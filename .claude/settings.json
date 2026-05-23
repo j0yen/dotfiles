@@ -1,0 +1,42 @@
+{
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "auto",
+  "skipAutoPermissionPrompt": true,
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(sudo:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/ctrace-session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-session-start.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/ctrace-session-end.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
