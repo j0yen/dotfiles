@@ -15,7 +15,7 @@ RECALL_BIN="${RECALL_BIN:-$HOME/.local/bin/recall}"
 
 cwd="${CLAUDE_PROJECT_DIR:-$PWD}"
 project="$(basename "$cwd")"
-limit="${RECALL_SESSION_LIMIT:-5}"
+limit="${RECALL_SESSION_LIMIT:-8}"
 
 # Extract the markdown body from `recall show <id>` (everything after the
 # closing `---` of the frontmatter), and squash to one line.
