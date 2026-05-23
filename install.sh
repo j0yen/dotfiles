@@ -26,11 +26,7 @@ ts="$(date -u +%Y%m%dT%H%M%SZ)"
 
 # Files to skip even if present in the repo:
 #   - settings.local.json: machine-local permission allowlist (also .gitignored)
-#   - CLAUDE_SELF{,.default}.md / claude-self-start.sh / claude-self CLI:
-#     the claude-self cluster is owned by the autobuilder pipeline. Until
-#     autobuilder ships v0.2 and explicitly wires it, install.sh skips these
-#     so partial drafts don't bind into a live SessionStart.
-skip_pattern='/(settings\.local\.json|CLAUDE_SELF\.md|CLAUDE_SELF\.default\.md|claude-self-start\.sh|claude-self)$'
+skip_pattern='/(settings\.local\.json)$'
 
 link() {
   local src="$1" dst="$2"
