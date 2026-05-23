@@ -1,49 +1,44 @@
 # dotfiles
 
-Machine config for this laptop. Tracks `~/.claude/` settings + hook scripts;
-intentionally narrow scope (the things that, if lost, would meaningfully
-break my agent setup).
+**Holding pen for the `claude-self` cluster** — drafts that the
+autobuilder pipeline owns and that have not yet been wired into
+`~/.claude/`. Kept private (this repo) until autobuilder ships v0.2 and
+binds them.
+
+Everything else that was previously here (settings.json, hook scripts,
+scratch CLIs) has moved to [`~/wintermute/dotfiles/`](https://github.com/j0yen/wintermute/tree/master/dotfiles).
 
 ## Layout
 
 ```
 .
 ├── .claude/
-│   ├── settings.json            # Claude Code global settings (hooks, permissions, theme)
+│   ├── CLAUDE_SELF.md           # draft self-preferences (PRD-claude-self)
+│   ├── CLAUDE_SELF.default.md   # draft template (default-restore source)
 │   └── scripts/
-│       ├── ctrace-session-start.sh    # eBPF session tracer (start)
-│       ├── ctrace-session-end.sh      # eBPF session tracer (stop)
-│       ├── summarize-ctrace-session.sh
-│       └── recall-session-start.sh    # SessionStart hook — emit relevant memories
-├── install.sh                   # symlink installer with backups
+│       └── claude-self-start.sh # SessionStart hook draft, NOT yet wired
+├── .local/
+│   └── bin/
+│       └── claude-self          # CLI to manage CLAUDE_SELF.md (symlinked into ~/.local/bin/)
+├── install.sh                   # symlink installer; skip_pattern excludes the entire claude-self cluster
 └── README.md
 ```
 
-`~/.claude/settings.local.json` is intentionally **not** tracked
-(machine-local permission allowlist); it's listed in `.gitignore` and
-skipped by `install.sh`.
+## Why nothing here is symlinked yet
 
-## Install on a fresh machine
+`install.sh`'s `skip_pattern` excludes every file in this repo. Running
+`./install.sh` is currently a no-op by design — autobuilder is supposed
+to land `PRD-claude-self.md` (in `~/projects/autobuilder/`) before the
+drafts get bound to live SessionStart behavior. The `claude-self` CLI
+itself is the one exception: it's already symlinked into `~/.local/bin/`
+manually (it can lint and edit the live file even when there isn't one
+yet).
 
-```sh
-git clone git@github.com:j0yen/dotfiles.git ~/dotfiles
-cd ~/dotfiles
-./install.sh --dry-run     # preview
-./install.sh               # symlink into ~/
-```
+When autobuilder is ready, the cutover is:
 
-`install.sh` is idempotent. If the target file already exists and is *not*
-a symlink to the right place, it is renamed to `<name>.bak.<UTC timestamp>`
-before the symlink is created.
-
-## Why not chezmoi / yadm / stow?
-
-Three tracked files. The complexity budget for a personal dotfiles repo
-should be near zero — one shell script is fewer moving parts than any of
-the alternatives.
-
-## Related
-
-- `~/wintermute/recall/hooks/session-start.sh` is the *canonical* source for
-  the SessionStart hook script. The copy here in `.claude/scripts/` is the
-  installed runtime artifact, kept in sync by hand.
+1. Remove the claude-self entries from `install.sh`'s `skip_pattern`.
+2. Run `./install.sh` — `CLAUDE_SELF.md`, `CLAUDE_SELF.default.md`, and
+   `claude-self-start.sh` get symlinked into `~/.claude/`.
+3. Add `claude-self-start.sh` to the SessionStart hooks list in
+   `~/wintermute/dotfiles/.claude/settings.json`.
+4. Pop stack item #2 ("wire claude-self when autobuilder is ready").

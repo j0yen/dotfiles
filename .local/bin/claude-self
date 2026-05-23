@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# claude-self — manage ~/.claude/CLAUDE_SELF.md
+#
+# Subcommands:
+#   show                cat the live file
+#   edit                $EDITOR with lint-on-save
+#   lint [--quiet]      validate canonical structure + length cap
+#   log                 git log restricted to CLAUDE_SELF.md (via dotfiles)
+#   diff [REF]          git diff vs REF (default HEAD)
+#   default-restore     overwrite live file with default template (after lint)
+#   path                print the live-file path
+#   help                print this message
+#
+# Lint rules (PRD-claude-self §4.4):
+#   - Exactly the seven canonical section headers, in order
+#   - Total lines <= 200
+#   - "Aspirations" section has at least one non-empty bullet (load-bearing)
+#   - No duplicate bullet text within a section
+
+set -uo pipefail
+
+SELF_FILE="${CLAUDE_SELF_FILE:-${HOME}/.claude/CLAUDE_SELF.md}"
+DEFAULT_FILE="${CLAUDE_SELF_DEFAULT:-${HOME}/.claude/CLAUDE_SELF.default.md}"
+DOTFILES="${CLAUDE_DOTFILES:-${HOME}/dotfiles}"
+LINT_MAX_LINES=200
+
+# The seven canonical section headers, in canonical order.
+CANONICAL_SECTIONS=(
+    "Voice"
+    "Values"
+    "Defaults"
+    "Things I keep getting wrong"
+    "Aspirations"
+    "Boundaries"
+    "Changelog"
+)
+
+usage() {
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+cmd_path() {
+    printf '%s\n' "$SELF_FILE"
+}
+
+cmd_show() {
+    if [ ! -r "$SELF_FILE" ]; then
+        printf 'claude-self: %s not found\n' "$SELF_FILE" >&2
+        return 2
+    fi
+    cat "$SELF_FILE"
+}
+
+cmd_lint() {
+    local quiet=0
+    [ "${1:-}" = "--quiet" ] && quiet=1
+
+    if [ ! -r "$SELF_FILE" ]; then
+        [ $quiet -eq 0 ] && printf 'lint: %s missing\n' "$SELF_FILE" >&2
+        return 2
+    fi
+
+    local errs=0 line_count
+    line_count=$(wc -l < "$SELF_FILE")
+
+    # 1) Length cap
+    if [ "$line_count" -gt "$LINT_MAX_LINES" ]; then
+        [ $quiet -eq 0 ] && printf 'lint: %d lines exceeds cap of %d\n' "$line_count" "$LINT_MAX_LINES" >&2
+        errs=$((errs + 1))
+    fi
+
+    # 2) Canonical sections present, in order
+    local got
+    got=$(grep -E '^## ' "$SELF_FILE" | sed 's/^## //' || true)
+    local want
+    want=$(printf '%s\n' "${CANONICAL_SECTIONS[@]}")
+    if [ "$got" != "$want" ]; then
+        [ $quiet -eq 0 ] && {
+            printf 'lint: section headers do not match canonical set\n' >&2
+            printf '  expected:\n' >&2
+            printf '%s\n' "$want" | sed 's/^/    /' >&2
+            printf '  got:\n' >&2
+            printf '%s\n' "$got" | sed 's/^/    /' >&2
+        }
+        errs=$((errs + 1))
+    fi
+
+    # 3) Aspirations section has >=1 non-empty bullet
+    local asp_bullets
+    asp_bullets=$(awk '
+        /^## Aspirations$/ { in_sec=1; next }
+        /^## / && in_sec { in_sec=0 }
+        in_sec && /^- [^[:space:]]/ { n++ }
+        END { print n+0 }
+    ' "$SELF_FILE")
+    if [ "$asp_bullets" -lt 1 ]; then
+        [ $quiet -eq 0 ] && printf 'lint: Aspirations section is empty (must have >=1 bullet)\n' >&2
+        errs=$((errs + 1))
+    fi
+
+    # 4) No duplicate bullets within a section
+    local dupes
+    dupes=$(awk '
+        /^## / { sec=$0; delete seen; next }
+        /^- / {
+            line=$0
+            if (line in seen) { print sec "|" line; }
+            seen[line]=1
+        }
+    ' "$SELF_FILE")
+    if [ -n "$dupes" ]; then
+        [ $quiet -eq 0 ] && {
+            printf 'lint: duplicate bullets within section(s):\n' >&2
+            printf '%s\n' "$dupes" | sed 's/^/  /' >&2
+        }
+        errs=$((errs + 1))
+    fi
+
+    if [ "$errs" -eq 0 ]; then
+        [ $quiet -eq 0 ] && printf 'lint: OK (%d/%d lines, all sections present)\n' "$line_count" "$LINT_MAX_LINES"
+        return 0
+    fi
+    return 1
+}
+
+cmd_edit() {
+    if [ ! -e "$SELF_FILE" ]; then
+        printf 'claude-self: %s does not exist; create it first or run `claude-self default-restore`\n' "$SELF_FILE" >&2
+        return 2
+    fi
+    local editor="${EDITOR:-vim}"
+    while true; do
+        "$editor" "$SELF_FILE"
+        if cmd_lint; then
+            return 0
+        fi
+        printf 'lint failed. [r]e-edit, [a]ccept anyway, [q]uit without saving lint state? ' >&2
+        read -r choice
+        case "$choice" in
+            r|R|"") continue ;;
+            a|A) printf 'accepted with lint failures (file unchanged)\n' >&2; return 1 ;;
+            q|Q) return 2 ;;
+            *) printf '(unrecognized; re-editing)\n' >&2 ;;
+        esac
+    done
+}
+
+cmd_log() {
+    if [ ! -d "$DOTFILES/.git" ]; then
+        printf 'log: dotfiles repo not found at %s\n' "$DOTFILES" >&2
+        return 2
+    fi
+    git -C "$DOTFILES" log --oneline -- .claude/CLAUDE_SELF.md "$@"
+}
+
+cmd_diff() {
+    if [ ! -d "$DOTFILES/.git" ]; then
+        printf 'diff: dotfiles repo not found at %s\n' "$DOTFILES" >&2
+        return 2
+    fi
+    local ref="${1:-HEAD}"
+    git -C "$DOTFILES" diff "$ref" -- .claude/CLAUDE_SELF.md
+}
+
+cmd_default_restore() {
+    if [ ! -r "$DEFAULT_FILE" ]; then
+        printf 'default-restore: default file missing at %s\n' "$DEFAULT_FILE" >&2
+        return 2
+    fi
+    printf 'About to overwrite %s with the default template.\n' "$SELF_FILE" >&2
+    printf 'Type "yes" to proceed: ' >&2
+    read -r confirm
+    [ "$confirm" = "yes" ] || { printf 'aborted\n' >&2; return 1; }
+    cp "$DEFAULT_FILE" "$SELF_FILE"
+    cmd_lint
+}
+
+case "${1:-help}" in
+    show)               shift; cmd_show "$@" ;;
+    edit)               shift; cmd_edit "$@" ;;
+    lint)               shift; cmd_lint "$@" ;;
+    log)                shift; cmd_log "$@" ;;
+    diff)               shift; cmd_diff "$@" ;;
+    default-restore)    shift; cmd_default_restore "$@" ;;
+    path)               shift; cmd_path "$@" ;;
+    help|-h|--help)     usage ;;
+    *)                  printf 'claude-self: unknown subcommand %s\n' "$1" >&2; usage >&2; exit 2 ;;
+esac

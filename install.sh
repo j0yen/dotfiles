@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# install.sh — symlink everything under .claude/ into ~/.claude/.
+# install.sh — symlink everything under this directory into $HOME (matching paths).
 #
 # Backs up any existing non-symlink target to <name>.bak.<timestamp> the
 # first time it runs. Idempotent on subsequent runs (already-symlinked
 # files are skipped).
 #
 # Run from this repo:
-#   ./install.sh           # link from $HOME/dotfiles/<file> → $HOME/<file>
+#   ./install.sh           # link from $PWD/<file> → $HOME/<file>
 #   ./install.sh --dry-run # show what would change
 #
-# Files under .gitignore (settings.local.json by default) are *not*
-# linked — they stay machine-local.
+# Files matched by skip_pattern below are *not* linked.
 
 set -euo pipefail
 
@@ -25,8 +24,13 @@ repo_root="$(cd "$(dirname "$0")" && pwd)"
 home="$HOME"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 
-# Files to skip even if present in the repo. Keep machine-local.
-skip_pattern='/(settings\.local\.json)$'
+# Files to skip even if present in the repo:
+#   - settings.local.json: machine-local permission allowlist (also .gitignored)
+#   - CLAUDE_SELF{,.default}.md / claude-self-start.sh / claude-self CLI:
+#     the claude-self cluster is owned by the autobuilder pipeline. Until
+#     autobuilder ships v0.2 and explicitly wires it, install.sh skips these
+#     so partial drafts don't bind into a live SessionStart.
+skip_pattern='/(settings\.local\.json|CLAUDE_SELF\.md|CLAUDE_SELF\.default\.md|claude-self-start\.sh|claude-self)$'
 
 link() {
   local src="$1" dst="$2"
@@ -57,7 +61,7 @@ while IFS= read -r -d '' src; do
     .git/*|.gitignore|README.md|install.sh) continue ;;
   esac
   if [[ "$rel" =~ $skip_pattern ]]; then
-    printf 'skip (machine-local): %s\n' "$rel"
+    printf 'skip (claude-self or local-only): %s\n' "$rel"
     continue
   fi
   link "$src" "$home/$rel"
