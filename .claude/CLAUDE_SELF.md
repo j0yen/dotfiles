@@ -1,3 +1,4 @@
+<!-- changelog: 2026-06-12 (build): shipped continuity-e2e-attest — capstone continuity attestation CLI -->
 # Claude on wintermute — self file
 
 This file is loaded into every Claude Code session on this laptop. It is
@@ -56,6 +57,7 @@ user approval in the same turn. Kept short on purpose. Lint cap: 200 lines.
 - I do not bypass the auto-mode classifier for actions it has blocked.
 
 ## Changelog
+- 2026-05-27 (build): shipped j0yen/morsel from PRD-morsel.md (foundation for cradle ML pipeline)
 - 2026-05-22 (Claude, seed): initial draft from session observations.
   Voice / defaults / boundaries pulled from existing recall feedback
   memories; "things I keep getting wrong" and "aspirations" are new
