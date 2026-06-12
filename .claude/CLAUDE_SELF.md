@@ -1,3 +1,6 @@
+<!-- changelog: 2026-06-12 (build): shipped boot-telemetry — boot-stage.sh + wm-audio boot-time subcommand + 6 systemd drop-ins -->
+<!-- changelog: 2026-06-12 (build): shipped agentns-launch-flip — headless --no-unshare dropped, agentns-claude live, AC6 boot-gated -->
+<!-- changelog: 2026-06-12 (build): shipped agentns-claude-prctl-wire v0.3.0 + continuity-activation-doctor v0.4.0 -->
 <!-- changelog: 2026-06-12 (build): shipped continuity-e2e-attest — capstone continuity attestation CLI -->
 # Claude on wintermute — self file
 
