@@ -1,6 +1,11 @@
+<!-- changelog: 2026-06-12 (build): shipped answerable-redline v0.3.0 — declarative redline policy + answerable check -->
+<!-- changelog: 2026-06-12 (build): shipped answerable-values-drift v0.4.0 — values-drift subcommand watches CLAUDE_SELF.md for weakened/removed commitments -->
+<!-- changelog: 2026-06-12 (build): shipped wintermute-music from PRD-wintermute-music.md -->
+<!-- changelog: 2026-06-12 (build): shipped agentns-clone-flag-fix — assay agentns Live on 7.0.11-arch1-1 (prctl path + counter/tag parser fixes) -->
 <!-- changelog: 2026-06-12 (build): shipped boot-telemetry — boot-stage.sh + wm-audio boot-time subcommand + 6 systemd drop-ins -->
 <!-- changelog: 2026-06-12 (build): shipped agentns-launch-flip — headless --no-unshare dropped, agentns-claude live, AC6 boot-gated -->
 <!-- changelog: 2026-06-12 (build): shipped agentns-claude-prctl-wire v0.3.0 + continuity-activation-doctor v0.4.0 -->
+<!-- changelog: 2026-06-12 (build): shipped answerable v0.1.0 — append-only autonomous-action ledger (record/log/stats, O_APPEND, SIGPIPE-safe, library API for sibling PRDs) -->
 <!-- changelog: 2026-06-12 (build): shipped continuity-e2e-attest — capstone continuity attestation CLI -->
 # Claude on wintermute — self file
 
