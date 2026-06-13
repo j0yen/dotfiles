@@ -1,3 +1,5 @@
+<!-- changelog: 2026-06-13 (build): shipped plumb-selfreview-bind — plumb_gate in self-review Phase B.5, memlog probe fix from PRD-plumb-selfreview-bind.md -->
+<!-- changelog: 2026-06-13 (build): extended plumb v0.1.0→v0.2.0 — calibration ledger + trust subcommand from PRD-plumb-ledger.md -->
 <!-- changelog: 2026-06-13 (build): shipped plumb-core v0.1.0 — probe-oracle calibration CLI from PRD-plumb-core.md -->
 <!-- changelog: 2026-06-13 (build): shipped harbor-thrift — wm-burst cost hub standing from PRD-harbor-thrift.md -->
 <!-- changelog: 2026-06-13 (build): shipped adopt-apply — adopt apply subcommand from PRD-adopt-apply.md -->
