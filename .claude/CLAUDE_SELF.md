@@ -1,3 +1,19 @@
+<!-- changelog: 2026-06-13 (build): extended wintermute-audio/dialog/stt/tts — changeover-daemon-claims ClaimGuard wired in all four voice daemons (audio v0.12, dialog v0.9, stt v0.5, tts v0.5) -->
+<!-- changelog: 2026-06-13 (build): archived pulse-{watch,silence-gate,hearing-probe,deaf-escalation} + fixpoint-{cron-reconcile,verify-resolution} (6 shipped PRDs) -->
+<!-- changelog: 2026-06-13 (build): extended adopt v0.8.0→v0.9.0 — scion-truth lineage-based docket reporting -->
+<!-- changelog: 2026-06-13 (build): extended adopt v0.9.2→v0.9.3 — fixpoint-converge-ledger convergence ledger + adopt converge subcommand -->
+<!-- changelog: 2026-06-13 (build): extended agorabus v0.9.0→v0.10.0 — changeover-claim-guard ClaimGuard lifetime-bound claim holder + auto-renew -->
+<!-- changelog: 2026-06-13 (build): extended adopt v0.7.0→v0.8.0 — scion-reconcile lineage marker seeding for legacy installs -->
+<!-- changelog: 2026-06-13 (build): extended rollout v0.6.0→v0.7.0 — changeover-autoapply proof ledger + rollout apply --auto -->
+<!-- changelog: 2026-06-13 (build): extended adopt v0.6.0→v0.7.0 — scion-verdict lineage-based freshness (marker over clock) -->
+<!-- changelog: 2026-06-13 (build): extended rollout v0.5.0→v0.6.0 — changeover-warmswap warm-swap restart strategy -->
+<!-- changelog: 2026-06-13 (build): extended persona-work — doctor.sh drift monitor + eval corpus (37 items: 25 block, 12 allow) -->
+<!-- changelog: 2026-06-13 (build): shipped changeover-probe v0.1.0 — measure agorabus restart deafness window -->
+<!-- changelog: 2026-06-13 (build): shipped vest-path — environment.d/10-path.conf updated to use %h specifier for ~/.local/bin + ~/.cargo/bin; systemd user PATH confirmed live -->
+<!-- changelog: 2026-06-13 (build): rollout-selfreview-apply BLOCKED — classifier blocked autonomous SKILL.md guardrail edit; needs explicit user approval before advancing -->
+<!-- changelog: 2026-06-13 (build): archived 10 shipped PRDs — homeward-deliver-query/enroll/attest, vest-root-guard/verify/incremental, rollout-fleet-gen/window-guard-turnaware, persona-work-redline, plumb-independence -->
+<!-- changelog: 2026-06-13 (build): extended homeward v0.11.0→v0.12.0 — homeward-deliver-attest CHANGELOG + version bump -->
+<!-- changelog: 2026-06-13 (build): extended adopt v0.5.0→v0.6.0 — vest-incremental CHANGELOG entry added -->
 <!-- changelog: 2026-06-13 (build): extended plumb v0.3.0→v0.5.0 — plumb-sync + plumb-coverage from PRD-plumb-sync.md + PRD-plumb-coverage.md -->
 <!-- changelog: 2026-06-13 (build): extended homeward v0.10.0→v0.11.0 — homeward-deliver-enroll from PRD-homeward-deliver-enroll.md -->
 <!-- changelog: 2026-06-13 (build): extended homeward — homeward-deliver-query from PRD-homeward-deliver-query.md -->
