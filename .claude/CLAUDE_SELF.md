@@ -1,3 +1,17 @@
+<!-- changelog: 2026-06-13 (build): extended plumb v0.3.0→v0.5.0 — plumb-sync + plumb-coverage from PRD-plumb-sync.md + PRD-plumb-coverage.md -->
+<!-- changelog: 2026-06-13 (build): extended homeward v0.10.0→v0.11.0 — homeward-deliver-enroll from PRD-homeward-deliver-enroll.md -->
+<!-- changelog: 2026-06-13 (build): extended homeward — homeward-deliver-query from PRD-homeward-deliver-query.md -->
+<!-- changelog: 2026-06-13 (build): extended rollout v0.4.0→v0.5.0 — rollout-window-guard-turnaware from PRD-rollout-window-guard-turnaware.md -->
+<!-- changelog: 2026-06-13 (build): shipped homeward-deliver-embed-client from PRD-homeward-deliver-embed-client.md -->
+<!-- changelog: 2026-06-13 (build): extended rollout v0.3.0→v0.4.0 — rollout-apply-systemd from PRD-rollout-apply-systemd.md -->
+<!-- changelog: 2026-06-13 (build): shipped ousia-forge from PRD-ousia-forge.md -->
+<!-- changelog: 2026-06-13 (build): extended wintermute-brain v0.22.0→v0.23.0 — persona-redline-regenerate from PRD-persona-redline-regenerate.md -->
+<!-- changelog: 2026-06-13 (build): shipped persona-redline-eval from PRD-persona-redline-eval.md -->
+<!-- changelog: 2026-06-13 (build): shipped persona-deploy-jocelyn from PRD-persona-deploy-jocelyn.md -->
+<!-- changelog: 2026-06-13 (build): shipped persona-deploy-doctor from PRD-persona-deploy-doctor.md -->
+<!-- changelog: 2026-06-13 (build): extended wintermute-brain v0.21.0→v0.22.0 — persona-profile named registry from PRD-persona-profile.md -->
+<!-- changelog: 2026-06-13 (build): extended wintermute-brain v0.20.0→v0.21.0 — persona-redline output enforcement from PRD-persona-redline.md -->
+<!-- changelog: 2026-06-13 (build): shipped adopt-cron — systemd timer runs adopt apply --execute every 6h -->
 <!-- changelog: 2026-06-13 (build): shipped adopt-docket-report — adopt report subcommand wires scan findings to docket ledger from PRD-adopt-docket-report.md -->
 <!-- changelog: 2026-06-13 (build): shipped plumb-selfreview-bind — plumb_gate in self-review Phase B.5, memlog probe fix from PRD-plumb-selfreview-bind.md -->
 <!-- changelog: 2026-06-13 (build): extended plumb v0.1.0→v0.2.0 — calibration ledger + trust subcommand from PRD-plumb-ledger.md -->
