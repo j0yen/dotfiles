@@ -1,3 +1,6 @@
+<!-- changelog: 2026-06-13 (build): extended homeward v0.14.0→v0.15.0 — homeward-coverage-report coverage subcommand (LIVE/STALE/SILENT/UNREACHABLE per source, --json, fixture tests) -->
+<!-- changelog: 2026-06-13 (build): extended homeward v0.13.0→v0.14.0 — homeward-source-catalog deploy/sources.toml (6 cities), CATCHMENT.md, load test, default env wiring -->
+<!-- changelog: 2026-06-13 (build): extended rollout v0.7.0→v0.9.0 — changeover-proof-seed rollout prove subcommand + changeover-prove.timer (daily auto-proof) -->
 <!-- changelog: 2026-06-13 (build): extended wintermute-audio/dialog/stt/tts — changeover-daemon-claims ClaimGuard wired in all four voice daemons (audio v0.12, dialog v0.9, stt v0.5, tts v0.5) -->
 <!-- changelog: 2026-06-13 (build): archived pulse-{watch,silence-gate,hearing-probe,deaf-escalation} + fixpoint-{cron-reconcile,verify-resolution} (6 shipped PRDs) -->
 <!-- changelog: 2026-06-13 (build): extended adopt v0.8.0→v0.9.0 — scion-truth lineage-based docket reporting -->
