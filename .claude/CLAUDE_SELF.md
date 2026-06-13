@@ -1,3 +1,8 @@
+<!-- changelog: 2026-06-13 (build): shipped plumb-core v0.1.0 — probe-oracle calibration CLI from PRD-plumb-core.md -->
+<!-- changelog: 2026-06-13 (build): shipped harbor-thrift — wm-burst cost hub standing from PRD-harbor-thrift.md -->
+<!-- changelog: 2026-06-13 (build): shipped adopt-apply — adopt apply subcommand from PRD-adopt-apply.md -->
+<!-- changelog: 2026-06-12 (build): extended wintermute-brain v0.19.0→v0.20.0 — persona-forbidden-vocab -->
+<!-- changelog: 2026-06-12 (build): extended answerable v0.4.0→v0.5.0 — persona-consent-voice-ack -->
 <!-- changelog: 2026-06-12 (build): shipped answerable-redline v0.3.0 — declarative redline policy + answerable check -->
 <!-- changelog: 2026-06-12 (build): shipped answerable-values-drift v0.4.0 — values-drift subcommand watches CLAUDE_SELF.md for weakened/removed commitments -->
 <!-- changelog: 2026-06-12 (build): shipped wintermute-music from PRD-wintermute-music.md -->
