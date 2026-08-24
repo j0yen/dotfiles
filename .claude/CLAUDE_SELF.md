@@ -1,3 +1,4 @@
+<!-- changelog: 2026-06-13 (build): extended rollout v0.9.0→v0.10.0 — changeover-activate rollout cycle subcommand + dormant systemd timer -->
 <!-- changelog: 2026-06-13 (build): extended homeward v0.14.0→v0.15.0 — homeward-coverage-report coverage subcommand (LIVE/STALE/SILENT/UNREACHABLE per source, --json, fixture tests) -->
 <!-- changelog: 2026-06-13 (build): extended homeward v0.13.0→v0.14.0 — homeward-source-catalog deploy/sources.toml (6 cities), CATCHMENT.md, load test, default env wiring -->
 <!-- changelog: 2026-06-13 (build): extended rollout v0.7.0→v0.9.0 — changeover-proof-seed rollout prove subcommand + changeover-prove.timer (daily auto-proof) -->
