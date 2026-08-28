@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Obsidian
+Comment=Obsidian
+Exec=/snap/bin/obsidian %U
+Icon=obsidian
+Terminal=false
+Type=Application
+StartupWMClass=md.obsidian.Obsidian
+MimeType=x-scheme-handler/obsidian;
+Categories=Office;
