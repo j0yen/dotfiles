@@ -33,7 +33,7 @@ link() {
   if [[ -L "$dst" ]] && [[ "$(readlink "$dst")" == "$src" ]]; then
     return 0
   fi
-  if [[ -e "$dst" ]]; then
+  if [[ -e "$dst" || -L "$dst" ]]; then   # -L: a dangling symlink still occupies the path
     if [[ $DRY -eq 1 ]]; then
       printf 'would back up: %s -> %s.bak.%s\n' "$dst" "$dst" "$ts"
     else
