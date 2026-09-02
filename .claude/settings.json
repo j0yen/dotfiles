@@ -1,0 +1,425 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sudo:*)",
+      "Bash(wm-publish:*)",
+      "Bash(wm-push:*)"
+    ],
+    "defaultMode": "auto"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/ctrace-session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/scratch-tools-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/claude-self-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/agorabus-session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/learning-candidates-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/agentns-activation-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/ctrace-session-end.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/agorabus-session-end.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/scripts/hook-handle-use.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/scripts/hook-handle-rename.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-user-prompt.sh",
+            "timeout": 1,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-search-inject.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-stop.sh",
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-learning-candidate.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/spool-hook.sh start",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/procstat-cargo.sh start",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit|Agent|Skill|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/ousia-guard-pretool.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/spool-hook.sh end ok",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/procstat-cargo.sh end ok",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh post",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh post",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh post",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/spool-hook.sh end error",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/recall-post-tool-use.sh",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/procstat-cargo.sh end error",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
+            "timeout": 10,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/memlog-precompact.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "skipAutoPermissionPrompt": true
+}
