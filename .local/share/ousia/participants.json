@@ -33,6 +33,17 @@
         ]
       },
       "edge": "affects"
+    },
+    {
+      "note": "Deny any tool call that names ~/.config/wm-burst/.env (holds HCLOUD_TOKEN and builder/snapshot ids): exposing it violates the owner's credential right, so rights-violation fires as deny. Automation reads it via cloudbuild.sh, which never names the path in tool input.",
+      "pattern": "wm-burst/\\.env",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
     }
   ],
   "_examples": [
