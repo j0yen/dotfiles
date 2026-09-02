@@ -44,6 +44,28 @@
         ]
       },
       "edge": "violates"
+    },
+    {
+      "note": "Deny any tool input containing a Hetzner Cloud API token by shape: exactly 64 alphanumerics with at least one upper, one lower, one digit (sha256 hex sums are lowercase-only and do not match). The literal token must never be written here — this file is committed. Pasting the token into a command, file, or agent prompt violates the owner's credential right.",
+      "pattern": "(?<![A-Za-z0-9])(?=[A-Za-z0-9]{64}(?![A-Za-z0-9]))(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{64}(?![A-Za-z0-9])",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
+    },
+    {
+      "note": "Deny commands that print the HCLOUD_TOKEN value into the transcript (echo/printf/printenv/declare -p/export -p naming it, or env piped to grep for hcloud). Using $HCLOUD_TOKEN inside a curl header or hcloud call is still allowed.",
+      "pattern": "\\b(echo|printf|printenv|declare\\s+-p|export\\s+-p)\\b[^\\n|;&]*HCLOUD_TOKEN|\\benv\\b\\s*\\|\\s*grep\\b[^\\n]*(?i:hcloud)",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
     }
   ],
   "_examples": [
