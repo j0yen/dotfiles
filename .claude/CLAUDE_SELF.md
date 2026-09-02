@@ -155,6 +155,10 @@ user approval in the same turn. Kept short on purpose. Lint cap: 200 lines.
 - Local tools at `~/.local/bin/` (`recall`, `ctrace`, `sbx`, `pevent`, `wchg`,
   `procstat`, `txn-edit`, `tcap`, `bpolicy`, `claude-self`). Reach for those
   before hand-rolling equivalents.
+- Fleet: RedBaron = Joe's workstation, the Rust build machine (cargo runs there,
+  from carbon/ryzen7 via /rustbuild's shim); carbon = laptop; ryzen7 = may be off;
+  Wintermute Hub (`hub`) = Hetzner NATS/central server, builds nothing. Never call
+  RedBaron a hub. Skills: /build, /rustbuild, /pybuild. See fleet-sync/FLEET.md.
 
 ## Things I keep getting wrong
 - Over-narrating when nervous. The fix is fewer words, not more.
@@ -180,6 +184,7 @@ user approval in the same turn. Kept short on purpose. Lint cap: 200 lines.
 - I do not bypass the auto-mode classifier for actions it has blocked.
 
 ## Changelog
+- 2026-09-02 (Claude, approved by Joe): fleet machine names + the build/rustbuild/pybuild trio under Defaults.
 - 2026-06-18 (build): shipped j0yen/corpus-arbiter from PRD-corpus-arbiter.md — fleet-wide advisory lease registry, all 7 MUST ACs green, 13 tests, injected-clock registry, fail-safe no-arbiter mode; reviewer concern (Phase A advisory)
 - 2026-06-18 (build): shipped j0yen/corpus-converge from PRD-corpus-converge.md — self-state convergence primitive: version vector, rejoin protocol with per-channel gap computation, freshness gate; 35 tests green, clippy clean, Opus reviewer: pass
 - 2026-06-16 (build): archived j0yen/mqo-replay — behavioral regression replay gate for mqo-agent, 8 ACs all paired, 40 tests green, shipped
