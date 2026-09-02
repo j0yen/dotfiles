@@ -11,6 +11,28 @@
         ]
       },
       "edge": "affects"
+    },
+    {
+      "note": "Deny any tool call that names an SSH private key file (id_* without .pub, or *.pem/*.key under .ssh): the action violates the owner's credential right, so rights-violation fires as deny.",
+      "pattern": "(^|/)\\.ssh/(id_[A-Za-z0-9_-]+|[^/\\s\"']+\\.(pem|key))(?!\\S*\\.pub)",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
+    },
+    {
+      "note": "Flag any tool call that touches ~/.ssh/ at all (config, known_hosts, authorized_keys, public keys): the session exercises AuthorityRole over the owner's access credentials with no asserted Accountability, so unaccountable-authority fires as a flag.",
+      "pattern": "(^|/)\\.ssh/",
+      "participant": {
+        "id": "AgentSession",
+        "types": [
+          "AuthorityRole"
+        ]
+      },
+      "edge": "affects"
     }
   ],
   "_examples": [
