@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# bookmark — file:line markers; resume where you stopped.
+#
+# Subcommands:
+#   set <name> <path>[:<line>]  set/overwrite a named bookmark
+#   get <name>                   print "<path>:<line>"
+#   open <name>                  print "<path> +<line>" suitable for `$EDITOR`
+#   list                         all bookmarks
+#   del <name>                   remove a bookmark
+#   clear                        wipe all (asks for confirmation)
+#   path                         print the file
+#
+# File: ~/.cache/claude-bookmark/bookmarks.tsv  (name<TAB>path<TAB>line)
+
+set -uo pipefail
+
+BM_DIR="${CLAUDE_BOOKMARK_DIR:-${HOME}/.cache/claude-bookmark}"
+BM_FILE="${BM_DIR}/bookmarks.tsv"
+mkdir -p "$BM_DIR"
+[ -e "$BM_FILE" ] || : > "$BM_FILE"
+
+usage() {
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+parse_target() {
+    # path[:line] -> outputs "<path><TAB><line>"
+    local raw="$1"
+    if [[ "$raw" == *:* ]]; then
+        printf '%s\t%s\n' "${raw%:*}" "${raw##*:}"
+    else
+        printf '%s\t%s\n' "$raw" "1"
+    fi
+}
+
+case "${1:-list}" in
+    set)
+        shift
+        [ $# -ge 2 ] || { printf 'bookmark: set NAME PATH[:LINE]\n' >&2; exit 2; }
+        name="$1"
+        IFS=$'\t' read -r path line <<< "$(parse_target "$2")"
+        # absolute-ize relative paths so resume from elsewhere still works
+        if [[ "$path" != /* ]]; then
+            path="$(realpath -m "$path")"
+        fi
+        # remove any prior entry with this name, then append
+        grep -v "^${name}	" "$BM_FILE" > "${BM_FILE}.new" 2>/dev/null || true
+        mv "${BM_FILE}.new" "$BM_FILE"
+        printf '%s\t%s\t%s\n' "$name" "$path" "$line" >> "$BM_FILE"
+        printf 'set %s -> %s:%s\n' "$name" "$path" "$line" >&2
+        ;;
+    get)
+        shift
+        name="${1:-}"
+        [ -n "$name" ] || { printf 'bookmark: get NAME\n' >&2; exit 2; }
+        line=$(awk -F'\t' -v n="$name" '$1==n {print $2 ":" $3; exit}' "$BM_FILE")
+        if [ -z "$line" ]; then
+            printf 'bookmark: %s not found\n' "$name" >&2
+            exit 1
+        fi
+        printf '%s\n' "$line"
+        ;;
+    open)
+        shift
+        name="${1:-}"
+        [ -n "$name" ] || { printf 'bookmark: open NAME\n' >&2; exit 2; }
+        out=$(awk -F'\t' -v n="$name" '$1==n {print $2 " +" $3; exit}' "$BM_FILE")
+        if [ -z "$out" ]; then
+            printf 'bookmark: %s not found\n' "$name" >&2
+            exit 1
+        fi
+        printf '%s\n' "$out"
+        ;;
+    list)
+        if [ ! -s "$BM_FILE" ]; then
+            printf '(no bookmarks)\n'
+            exit 0
+        fi
+        awk -F'\t' '{printf "%-20s %s:%s\n", $1, $2, $3}' "$BM_FILE"
+        ;;
+    del)
+        shift
+        name="${1:-}"
+        [ -n "$name" ] || { printf 'bookmark: del NAME\n' >&2; exit 2; }
+        if grep -q "^${name}	" "$BM_FILE"; then
+            grep -v "^${name}	" "$BM_FILE" > "${BM_FILE}.new" || true
+            mv "${BM_FILE}.new" "$BM_FILE"
+            printf 'deleted %s\n' "$name" >&2
+        else
+            printf 'bookmark: %s not found\n' "$name" >&2
+            exit 1
+        fi
+        ;;
+    clear)
+        printf 'wipe all bookmarks? type "yes": ' >&2
+        read -r ans
+        [ "$ans" = "yes" ] && : > "$BM_FILE" && printf 'cleared\n' || printf 'aborted\n'
+        ;;
+    path)
+        printf '%s\n' "$BM_FILE"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        printf 'bookmark: unknown subcommand %s\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

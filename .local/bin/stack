@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# stack — LIFO of pending intentions. Persists across sessions.
+#
+# Subcommands:
+#   push <text>     append a new top
+#   pop             output top entry; remove it from the stack
+#   peek            output top entry without removing
+#   list            show all entries (top last; matches LIFO file order)
+#   drop <n>        remove the nth entry (1-indexed from top)
+#   clear           wipe the stack (asks for confirmation)
+#   path            print the file path
+#
+# File: ~/.cache/claude-stack/stack.txt (one entry per line; bottom = top-of-stack)
+
+set -uo pipefail
+
+STACK_DIR="${CLAUDE_STACK_DIR:-${HOME}/.cache/claude-stack}"
+STACK_FILE="${STACK_DIR}/stack.txt"
+mkdir -p "$STACK_DIR"
+[ -e "$STACK_FILE" ] || : > "$STACK_FILE"
+
+usage() {
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+depth() {
+    if [ -s "$STACK_FILE" ]; then
+        wc -l < "$STACK_FILE" | tr -d '[:space:]'
+    else
+        printf '0'
+    fi
+}
+
+case "${1:-list}" in
+    push)
+        shift
+        [ $# -gt 0 ] || { printf 'stack: push requires text\n' >&2; exit 2; }
+        printf '%s\n' "$*" >> "$STACK_FILE"
+        printf 'pushed (depth=%s)\n' "$(depth)" >&2
+        ;;
+    pop)
+        d=$(depth)
+        if [ "$d" -eq 0 ]; then
+            printf '(empty)\n' >&2
+            exit 1
+        fi
+        tail -n 1 "$STACK_FILE"
+        # remove last line
+        head -n "-1" "$STACK_FILE" > "${STACK_FILE}.new" && mv "${STACK_FILE}.new" "$STACK_FILE"
+        ;;
+    peek)
+        d=$(depth)
+        if [ "$d" -eq 0 ]; then
+            printf '(empty)\n' >&2
+            exit 1
+        fi
+        tail -n 1 "$STACK_FILE"
+        ;;
+    list)
+        d=$(depth)
+        if [ "$d" -eq 0 ]; then
+            printf '(empty)\n'
+            exit 0
+        fi
+        # display newest (top) first for human reading
+        nl -b a "$STACK_FILE" | tac
+        ;;
+    drop)
+        shift
+        n="${1:-}"
+        [ -n "$n" ] || { printf 'stack: drop requires an index\n' >&2; exit 2; }
+        d=$(depth)
+        if [ "$n" -lt 1 ] || [ "$n" -gt "$d" ]; then
+            printf 'stack: index %s out of range (depth=%d)\n' "$n" "$d" >&2
+            exit 1
+        fi
+        # nth from top == (depth - n + 1) from bottom
+        target=$(( d - n + 1 ))
+        sed -i "${target}d" "$STACK_FILE"
+        printf 'dropped #%s (depth=%s)\n' "$n" "$(depth)" >&2
+        ;;
+    clear)
+        printf 'truncate stack (%s entries)? type "yes": ' "$(depth)" >&2
+        read -r ans
+        [ "$ans" = "yes" ] && : > "$STACK_FILE" && printf 'cleared\n' || printf 'aborted\n'
+        ;;
+    path)
+        printf '%s\n' "$STACK_FILE"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        printf 'stack: unknown subcommand %s\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

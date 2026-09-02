@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# napkin — within-session scratchpad. Append-only thinking-out-loud space.
+#
+# Subcommands:
+#   write <text>       append text (with timestamp) to today's napkin
+#   show               cat current napkin
+#   clear              truncate today's napkin (asks for confirmation)
+#   path               print the file path
+#   stdin              read text from stdin and append
+#
+# Session-id resolution: $CLAUDE_SESSION_ID if set, else date-based.
+
+set -uo pipefail
+
+NAPKIN_DIR="${CLAUDE_NAPKIN_DIR:-${HOME}/.cache/claude-napkin}"
+mkdir -p "$NAPKIN_DIR"
+
+session_key() {
+    if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+        printf '%s\n' "$CLAUDE_SESSION_ID"
+    else
+        date +%Y-%m-%d
+    fi
+}
+
+NAPKIN_FILE="${NAPKIN_DIR}/$(session_key).md"
+
+usage() {
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-show}" in
+    write)
+        shift
+        [ $# -gt 0 ] || { printf 'napkin: write requires text\n' >&2; exit 2; }
+        printf -- '- %s · %s\n' "$(date +%H:%M:%S)" "$*" >> "$NAPKIN_FILE"
+        ;;
+    stdin)
+        {
+            printf -- '- %s ·\n' "$(date +%H:%M:%S)"
+            sed 's/^/    /'
+        } < /dev/stdin >> "$NAPKIN_FILE"
+        ;;
+    show)
+        [ -r "$NAPKIN_FILE" ] && cat "$NAPKIN_FILE" || printf '(empty: %s)\n' "$NAPKIN_FILE"
+        ;;
+    clear)
+        printf 'truncate %s? type "yes": ' "$NAPKIN_FILE" >&2
+        read -r ans
+        [ "$ans" = "yes" ] && : > "$NAPKIN_FILE" && printf 'cleared\n' || printf 'aborted\n'
+        ;;
+    path)
+        printf '%s\n' "$NAPKIN_FILE"
+        ;;
+    help|-h|--help)
+        usage
+        ;;
+    *)
+        printf 'napkin: unknown subcommand %s\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

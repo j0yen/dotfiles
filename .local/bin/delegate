@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# delegate — send a task to another claude session via agorabus, wait for reply.
+#
+# usage:
+#   delegate <target-sid> "<prompt>" [--timeout SEC] [--cwd DIR] [--text]
+#   delegate --any "<prompt>" [--exclude SID]... [--timeout SEC] [--cwd DIR] [--text]
+#   delegate --list
+#
+# Default output: the .data envelope (JSON). With --text: just result.stdout
+# (or the error detail) for easy reading. Exit 0 on ok:true, 1 on ok:false
+# or timeout.
+
+set -u
+
+agorabus=/home/jsy/.local/bin/agorabus
+
+usage() {
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-2}"
+}
+
+cmd_list() {
+    "$agorabus" peers 2>/dev/null \
+        | jq -r '.[] | "\(.session_id)\tpid=\(.pid)\tcwd=\(.cwd)\tlast_tool=\(.last_tool // "-")"'
+}
+
+target=""
+prompt=""
+timeout_secs=300
+cwd_override=""
+text_mode=0
+any_mode=0
+exclude=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list) cmd_list; exit 0;;
+        --any) any_mode=1; shift;;
+        --timeout) timeout_secs="$2"; shift 2;;
+        --cwd) cwd_override="$2"; shift 2;;
+        --exclude) exclude+=("$2"); shift 2;;
+        --text) text_mode=1; shift;;
+        -h|--help) usage 0;;
+        --*) echo "delegate: unknown flag: $1" >&2; usage 2;;
+        *)
+            if [ -z "$target" ] && [ $any_mode -eq 0 ]; then
+                target="$1"
+            elif [ -z "$prompt" ]; then
+                prompt="$1"
+            else
+                echo "delegate: unexpected arg: $1" >&2; usage 2
+            fi
+            shift;;
+    esac
+done
+
+if [ -z "$prompt" ]; then
+    echo "delegate: missing prompt" >&2
+    usage 2
+fi
+
+if [ $any_mode -eq 1 ]; then
+    excl_json=$(printf '%s\n' "${exclude[@]:-}" | jq -R . | jq -s '. - [""]')
+    target=$("$agorabus" peers 2>/dev/null \
+        | jq -r --argjson excl "$excl_json" \
+            '[.[].session_id | select(test("-worker$")|not) | select(test("^delegate-cli-")|not)] - $excl | .[0] // ""')
+    if [ -z "$target" ]; then
+        echo "delegate: no eligible peer (use --list to see peers)" >&2
+        exit 1
+    fi
+fi
+
+if [ -z "$target" ]; then
+    echo "delegate: missing target sid (or use --any)" >&2
+    usage 2
+fi
+
+id="task-$$-$(date +%N | tail -c 6)"
+self_sid="delegate-cli-$$"
+deadline_unix=$(($(date +%s) + timeout_secs))
+
+if [ -n "$cwd_override" ]; then
+    req=$(jq -nc --arg id "$id" --arg from "$self_sid" --arg to "$target" \
+                  --arg prompt "$prompt" --arg cwd "$cwd_override" \
+                  --argjson deadline "$deadline_unix" \
+                  --argjson timeout "$timeout_secs" \
+        '{id:$id, from:$from, to:$to, method:"delegate.run",
+          params:{prompt:$prompt, cwd:$cwd, timeout_secs:$timeout},
+          deadline_unix:$deadline}')
+else
+    req=$(jq -nc --arg id "$id" --arg from "$self_sid" --arg to "$target" \
+                  --arg prompt "$prompt" \
+                  --argjson deadline "$deadline_unix" \
+                  --argjson timeout "$timeout_secs" \
+        '{id:$id, from:$from, to:$to, method:"delegate.run",
+          params:{prompt:$prompt, timeout_secs:$timeout},
+          deadline_unix:$deadline}')
+fi
+
+reply_file=$(mktemp /tmp/delegate-reply.XXXXXX)
+trap 'rm -f "$reply_file"' EXIT
+
+(timeout "$((timeout_secs + 10))" "$agorabus" subscribe "rpc.reply.${self_sid}" \
+        --session-id "${self_sid}-sub" --max-events 1 \
+        >"$reply_file" 2>/dev/null) &
+sub_pid=$!
+sleep 0.3
+
+if ! "$agorabus" publish --session-id "$self_sid" "rpc.req.${target}" "$req" >/dev/null 2>&1; then
+    kill "$sub_pid" 2>/dev/null || true
+    echo "delegate: publish failed" >&2
+    exit 1
+fi
+
+wait "$sub_pid" 2>/dev/null
+sub_rc=$?
+
+if [ ! -s "$reply_file" ]; then
+    echo "delegate: no reply within ${timeout_secs}s (target=$target, sub_rc=$sub_rc)" >&2
+    exit 1
+fi
+
+if [ $text_mode -eq 1 ]; then
+    jq -r '.data.result.stdout // .data.detail // ("<error: " + (.data.error // "unknown") + ">")' "$reply_file"
+else
+    jq '.data' "$reply_file"
+fi
+
+ok=$(jq -r '.data.ok' "$reply_file")
+[ "$ok" = "true" ] && exit 0 || exit 1
