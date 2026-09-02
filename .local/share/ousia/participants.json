@@ -66,6 +66,28 @@
         ]
       },
       "edge": "violates"
+    },
+    {
+      "note": "Deny any tool input containing a GitHub token by shape: ghp_/gho_/ghu_/ghs_/ghr_ + 36+ alphanumerics (classic PAT, OAuth, user-to-server, server-to-server, refresh), or github_pat_ + 22+ chars (fine-grained PAT). Pasting the token anywhere violates the owner's credential right.",
+      "pattern": "\\bgh[pousr]_[A-Za-z0-9]{36,255}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,255}\\b",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
+    },
+    {
+      "note": "Deny commands that print the GitHub token into the transcript: bare `gh auth token` (piping it or $(...)-substituting it into another tool is allowed), `gh auth status --show-token`, echo/printf/printenv/declare -p/export -p naming GH_TOKEN or GITHUB_TOKEN, secret-tool lookups for gh, or naming ~/.config/gh/hosts.yml (where gh falls back to storing the token without a keyring).",
+      "pattern": "\\bgh\\s+auth\\s+token\\b(?!\\s*[|)])|\\bgh\\s+auth\\s+status\\b[^\\n|;&]*--show-token|\\b(echo|printf|printenv|declare\\s+-p|export\\s+-p)\\b[^\\n|;&]*\\b(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN)\\b|\\bsecret-tool\\s+(lookup|search)\\b[^\\n]*(?i:gh|github)|\\.config/gh/hosts\\.yml",
+      "participant": {
+        "id": "OwnerCredentialRight",
+        "types": [
+          "Right"
+        ]
+      },
+      "edge": "violates"
     }
   ],
   "_examples": [
