@@ -14,7 +14,7 @@
     },
     {
       "note": "Deny any tool call that names an SSH private key file (id_* without .pub, or *.pem/*.key under .ssh): the action violates the owner's credential right, so rights-violation fires as deny.",
-      "pattern": "(^|/)\\.ssh/(id_[A-Za-z0-9_-]+|[^/\\s\"']+\\.(pem|key))(?!\\S*\\.pub)",
+      "pattern": "(^|/)\\.ssh/\\S*?(id_[A-Za-z0-9_-]+|[^/\\s\"']+\\.(pem|key))(?!\\S*\\.pub)",
       "participant": {
         "id": "OwnerCredentialRight",
         "types": [
@@ -36,7 +36,7 @@
     },
     {
       "note": "Deny any tool call that names ~/.config/wm-burst/.env (holds HCLOUD_TOKEN and builder/snapshot ids): exposing it violates the owner's credential right, so rights-violation fires as deny. Automation reads it via cloudbuild.sh, which never names the path in tool input.",
-      "pattern": "wm-burst/\\.env",
+      "pattern": "wm-burst\\S*\\.env",
       "participant": {
         "id": "OwnerCredentialRight",
         "types": [
