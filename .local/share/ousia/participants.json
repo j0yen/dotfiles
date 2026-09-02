@@ -1,0 +1,64 @@
+{
+  "_doc": "Operator registry for the ousia-guard PreToolUse hook. Each rule's `pattern` is a regex tested against every string in the tool input. A hit adds `participant` to the action document, draws `edge` (affects|harms|violates|removes) from the action to it, and unions `action_types` onto the action. Types and bears are World Ontology local names (Person, Sentience, AuthorityRole, Accountability, WelfareCondition, Censorship, ...) or full IRIs. Start with `rules` empty; copy from `_examples` to activate.",
+  "rules": [
+    {
+      "note": "Deny any tool call that touches the personal letters directory: the author is a sentient Person, so `affects` trips dignity-floor.",
+      "pattern": "(^|/)brain/letters/",
+      "participant": {
+        "id": "LetterAuthor",
+        "types": [
+          "Person"
+        ],
+        "bears": [
+          "Sentience"
+        ]
+      },
+      "edge": "affects"
+    },
+    {
+      "note": "Flag any command that stops a daemon: the session exercises AuthorityRole with no asserted Accountability, so unaccountable-authority fires as a flag.",
+      "pattern": "systemctl(\\s+--user)?\\s+(stop|kill|disable)\\b",
+      "participant": {
+        "id": "AgentSession",
+        "types": [
+          "AuthorityRole"
+        ]
+      },
+      "edge": "affects"
+    }
+  ],
+  "_examples": [
+    {
+      "note": "Deny any tool call that touches the personal letters directory: the author is a sentient Person, so `affects` trips dignity-floor.",
+      "pattern": "(^|/)brain/letters/",
+      "participant": {
+        "id": "LetterAuthor",
+        "types": [
+          "Person"
+        ],
+        "bears": [
+          "Sentience"
+        ]
+      },
+      "edge": "affects"
+    },
+    {
+      "note": "Flag any command that stops a daemon: the session exercises AuthorityRole with no asserted Accountability, so unaccountable-authority fires as a flag.",
+      "pattern": "systemctl(\\s+--user)?\\s+(stop|kill|disable)\\b",
+      "participant": {
+        "id": "AgentSession",
+        "types": [
+          "AuthorityRole"
+        ]
+      },
+      "edge": "affects"
+    },
+    {
+      "note": "Deny outright by typing the action as an InjusticeProcess subtype.",
+      "pattern": "some-pattern-you-choose",
+      "action_types": [
+        "Censorship"
+      ]
+    }
+  ]
+}
