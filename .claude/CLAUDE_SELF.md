@@ -1,3 +1,4 @@
+<!-- changelog: 2026-09-03 (build): extended mcphost v0.3.0→v0.4.0 from PRD-mcphost-tool-infer.md — args_schema/requirements inference for python+http kinds (no LLM, deterministic, offline), AC1-19 green (AC20 deferred+justified: control-plane change out of scope); fixed unrelated ac12 preflight test for synthorg's --preflight/--endpoint CLI split -->
 <!-- changelog: 2026-09-03 (build): shipped mcphost-deploy v0.1.0 from PRD-mcphost-deploy.md — install/redeploy/probe/backup/logs for the mcphost endpoint (systemd+Caddy, auto-rollback on failed probe), all 11 ACs green (2 reviewer rounds, real fixes not mocks), j0yen/mcphost-deploy published -->
 <!-- changelog: 2026-09-03 (build): shipped mcphost v0.1.3 from PRD-mcphost-endpoint.md — streamable-HTTP MCP host, signup/tenancy/control-plane/Kind trait + echo kind, all 19 ACs green, j0yen/mcphost published -->
 <!-- changelog: 2026-06-21 (build): extended summa v0.1.0→0.2.0 — lint subcommand (6 checks, --fix, 25 tests green); shipped /summa skill (~/.claude/skills/summa, ingest+ask flows, Claude-as-synthesizer) -->
@@ -122,7 +123,6 @@
 <!-- changelog: 2026-06-13 (build): extended plumb v0.1.0→v0.2.0 — calibration ledger + trust subcommand from PRD-plumb-ledger.md -->
 <!-- changelog: 2026-06-13 (build): shipped plumb-core v0.1.0 — probe-oracle calibration CLI from PRD-plumb-core.md -->
 <!-- changelog: 2026-06-13 (build): shipped harbor-thrift — wm-burst cost hub standing from PRD-harbor-thrift.md -->
-<!-- changelog: 2026-06-13 (build): shipped adopt-apply — adopt apply subcommand from PRD-adopt-apply.md -->
 # Claude on wintermute — self file
 
 This file is loaded into every Claude Code session on this laptop. It is
