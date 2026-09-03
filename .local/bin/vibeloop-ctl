@@ -17,6 +17,8 @@
 #   vibeloop-ctl timer on|off        enable/disable claude-vibeloop.timer on RedBaron
 #   vibeloop-ctl watch               subscribe to wm.vibeloop.> on NATS (cycle verdicts)
 #   vibeloop-ctl sync                pull PRDs here and on RedBaron
+#   vibeloop-ctl questions [N]       what recent cycles flagged for a human (ledger notes + "needs human" log lines)
+#   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
 set -uo pipefail
 HOST="${VIBELOOP_HOST:-redbaron}"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"
@@ -59,5 +61,16 @@ case "$cmd" in
   timer)  case "${1:-}" in on) rb "systemctl --user enable --now claude-vibeloop.timer";; off) rb "systemctl --user disable --now claude-vibeloop.timer";; *) echo "usage: vibeloop-ctl timer on|off" >&2; exit 2;; esac ;;
   watch)  exec nats --server "$NATS_URL" sub 'wm.vibeloop.>' ;;
   sync)   pull; here || rb "git -C ~/Documents/PRDs pull -q --ff-only"; echo synced ;;
+  questions)
+    pull; n="${1:-5}"
+    echo "== ledger notes (last $n cycles) =="; tail -n "$n" "$LOOP/ledger.md" 2>/dev/null | grep -oE 'cycle=[0-9]+|blocked=\[[^]]*\]|note="[^"]*"' | grep -vE 'blocked=\[\]' | cut -c1-300 | sed 's/^/  /'
+    echo "== flagged for a human (RedBaron cycle log) =="; rb "grep -nE 'needs (a )?human|worth your attention|Needs your action|only you can|Joe to|human .*(decide|provision|confirm)' ~/brain/journal/vibeloop-auto.log 2>/dev/null | tail -n 12 | cut -c1-260" | sed 's/^/  /'
+    echo "== open questions (project profile / vision) =="; grep -hA12 '^## Open questions' "$PRD_DIR"/visions/mcp-host.md 2>/dev/null | grep -E '^\|' | grep -v -- '---' | tail -n +2 | cut -c1-160 | sed 's/^/  /'
+    echo; echo "answer with: vibeloop-ctl answer \"<decision>\"   (lands in projects/mcp-host.md; dream reads it) — or vibeloop-ctl goal / park / stop" ;;
+  answer) [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl answer \"<text>\"" >&2; exit 2; }
+    pull; prof="$PRD_DIR/projects/mcp-host.md"
+    grep -q '^## Operator answers' "$prof" || printf '\n## Operator answers (append-only; dream reads these before every run)\n' >> "$prof"
+    printf -- '- %s (%s): %s\n' "$(date -u +%Y-%m-%d)" "$(hostname)" "$*" >> "$prof"
+    push "vibeloop: operator answer — ${1:0:60}" projects/mcp-host.md; echo "recorded in projects/mcp-host.md" ;;
   *)      sed -n 2,20p "$0"; exit 2 ;;
 esac
