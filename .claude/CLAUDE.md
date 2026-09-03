@@ -17,7 +17,6 @@ Ladder: Haiku < Sonnet < Opus/Fable. Route every delegated task to the cheapest 
 
 ## Cross-agent awareness
 
-- OpenClaw shares this machine and appears on `agorabus` as `openclaw-main` while its gateway is active.
-- At the start of substantial work, inspect `agorabus peers`, `agorabus intent list`, and—when work may overlap—the last 20 lines of `journalctl --user -u openclaw-agorabus.service --no-pager`.
+- At the start of substantial work, inspect `agorabus peers` and `agorabus intent list` for other sessions whose work may overlap.
 - Publish a concise `agent.activity` event when substantial work starts or finishes. Include only `agent`, `status`, `summary`, and `paths`; use `claude-activity` as the one-shot publisher session id.
 - Never publish raw prompts, transcripts, secrets, personal messages, or full tool output. Coordination events do not belong in Recall, Summa, or Claude memory unless the user separately asks to preserve something.
