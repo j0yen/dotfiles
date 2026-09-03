@@ -17,6 +17,7 @@
 #   vibeloop-ctl timer on|off        enable/disable claude-vibeloop.timer on RedBaron
 #   vibeloop-ctl watch               subscribe to wm.vibeloop.> on NATS (cycle verdicts)
 #   vibeloop-ctl sync                pull PRDs here and on RedBaron
+#   vibeloop-ctl measure [N]         truth-tier runs: last N measure-ledger lines, LATEST measure.json summary, timer state
 #   vibeloop-ctl questions [N]       what recent cycles flagged for a human (ledger notes + "needs human" log lines)
 #   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
 set -uo pipefail
@@ -61,6 +62,23 @@ case "$cmd" in
   timer)  case "${1:-}" in on) rb "systemctl --user enable --now claude-vibeloop.timer";; off) rb "systemctl --user disable --now claude-vibeloop.timer";; *) echo "usage: vibeloop-ctl timer on|off" >&2; exit 2;; esac ;;
   watch)  exec nats --server "$NATS_URL" sub 'wm.vibeloop.>' ;;
   sync)   pull; here || rb "git -C ~/Documents/PRDs pull -q --ff-only"; echo synced ;;
+  measure)
+    pull; n="${1:-5}"; ML="$LOOP/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"
+    echo "== measure ledger (last $n) =="; tail -n "$n" "$ML" 2>/dev/null | cut -c1-240 | sed 's/^/  /'; [ -s "$ML" ] || echo "  (no runs yet)"
+    if [ -f "$EVD/LATEST" ]; then d="$EVD/$(cat "$EVD/LATEST")"; echo "== LATEST: $(cat "$EVD/LATEST") =="; python3 - "$d/measure.json" <<'PY2'
+import json,sys
+try: m=json.load(open(sys.argv[1]))
+except Exception as e: print("  unreadable:",e); sys.exit()
+print(f"  satisfaction={m.get('satisfaction')} wow_rate={m.get('wow_rate')} sessions={m.get('sessions')} failures={m.get('failures')}")
+for seg,v in (m.get('by_segment') or {}).items(): print(f"  {seg:26s} sat={v.get('satisfaction')} wow={v.get('wow_rate')} n={v.get('n')}")
+PY2
+    fi
+    echo "== RedBaron measure job =="
+    rb "systemctl --user is-enabled claude-vibeloop-measure.timer 2>/dev/null" | sed 's/^/  timer: /'
+    rb "systemctl --user is-active claude-vibeloop-measure.service 2>/dev/null" | sed 's/^/  run: /'
+    rb "cat ~/.config/vibeloop/calibration-remaining 2>/dev/null" | sed 's/^/  calibration runs left: /'
+    rb "tail -n 3 ~/brain/journal/vibeloop-measure.log 2>/dev/null" | cut -c1-160 | sed 's/^/  log: /'
+    curl -s --max-time 6 https://178-105-64-66.sslip.io/healthz | sed 's/^/  hub: /' ;;
   questions)
     pull; n="${1:-5}"
     echo "== ledger notes (last $n cycles) =="; tail -n "$n" "$LOOP/ledger.md" 2>/dev/null | grep -oE 'cycle=[0-9]+|blocked=\[[^]]*\]|note="[^"]*"' | grep -vE 'blocked=\[\]' | cut -c1-300 | sed 's/^/  /'
