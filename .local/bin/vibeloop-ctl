@@ -41,8 +41,10 @@ case "$cmd" in
     [ -f "$LOOP/state.json" ] && echo "state: $(tr -d '\n ' < "$LOOP/state.json")"
     if [ -f "$LOOP/STOP" ]; then echo "STOP: present — $(head -1 "$LOOP/STOP")"; else echo "STOP: absent (running)"; fi
     [ -f "$LOOP/intent.md" ] && echo "goal: $(head -c 120 "$LOOP/intent.md" | tr '\n' ' ')…"
-    echo "ledger (last 3):"; tail -n 3 "$LOOP/ledger.md" 2>/dev/null | sed 's/^/  /'
-    echo "RedBaron:"; rb "systemctl --user is-enabled claude-vibeloop.timer 2>/dev/null | sed 's/^/  timer: /'; systemctl --user is-active claude-vibeloop-work.service 2>/dev/null | sed 's/^/  cycle: /'; systemctl --user list-timers 2>/dev/null | grep claude-vibeloop | awk '{print \"  next: \" \$1\" \"\$2\" \"\$3\" \"\$4}'; tail -n 1 ~/brain/journal/vibeloop-auto.log 2>/dev/null | sed 's/^/  log: /'" ;;
+    since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)
+    echo "last 24h: $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | wc -l | tr -d ' ') cycles, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -c 'dreamed=\[PRD') dreams, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -c 'verdict=PROGRESS') progress, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -cE 'verdict=(ABORTED|HALTED)') aborted (caps: 12 cycles, 2 dreams per 24h; 3 consecutive failures write STOP)"
+    echo "ledger (last 3):"; tail -n 3 "$LOOP/ledger.md" 2>/dev/null | cut -c1-220 | sed 's/^/  /'
+    echo "RedBaron:"; rb "systemctl --user is-enabled claude-vibeloop.timer 2>/dev/null | sed 's/^/  timer: /'; systemctl --user is-active claude-vibeloop-work.service 2>/dev/null | sed 's/^/  cycle: /'; systemctl --user list-timers 2>/dev/null | grep claude-vibeloop | awk '{print \"  next: \" \$1\" \"\$2\" \"\$3\" \"\$4}'; grep -E 'launcher|cycle: (ok|failed|ABORTED|quota)' ~/brain/journal/vibeloop-auto.log 2>/dev/null | tail -n 3 | cut -c1-150 | sed 's/^/  log: /'" ;;
   start)  rb "systemctl --user start claude-vibeloop.service" && echo "cycle launched on $HOST (tail with: vibeloop-ctl log -f)" ;;
   log)    if [ "${1:-}" = "-f" ]; then rb "tail -n 20 -f ~/brain/journal/vibeloop-auto.log"; else rb "tail -n ${1:-40} ~/brain/journal/vibeloop-auto.log"; fi ;;
   ledger) pull; tail -n "${1:-10}" "$LOOP/ledger.md" ;;
