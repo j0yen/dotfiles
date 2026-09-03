@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# vibeloop-ctl — drive the mcphost-buildloop (/vibeloop on RedBaron) from any fleet node.
+#
+# State of record is the j0yen/PRDs repo (~/Documents/PRDs, dir vibeloop/): goal, STOP,
+# state.json, ledger.md. Cycles run only on RedBaron (cargo lives there) via
+# claude-vibeloop.timer. This tool edits state through git and talks to RedBaron over ssh.
+#
+#   vibeloop-ctl status              queue depth, state.json, ledger tail, STOP, timer/cycle state
+#   vibeloop-ctl start               run one cycle now on RedBaron (does not wait)
+#   vibeloop-ctl log [-f]            tail the cycle log on RedBaron
+#   vibeloop-ctl ledger [N]          last N ledger lines (default 10), after a pull
+#   vibeloop-ctl goal "<text>"       replace the standing goal (intent.md), push, RedBaron pulls
+#   vibeloop-ctl stop "<reason>"     write STOP (halts at next cycle), push, mirror to RedBaron
+#   vibeloop-ctl resume              remove STOP, push, mirror to RedBaron
+#   vibeloop-ctl queue               list build-queue PRDs with Status
+#   vibeloop-ctl park <slug>|unpark <slug>   move a PRD between parked/ and build-queue/, push
+#   vibeloop-ctl timer on|off        enable/disable claude-vibeloop.timer on RedBaron
+#   vibeloop-ctl watch               subscribe to wm.vibeloop.> on NATS (cycle verdicts)
+#   vibeloop-ctl sync                pull PRDs here and on RedBaron
+set -uo pipefail
+HOST="${VIBELOOP_HOST:-redbaron}"
+PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"
+LOOP="$PRD_DIR/vibeloop"
+NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
+here() { [ "$(hostname)" = "RedBaron" ]; }
+rb() { if here; then bash -lc "$*"; else ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "export PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH; $*"; fi; }
+pull() { git -C "$PRD_DIR" pull -q --ff-only 2>/dev/null || echo "warn: pull failed (offline or diverged)" >&2; }
+push() { # $1 message, rest = paths
+  local msg="$1"; shift
+  git -C "$PRD_DIR" add -A -- "$@" && git -C "$PRD_DIR" commit -q -m "$msg" -- "$@" 2>/dev/null || true
+  git -C "$PRD_DIR" push -q 2>/dev/null || echo "warn: push failed" >&2
+  here || rb "git -C ~/Documents/PRDs pull -q --ff-only" 2>/dev/null || echo "warn: RedBaron pull failed (fleet-sync will catch up hourly)" >&2
+}
+queue_count() { grep -ls '^- Status: queued' "$PRD_DIR"/build-queue/*.md 2>/dev/null | wc -l | tr -d ' '; }
+cmd="${1:-status}"; shift || true
+case "$cmd" in
+  status)
+    pull
+    echo "host: $HOST   prd_dir: $PRD_DIR ($(git -C "$PRD_DIR" rev-parse --short HEAD 2>/dev/null))"
+    echo "queue: $(queue_count) queued in build-queue/"
+    [ -f "$LOOP/state.json" ] && echo "state: $(tr -d '\n ' < "$LOOP/state.json")"
+    if [ -f "$LOOP/STOP" ]; then echo "STOP: present — $(head -1 "$LOOP/STOP")"; else echo "STOP: absent (running)"; fi
+    [ -f "$LOOP/intent.md" ] && echo "goal: $(head -c 120 "$LOOP/intent.md" | tr '\n' ' ')…"
+    echo "ledger (last 3):"; tail -n 3 "$LOOP/ledger.md" 2>/dev/null | sed 's/^/  /'
+    echo "RedBaron:"; rb "systemctl --user is-enabled claude-vibeloop.timer 2>/dev/null | sed 's/^/  timer: /'; systemctl --user is-active claude-vibeloop-work.service 2>/dev/null | sed 's/^/  cycle: /'; systemctl --user list-timers 2>/dev/null | grep claude-vibeloop | awk '{print \"  next: \" \$1\" \"\$2\" \"\$3\" \"\$4}'; tail -n 1 ~/brain/journal/vibeloop-auto.log 2>/dev/null | sed 's/^/  log: /'" ;;
+  start)  rb "systemctl --user start claude-vibeloop.service" && echo "cycle launched on $HOST (tail with: vibeloop-ctl log -f)" ;;
+  log)    if [ "${1:-}" = "-f" ]; then rb "tail -n 20 -f ~/brain/journal/vibeloop-auto.log"; else rb "tail -n ${1:-40} ~/brain/journal/vibeloop-auto.log"; fi ;;
+  ledger) pull; tail -n "${1:-10}" "$LOOP/ledger.md" ;;
+  goal)   [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl goal \"<text>\"" >&2; exit 2; }
+          pull; mkdir -p "$LOOP"; printf '%s\n' "$*" > "$LOOP/intent.md"; push "vibeloop: goal — ${1:0:60}" vibeloop/intent.md; echo "goal set" ;;
+  stop)   pull; mkdir -p "$LOOP"; printf 'STOP: %s\nSet %s from %s. Resume: vibeloop-ctl resume\n' "${*:-operator stop}" "$(date -u +%FT%TZ)" "$(hostname)" > "$LOOP/STOP"
+          push "vibeloop: STOP — ${*:-operator stop}" vibeloop/STOP; here || rb "cp -n ~/Documents/PRDs/vibeloop/STOP ~/Documents/PRDs/vibeloop/STOP 2>/dev/null; true"; echo "STOP written; the next cycle halts" ;;
+  resume) pull; rm -f "$LOOP/STOP"; push "vibeloop: resume" vibeloop/STOP; echo "STOP removed" ;;
+  queue)  pull; for f in "$PRD_DIR"/build-queue/PRD-*.md; do printf '%-45s %s\n' "$(basename "$f")" "$(grep -m1 -oE '^- Status: [a-z]+' "$f" | cut -d' ' -f3)"; done ;;
+  park)   pull; git -C "$PRD_DIR" mv "build-queue/PRD-$1.md" "parked/PRD-$1.md" && push "vibeloop: park $1" build-queue parked ;;
+  unpark) pull; git -C "$PRD_DIR" mv "parked/PRD-$1.md" "build-queue/PRD-$1.md" && push "vibeloop: unpark $1" build-queue parked ;;
+  timer)  case "${1:-}" in on) rb "systemctl --user enable --now claude-vibeloop.timer";; off) rb "systemctl --user disable --now claude-vibeloop.timer";; *) echo "usage: vibeloop-ctl timer on|off" >&2; exit 2;; esac ;;
+  watch)  exec nats --server "$NATS_URL" sub 'wm.vibeloop.>' ;;
+  sync)   pull; here || rb "git -C ~/Documents/PRDs pull -q --ff-only"; echo synced ;;
+  *)      sed -n 2,20p "$0"; exit 2 ;;
+esac
