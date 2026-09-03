@@ -22,15 +22,19 @@ else
     exit 0
 fi
 
+# Only the node with roundtable.timer runs sessions and holds their data
+# (carbon, daily at noon). Elsewhere `digest` can only ever say "no session",
+# so stay quiet instead of nagging.
+if ! systemctl --user list-unit-files roundtable.timer --no-legend 2>/dev/null | grep -q roundtable.timer; then
+    echo "roundtable · sessions run on carbon (no roundtable.timer on $(hostname)); nothing to show locally"
+    exit 0
+fi
+
 # Run `roundtable digest` (defaults to yesterday, text format).
 # Never let this error propagate — hook must always exit 0.
 output="$("${RT_BIN}" digest 2>/dev/null)" || output=""
 
-if [ -z "${output}" ] && ! systemctl --user list-unit-files roundtable.timer --no-legend 2>/dev/null | grep -q roundtable.timer; then
-    # No roundtable.timer on this node, so it never holds session data:
-    # sessions run on the node that has the timer (carbon, daily at noon).
-    echo "roundtable · sessions run on carbon (no roundtable.timer on $(hostname)); nothing to show locally"
-elif [ -z "${output}" ]; then
+if [ -z "${output}" ]; then
     yesterday="$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d 2>/dev/null || echo "yesterday")"
     echo "roundtable · no session run for ${yesterday} — run: roundtable session"
 else
