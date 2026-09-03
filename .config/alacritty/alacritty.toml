@@ -1,6 +1,6 @@
 [font]
 normal = { family = "DejaVu Sans Mono", style = "Regular" }
-size = 10
+size = 12
 
 [window]
 padding = { x = 0, y = 0 }
