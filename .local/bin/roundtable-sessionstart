@@ -10,6 +10,14 @@
 
 set -euo pipefail
 
+# Only the node with roundtable.timer runs sessions and holds their data
+# (carbon, daily at noon). Elsewhere `digest` can only ever say "no session",
+# so stay quiet instead of nagging.
+if ! systemctl --user list-unit-files roundtable.timer --no-legend 2>/dev/null | grep -q roundtable.timer; then
+    echo "roundtable · sessions run on carbon (no roundtable.timer on $(hostname)); nothing to show locally"
+    exit 0
+fi
+
 # Determine the roundtable binary — prefer the installed one, fall back to
 # the cargo-built dev binary if running from the repo.
 if command -v roundtable >/dev/null 2>&1; then
@@ -19,14 +27,6 @@ elif [ -f "${HOME}/.cargo/bin/roundtable" ]; then
 else
     # No binary found — emit fallback and exit cleanly
     echo "roundtable · not installed — run: cargo install --path ~/wintermute/roundtable"
-    exit 0
-fi
-
-# Only the node with roundtable.timer runs sessions and holds their data
-# (carbon, daily at noon). Elsewhere `digest` can only ever say "no session",
-# so stay quiet instead of nagging.
-if ! systemctl --user list-unit-files roundtable.timer --no-legend 2>/dev/null | grep -q roundtable.timer; then
-    echo "roundtable · sessions run on carbon (no roundtable.timer on $(hostname)); nothing to show locally"
     exit 0
 fi
 
