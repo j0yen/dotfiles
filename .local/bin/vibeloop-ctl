@@ -24,11 +24,23 @@
 #   vibeloop-ctl archive-cost <slug> sum a PRD's cost-ledger share, write "- Cost: $x.xx over n cycles" into its archived frontmatter
 #   vibeloop-ctl digest [date]       pull, then print vibeloop/digest/<date|today>.md (PRD-vibeloop-daily-digest)
 #   vibeloop-ctl digest --today      generate today's page fresh (vibeloop-digest.sh --no-commit) and print it, no commit
+#   vibeloop-ctl claim "<note>" [--for 2h]   record an operator claim (host/user/note/expiry) in
+#                                     vibeloop/operator.json, commit; default 2h, max 12h expiry
+#   vibeloop-ctl release             remove the current claim, commit
+#   vibeloop-ctl who                 print the current claim and the last 10 operator-attributed commits
+#   vibeloop-ctl operator-summary    print "operator=<host|none> controls=<8-char digest>" for the
+#                                     tick to append to its ledger line (read-side primitive; see below)
+#
+# PRD-vibeloop-operator-claim: two operators, one hand on the wheel at a time. `claim`/`release`
+# record who is driving; control commands (goal/stop/resume/answer/park/unpark/timer) refuse,
+# without --force, when another host holds an unexpired claim; read commands never check it.
+# `--force` on any control command overrides and appends forced-by=<host> to the commit message.
 set -uo pipefail
 HOST="${VIBELOOP_HOST:-redbaron}"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"
 LOOP="$PRD_DIR/vibeloop"
 CL="$LOOP/cost-ledger.jsonl"
+CLAIM="$LOOP/operator.json"
 NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
 here() { [ "$(hostname)" = "RedBaron" ]; }
 rb() { if here; then bash -lc "$*"; else ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "export PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH; $*"; fi; }
@@ -38,6 +50,49 @@ push() { # $1 message, rest = paths
   git -C "$PRD_DIR" add -A -- "$@" && git -C "$PRD_DIR" commit -q -m "$msg" -- "$@" 2>/dev/null || true
   git -C "$PRD_DIR" push -q 2>/dev/null || echo "warn: push failed" >&2
   here || rb "git -C ~/Documents/PRDs pull -q --ff-only" 2>/dev/null || echo "warn: RedBaron pull failed (fleet-sync will catch up hourly)" >&2
+}
+# PRD-vibeloop-operator-claim: read vibeloop/operator.json into CLAIM_* globals.
+# CLAIM_EXISTS=1 iff the file exists at all; CLAIM_ACTIVE=1 iff it also hasn't expired.
+claim_eval() {
+  CLAIM_EXISTS=0 CLAIM_ACTIVE=0 CLAIM_HOST="" CLAIM_USER="" CLAIM_NOTE="" CLAIM_EXP=""
+  [ -f "$CLAIM" ] || return 0
+  CLAIM_EXISTS=1
+  eval "$(python3 - "$CLAIM" <<'PY'
+import json,sys,time,calendar,shlex
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    d={}
+host=d.get("host",""); user=d.get("user",""); note=d.get("note",""); exp=d.get("expires_at","")
+active=0
+try:
+    t=calendar.timegm(time.strptime(exp,"%Y-%m-%dT%H:%M:%SZ"))
+    active=1 if t>time.time() else 0
+except Exception:
+    active=0
+print(f"CLAIM_HOST={shlex.quote(host)}")
+print(f"CLAIM_USER={shlex.quote(user)}")
+print(f"CLAIM_NOTE={shlex.quote(note)}")
+print(f"CLAIM_EXP={shlex.quote(exp)}")
+print(f"CLAIM_ACTIVE={active}")
+PY
+)"
+}
+# Gate a control command on the current claim. Sets FORCE_SUFFIX ("" or " forced-by=<host>")
+# for the caller to append to its commit message. Exits 3 (no state change) when blocked.
+claim_gate() {
+  claim_eval
+  local host; host="$(hostname)"
+  FORCE_SUFFIX=""
+  if [ "$CLAIM_EXISTS" = 1 ] && [ "$CLAIM_ACTIVE" = 1 ] && [ "$CLAIM_HOST" != "$host" ]; then
+    if [ "$FORCE" = 1 ]; then
+      FORCE_SUFFIX=" forced-by=$host"
+      echo "warning: overriding claim by $CLAIM_HOST ($CLAIM_USER) until $CLAIM_EXP: $CLAIM_NOTE (--force)" >&2
+      return 0
+    fi
+    echo "claimed by $CLAIM_HOST ($CLAIM_USER) until $CLAIM_EXP: $CLAIM_NOTE; use --force to override" >&2
+    exit 3
+  fi
 }
 queue_count() { grep -ls '^- Status: queued' "$PRD_DIR"/build-queue/*.md 2>/dev/null | wc -l | tr -d ' '; }
 # PRD-vibeloop-cost-budget: sum cost-ledger.jsonl by kind over a rolling window (seconds).
@@ -63,9 +118,22 @@ print(f'{total:.4f} {tot.get("cycle",0):.4f} {tot.get("dream",0):.4f} {tot.get("
 PY
 }
 cmd="${1:-status}"; shift || true
+# PRD-vibeloop-operator-claim: --force is a global flag on any control command; strip it here
+# so per-command arg parsing ($1, $*, etc.) below never sees it.
+FORCE=0; ARGS=()
+for a in "$@"; do [ "$a" = "--force" ] && FORCE=1 || ARGS+=("$a"); done
+set -- "${ARGS[@]}"
 case "$cmd" in
   status)
     pull
+    claim_eval
+    if [ "$CLAIM_EXISTS" = 1 ] && [ "$CLAIM_ACTIVE" = 1 ]; then
+      echo "claim: $CLAIM_HOST ($CLAIM_USER) until $CLAIM_EXP — $CLAIM_NOTE"
+    elif [ "$CLAIM_EXISTS" = 1 ]; then
+      echo "claim: none (expired $CLAIM_EXP — was $CLAIM_HOST: $CLAIM_NOTE)"
+    else
+      echo "claim: none"
+    fi
     echo "host: $HOST   prd_dir: $PRD_DIR ($(git -C "$PRD_DIR" rev-parse --short HEAD 2>/dev/null))"
     echo "queue: $(queue_count) queued in build-queue/"
     [ -f "$LOOP/state.json" ] && echo "state: $(tr -d '\n ' < "$LOOP/state.json")"
@@ -82,15 +150,46 @@ case "$cmd" in
   start)  rb "systemctl --user start claude-vibeloop.service" && echo "cycle launched on $HOST (tail with: vibeloop-ctl log -f)" ;;
   log)    if [ "${1:-}" = "-f" ]; then rb "tail -n 20 -f ~/brain/journal/vibeloop-auto.log"; else rb "tail -n ${1:-40} ~/brain/journal/vibeloop-auto.log"; fi ;;
   ledger) pull; tail -n "${1:-10}" "$LOOP/ledger.md" ;;
-  goal)   [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl goal \"<text>\"" >&2; exit 2; }
-          pull; mkdir -p "$LOOP"; printf '%s\n' "$*" > "$LOOP/intent.md"; push "vibeloop: goal — ${1:0:60}" vibeloop/intent.md; echo "goal set" ;;
-  stop)   pull; mkdir -p "$LOOP"; printf 'STOP: %s\nSet %s from %s. Resume: vibeloop-ctl resume\n' "${*:-operator stop}" "$(date -u +%FT%TZ)" "$(hostname)" > "$LOOP/STOP"
-          push "vibeloop: STOP — ${*:-operator stop}" vibeloop/STOP; here || rb "cp -n ~/Documents/PRDs/vibeloop/STOP ~/Documents/PRDs/vibeloop/STOP 2>/dev/null; true"; echo "STOP written; the next cycle halts" ;;
-  resume) pull; rm -f "$LOOP/STOP"; push "vibeloop: resume" vibeloop/STOP; echo "STOP removed" ;;
+  goal)   [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl goal \"<text>\" [--force]" >&2; exit 2; }
+          pull; claim_gate; mkdir -p "$LOOP"; printf '%s\n' "$*" > "$LOOP/intent.md"; push "vibeloop: goal — ${1:0:60}${FORCE_SUFFIX}" vibeloop/intent.md; echo "goal set" ;;
+  stop)   pull; claim_gate; mkdir -p "$LOOP"; printf 'STOP: %s\nSet %s from %s. Resume: vibeloop-ctl resume\n' "${*:-operator stop}" "$(date -u +%FT%TZ)" "$(hostname)" > "$LOOP/STOP"
+          push "vibeloop: STOP — ${*:-operator stop}${FORCE_SUFFIX}" vibeloop/STOP; here || rb "cp -n ~/Documents/PRDs/vibeloop/STOP ~/Documents/PRDs/vibeloop/STOP 2>/dev/null; true"; echo "STOP written; the next cycle halts" ;;
+  resume) pull; claim_gate; rm -f "$LOOP/STOP"; push "vibeloop: resume${FORCE_SUFFIX}" vibeloop/STOP; echo "STOP removed" ;;
+  claim)  [ -n "${1:-}" ] || { echo 'usage: vibeloop-ctl claim "<note>" [--for 2h]' >&2; exit 2; }
+          pull; mkdir -p "$LOOP"; note="$1"; shift || true
+          hours="2"; [ "${1:-}" = "--for" ] && hours="${2:-2h}"
+          python3 - "$CLAIM" "$(hostname)" "${USER:-$(id -un)}" "$note" "$hours" <<'PY'
+import json,sys,datetime
+path,host,user,note,hours=sys.argv[1:6]
+try: h=float(hours.rstrip('hH'))
+except Exception: h=2.0
+if h<=0: h=2.0
+if h>12: h=12.0
+now=datetime.datetime.now(datetime.UTC)
+exp=now+datetime.timedelta(hours=h)
+d={"host":host,"user":user,"session_hint":f"{host}-{now.strftime('%H%M%S')}","note":note,
+   "claimed_at":now.strftime("%Y-%m-%dT%H:%M:%SZ"),"expires_at":exp.strftime("%Y-%m-%dT%H:%M:%SZ")}
+json.dump(d, open(path,"w"), indent=2); open(path,"a").write("\n")
+PY
+          push "vibeloop: claim by $(hostname) — ${note:0:60}" vibeloop/operator.json
+          claim_eval; echo "claimed by $CLAIM_HOST until $CLAIM_EXP: $CLAIM_NOTE" ;;
+  release) pull
+          if [ -f "$CLAIM" ]; then rm -f "$CLAIM"; push "vibeloop: release claim by $(hostname)" vibeloop/operator.json; echo "claim released"
+          else echo "no claim to release"; fi ;;
+  who)    pull; claim_eval
+          if [ "$CLAIM_EXISTS" = 1 ] && [ "$CLAIM_ACTIVE" = 1 ]; then echo "claim: $CLAIM_HOST ($CLAIM_USER) until $CLAIM_EXP — $CLAIM_NOTE"
+          elif [ "$CLAIM_EXISTS" = 1 ]; then echo "claim: none (expired $CLAIM_EXP — was $CLAIM_HOST: $CLAIM_NOTE)"
+          else echo "claim: none"; fi
+          echo "last 10 operator-attributed commits:"
+          git -C "$PRD_DIR" log --oneline -n 10 --extended-regexp \
+            --grep='^vibeloop: (claim by|release claim by|goal|STOP|resume|operator answer|park |unpark )' \
+            | sed 's/^/  /' ;;
   queue)  pull; for f in "$PRD_DIR"/build-queue/PRD-*.md; do printf '%-45s %s\n' "$(basename "$f")" "$(grep -m1 -oE '^- Status: [a-z]+' "$f" | cut -d' ' -f3)"; done ;;
-  park)   pull; git -C "$PRD_DIR" mv "build-queue/PRD-$1.md" "parked/PRD-$1.md" && push "vibeloop: park $1" build-queue parked ;;
-  unpark) pull; git -C "$PRD_DIR" mv "parked/PRD-$1.md" "build-queue/PRD-$1.md" && push "vibeloop: unpark $1" build-queue parked ;;
-  timer)  case "${1:-}" in on) rb "systemctl --user enable --now claude-vibeloop.timer";; off) rb "systemctl --user disable --now claude-vibeloop.timer";; *) echo "usage: vibeloop-ctl timer on|off" >&2; exit 2;; esac ;;
+  park)   pull; claim_gate; git -C "$PRD_DIR" mv "build-queue/PRD-$1.md" "parked/PRD-$1.md" && push "vibeloop: park $1${FORCE_SUFFIX}" build-queue parked ;;
+  unpark) pull; claim_gate; git -C "$PRD_DIR" mv "parked/PRD-$1.md" "build-queue/PRD-$1.md" && push "vibeloop: unpark $1${FORCE_SUFFIX}" build-queue parked ;;
+  timer)  pull; claim_gate
+          case "${1:-}" in on) rb "systemctl --user enable --now claude-vibeloop.timer";; off) rb "systemctl --user disable --now claude-vibeloop.timer";; *) echo "usage: vibeloop-ctl timer on|off" >&2; exit 2;; esac
+          [ -n "${FORCE_SUFFIX:-}" ] && echo "note: timer has no commit to attribute; override was logged to stderr above" ;;
   watch)  exec nats --server "$NATS_URL" sub 'wm.vibeloop.>' ;;
   sync)   pull; here || rb "git -C ~/Documents/PRDs pull -q --ff-only"; echo synced ;;
   measure)
@@ -143,11 +242,11 @@ PY2
     echo "== flagged for a human (RedBaron cycle log) =="; rb "grep -nE 'needs (a )?human|worth your attention|Needs your action|only you can|Joe to|human .*(decide|provision|confirm)' ~/brain/journal/vibeloop-auto.log 2>/dev/null | tail -n 12 | cut -c1-260" | sed 's/^/  /'
     echo "== open questions (project profile / vision) =="; grep -hA12 '^## Open questions' "$PRD_DIR"/visions/mcp-host.md 2>/dev/null | grep -E '^\|' | grep -v -- '---' | tail -n +2 | cut -c1-160 | sed 's/^/  /'
     echo; echo "answer with: vibeloop-ctl answer \"<decision>\"   (lands in projects/mcp-host.md; dream reads it) — or vibeloop-ctl goal / park / stop" ;;
-  answer) [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl answer \"<text>\"" >&2; exit 2; }
-    pull; prof="$PRD_DIR/projects/mcp-host.md"
+  answer) [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl answer \"<text>\" [--force]" >&2; exit 2; }
+    pull; claim_gate; prof="$PRD_DIR/projects/mcp-host.md"
     grep -q '^## Operator answers' "$prof" || printf '\n## Operator answers (append-only; dream reads these before every run)\n' >> "$prof"
     printf -- '- %s (%s): %s\n' "$(date -u +%Y-%m-%d)" "$(hostname)" "$*" >> "$prof"
-    push "vibeloop: operator answer — ${1:0:60}" projects/mcp-host.md; echo "recorded in projects/mcp-host.md" ;;
+    push "vibeloop: operator answer — ${1:0:60}${FORCE_SUFFIX}" projects/mcp-host.md; echo "recorded in projects/mcp-host.md" ;;
   cost)
     pull
     if [ "${1:-}" = "--import-log" ]; then echo "cost --import-log: not implemented this ship (see PRD-vibeloop-cost-budget Migration note); import manually if needed" >&2; exit 1; fi
@@ -239,5 +338,15 @@ open(p,'w').writelines(out)" "$f" "$cost_line"
       [ -f "$f" ] || { echo "no digest for $d yet ($f) — try: vibeloop-ctl digest --today" >&2; exit 1; }
       cat "$f"
     fi ;;
+  operator-summary)
+    # PRD-vibeloop-operator-claim req 4/5: a primitive the RedBaron tick can call at cycle start
+    # and append verbatim to the ledger line — `operator=<host|none> controls=<8-char digest>`.
+    # Not yet wired into the tick itself (that's ~/wintermute/vicecode-kit's SKILL.md, a
+    # different repo than this PRD's build_into: dotfiles); this subcommand is the ready-made
+    # read-side so wiring it in is a one-line addition there.
+    pull; claim_eval
+    op="none"; [ "$CLAIM_EXISTS" = 1 ] && [ "$CLAIM_ACTIVE" = 1 ] && op="$CLAIM_HOST"
+    digest=$( { cat "$HOME/.config/vibeloop/limits" 2>/dev/null; printf '%s' "${VIBELOOP_CAP_SECS:-}${VIBELOOP_WATCHDOG_SECS:-}"; } | sha256sum | cut -c1-8 )
+    echo "operator=$op controls=$digest" ;;
   *)      awk '/^set -uo pipefail/{exit} NR>=2{print}' "$0"; exit 2 ;;
 esac
