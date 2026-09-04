@@ -342,14 +342,21 @@ else:
     out.append(f"- 24h total: ${total24:.2f}{ceiling_s}  ({relpath(cl_path)})")
     if b24:
         out.append("- 24h by kind: " + ", ".join(f"{k}=${v:.2f}" for k, v in sorted(b24.items())) + f"  ({relpath(cl_path)})")
-    day_lines = lines_for_date(cl_path, DATE) or []
+    # NOT lines_for_date() here: that compares each raw line's first 10 characters to DATE,
+    # which only works for the plain-text ledgers (timestamp-first). cost-ledger.jsonl lines
+    # are JSON objects starting with '{"ts": "...', so the date has to be read out of the
+    # parsed "ts" field instead, or every day total renders $0.00 regardless of actual spend.
     day_tot = collections.defaultdict(float)
-    for line in day_lines:
+    for line in (read_lines(cl_path) or []):
+        line = line.strip()
+        if not line:
+            continue
         try:
             r = json.loads(line)
         except Exception:
             continue
-        day_tot[r.get("kind", "?")] += float(r.get("usd") or 0)
+        if r.get("ts", "")[:10] == DATE:
+            day_tot[r.get("kind", "?")] += float(r.get("usd") or 0)
     out.append(f"- day ({DATE}) total: ${sum(day_tot.values()):.2f}  ({relpath(cl_path)})")
     if day_tot:
         out.append("- day by kind: " + ", ".join(f"{k}=${v:.2f}" for k, v in sorted(day_tot.items())) + f"  ({relpath(cl_path)})")
