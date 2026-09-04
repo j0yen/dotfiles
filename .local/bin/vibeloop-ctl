@@ -20,10 +20,13 @@
 #   vibeloop-ctl measure [N]         truth-tier runs: last N measure-ledger lines, LATEST measure.json summary, timer state
 #   vibeloop-ctl questions [N]       what recent cycles flagged for a human (ledger notes + "needs human" log lines)
 #   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
+#   vibeloop-ctl cost [days]         per-day spend totals + top 5 PRDs by cost, from vibeloop/cost-ledger.jsonl (default 7d)
+#   vibeloop-ctl archive-cost <slug> sum a PRD's cost-ledger share, write "- Cost: $x.xx over n cycles" into its archived frontmatter
 set -uo pipefail
 HOST="${VIBELOOP_HOST:-redbaron}"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"
 LOOP="$PRD_DIR/vibeloop"
+CL="$LOOP/cost-ledger.jsonl"
 NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
 here() { [ "$(hostname)" = "RedBaron" ]; }
 rb() { if here; then bash -lc "$*"; else ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "export PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH; $*"; fi; }
@@ -35,6 +38,28 @@ push() { # $1 message, rest = paths
   here || rb "git -C ~/Documents/PRDs pull -q --ff-only" 2>/dev/null || echo "warn: RedBaron pull failed (fleet-sync will catch up hourly)" >&2
 }
 queue_count() { grep -ls '^- Status: queued' "$PRD_DIR"/build-queue/*.md 2>/dev/null | wc -l | tr -d ' '; }
+# PRD-vibeloop-cost-budget: sum cost-ledger.jsonl by kind over a rolling window (seconds).
+cost_window() { # $1=window_secs -> "total cycle dream measure probe proxy" (USD, 4dp)
+  python3 - "$CL" "$1" <<'PY'
+import json,sys,time,calendar
+path,win=sys.argv[1],float(sys.argv[2])
+now=time.time(); tot={}
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        try: t=calendar.timegm(time.strptime(r.get("ts",""),"%Y-%m-%dT%H:%M:%SZ"))
+        except Exception: continue
+        if now - t > win: continue
+        k=r.get("kind","?"); tot[k]=tot.get(k,0.0)+float(r.get("usd") or 0)
+except FileNotFoundError:
+    pass
+total=sum(tot.values())
+print(f'{total:.4f} {tot.get("cycle",0):.4f} {tot.get("dream",0):.4f} {tot.get("measure",0):.4f} {tot.get("probe",0):.4f} {tot.get("proxy",0):.4f}')
+PY
+}
 cmd="${1:-status}"; shift || true
 case "$cmd" in
   status)
@@ -46,6 +71,9 @@ case "$cmd" in
     [ -f "$LOOP/intent.md" ] && echo "goal: $(head -c 120 "$LOOP/intent.md" | tr '\n' ' ')…"
     since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)
     echo "last 24h: $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | wc -l | tr -d ' ') cycles, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -c 'dreamed=\[PRD') dreams, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -c 'verdict=PROGRESS') progress, $(awk -v s="$since" '$1 > s' "$LOOP/ledger.md" 2>/dev/null | grep -cE 'verdict=(ABORTED|HALTED)') aborted (caps live in RedBaron ~/.config/vibeloop/limits; 3 consecutive failures write STOP)"
+    max_day=$(rb "grep -m1 '^MAX_COST_USD_PER_DAY=' ~/.config/vibeloop/limits 2>/dev/null | cut -d= -f2 | cut -d' ' -f1"); max_day="${max_day:-60}"
+    read -r sum24 cyc24 dream24 meas24 probe24 proxy24 <<< "$(cost_window 86400)"
+    printf 'spend 24h: $%.2f of $%s (cycles $%.2f, dream $%.2f, measure $%.2f, probe $%.2f)\n' "$sum24" "$max_day" "$cyc24" "$dream24" "$meas24" "$probe24"
     echo "ledger (last 3):"; tail -n 3 "$LOOP/ledger.md" 2>/dev/null | cut -c1-220 | sed 's/^/  /'
     rb "awk -v s=\"\$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)\" '\$1 > s && /cycle: cost_usd=/ {n++; split(\$3,a,\"=\"); c+=a[2]} END {printf \"cost (24h, API-equivalent): \$%.2f over %d cycles\\n\", c, n}' ~/brain/journal/vibeloop-auto.log 2>/dev/null"
     echo "RedBaron:"; rb "systemctl --user is-enabled claude-vibeloop.timer 2>/dev/null | sed 's/^/  timer: /'; systemctl --user is-active claude-vibeloop-work.service 2>/dev/null | sed 's/^/  cycle: /'; systemctl --user list-timers 2>/dev/null | grep claude-vibeloop | awk '{print \"  next: \" \$1\" \"\$2\" \"\$3\" \"\$4}'; grep -E 'launcher|cycle: (ok|failed|ABORTED|quota)' ~/brain/journal/vibeloop-auto.log 2>/dev/null | tail -n 3 | cut -c1-150 | sed 's/^/  log: /'" ;;
@@ -91,5 +119,87 @@ PY2
     grep -q '^## Operator answers' "$prof" || printf '\n## Operator answers (append-only; dream reads these before every run)\n' >> "$prof"
     printf -- '- %s (%s): %s\n' "$(date -u +%Y-%m-%d)" "$(hostname)" "$*" >> "$prof"
     push "vibeloop: operator answer — ${1:0:60}" projects/mcp-host.md; echo "recorded in projects/mcp-host.md" ;;
-  *)      sed -n 2,20p "$0"; exit 2 ;;
+  cost)
+    pull
+    if [ "${1:-}" = "--import-log" ]; then echo "cost --import-log: not implemented this ship (see PRD-vibeloop-cost-budget Migration note); import manually if needed" >&2; exit 1; fi
+    days="${1:-7}"
+    python3 - "$CL" "$days" <<'PY'
+import json,sys,time,calendar,collections
+path,days=sys.argv[1],int(sys.argv[2])
+now=time.time(); cutoff=now-days*86400
+byday=collections.defaultdict(float); byprd=collections.defaultdict(float)
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        try: t=calendar.timegm(time.strptime(r.get("ts",""),"%Y-%m-%dT%H:%M:%SZ"))
+        except Exception: continue
+        if t < cutoff: continue
+        usd=float(r.get("usd") or 0)
+        day=r.get("ts","")[:10]
+        byday[day]+=usd
+        refs=r.get("ref")
+        if isinstance(refs,str): refs=[refs]
+        refs=[x for x in (refs or []) if isinstance(x,str) and x.startswith("PRD-")]
+        if refs:
+            share=usd/len(refs)
+            for p in refs: byprd[p]+=share
+except FileNotFoundError:
+    print("(no cost-ledger.jsonl yet)"); sys.exit()
+print(f"== per-day totals (last {days}d) ==")
+for day in sorted(byday): print(f"  {day}  ${byday[day]:.2f}")
+print("== top 5 PRDs by cost ==")
+for p,usd in sorted(byprd.items(), key=lambda kv:-kv[1])[:5]:
+    print(f"  {p:50s} ${usd:.2f}")
+if not byprd: print("  (no PRD-attributed lines yet)")
+PY
+    ;;
+  archive-cost)
+    [ -n "${1:-}" ] || { echo "usage: vibeloop-ctl archive-cost <slug>" >&2; exit 2; }
+    pull; slug="$1"; f="$PRD_DIR/built-prds/PRD-$slug.md"
+    [ -f "$f" ] || { echo "not found: $f" >&2; exit 1; }
+    read -r usd n <<< "$(python3 - "$CL" "PRD-$slug.md" <<'PY'
+import json,sys
+path,ref=sys.argv[1],sys.argv[2]
+usd=0.0; n=0
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        refs=r.get("ref")
+        if isinstance(refs,str): refs=[refs]
+        refs=refs or []
+        if ref in refs:
+            usd += float(r.get("usd") or 0)/len(refs)
+            n += 1
+except FileNotFoundError:
+    pass
+print(f"{usd:.4f} {n}")
+PY
+)"
+    if [ "$n" = "0" ]; then echo "no cost-ledger lines reference PRD-$slug.md yet" >&2; exit 1; fi
+    cost_line=$(printf -- '- Cost: $%.2f over %s cycles' "$usd" "$n")
+    if grep -q '^- Cost:' "$f"; then
+      python3 -c "import sys,re; p=sys.argv[1]; c=sys.argv[2]; s=open(p).read(); s=re.sub(r'^- Cost:.*$', c, s, count=1, flags=re.M); open(p,'w').write(s)" "$f" "$cost_line"
+    else
+      python3 -c "import sys; p=sys.argv[1]; c=sys.argv[2]; lines=open(p).read().splitlines(True); out=[]; done=False
+for l in lines:
+    out.append(l)
+    if not done and l.startswith('- Receipts:'):
+        out.append(c+chr(10)); done=True
+if not done:
+    for i,l in enumerate(lines):
+        if l.startswith('- Status:'):
+            out=lines[:i+1]+[c+chr(10)]+lines[i+1:]; done=True; break
+if not done:
+    out.insert(1, c+chr(10))
+open(p,'w').writelines(out)" "$f" "$cost_line"
+    fi
+    push "vibeloop: archive-cost $slug — $cost_line" "built-prds/PRD-$slug.md"
+    echo "$cost_line -> $f" ;;
+  *)      awk '/^set -uo pipefail/{exit} NR>=2{print}' "$0"; exit 2 ;;
 esac

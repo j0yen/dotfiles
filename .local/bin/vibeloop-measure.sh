@@ -17,6 +17,57 @@ BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-ht
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
 [ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
+# PRD-vibeloop-cost-budget req 2/3: cost ledger + rolling-window budget gate for measurement/probes.
+MAX_COST_USD_PER_DAY="${MAX_COST_USD_PER_DAY:-60}"; MAX_COST_USD_PER_WEEK="${MAX_COST_USD_PER_WEEK:-0}"
+CL="$PRD_DIR/vibeloop/cost-ledger.jsonl"
+cost_sum() { # $1=window_secs
+  python3 - "$CL" "$1" <<'PY'
+import json,sys,time,calendar
+path,win=sys.argv[1],float(sys.argv[2]); now=time.time(); total=0.0
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        try: t=calendar.timegm(time.strptime(r.get("ts",""),"%Y-%m-%dT%H:%M:%SZ"))
+        except Exception: continue
+        if now - t <= win: total += float(r.get("usd") or 0)
+except FileNotFoundError:
+    pass
+print(f"{total:.4f}")
+PY
+}
+ledger_cost() { # $1=kind $2=usd $3=ref $4=cost_known(true/false)
+  python3 - "$CL" "$1" "$2" "$3" "$4" <<'PY'
+import json,sys,datetime
+path,kind,usd,ref,known=sys.argv[1:6]
+row={"ts":datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),"kind":kind,"usd":round(float(usd),6),"ref":ref,"cost_known":known=="true"}
+with open(path,"a") as f: f.write(json.dumps(row)+"\n")
+PY
+}
+sum_session_cost() { # $1=ledger.jsonl path -> "usd known(true/false)"
+  python3 - "$1" <<'PY'
+import json,sys
+path=sys.argv[1]; total=0.0; known=True; n=0
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        n+=1
+        c=r.get("cost_usd")
+        if c is None: known=False
+        else: total+=float(c)
+except FileNotFoundError:
+    known=False
+print(f"{total:.6f} {'true' if (known and n>0) else 'false'}")
+PY
+}
+budget_hit() { # $1=sum $2=max $3=frac -> 1/0
+  awk -v s="$1" -v m="$2" -v f="$3" 'BEGIN{print (m>0 && s>=f*m)?1:0}'
+}
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "$(ts) $*" >> "$LOG"; }
 bus() { command -v nats >/dev/null 2>&1 && timeout 5 nats --server "${NATS_URL:-nats://127.0.0.1:4222}" pub wm.vibeloop.measure "$1" >/dev/null 2>&1; return 0; }
@@ -55,6 +106,14 @@ since24=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
 # refusal or a skip that opens no session must not bind the daily cap.
 runs24=$(awk -v s="$since24" '$1 > s' "$MLEDGER" 2>/dev/null | grep -o 'sessions_spent=[0-9]*' | awk -F= '{sum+=$2} END{print sum+0}')
 [ "$runs24" -ge "$MAX_MEASURES_PER_DAY" ] && { log "skip: daily cap ($runs24/$MAX_MEASURES_PER_DAY)"; exit 0; }
+# PRD-vibeloop-cost-budget req 3/AC4: no measurement or probes at >=95% of either ceiling.
+budget_sum24=$(cost_sum 86400); budget_sum7=$(cost_sum 604800)
+if [ "$(budget_hit "$budget_sum24" "$MAX_COST_USD_PER_DAY" 0.95)" = "1" ] || [ "$(budget_hit "$budget_sum7" "$MAX_COST_USD_PER_WEEK" 0.95)" = "1" ]; then
+  log "skip: budget >=95% (24h \$$budget_sum24/\$$MAX_COST_USD_PER_DAY, 7d \$$budget_sum7/\$$MAX_COST_USD_PER_WEEK)"
+  echo "$(ts) budget=skipped sum24=$budget_sum24 max24=$MAX_COST_USD_PER_DAY sum7=$budget_sum7 max7=$MAX_COST_USD_PER_WEEK" >> "$MLEDGER"
+  git -C "$PRD_DIR" add "$MLEDGER" && git -C "$PRD_DIR" commit -q -m "measure: budget skip (24h \$$budget_sum24/\$$MAX_COST_USD_PER_DAY)" -- "$MLEDGER" && git -C "$PRD_DIR" push -q 2>/dev/null
+  exit 0
+fi
 git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 # --- what is built vs what is deployed ---
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
@@ -107,16 +166,18 @@ ok = r.get("t_first_own_call") is not None and (r.get("accuracy") or 0) > 0
 print("pass" if ok else f"fail t_first_publish={r.get('t_first_publish')} t_first_own_call={r.get('t_first_own_call')} accuracy={r.get('accuracy')} family={r.get('failure_family')} cost={r.get('cost_usd')}")
 PY2
 )
+  read -r probe_usd probe_known <<< "$(sum_session_cost "$pd/ledger.jsonl")"
+  ledger_cost probe "$probe_usd" "$deployed" "$probe_known"
   if [ "$verdict" = "pass" ]; then
     date -u +%FT%TZ > "$VER"; log "harness probe PASS — measurement enabled from now on"
     # req 1: a probe that ran spends one session — the day's cap must see it.
     echo "$(ts) version=$deployed harness-probe=PASS sessions_spent=1" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: harness probe passed on $deployed" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe passed on $deployed" -- vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"harness-verified\",\"ts\":\"$(ts)\"}"
   else
     log "harness probe FAIL ($verdict) — not measuring; will re-probe in $((PROBE_EVERY/3600))h"
     echo "$(ts) version=$deployed harness-probe=FAIL $verdict sessions_spent=1" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
 fi
@@ -134,6 +195,10 @@ if [ ! -f "$out/measure.json" ]; then
   ns=0; [ -f "$out/ledger.jsonl" ] && ns=$(wc -l < "$out/ledger.jsonl" 2>/dev/null || echo 0)
   log "measure FAILED rc=$rc (no measure.json) sessions_spent=$ns"
   echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc sessions_spent=$ns" >> "$MLEDGER"
+  if [ "$ns" -gt 0 ]; then
+    read -r fail_usd fail_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
+    ledger_cost measure "$fail_usd" "$deployed" "$fail_known"
+  fi
   rmdir "$out" 2>/dev/null
 else
   summary=$(python3 - "$out/measure.json" <<'PY'
@@ -143,6 +208,8 @@ print(f"satisfaction={d.get('satisfaction')} wow_rate={d.get('wow_rate')} sessio
 PY
 )
   ns=$(python3 -c "import json;print(json.load(open('$out/measure.json')).get('sessions',0))" 2>/dev/null || echo 0)
+  read -r meas_usd meas_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
+  ledger_cost measure "$meas_usd" "$deployed" "$meas_known"
   # req 9: compare against the previous run of the SAME version, if one
   # exists — read LATEST before this run overwrites it.
   lift_field=""
@@ -163,5 +230,5 @@ PY
   echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field" >> "$MLEDGER"
   log "measure ok: $summary sessions_spent=$ns$lift_field"
 fi
-git -C "$PRD_DIR" add "$EVD" vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+git -C "$PRD_DIR" add "$EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
 bus "{\"event\":\"measured\",\"version\":\"$deployed\",\"reason\":\"$reason\",\"line\":$(tail -n1 "$MLEDGER" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))'),\"ts\":\"$(ts)\"}"
