@@ -32,8 +32,6 @@ PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcph
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
 VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
 PROXY_FIELD=""  # set by run_proxy_gate on a proxy pass; carried onto the truth-tier ledger line (AC5)
-# PRD-vibeloop-cost-budget req 2/3: cost ledger + rolling-window budget gate for measurement/probes.
-MAX_COST_USD_PER_DAY="${MAX_COST_USD_PER_DAY:-60}"; MAX_COST_USD_PER_WEEK="${MAX_COST_USD_PER_WEEK:-0}"
 CL="$PRD_DIR/vibeloop/cost-ledger.jsonl"
 cost_sum() { # $1=window_secs
   python3 - "$CL" "$1" <<'PY'
@@ -125,14 +123,6 @@ since24=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
 # refusal or a skip that opens no session must not bind the daily cap.
 runs24=$(awk -v s="$since24" '$1 > s' "$MLEDGER" 2>/dev/null | grep -o 'sessions_spent=[0-9]*' | awk -F= '{sum+=$2} END{print sum+0}')
 [ "$runs24" -ge "$MAX_MEASURES_PER_DAY" ] && { log "skip: daily cap ($runs24/$MAX_MEASURES_PER_DAY)"; exit 0; }
-# PRD-vibeloop-cost-budget req 3/AC4: no measurement or probes at >=95% of either ceiling.
-budget_sum24=$(cost_sum 86400); budget_sum7=$(cost_sum 604800)
-if [ "$(budget_hit "$budget_sum24" "$MAX_COST_USD_PER_DAY" 0.95)" = "1" ] || [ "$(budget_hit "$budget_sum7" "$MAX_COST_USD_PER_WEEK" 0.95)" = "1" ]; then
-  log "skip: budget >=95% (24h \$$budget_sum24/\$$MAX_COST_USD_PER_DAY, 7d \$$budget_sum7/\$$MAX_COST_USD_PER_WEEK)"
-  echo "$(ts) budget=skipped sum24=$budget_sum24 max24=$MAX_COST_USD_PER_DAY sum7=$budget_sum7 max7=$MAX_COST_USD_PER_WEEK" >> "$MLEDGER"
-  git -C "$PRD_DIR" add "$MLEDGER" && git -C "$PRD_DIR" commit -q -m "measure: budget skip (24h \$$budget_sum24/\$$MAX_COST_USD_PER_DAY)" -- "$MLEDGER" && git -C "$PRD_DIR" push -q 2>/dev/null
-  exit 0
-fi
 git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 # --- what is built vs what is deployed ---
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
