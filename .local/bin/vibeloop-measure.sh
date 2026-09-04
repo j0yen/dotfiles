@@ -90,9 +90,12 @@ else log "skip: $deployed already measured, no calibration runs left"; exit 0; f
 # --- harness gate: measure only once a live session has completed signup -> publish -> call ---
 VER="$HOME/.config/vibeloop/harness-verified"; PROBE_LAST="$HOME/.config/vibeloop/harness-probe-last"; PROBE_EVERY="${HARNESS_PROBE_SECS:-21600}"
 if [ ! -f "$VER" ]; then
-  now=$(date +%s); last=$(cat "$PROBE_LAST" 2>/dev/null || echo 0)
-  [ $((now-last)) -lt "$PROBE_EVERY" ] && { log "skip: harness unverified; next probe in $(( (PROBE_EVERY-(now-last))/60 )) min"; exit 0; }
-  echo "$now" > "$PROBE_LAST"; pd="$HOME/.cache/vibeloop/harness-probe"; rm -rf "$pd" "$SYN/runs/mcp-host-project-consume"; mkdir -p "$pd"
+  now=$(date +%s); last=$(cat "$PROBE_LAST" 2>/dev/null | cut -d' ' -f1); last=${last:-0}
+  last_head=$(cat "$PROBE_LAST" 2>/dev/null | cut -d' ' -f2); syn_head=$(git -C "$SYN" rev-parse --short HEAD 2>/dev/null)
+  # The backoff only applies while the harness is unchanged: a new synthorg commit re-probes at once
+  # (2026-09-04: a scorer fix shipped at 04:16Z and the probe sat on its 6 h backoff until 08:45Z).
+  if [ "$last_head" = "$syn_head" ] && [ $((now-last)) -lt "$PROBE_EVERY" ]; then log "skip: harness unverified; next probe in $(( (PROBE_EVERY-(now-last))/60 )) min (synthorg $syn_head unchanged)"; exit 0; fi
+  echo "$now $syn_head" > "$PROBE_LAST"; pd="$HOME/.cache/vibeloop/harness-probe"; rm -rf "$pd" "$SYN/runs/mcp-host-project-consume"; mkdir -p "$pd"
   log "harness probe: one live session (signup -> publish -> call?)"
   ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 900 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$pd" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --segments rapid_prototyper --panel 1 ) >> "$LOG" 2>&1
   verdict=$(python3 - "$pd/ledger.jsonl" <<'PY2'
