@@ -22,6 +22,8 @@
 #   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
 #   vibeloop-ctl cost [days]         per-day spend totals + top 5 PRDs by cost, from vibeloop/cost-ledger.jsonl (default 7d)
 #   vibeloop-ctl archive-cost <slug> sum a PRD's cost-ledger share, write "- Cost: $x.xx over n cycles" into its archived frontmatter
+#   vibeloop-ctl digest [date]       pull, then print vibeloop/digest/<date|today>.md (PRD-vibeloop-daily-digest)
+#   vibeloop-ctl digest --today      generate today's page fresh (vibeloop-digest.sh --no-commit) and print it, no commit
 set -uo pipefail
 HOST="${VIBELOOP_HOST:-redbaron}"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"
@@ -228,5 +230,14 @@ open(p,'w').writelines(out)" "$f" "$cost_line"
     fi
     push "vibeloop: archive-cost $slug — $cost_line" "built-prds/PRD-$slug.md"
     echo "$cost_line -> $f" ;;
+  digest)
+    if [ "${1:-}" = "--today" ]; then
+      command -v vibeloop-digest.sh >/dev/null 2>&1 || { echo "vibeloop-digest.sh not on PATH" >&2; exit 1; }
+      pull; DREAM_PRD_DIR="$PRD_DIR" vibeloop-digest.sh "$(date -u +%F)" --no-commit >/dev/null && cat "$LOOP/digest/$(date -u +%F).md"
+    else
+      pull; d="${1:-$(date -u +%F)}"; f="$LOOP/digest/$d.md"
+      [ -f "$f" ] || { echo "no digest for $d yet ($f) — try: vibeloop-ctl digest --today" >&2; exit 1; }
+      cat "$f"
+    fi ;;
   *)      awk '/^set -uo pipefail/{exit} NR>=2{print}' "$0"; exit 2 ;;
 esac
