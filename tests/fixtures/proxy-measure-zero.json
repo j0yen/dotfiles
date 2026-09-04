@@ -1,0 +1,10 @@
+{
+  "tier": "proxy",
+  "model": "claude-haiku-4-5",
+  "cost_usd_total": 0.031,
+  "bootstrap_by_segment": {
+    "rapid_prototyper": {"bootstrap_ok": false, "t_first_own_call": null},
+    "data_analyst": {"bootstrap_ok": false, "t_first_own_call": null},
+    "ops_lead": {"bootstrap_ok": false, "t_first_own_call": null}
+  }
+}

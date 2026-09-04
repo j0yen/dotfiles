@@ -1,0 +1,14 @@
+{
+  "tier": "proxy",
+  "model": "claude-haiku-4-5",
+  "cost_usd_total": 0.047,
+  "bootstrap_by_segment": {
+    "rapid_prototyper": {"bootstrap_ok": true, "t_first_own_call": 41.2},
+    "data_analyst": {"bootstrap_ok": true, "t_first_own_call": 58.9},
+    "ops_lead": {"bootstrap_ok": true, "t_first_own_call": 33.0},
+    "compliance_reviewer": {"bootstrap_ok": false, "t_first_own_call": null},
+    "growth_marketer": {"bootstrap_ok": false, "t_first_own_call": null},
+    "support_lead": {"bootstrap_ok": false, "t_first_own_call": null},
+    "finance_analyst": {"bootstrap_ok": false, "t_first_own_call": null}
+  }
+}

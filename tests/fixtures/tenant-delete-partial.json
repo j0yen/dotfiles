@@ -1,0 +1,1 @@
+{"dry_run": false, "deleted": ["t_a1", "t_b2"], "truncated": false, "tools_removed": 4, "secrets_removed": 1, "calls_removed": 12, "logs_removed": 30}

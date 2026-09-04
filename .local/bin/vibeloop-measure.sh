@@ -9,14 +9,29 @@
 #         ran in 24h (line count no longer counts — req 2/4). Results land in the PRDs repo:
 #   evidence/mcp-host/measure/<version>-<ts>/{measure.json,ledger.jsonl}, evidence/mcp-host/measure/LATEST,
 #   vibeloop/measure-ledger.md (one line per run) — dream reads LATEST; carbon reads via vibeloop-ctl measure.
+#
+# PRD-mcphost-measure-guards adds two more, in .local/lib/vibeloop-measure-guards.sh
+# (sourced below, function-only so tests/vibeloop-measure-guards.test.sh can exercise
+# the decision logic against fixture JSON with no network/systemctl calls — run it with
+# `bash tests/vibeloop-measure-guards.test.sh` from the repo root):
+#   - proxy gate: immediately after a successful redeploy, before the harness probe or
+#     any truth-tier session, run `synthorg consume --tier proxy`; zero bootstraps writes
+#     `proxy=0/<n> truth=skipped`, publishes `proxy-failed`, and skips the truth tier.
+#   - cleanup: after the truth or proxy tier finishes, delete every `panel_`/`probe-`
+#     tenant via `admin.tenant_delete_by_prefix` (dry_run=false) and record
+#     `cleanup=<n> tenants_after=<n>` on the run's ledger line. VIBELOOP_KEEP_TENANTS=1
+#     skips the delete for debugging (`cleanup=kept`).
 set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"; LOG="$HOME/brain/journal/vibeloop-measure.log"
 CRATE="$HOME/wintermute/mcphost"; DEPLOY="$HOME/repos/mcphost-deploy"; SYN="$HOME/repos/synthorg"
 BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://178-105-64-66.sslip.io/mcp}"; HOST=hub
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
+PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcphost/admin-key"
 [ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
+VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
+PROXY_FIELD=""  # set by run_proxy_gate on a proxy pass; carried onto the truth-tier ledger line (AC5)
 # PRD-vibeloop-cost-budget req 2/3: cost ledger + rolling-window budget gate for measurement/probes.
 MAX_COST_USD_PER_DAY="${MAX_COST_USD_PER_DAY:-60}"; MAX_COST_USD_PER_WEEK="${MAX_COST_USD_PER_WEEK:-0}"
 CL="$PRD_DIR/vibeloop/cost-ledger.jsonl"
@@ -71,7 +86,11 @@ budget_hit() { # $1=sum $2=max $3=frac -> 1/0
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "$(ts) $*" >> "$LOG"; }
 bus() { command -v nats >/dev/null 2>&1 && timeout 5 nats --server "${NATS_URL:-nats://127.0.0.1:4222}" pub wm.vibeloop.measure "$1" >/dev/null 2>&1; return 0; }
-mkdir -p "$EVD" "$(dirname "$CAL")"; [ -f "$CAL" ] || echo 2 > "$CAL"
+# PRD-mcphost-measure-guards: function-only, sourced after ts/log/bus/sum_session_cost/
+# ledger_cost exist (it calls them) and before any guard runs (it's called from both the
+# redeploy branch and the harness-probe/measure tail below).
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/vibeloop-measure-guards.sh"
+mkdir -p "$EVD" "$PROXY_EVD" "$(dirname "$CAL")"; [ -f "$CAL" ] || echo 2 > "$CAL"
 VIBELOOP_WATCHDOG_SECS="${VIBELOOP_WATCHDOG_SECS:-1200}"
 SYNTHORG_SEED="${SYNTHORG_SEED:-0}"                                          # PRD-mcphost-measure-comparable req 5: fixed, never wall-clock.
 COMPOSITION="${SYNTHORG_COMPOSITION:-corpora/mcphost/panel-composition.yaml}" # req 6: pinned, relative to $SYN.
@@ -139,6 +158,11 @@ if [ "$built" != "$deployed" ]; then
   if ( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$CRATE/target/release/mcphost" ) >> "$LOG" 2>&1; then
     deployed=$(curl -s --max-time 10 "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null)
     log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
+    # req 3/AC3/AC4: proxy gate runs immediately after a successful redeploy,
+    # before the harness probe or any truth-tier session — a zero-bootstrap
+    # result writes its own terminal ledger line and this script exits here.
+    proxy_out="$PROXY_EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"
+    run_proxy_gate "$deployed" "$URL" "$proxy_out" || exit 0
   else
     log "redeploy FAILED (rolled back to $deployed) — not measuring"; echo "$(ts) version=$built redeploy=FAILED-rolled-back-to-$deployed measured=no sessions_spent=0" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $built failed, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
@@ -176,8 +200,9 @@ PY2
     bus "{\"event\":\"harness-verified\",\"ts\":\"$(ts)\"}"
   else
     log "harness probe FAIL ($verdict) — not measuring; will re-probe in $((PROBE_EVERY/3600))h"
-    echo "$(ts) version=$deployed harness-probe=FAIL $verdict sessions_spent=1" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
+    cleanup_field=$(cleanup_tenants)
+    echo "$(ts) version=$deployed harness-probe=FAIL $verdict sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+    git -C "$PRD_DIR" add "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
 fi
@@ -188,13 +213,16 @@ log "measure start version=$deployed reason=$reason out=$out"
 # panel the corpus can't serve, instead of a wall-clock seed and a
 # re-derived-per-run panel that check_comparable/attribution can't use.
 ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 5400 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$out" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --strict-segments ) >> "$LOG" 2>&1; rc=$?
+# req 1: the truth tier just finished (success or failure) — clean up now,
+# before either branch below writes the run's terminal ledger line.
+cleanup_field=$(cleanup_tenants)
 if [ ! -f "$out/measure.json" ]; then
   # req 1: no measure.json means no observably-completed session to count —
   # ledger.jsonl is only ever written once, at the end of a successful
   # consume run, so a killed/failed run leaves nothing on disk to sum from.
   ns=0; [ -f "$out/ledger.jsonl" ] && ns=$(wc -l < "$out/ledger.jsonl" 2>/dev/null || echo 0)
   log "measure FAILED rc=$rc (no measure.json) sessions_spent=$ns"
-  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc sessions_spent=$ns" >> "$MLEDGER"
+  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc sessions_spent=$ns${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   if [ "$ns" -gt 0 ]; then
     read -r fail_usd fail_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
     ledger_cost measure "$fail_usd" "$deployed" "$fail_known"
@@ -227,8 +255,8 @@ PY
     esac
   fi
   echo "$(basename "$out")" > "$EVD/LATEST"; [ "$reason" != "new-version" ] && echo $((cal-1)) > "$CAL"
-  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field" >> "$MLEDGER"
-  log "measure ok: $summary sessions_spent=$ns$lift_field"
+  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  log "measure ok: $summary sessions_spent=$ns$lift_field${PROXY_FIELD} $cleanup_field"
 fi
-git -C "$PRD_DIR" add "$EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
+git -C "$PRD_DIR" add "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
 bus "{\"event\":\"measured\",\"version\":\"$deployed\",\"reason\":\"$reason\",\"line\":$(tail -n1 "$MLEDGER" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))'),\"ts\":\"$(ts)\"}"
