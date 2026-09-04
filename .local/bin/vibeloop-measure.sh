@@ -94,7 +94,7 @@ if [ ! -f "$VER" ]; then
   [ $((now-last)) -lt "$PROBE_EVERY" ] && { log "skip: harness unverified; next probe in $(( (PROBE_EVERY-(now-last))/60 )) min"; exit 0; }
   echo "$now" > "$PROBE_LAST"; pd="$HOME/.cache/vibeloop/harness-probe"; rm -rf "$pd" "$SYN/runs/mcp-host-project-consume"; mkdir -p "$pd"
   log "harness probe: one live session (signup -> publish -> call?)"
-  ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 900 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$pd" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --panel 1 --tasks rapid-prototyper-five-minute-wow ) >> "$LOG" 2>&1
+  ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 900 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$pd" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --segments rapid_prototyper --panel 1 --tasks rapid-prototyper-five-minute-wow ) >> "$LOG" 2>&1
   verdict=$(python3 - "$pd/ledger.jsonl" <<'PY2'
 import json,sys
 try: rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
