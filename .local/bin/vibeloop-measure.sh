@@ -28,9 +28,15 @@ CRATE="$HOME/wintermute/mcphost"; DEPLOY="$HOME/repos/mcphost-deploy"; SYN="$HOM
 BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://178-105-64-66.sslip.io/mcp}"; HOST=hub
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
 PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcphost/admin-key"
+BASELINE="$PRD_DIR/vibeloop/baseline.json"  # PRD-mcphost-baseline-anchor: the standing baseline pointer; written only below (baseline_set/baseline_reanchored)
 [ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
 VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
+# PRD-mcphost-baseline-anchor: set by a future candidate-run trigger — no invocation path in
+# this script sets it yet (every run today is a "plain" comparable run against the deployed
+# head), but the staleness refusal and the baseline-write guard below both key off it so that
+# whichever PRD wires an actual candidate build/measure path in gets the policy for free.
+VIBELOOP_CANDIDATE="${VIBELOOP_CANDIDATE:-0}"
 PROXY_FIELD=""  # set by run_proxy_gate on a proxy pass; carried onto the truth-tier ledger line (AC5)
 CL="$PRD_DIR/vibeloop/cost-ledger.jsonl"
 cost_sum() { # $1=window_secs
@@ -84,6 +90,50 @@ budget_hit() { # $1=sum $2=max $3=frac -> 1/0
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { echo "$(ts) $*" >> "$LOG"; }
 bus() { command -v nats >/dev/null 2>&1 && timeout 5 nats --server "${NATS_URL:-nats://127.0.0.1:4222}" pub wm.vibeloop.measure "$1" >/dev/null 2>&1; return 0; }
+# PRD-mcphost-baseline-anchor: standing-baseline helpers. `baseline_version`
+# reads the field vibeloop-ctl and the staleness guard both need; the other
+# two read/write the whole 7-field pointer file.
+baseline_version() { [ -f "$BASELINE" ] && python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('version',''))" "$BASELINE" 2>/dev/null; }
+baseline_run_dir() { [ -f "$BASELINE" ] && python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('run_dir',''))" "$BASELINE" 2>/dev/null; }
+# Eligibility per the Baseline policy / AC5: pinned seed, pinned composition,
+# strict (unfiltered) segments, truth tier — a measure.json missing any of
+# these predates comparability (wall-clock seed, no composition fingerprint)
+# and must never be selectable as a baseline. Prints "eligible <seed>
+# <corpus_fp> <composition_fp> <sessions>" or "ineligible".
+measure_comparability() { # $1=measure.json path
+  python3 - "$1" <<'PY'
+import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("ineligible"); sys.exit()
+tier = d.get("tier", "truth")
+seed = d.get("seed")
+corpus_fp = (d.get("corpus") or {}).get("fingerprint")
+comp_fp = (d.get("composition") or {}).get("fingerprint")
+segfilt = d.get("segments_filter")
+sessions = d.get("sessions")
+if tier != "truth" or seed is None or not corpus_fp or not comp_fp or segfilt is not None:
+    print("ineligible")
+else:
+    print(f"eligible {seed} {corpus_fp} {comp_fp} {sessions}")
+PY
+}
+# Requirement 1: write the 7-field pointer on baseline set/re-anchor only.
+write_baseline() { # $1=run_dir $2=version $3=seed $4=corpus_fp $5=composition_fp $6=sessions
+  python3 - "$BASELINE" "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
+import json,sys,datetime
+path, run_dir, version, seed, corpus_fp, composition_fp, sessions = sys.argv[1:8]
+d = {
+    "run_dir": run_dir, "version": version, "seed": int(seed),
+    "corpus_fingerprint": corpus_fp, "composition_fingerprint": composition_fp,
+    "sessions": int(sessions),
+    "created_at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+with open(path, "w") as f:
+    json.dump(d, f, indent=2); f.write("\n")
+PY
+}
 # PRD-mcphost-measure-guards: function-only, sourced after ts/log/bus/sum_session_cost/
 # ledger_cost exist (it calls them) and before any guard runs (it's called from both the
 # redeploy branch and the harness-probe/measure tail below).
@@ -131,6 +181,21 @@ built=$(git -C "$CRATE" show HEAD:Cargo.toml 2>/dev/null | awk -F'"' '/^version 
 deployed=$(curl -s --max-time 10 "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null)
 [ -z "$deployed" ] && { log "skip: hub healthz unreachable"; bus "{\"event\":\"hub-unreachable\",\"ts\":\"$(ts)\"}"; exit 0; }
 [ -z "$built" ] && { log "skip: could not read crate version at HEAD"; exit 0; }
+# PRD-mcphost-baseline-anchor req 3/AC4: a candidate run is refused before
+# any session opens (redeploy, harness probe, or truth-tier consume all sit
+# below this) when the standing baseline names a version other than what's
+# deployed now. A plain run is never refused here — it's the mechanism that
+# re-anchors a stale baseline (below, once its own measurement completes).
+if [ "$VIBELOOP_CANDIDATE" = 1 ]; then
+  bv=$(baseline_version)
+  if [ -n "$bv" ] && [ "$bv" != "$deployed" ]; then
+    log "candidate run refused: baseline stale (baseline=$bv deployed=$deployed)"
+    echo "$(ts) version=$deployed candidate_refused=1 baseline=baseline_stale baseline_version=$bv deployed_version=$deployed sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: candidate refused, baseline stale ($bv != $deployed)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    bus "{\"event\":\"baseline-stale\",\"baseline_version\":\"$bv\",\"deployed_version\":\"$deployed\",\"ts\":\"$(ts)\"}"
+    exit 0
+  fi
+fi
 cal=$(cat "$CAL"); reason=""
 if [ "$built" != "$deployed" ]; then
   log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
@@ -251,25 +316,47 @@ PY
   ns=$(python3 -c "import json;print(json.load(open('$out/measure.json')).get('sessions',0))" 2>/dev/null || echo 0)
   read -r meas_usd meas_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
   ledger_cost measure "$meas_usd" "$deployed" "$meas_known"
-  # req 9: compare against the previous run of the SAME version, if one
-  # exists — read LATEST before this run overwrites it.
+  # PRD-mcphost-baseline-anchor req 2: the prior-run-of-the-same-version
+  # comparison this used to be (req 9) is superseded, not kept alongside —
+  # lift now runs against whatever run.baseline.json names, read before this
+  # run has any chance to become the new baseline itself (below), so a
+  # run's own baseline write never turns it into a self-comparison.
   lift_field=""
-  if [ -f "$EVD/LATEST" ]; then
-    prior_name=$(cat "$EVD/LATEST" 2>/dev/null)
-    case "$prior_name" in
-      "$deployed"-*)
-        prior_dir="$EVD/$prior_name"
-        if lift_txt=$(cd "$SYN" && uv run synthorg lift --baseline "$prior_dir" --candidate "$out" --out "$out/lift.json" 2>&1); then
-          lift_field=" lift=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
-        else
-          lift_field=" lift_error=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
-        fi
-        ;;
-    esac
+  base_dir=$(baseline_run_dir)
+  if [ -n "$base_dir" ] && [ -d "$base_dir" ]; then
+    if lift_txt=$(cd "$SYN" && uv run synthorg lift --baseline "$base_dir" --candidate "$out" --out "$out/lift.json" 2>&1); then
+      lift_field=" lift=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
+    else
+      lift_field=" lift_error=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
+    fi
+  fi
+  # req 1/3/4/AC1/AC3/AC5: a plain (non-candidate) comparable run sets the
+  # baseline when none stands yet, or re-anchors it when the standing one
+  # names a version other than what's deployed now. A candidate run, or a
+  # run that predates comparability, never touches baseline.json.
+  baseline_field=""
+  if [ "$VIBELOOP_CANDIDATE" != 1 ]; then
+    read -r elig elig_seed elig_corpus_fp elig_comp_fp elig_sessions <<< "$(measure_comparability "$out/measure.json")"
+    if [ "$elig" = "eligible" ]; then
+      cur_bv=$(baseline_version)
+      if [ -z "$cur_bv" ]; then
+        write_baseline "$out" "$deployed" "$elig_seed" "$elig_corpus_fp" "$elig_comp_fp" "$elig_sessions"
+        baseline_field=" baseline=baseline_set"
+        log "baseline_set: $out ($deployed)"
+        git -C "$PRD_DIR" add vibeloop/baseline.json && git -C "$PRD_DIR" commit -q -m "measure: baseline_set at $deployed ($(basename "$out"))" -- vibeloop/baseline.json && git -C "$PRD_DIR" push -q 2>/dev/null
+        bus "{\"event\":\"baseline-set\",\"version\":\"$deployed\",\"run_dir\":\"$out\",\"ts\":\"$(ts)\"}"
+      elif [ "$cur_bv" != "$deployed" ]; then
+        write_baseline "$out" "$deployed" "$elig_seed" "$elig_corpus_fp" "$elig_comp_fp" "$elig_sessions"
+        baseline_field=" baseline=baseline_reanchored"
+        log "baseline_reanchored: $out ($cur_bv -> $deployed)"
+        git -C "$PRD_DIR" add vibeloop/baseline.json && git -C "$PRD_DIR" commit -q -m "measure: baseline_reanchored $cur_bv -> $deployed ($(basename "$out"))" -- vibeloop/baseline.json && git -C "$PRD_DIR" push -q 2>/dev/null
+        bus "{\"event\":\"baseline-reanchored\",\"from\":\"$cur_bv\",\"to\":\"$deployed\",\"run_dir\":\"$out\",\"ts\":\"$(ts)\"}"
+      fi
+    fi
   fi
   echo "$(basename "$out")" > "$EVD/LATEST"; [ "$reason" != "new-version" ] && echo $((cal-1)) > "$CAL"
-  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
-  log "measure ok: $summary sessions_spent=$ns$lift_field${PROXY_FIELD} $cleanup_field"
+  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  log "measure ok: $summary sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field"
 fi
 git -C "$PRD_DIR" add "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
 bus "{\"event\":\"measured\",\"version\":\"$deployed\",\"reason\":\"$reason\",\"line\":$(tail -n1 "$MLEDGER" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))'),\"ts\":\"$(ts)\"}"

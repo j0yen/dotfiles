@@ -121,8 +121,10 @@ cat > "$repo/evidence/mcp-host/measure/run1/measure.json" <<'EOF'
 {"satisfaction": 0.5, "wow_rate": 0.2, "sessions": 10, "failures": 1,
  "by_segment": {"seg1": {"satisfaction": 0.5, "wow_rate": 0.2, "n": 10}}}
 EOF
-cat > "$repo/evidence/mcp-host/baseline.json" <<'EOF'
-{"version": "1.0.0"}
+mkdir -p "$repo/vibeloop"
+cat > "$repo/vibeloop/baseline.json" <<'EOF'
+{"run_dir": "/evd/1.0.0-run1", "version": "1.0.0", "seed": 0, "corpus_fingerprint": "sha256:c1",
+ "composition_fingerprint": "sha256:p1", "sessions": 10, "created_at": "2026-01-15T09:10:00Z"}
 EOF
 
 cat > "$H1/.config/vibeloop/limits" <<'EOF'
@@ -216,7 +218,7 @@ assert_contains "$body1" "2 runs today  (vibeloop/measure-ledger.md)" "Measureme
 assert_contains "$body1" "satisfaction=0.5 wow_rate=0.2 sessions=10 failures=1" "Measurement: proxy/latest results"
 assert_contains "$body1" "evidence/mcp-host/measure/run1/measure.json" "Measurement: proxy/latest results carry source path"
 assert_contains "$body1" "seg1: sat=0.5 wow=0.2 n=10" "Measurement: decisions per segment"
-assert_contains "$body1" "baseline pointer: evidence/mcp-host/baseline.json" "Measurement: baseline pointer path"
+assert_contains "$body1" "baseline pointer: run_dir=/evd/1.0.0-run1 version=1.0.0 seed=0 corpus_fingerprint=sha256:c1 composition_fingerprint=sha256:p1 sessions=10 created_at=2026-01-15T09:10:00Z  (vibeloop/baseline.json)" "Measurement: baseline pointer fields"
 
 # -- Errors: deduplicated, each line sourced -------------------------------------------------
 assert_contains "$body1" "status=failed reason=crashed" "Errors: cycle failure surfaced"

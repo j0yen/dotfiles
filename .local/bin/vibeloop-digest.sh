@@ -12,7 +12,7 @@
 # Reads (missing ones render "not available" in the digest, never abort it):
 #   vibeloop/ledger.md, vibeloop/measure-ledger.md, vibeloop/cost-ledger.jsonl, vibeloop/STOP,
 #   vibeloop/MEASURE-STOP, build-queue/*.md, built-prds/*.md, evidence/mcp-host/measure/LATEST,
-#   evidence/mcp-host/baseline.json, ~/brain/journal/vibeloop-auto.log (RedBaron-only),
+#   vibeloop/baseline.json (PRD-mcphost-baseline-anchor), ~/brain/journal/vibeloop-auto.log (RedBaron-only),
 #   ~/brain/journal/vibeloop-measure.log (RedBaron-only), the hub /healthz.
 # Writes: vibeloop/digest/<date>.md (and, on a Monday date, vibeloop/digest/<date>-weekly.md).
 #
@@ -421,13 +421,18 @@ if os.path.isfile(latest_path):
 else:
     out.append(f"- proxy/latest results: {na(latest_path)}")
 
-baseline_path = os.path.join(evd, "baseline.json")
-if not os.path.isfile(baseline_path):
-    baseline_path = os.path.join(PRD_DIR, "evidence", "mcp-host", "baseline.json")
+baseline_path = os.path.join(LOOP, "baseline.json")
 if os.path.isfile(baseline_path):
-    out.append(f"- baseline pointer: {relpath(baseline_path)}")
+    try:
+        with open(baseline_path, encoding="utf-8", errors="replace") as f:
+            b = json.load(f)
+        fields = " ".join(f"{k}={b.get(k)}" for k in
+            ("run_dir", "version", "seed", "corpus_fingerprint", "composition_fingerprint", "sessions", "created_at"))
+        out.append(f"- baseline pointer: {fields}  ({relpath(baseline_path)})")
+    except Exception as e:
+        out.append(f"- baseline pointer: not available ({relpath(baseline_path)}: {e})")
 else:
-    out.append(f"- baseline pointer: not available ({relpath(baseline_path)}: PRD-mcphost-baseline-anchor not yet built)")
+    out.append(f"- baseline pointer: not available ({relpath(baseline_path)}: no baseline set yet)")
 
 # ============================================================== Errors ==================
 sec("Errors")

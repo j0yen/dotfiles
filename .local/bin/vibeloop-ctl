@@ -18,6 +18,8 @@
 #   vibeloop-ctl watch               subscribe to wm.vibeloop.> on NATS (cycle verdicts)
 #   vibeloop-ctl sync                pull PRDs here and on RedBaron
 #   vibeloop-ctl measure [N]         truth-tier runs: last N measure-ledger lines (with proxy/cleanup fields when present), LATEST measure.json summary, last proxy result, timer state
+#   vibeloop-ctl baseline             print the standing baseline's 7 fields (vibeloop/baseline.json,
+#                                     PRD-mcphost-baseline-anchor), or "no baseline"; exits 0 either way
 #   vibeloop-ctl questions [N]       what recent cycles flagged for a human (ledger notes + "needs human" log lines)
 #   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
 #   vibeloop-ctl cost [days]         per-day spend totals + top 5 PRDs by cost, from vibeloop/cost-ledger.jsonl (default 7d)
@@ -236,6 +238,23 @@ PY2
     rb "cat ~/.config/vibeloop/calibration-remaining 2>/dev/null" | sed 's/^/  calibration runs left: /'
     rb "tail -n 3 ~/brain/journal/vibeloop-measure.log 2>/dev/null" | cut -c1-160 | sed 's/^/  log: /'
     curl -s --max-time 6 https://178-105-64-66.sslip.io/healthz | sed 's/^/  hub: /' ;;
+  baseline)
+    # PRD-mcphost-baseline-anchor req 5/AC6: the standing baseline's seven
+    # fields, or "no baseline" — read-only, no claim check, exits 0 either way.
+    pull
+    if [ -f "$LOOP/baseline.json" ]; then
+      python3 - "$LOOP/baseline.json" <<'PY'
+import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("no baseline"); sys.exit()
+for k in ("run_dir", "version", "seed", "corpus_fingerprint", "composition_fingerprint", "sessions", "created_at"):
+    print(f"{k}: {d.get(k)}")
+PY
+    else
+      echo "no baseline"
+    fi ;;
   questions)
     pull; n="${1:-5}"
     echo "== ledger notes (last $n cycles) =="; tail -n "$n" "$LOOP/ledger.md" 2>/dev/null | grep -oE 'cycle=[0-9]+|blocked=\[[^]]*\]|note="[^"]*"' | grep -vE 'blocked=\[\]' | cut -c1-300 | sed 's/^/  /'
