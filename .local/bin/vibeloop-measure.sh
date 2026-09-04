@@ -145,18 +145,41 @@ if [ "$built" != "$deployed" ]; then
   bin_v=$("$CRATE/target/release/mcphost" version 2>/dev/null | awk '{print $NF}')
   [ "$bin_v" = "$built" ] || { log "skip: built binary reports $bin_v, manifest says $built"; exit 0; }
   log "redeploying $built"
-  if ( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$CRATE/target/release/mcphost" ) >> "$LOG" 2>&1; then
+  # PRD-mcphost-deployed-head req 2/3/7, AC1/AC2/AC8: capture the tool's own
+  # exit code (not just success/fail) and its stdout (the probe's
+  # [ok]/[FAIL] check lines + compat_check verdict) so the ledger line below
+  # can record from/to versions, `deploy_failed` with the numeric exit code,
+  # and the probe result — not just a journal-only note.
+  hub_before="$deployed"
+  redeploy_rc=0
+  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$CRATE/target/release/mcphost" 2>&1 ) || redeploy_rc=$?
+  echo "$redeploy_out" >> "$LOG"
+  if [ "$redeploy_rc" -eq 0 ]; then
     deployed=$(curl -s --max-time 10 "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null)
     log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
+    compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
+    # AC1/AC8: the redeploy event's own ledger line — from/to versions,
+    # sessions_spent=0 (no session opened yet), and the probe result. A
+    # successful `mcphost-deploy redeploy` only ever returns exit 0 when its
+    # own probe already passed (redeploy_mod.redeploy returns EXIT_ROLLBACK
+    # on a failed probe), so probe=pass is exact here, not assumed.
+    echo "$(ts) version=$built redeploy=ok from=$hub_before to=$deployed probe=pass compat_check=$compat sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $hub_before -> $deployed ok, probe pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    bus "{\"event\":\"redeploy-ok\",\"from\":\"$hub_before\",\"to\":\"$deployed\",\"ts\":\"$(ts)\"}"
     # req 3/AC3/AC4: proxy gate runs immediately after a successful redeploy,
     # before the harness probe or any truth-tier session — a zero-bootstrap
     # result writes its own terminal ledger line and this script exits here.
     proxy_out="$PROXY_EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"
     run_proxy_gate "$deployed" "$URL" "$proxy_out" || exit 0
   else
-    log "redeploy FAILED (rolled back to $deployed) — not measuring"; echo "$(ts) version=$built redeploy=FAILED-rolled-back-to-$deployed measured=no sessions_spent=0" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $built failed, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
-    bus "{\"event\":\"redeploy-failed\",\"version\":\"$built\",\"ts\":\"$(ts)\"}"; exit 0
+    # AC2/AC4: any non-zero exit (probe-failed rollback, refused-incompatible,
+    # or a remote/ELF error before the switch ever took effect) leaves
+    # $deployed — the hub's serving version — unchanged; `deploy_failed`
+    # plus the numeric exit code is the literal token AC2 asks for.
+    log "redeploy FAILED rc=$redeploy_rc (hub still $deployed) — not measuring"
+    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $built failed rc=$redeploy_rc, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    bus "{\"event\":\"redeploy-failed\",\"version\":\"$built\",\"exit_code\":$redeploy_rc,\"ts\":\"$(ts)\"}"; exit 0
   fi
 elif [ "$cal" -gt 0 ]; then reason="calibration($cal left)"
 else log "skip: $deployed already measured, no calibration runs left"; exit 0; fi
@@ -170,7 +193,7 @@ if [ ! -f "$VER" ]; then
   if [ "$last_head" = "$syn_head" ] && [ $((now-last)) -lt "$PROBE_EVERY" ]; then log "skip: harness unverified; next probe in $(( (PROBE_EVERY-(now-last))/60 )) min (synthorg $syn_head unchanged)"; exit 0; fi
   echo "$now $syn_head" > "$PROBE_LAST"; pd="$HOME/.cache/vibeloop/harness-probe"; rm -rf "$pd" "$SYN/runs/mcp-host-project-consume"; mkdir -p "$pd"
   log "harness probe: one live session (signup -> publish -> call?)"
-  ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 900 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$pd" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --segments rapid_prototyper --panel 1 ) >> "$LOG" 2>&1
+  ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 900 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$pd" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --segments rapid_prototyper --panel 1 --deployed-version "$deployed" ) >> "$LOG" 2>&1
   verdict=$(python3 - "$pd/ledger.jsonl" <<'PY2'
 import json,sys
 try: rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
@@ -202,7 +225,7 @@ log "measure start version=$deployed reason=$reason out=$out"
 # req 5/6/7: fixed seed + pinned composition + fail-before-any-call on a
 # panel the corpus can't serve, instead of a wall-clock seed and a
 # re-derived-per-run panel that check_comparable/attribution can't use.
-( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 5400 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$out" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --strict-segments ) >> "$LOG" 2>&1; rc=$?
+( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 5400 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$out" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --strict-segments --deployed-version "$deployed" ) >> "$LOG" 2>&1; rc=$?
 # req 1: the truth tier just finished (success or failure) — clean up now,
 # before either branch below writes the run's terminal ledger line.
 cleanup_field=$(cleanup_tenants)
