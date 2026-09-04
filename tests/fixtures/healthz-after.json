@@ -1,0 +1,1 @@
+{"db_ok": true, "sandbox_mechanism": "bwrap", "tenants_total": 8, "tenants_probe": 2, "tools_total": 4, "version": "0.6.0"}

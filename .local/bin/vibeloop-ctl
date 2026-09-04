@@ -17,7 +17,7 @@
 #   vibeloop-ctl timer on|off        enable/disable claude-vibeloop.timer on RedBaron
 #   vibeloop-ctl watch               subscribe to wm.vibeloop.> on NATS (cycle verdicts)
 #   vibeloop-ctl sync                pull PRDs here and on RedBaron
-#   vibeloop-ctl measure [N]         truth-tier runs: last N measure-ledger lines, LATEST measure.json summary, timer state
+#   vibeloop-ctl measure [N]         truth-tier runs: last N measure-ledger lines (with proxy/cleanup fields when present), LATEST measure.json summary, last proxy result, timer state
 #   vibeloop-ctl questions [N]       what recent cycles flagged for a human (ledger notes + "needs human" log lines)
 #   vibeloop-ctl answer "<text>"     record an operator answer/decision in the project profile (read by every dream cycle), push
 #   vibeloop-ctl cost [days]         per-day spend totals + top 5 PRDs by cost, from vibeloop/cost-ledger.jsonl (default 7d)
@@ -94,6 +94,33 @@ case "$cmd" in
   measure)
     pull; n="${1:-5}"; ML="$LOOP/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"
     echo "== measure ledger (last $n) =="; tail -n "$n" "$ML" 2>/dev/null | cut -c1-240 | sed 's/^/  /'; [ -s "$ML" ] || echo "  (no runs yet)"
+    # PRD-mcphost-measure-guards req 5/AC7: a separate line for the last proxy-gate
+    # result (version, k/n, cost) — the per-run lines above already carry proxy=
+    # and cleanup= fields inline (or don't, for older lines; Migration note).
+    proxy_line=$(grep -E 'proxy=[0-9]+/[0-9]+' "$ML" 2>/dev/null | tail -n1)
+    if [ -n "$proxy_line" ]; then
+      pver=$(echo "$proxy_line" | grep -oE 'version=[^ ]+' | head -1 | cut -d= -f2)
+      pkn=$(echo "$proxy_line" | grep -oE 'proxy=[0-9]+/[0-9]+' | head -1 | cut -d= -f2)
+      pcost=$(python3 - "$CL" "$pver" <<'PY'
+import json,sys
+path,ver=sys.argv[1],sys.argv[2]
+total=0.0
+try:
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        if r.get("kind")=="proxy" and r.get("ref")==ver: total+=float(r.get("usd") or 0)
+except FileNotFoundError:
+    pass
+print(f"{total:.4f}")
+PY
+)
+      echo "last proxy: version=$pver proxy=$pkn cost=\$$pcost"
+    else
+      echo "last proxy: (no proxy runs yet)"
+    fi
     if [ -f "$EVD/LATEST" ]; then d="$EVD/$(cat "$EVD/LATEST")"; echo "== LATEST: $(cat "$EVD/LATEST") =="; python3 - "$d/measure.json" <<'PY2'
 import json,sys
 try: m=json.load(open(sys.argv[1]))

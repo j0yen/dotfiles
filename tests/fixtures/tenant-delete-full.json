@@ -1,0 +1,1 @@
+{"dry_run": false, "deleted": ["t_01", "t_02", "t_03", "t_04", "t_05", "t_06", "t_07", "t_08", "t_09", "t_10", "t_11", "t_12", "t_13", "t_14", "t_15", "t_16", "t_17", "t_18", "t_19", "t_20"], "truncated": false, "tools_removed": 20, "secrets_removed": 5, "calls_removed": 300, "logs_removed": 950}
