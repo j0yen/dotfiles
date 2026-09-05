@@ -7,6 +7,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "claude-fable-5[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -409,6 +410,11 @@
         ]
       }
     ]
+  },
+  "modelSettings": {
+    "claude-fable-5": {
+      "effortLevel": "high"
+    }
   },
   "skipDangerousModePermissionPrompt": true,
   "skipAutoPermissionPrompt": true
