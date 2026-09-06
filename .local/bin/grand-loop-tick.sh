@@ -11,12 +11,13 @@
 #
 # THIS PASS (first coherent slice of a larger PRD — see PRD Status note):
 #   flock (state.lock), STOP (+ MEASURE-OK override), the daily MEASURE cap,
-#   PREFLIGHT's db_ok check, MEASURE's exit-3 (unvalidated) handling, and
-#   family classification for instrument / activation / monetization /
-#   retention / discovery / growing / flat.
-# NOT YET: the `distribution` family (needs multi-tick listings-live
-#   history), grand-loop-status, the systemd units, synthorg-candidates
-#   integration, and the P1 daily section / instruction-table env file.
+#   PREFLIGHT's db_ok + listings-artifact checks, MEASURE's exit-3
+#   (unvalidated) handling, and family classification for instrument /
+#   distribution / activation / monetization / retention / discovery /
+#   growing / flat. grand-loop-status and the systemd units also ship
+#   (iter-2, AC12).
+# NOT YET: synthorg-candidates integration, and the P1 daily section /
+#   instruction-table env file (AC13).
 #
 # Env:
 #   GRAND_LOOP_PRD_DIR   default $HOME/Documents/PRDs (the PRDs repo clone)
@@ -122,6 +123,14 @@ if [ "$db_ok" != "True" ]; then
   log "instrument: preflight db_ok failed"
   exit 0
 fi
+
+# Listings artifact check, when present (AC5): tracks the first-seen-live
+# stamp in state.json so DIGEST's classify_family can measure "listings live
+# for 14 days" across ticks without a separate history file.
+listings_json="$tmpdir/listings.json"
+extract_listings_json "$preflight_json" "$listings_json"
+update_listings_state "$STATE" "$listings_json"
+
 bl_phase "$STATE" PREFLIGHT ok
 
 # ---- MEASURE ------------------------------------------------------------
@@ -162,7 +171,7 @@ if [ ! -f "$measure_json" ]; then
 fi
 
 tenants_jsonl="$out_dir/tenants.jsonl"; [ -f "$tenants_jsonl" ] || tenants_jsonl=""
-result="$(classify_family "$measure_json" "$tenants_jsonl" "$CANDIDATES" "$healthz_json" "$LEDGER")"
+result="$(classify_family "$measure_json" "$tenants_jsonl" "$CANDIDATES" "$healthz_json" "$LEDGER" "$STATE")"
 family="${result%%|*}"
 reason="${result#*|}"
 

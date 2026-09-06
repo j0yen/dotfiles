@@ -7,11 +7,16 @@
 # any network call — mirrors the vibeloop-measure-guards.sh pattern.
 #
 # NOT YET IMPLEMENTED (left for a follow-up tick, see PRD Status note):
-#   - the `distribution` family (needs a multi-tick "listings live N days"
-#     history the scaffold does not track yet)
 #   - the P1 family-instruction table in grand-loop.env (instructions are
 #     hardcoded in family_instruction() below for this pass)
 #   - `grand-loop-status --json` and the P1 daily section
+#
+# `distribution` (AC5, added iter-3): PREFLIGHT has no single-tick way to know
+# "listings live for 14 days" — the artifact check only says live/not-live
+# *this* tick. update_listings_state() persists the first-seen-live stamp in
+# state.json (`listings_live_since`); classify_family() below reads it back
+# plus scans the ledger's own history for the 14-day growth window, so no
+# separate history file is needed.
 set -uo pipefail
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -48,6 +53,95 @@ os.replace(tmp, path)
 PY
 }
 
+# extract_listings_json <preflight_json> <out_listings_json> — pulls the
+# "listings" object out of a `mcphost-deploy probe --json` payload (PREFLIGHT
+# bullet: "the billing and listings artifact checks when present"). Writes
+# "{}" to <out> when the key is absent or the payload is unparseable, so
+# update_listings_state() below can tell "not live" from "no information".
+extract_listings_json() {
+  local preflight_json="$1" out="$2"
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+listings = d.get('listings')
+json.dump(listings if isinstance(listings, dict) else {}, open(sys.argv[2], 'w'))
+" "$preflight_json" "$out" 2>/dev/null || echo '{}' > "$out"
+}
+
+# update_listings_state <state.json> <listings_json> — tracks the first
+# stamp PREFLIGHT observed `listings.live: true` in state.json's
+# `listings_live_since` field, so classify_family()'s `distribution` check
+# (AC5) can measure "listings live for N days" across ticks without a
+# separate history file. `listings.live: false` resets the stamp (the
+# listing came down, the 14-day clock restarts); an absent/unparseable
+# listings object (the artifact check did not run this tick, or ran before
+# any listings existed) leaves the existing stamp untouched — "no
+# information" is not "not live".
+update_listings_state() {
+  local state="$1" listings_json="$2"
+  python3 - "$state" "$listings_json" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+
+state_path, listings_path = sys.argv[1:3]
+try:
+    with open(state_path) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+
+listings = {}
+if listings_path and os.path.isfile(listings_path):
+    try:
+        with open(listings_path) as f:
+            listings = json.load(f) or {}
+    except Exception:
+        listings = {}
+
+if "live" in listings:
+    if listings.get("live") is True:
+        if not d.get("listings_live_since"):
+            d["listings_live_since"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        d["listings_live_since"] = None
+
+tmp = state_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+os.replace(tmp, state_path)
+PY
+}
+
+# listings_live_days <state.json> — days since listings_live_since, or ""
+# when unset. Used by grand-loop-status; classify_family() re-derives this
+# itself rather than shelling out, to keep the whole decision in one process.
+listings_live_days() {
+  local state="$1"
+  [ -f "$state" ] || { echo ""; return 0; }
+  python3 -c "
+import json, sys
+from datetime import datetime, timezone
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+since = d.get('listings_live_since')
+if not since:
+    print('')
+    sys.exit()
+try:
+    dt = datetime.strptime(since, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+except Exception:
+    print('')
+    sys.exit()
+print((datetime.now(timezone.utc) - dt).days)
+" "$state"
+}
+
 # count_reached_measure_today <ledger.md> <YYYY-MM-DD> — the budget cap counts
 # ledger lines that reached MEASURE, never log lines, and never STOP/lock/cap
 # skip lines that never got there (PRD "Budget" bullet).
@@ -74,14 +168,17 @@ family_instruction() {
   esac
 }
 
-# classify_family <measure.json> <tenants.jsonl|""> <candidates.yaml|""> <healthz.json|""> <ledger.md>
-# Prints "<family>|<one-clause reason>". Evaluated in the PRD's stated order;
-# `distribution` is skipped this pass (see file header).
+# classify_family <measure.json> <tenants.jsonl|""> <candidates.yaml|""> <healthz.json|""> <ledger.md> [state.json|""]
+# Prints "<family>|<one-clause reason>". Evaluated in the PRD's stated order.
+# The 6th arg (state.json) is optional so old call sites keep working; without
+# it, `distribution` is simply never selected (no listings_live_since to read).
 classify_family() {
-  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" "$5" "${6:-}" <<'PY'
 import json, os, re, sys
+from datetime import datetime, timezone
 
 measure_path, tenants_path, candidates_path, healthz_path, ledger_path = sys.argv[1:6]
+state_path = sys.argv[6] if len(sys.argv) > 6 else ""
 
 def load_json(p):
     if not p or not os.path.isfile(p):
@@ -93,6 +190,8 @@ def load_json(p):
         return None
 
 m = load_json(measure_path) or {}
+new_real = m.get("new_real_tenants")
+wow_rate = m.get("real_wow_rate")
 
 # instrument: preflight/healthz tenant accounting mismatch against this measure.
 hz = load_json(healthz_path)
@@ -106,11 +205,46 @@ if hz:
             print("instrument|tenant accounting mismatch")
             sys.exit()
 
-# distribution: NOT IMPLEMENTED — needs a tracked "listings live since" stamp
-# across ticks that this scaffold slice does not persist yet.
+# distribution (AC5): listings live (state.json's PREFLIGHT-tracked stamp)
+# for >= 14 days, and no real growth anywhere in the ledger's own 14-day
+# window (every reached-MEASURE, non-instrument line's new_real_tenants is
+# 0/absent) AND this tick's own measure agrees (new_real_tenants == 0).
+state = load_json(state_path) or {}
+listings_since = state.get("listings_live_since")
+if listings_since and new_real is not None and new_real == 0:
+    try:
+        since_dt = datetime.strptime(listings_since, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        live_days = (datetime.now(timezone.utc) - since_dt).days
+    except Exception:
+        live_days = 0
+    if live_days >= 14:
+        cutoff = datetime.now(timezone.utc).timestamp() - 14 * 86400
+        window_clean = True
+        if ledger_path and os.path.isfile(ledger_path):
+            with open(ledger_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    mo_ts = re.match(r"^(\S+)\s", line)
+                    if not mo_ts:
+                        continue
+                    try:
+                        ts = datetime.strptime(mo_ts.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+                    except Exception:
+                        continue
+                    if ts < cutoff:
+                        continue
+                    if "reached_measure=1" not in line or "family=instrument" in line:
+                        continue
+                    mo = re.search(r"new_real_tenants=(\S+)", line)
+                    if mo and mo.group(1) not in ("0", "-", "None", "null"):
+                        window_clean = False
+                        break
+        if window_clean:
+            print(f"distribution|listings live {live_days} days, new_real_tenants 0 over the last 14 days")
+            sys.exit()
 
-new_real = m.get("new_real_tenants")
-wow_rate = m.get("real_wow_rate")
 if new_real is not None and wow_rate is not None and new_real >= 5 and wow_rate < 0.3:
     print(f"activation|new_real_tenants={new_real}, real_wow_rate={wow_rate} under 0.3")
     sys.exit()

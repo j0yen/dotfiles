@@ -13,6 +13,7 @@ siblings=(
   loop_ac2_flock.test.sh
   loop_ac3_stop.test.sh
   loop_ac4_unvalidated.test.sh
+  loop_ac5_distribution.test.sh
   loop_ac6_families.test.sh
   loop_ac7_growing.test.sh
   loop_ac8_budget_cap.test.sh

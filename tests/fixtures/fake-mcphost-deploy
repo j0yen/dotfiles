@@ -6,6 +6,9 @@
 #   FAKE_PROBE_MODE       ok (default) | fail    — probe exit status
 #   FAKE_HEALTHZ_JSON     JSON object embedded as probe --json's "healthz"
 #                         field (default: {"db_ok": true})
+#   FAKE_LISTINGS_JSON    JSON object embedded as probe --json's "listings"
+#                         field (default: omitted — the artifact check did
+#                         not run this tick; PRD-grand-loop-scaffold AC5)
 #   FAKE_MEASURE_MODE     ok (default) | unvalidated | fail
 #   FAKE_UNVALIDATED_MSG  stdout text after "unvalidated: " (mode=unvalidated)
 #   FAKE_MEASURE_JSON     literal JSON written to <out>/measure.json (mode=ok)
@@ -24,7 +27,11 @@ case "$cmd" in
     healthz_default='{"db_ok": true}'  # see the measure branch below for why
                                         # this can't be inlined into the ${..:-..} expansion
     hz="${FAKE_HEALTHZ_JSON:-$healthz_default}"
-    printf '{"healthz": %s}\n' "$hz"
+    if [ -n "${FAKE_LISTINGS_JSON:-}" ]; then
+      printf '{"healthz": %s, "listings": %s}\n' "$hz" "$FAKE_LISTINGS_JSON"
+    else
+      printf '{"healthz": %s}\n' "$hz"
+    fi
     ;;
   measure)
     out=""
