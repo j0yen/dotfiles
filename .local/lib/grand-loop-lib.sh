@@ -9,7 +9,9 @@
 # NOT YET IMPLEMENTED (left for a follow-up tick, see PRD Status note):
 #   - the P1 family-instruction table in grand-loop.env (instructions are
 #     hardcoded in family_instruction() below for this pass)
-#   - `grand-loop-status --json` and the P1 daily section
+#   - `grand-loop-status --json`
+# The P1 daily section (AC13) IS implemented below (grand_loop_open_needs,
+# daily_page_target, write_daily_section, update_daily_section).
 #
 # `distribution` (AC5, added iter-3): PREFLIGHT has no single-tick way to know
 # "listings live for 14 days" — the artifact check only says live/not-live
@@ -366,11 +368,13 @@ finish_instrument_line() {
 # template doesn't otherwise carry, commits, and marks DIGEST/IDLE in
 # state.json. Does not exit — the caller does that, right after.
 finish_instrument() {
-  local state="$1" ledger="$2" profile="$3" prd_dir="$4" out_dir="$5" reason="$6" reached="$7" today
+  local state="$1" ledger="$2" profile="$3" prd_dir="$4" out_dir="$5" reason="$6" reached="$7" today loop_dir daily_target
   today="$(date -u +%F)"
+  loop_dir="$(dirname "$ledger")"
   finish_instrument_line "$ledger" "$reason" "$reached"
   write_loop_note "$profile" "$today" instrument "" "$(family_instruction instrument) ($reason)"
-  commit_prd_repo "$prd_dir" "$out_dir" "$ledger" "$state" "$profile"
+  daily_target="$(update_daily_section "$prd_dir" "$loop_dir" "$ledger" "$today")"
+  commit_prd_repo "$prd_dir" "$out_dir" "$ledger" "$state" "$profile" "$daily_target"
   bl_phase "$state" IDLE ok
 }
 
@@ -455,17 +459,136 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
-# commit_prd_repo <prd_dir> <out_dir|""> <ledger.md> <state.json> <profile.md>
+# ---- P1 daily section (PRD-grand-loop-scaffold, AC13) --------------------
+
+# grand_loop_open_needs <ledger.md> <date> <publish_ok_path> — one open-need
+# line per condition that applies today (labels missing, billing off,
+# PUBLISH-OK absent), or "none" when none do. Prints one need per line.
+grand_loop_open_needs() {
+  local ledger="$1" date="$2" publish_ok="$3"
+  local needs=() labels_reason labels_detail last_today bm
+
+  labels_reason="$(awk -v d="$date" '$0 ~ "^"d && /family=instrument/' "$ledger" 2>/dev/null \
+    | grep -o 'reason="[^"]*label[^"]*"' | tail -1)"
+  if [ -n "$labels_reason" ]; then
+    labels_detail="$(printf '%s' "$labels_reason" | sed -e 's/^reason="//' -e 's/"$//')"
+    needs+=("labels missing: $labels_detail")
+  fi
+
+  last_today="$(awk -v d="$date" '$0 ~ "^"d && /reached_measure=1/ {line=$0} END{print line}' "$ledger" 2>/dev/null)"
+  if [ -n "$last_today" ]; then
+    bm="$(ledger_field "$last_today" billing_mode)"
+    [ -n "$bm" ] && [ "$bm" != "live" ] && [ "$bm" != "-" ] && needs+=("billing off (billing_mode=$bm)")
+  fi
+
+  [ -f "$publish_ok" ] || needs+=("PUBLISH-OK absent")
+
+  if [ "${#needs[@]}" -eq 0 ]; then
+    echo "none"
+  else
+    printf '%s\n' "${needs[@]}"
+  fi
+}
+
+# daily_page_target <prd_dir> <loop_dir> <date> — the file the P1 daily
+# section is written into: today's vibeloop daily-digest page
+# (`vibeloop/digest/<date>.md`, the "daily page" visions/buildloop-operations.md
+# describes) when vibeloop-daily-digest already wrote one for today, else the
+# standalone `<loop_dir>/daily/<date>.md`, created with a one-line header on
+# first use so write_daily_section always has a file to edit.
+daily_page_target() {
+  local prd_dir="$1" loop_dir="$2" date="$3" vibeloop_page standalone
+  vibeloop_page="$prd_dir/vibeloop/digest/$date.md"
+  if [ -f "$vibeloop_page" ]; then
+    echo "$vibeloop_page"
+    return 0
+  fi
+  standalone="$loop_dir/daily/$date.md"
+  mkdir -p "$(dirname "$standalone")"
+  [ -f "$standalone" ] || printf '# grand-loop daily — %s\n' "$date" > "$standalone"
+  echo "$standalone"
+}
+
+# write_daily_section <target.md> <ledger.md> <date> <open_needs (one per line)>
+# Replaces the whole `## grand-loop` section in <target.md> with today's
+# ledger lines and the open needs, or appends one if the header isn't there
+# yet — so a day with several ticks (up to the daily cap) ends with exactly
+# one such section, not one per tick (AC13: "appended once").
+write_daily_section() {
+  local target="$1" ledger="$2" date="$3" open_needs="$4" day_lines
+  mkdir -p "$(dirname "$target")"
+  [ -f "$target" ] || printf '# grand-loop daily — %s\n' "$date" > "$target"
+  day_lines="$(awk -v d="$date" '$0 ~ "^"d' "$ledger" 2>/dev/null)"
+  DAILY_TARGET="$target" DAILY_DATE="$date" DAILY_OPEN_NEEDS="$open_needs" DAILY_LEDGER_LINES="$day_lines" \
+    python3 <<'PY'
+import os
+
+target = os.environ["DAILY_TARGET"]
+date = os.environ["DAILY_DATE"]
+open_needs = os.environ.get("DAILY_OPEN_NEEDS", "") or "none"
+ledger_lines = os.environ.get("DAILY_LEDGER_LINES", "")
+
+section = ["## grand-loop", "", f"Day's ledger lines ({date}):", ""]
+day_rows = [l for l in ledger_lines.splitlines() if l.strip()]
+if day_rows:
+    section += [f"- {l}" for l in day_rows]
+else:
+    section.append("- (no ticks yet today)")
+section += ["", "Open needs:", ""]
+needs_rows = [n for n in open_needs.splitlines() if n.strip()] or ["none"]
+section += [f"- {n}" for n in needs_rows]
+
+with open(target, encoding="utf-8") as f:
+    lines = f.read().splitlines()
+
+header = "## grand-loop"
+try:
+    hi = next(i for i, l in enumerate(lines) if l.strip() == header)
+except StopIteration:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend(section)
+    with open(target, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    raise SystemExit
+
+end = len(lines)
+for j in range(hi + 1, len(lines)):
+    if lines[j].startswith("## "):
+        end = j
+        break
+lines[hi:end] = section
+with open(target, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+PY
+}
+
+# update_daily_section <prd_dir> <loop_dir> <ledger.md> <date> — computes the
+# target file and open needs and writes the section (AC13); echoes the target
+# path so the caller (grand-loop-tick.sh, finish_instrument) can fold it into
+# the same commit_prd_repo call as the ledger/state/profile.
+update_daily_section() {
+  local prd_dir="$1" loop_dir="$2" ledger="$3" date="$4" target open_needs
+  target="$(daily_page_target "$prd_dir" "$loop_dir" "$date")"
+  open_needs="$(grand_loop_open_needs "$ledger" "$date" "$loop_dir/PUBLISH-OK")"
+  write_daily_section "$target" "$ledger" "$date" "$open_needs"
+  echo "$target"
+}
+
+# commit_prd_repo <prd_dir> <out_dir|""> <ledger.md> <state.json> <profile.md> [daily_page|""]
 # "commits the ledger, state, measure directory, and profile line to the PRDs
 # repo with git pull --rebase first and a push; a push failure is a warning
 # in the ledger line, never a failed tick." Best-effort throughout — this is
-# never the reason a tick fails.
+# never the reason a tick fails. The optional 6th arg is the P1 daily-section
+# target (AC13) — the vibeloop digest page for today, or grand-loop's own
+# standalone daily/<date>.md — folded into the same commit when it changed.
 commit_prd_repo() {
-  local prd_dir="$1" out_dir="$2" ledger="$3" state="$4" profile="$5"
+  local prd_dir="$1" out_dir="$2" ledger="$3" state="$4" profile="$5" daily="${6:-}"
   [ -d "$prd_dir/.git" ] || return 0
   git -C "$prd_dir" pull -q --rebase >/dev/null 2>&1
   local paths=("$ledger" "$state" "$profile")
   [ -n "$out_dir" ] && [ -d "$out_dir" ] && paths+=("$out_dir")
+  [ -n "$daily" ] && [ -f "$daily" ] && paths+=("$daily")
   git -C "$prd_dir" add -- "${paths[@]}" >/dev/null 2>&1
   if ! git -C "$prd_dir" diff --cached --quiet -- "${paths[@]}" 2>/dev/null; then
     git -C "$prd_dir" commit -q -m "grand-loop: tick $(ts)" -- "${paths[@]}" >/dev/null 2>&1

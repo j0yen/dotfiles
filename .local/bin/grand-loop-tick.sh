@@ -15,9 +15,11 @@
 #   (unvalidated) handling, and family classification for instrument /
 #   distribution / activation / monetization / retention / discovery /
 #   growing / flat. grand-loop-status and the systemd units also ship
-#   (iter-2, AC12).
-# NOT YET: synthorg-candidates integration, and the P1 daily section /
-#   instruction-table env file (AC13).
+#   (iter-2, AC12). The P1 daily section (AC13) ships iter-4: DIGEST folds a
+#   `## grand-loop` section (today's ledger lines + open needs) into today's
+#   vibeloop digest page when one exists, else grand-loop/daily/<date>.md.
+# NOT YET: synthorg-candidates integration, and the P1 family-instruction
+#   table in grand-loop.env (family_instruction() is still hardcoded).
 #
 # Env:
 #   GRAND_LOOP_PRD_DIR   default $HOME/Documents/PRDs (the PRDs repo clone)
@@ -177,7 +179,8 @@ reason="${result#*|}"
 
 write_ledger_line "$LEDGER" "$measure_json" "$family" "$reason" 1
 write_loop_note "$PROFILE" "$today" "$family" "$measure_json" "$(family_instruction "$family")"
-commit_prd_repo "$PRD_DIR" "$out_dir" "$LEDGER" "$STATE" "$PROFILE"
+daily_target="$(update_daily_section "$PRD_DIR" "$LOOP_DIR" "$LEDGER" "$today")"
+commit_prd_repo "$PRD_DIR" "$out_dir" "$LEDGER" "$STATE" "$PROFILE" "$daily_target"
 
 bl_phase "$STATE" DIGEST ok
 bl_phase "$STATE" IDLE ok

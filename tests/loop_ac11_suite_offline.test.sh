@@ -20,6 +20,7 @@ siblings=(
   loop_ac9_tenant_mismatch.test.sh
   loop_ac10_loop_notes.test.sh
   loop_ac12_status.test.sh
+  loop_ac13_daily_section.test.sh
 )
 
 fail=0
