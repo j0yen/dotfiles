@@ -11,7 +11,7 @@
 #     history the scaffold does not track yet)
 #   - the P1 family-instruction table in grand-loop.env (instructions are
 #     hardcoded in family_instruction() below for this pass)
-#   - grand-loop-status, the systemd units, and the P1 daily section
+#   - `grand-loop-status --json` and the P1 daily section
 set -uo pipefail
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -339,4 +339,46 @@ commit_prd_repo() {
       log "warning: grand-loop push failed (non-fatal)"
     fi
   fi
+}
+
+# ---- grand-loop-status helpers (PRD-grand-loop-scaffold, AC12) ------------
+
+# last_ledger_line <ledger.md> — the most recent ledger line, or "" if the
+# ledger doesn't exist yet (a status run before the first tick).
+last_ledger_line() {
+  local ledger="$1"
+  [ -f "$ledger" ] || return 0
+  tail -n1 "$ledger" 2>/dev/null
+}
+
+# last_live_ledger_line <ledger.md> — the most recent line that reached
+# MEASURE and isn't itself an instrument failure, i.e. the same "last live
+# measure" a fresh classify_family call would compare paid_mrr_usd against.
+# Prints "" when no such line exists yet.
+last_live_ledger_line() {
+  local ledger="$1"
+  [ -f "$ledger" ] || return 0
+  awk '/reached_measure=1/ && !/family=instrument/ {line=$0} END{if (line) print line}' "$ledger"
+}
+
+# newest_loop_note <profile.md> — the last (most recent) line under the
+# "## Loop notes" header, or "" when the section is absent or empty.
+newest_loop_note() {
+  local profile="$1"
+  [ -f "$profile" ] || return 0
+  awk '
+    /^## Loop notes/ { insection=1; next }
+    /^## / { insection=0 }
+    insection && /^- / { line=$0 }
+    END { if (line) print line }
+  ' "$profile"
+}
+
+# ledger_field <ledger line> <field name> — pulls one "key=value" token out
+# of a ledger line written by write_ledger_line (space-separated fields;
+# the "reason" field's value is quoted and double-word-safe, everything
+# else is a single token so a plain awk/split is enough).
+ledger_field() {
+  local line="$1" field="$2"
+  printf '%s\n' "$line" | grep -o "${field}=[^ ]*" | head -1 | cut -d= -f2-
 }

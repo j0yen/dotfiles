@@ -18,6 +18,7 @@ siblings=(
   loop_ac8_budget_cap.test.sh
   loop_ac9_tenant_mismatch.test.sh
   loop_ac10_loop_notes.test.sh
+  loop_ac12_status.test.sh
 )
 
 fail=0

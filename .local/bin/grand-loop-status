@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# grand-loop-status — PRD-grand-loop-scaffold AC12: what the outer loop last
+# measured, decided, and needs, in one screenful. Read-only: never touches
+# state.json, ledger.md, or the PRDs repo, so it's safe to run from any
+# machine that has the repo cloned (mcphost-deploy is never invoked here).
+#
+# Prints: the last tick's stamp and family, the last *live* (non-instrument,
+# reached-MEASURE) paid_mrr_usd and real_tenants, ticks today against the
+# daily MEASURE cap, whether STOP is set, the timer's next scheduled fire
+# (via `systemctl --user list-timers`, when the unit is installed), and the
+# newest `## Loop notes` line.
+#
+# NOT YET: --json (P1, for the fleet dashboard).
+#
+# Env (same names and defaults as grand-loop-tick.sh):
+#   GRAND_LOOP_PRD_DIR            default $HOME/Documents/PRDs
+#   GRAND_LOOP_ENV                default $HOME/.config/grand-loop/env, sourced if present
+#   GRAND_LOOP_MAX_TICKS_PER_DAY  default 4
+set -uo pipefail
+export PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/grand-loop-lib.sh
+. "$HERE/../lib/grand-loop-lib.sh"
+
+PRD_DIR="${GRAND_LOOP_PRD_DIR:-$HOME/Documents/PRDs}"
+LOOP_DIR="$PRD_DIR/grand-loop"
+LEDGER="$LOOP_DIR/ledger.md"
+STOP_FILE="$LOOP_DIR/STOP"
+PROFILE="$PRD_DIR/projects/grand-loop.md"
+
+ENV_FILE="${GRAND_LOOP_ENV:-$HOME/.config/grand-loop/env}"
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+GRAND_LOOP_MAX_TICKS_PER_DAY="${GRAND_LOOP_MAX_TICKS_PER_DAY:-4}"
+
+today="$(date -u +%F)"
+
+last_line="$(last_ledger_line "$LEDGER")"
+if [ -n "$last_line" ]; then
+  last_stamp="$(printf '%s\n' "$last_line" | awk '{print $1}')"
+  last_family="$(ledger_field "$last_line" family)"
+  last_reason="$(ledger_field "$last_line" reason)"
+  echo "last tick:   $last_stamp family=${last_family:--} reason=${last_reason:--}"
+else
+  echo "last tick:   none yet"
+fi
+
+live_line="$(last_live_ledger_line "$LEDGER")"
+if [ -n "$live_line" ]; then
+  live_stamp="$(printf '%s\n' "$live_line" | awk '{print $1}')"
+  live_mrr="$(ledger_field "$live_line" paid_mrr_usd)"
+  live_tenants="$(ledger_field "$live_line" real_tenants)"
+  echo "last live:   paid_mrr_usd=${live_mrr:--} real_tenants=${live_tenants:--} ($live_stamp)"
+else
+  echo "last live:   none yet"
+fi
+
+measured_today="$(count_reached_measure_today "$LEDGER" "$today")"
+echo "ticks today: $measured_today/$GRAND_LOOP_MAX_TICKS_PER_DAY"
+
+if [ -f "$STOP_FILE" ]; then
+  echo "STOP:        present"
+else
+  echo "STOP:        absent"
+fi
+
+timer_line=""
+if command -v systemctl >/dev/null 2>&1; then
+  timer_line="$(systemctl --user list-timers grand-loop.timer --no-legend 2>/dev/null | head -1)"
+fi
+if [ -n "$timer_line" ]; then
+  echo "timer:       $timer_line"
+else
+  echo "timer:       not installed (systemctl --user enable --now grand-loop.timer)"
+fi
+
+note="$(newest_loop_note "$PROFILE")"
+if [ -n "$note" ]; then
+  echo "loop note:   $note"
+else
+  echo "loop note:   none yet"
+fi

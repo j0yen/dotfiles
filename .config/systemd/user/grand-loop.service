@@ -1,0 +1,9 @@
+[Unit]
+Description=Run one grand-loop tick: preflight, measure, digest (PRD-grand-loop-scaffold)
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/grand-loop-tick.sh
+TimeoutStartSec=900
