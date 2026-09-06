@@ -7,7 +7,7 @@
     ],
     "defaultMode": "auto"
   },
-  "model": "claude-fable-5[1m]",
+  "model": "claude-fable-5-1[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -421,5 +421,8 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "enabledPlugins": {
+    "stripe@claude-plugins-official": true
+  }
 }
