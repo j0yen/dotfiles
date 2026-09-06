@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-06 — build-path-unit-overlap-exit0
+
+`.local/bin/claude-build-headless.sh` (PRD-build-path-unit-overlap-exit0) no longer exits 1 for any
+state it can reason about: `paused` file present, the work unit `active`/`activating`, `loaded`+`dead`
+(freed via `stop`+`reset-failed`, or reported pinned by cgroup pids when freeing doesn't clear the
+name), or a `systemd-run` failure of any other kind are now all exit 0 with one logged reason —
+closing the `unit-start-limit-hit` five-strikes trap that needed three hand resets on 2026-09-05.
+`claude-build.path` and `claude-build.service` both carry `StartLimitIntervalUSec=0` (service via
+its existing pacing drop-in, path via new `claude-build.path.d/nolimit.conf`) so the limit can never
+trip again even on a future launcher regression; the 300s `ExecStartPost` pacing and 400s
+`TimeoutStartSec` are unchanged. P1 adds `.local/bin/claude-build-status` (path/work-unit states,
+last 5 launcher log lines, pinned pids + comm names) and a bus `agent.activity` publish when the
+launcher finds a pinned cgroup. All units, drop-ins, and the launcher are tracked here and installed
+by `install.sh`; the offline `tests/buildpath_ac*.test.sh` suite (10 files) covers every state
+transition against a faked `systemctl`/`systemd-run`, green in under 1s. P2 (retire
+`claude-build.timer` once the path unit has run a clean week) stays open per the PRD's own gate.
+
 ## 2026-09-04 — vibeloop-daily-digest test coverage
 
 `tests/vibeloop-digest.test.sh` for PRD-vibeloop-daily-digest's `.local/bin/vibeloop-digest.sh`
