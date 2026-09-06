@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# fake-systemctl — stand-in for `systemctl --user` in buildpath_ac*.test.sh
+# (PRD-build-path-unit-overlap-exit0). Answers `show <unit> -p A -p B ...
+# --value` from a flat KEY=VALUE state file ($FAKE_SYSTEMCTL_STATE), and
+# records `stop`/`reset-failed` calls, in order, to $FAKE_SYSTEMCTL_CALLS.
+#
+# If $FAKE_SYSTEMCTL_FREE_ON_RESET is set, a `reset-failed` call rewrites
+# LoadState=not-found in the state file (simulating a cgroup that was
+# empty, so stop+reset-failed actually freed the unit name). Otherwise
+# reset-failed is recorded but the state file is left as-is (simulating a
+# pinned cgroup that a plain stop/reset-failed cannot free).
+set -uo pipefail
+
+state_file="${FAKE_SYSTEMCTL_STATE:?FAKE_SYSTEMCTL_STATE not set}"
+calls_file="${FAKE_SYSTEMCTL_CALLS:-/dev/null}"
+
+get_val() {
+  grep -E "^$1=" "$state_file" 2>/dev/null | tail -1 | cut -d= -f2-
+}
+
+set_val() {
+  local key="$1" val="$2" tmp
+  tmp="$(mktemp)"
+  grep -vE "^${key}=" "$state_file" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$state_file"
+}
+
+cmd=""
+for a in "$@"; do
+  case "$a" in
+    --user) continue ;;
+    show|stop|reset-failed) cmd="$a"; break ;;
+  esac
+done
+
+case "$cmd" in
+  show)
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "-p" ]; then get_val "$a"; fi
+      prev="$a"
+    done
+    ;;
+  stop)
+    echo "stop" >> "$calls_file"
+    ;;
+  reset-failed)
+    echo "reset-failed" >> "$calls_file"
+    if [ -n "${FAKE_SYSTEMCTL_FREE_ON_RESET:-}" ]; then
+      set_val LoadState not-found
+    fi
+    ;;
+  *)
+    echo "fake-systemctl: unhandled invocation: $*" >&2
+    exit 1
+    ;;
+esac
+exit 0

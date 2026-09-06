@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# fake-systemd-run — stand-in for `systemd-run` in buildpath_ac*.test.sh
+# (PRD-build-path-unit-overlap-exit0). Records every invocation (one line
+# of args) to $FAKE_SYSTEMD_RUN_CALLS. Exit behavior is controlled by
+# $FAKE_SYSTEMD_RUN_MODE: "ok" (default) exits 0 silently; "fail" prints
+# $FAKE_SYSTEMD_RUN_FAIL_MSG to stderr and exits 1.
+set -uo pipefail
+
+calls_file="${FAKE_SYSTEMD_RUN_CALLS:-/dev/null}"
+printf '%s\n' "$*" >> "$calls_file"
+
+mode="${FAKE_SYSTEMD_RUN_MODE:-ok}"
+if [ "$mode" = "fail" ]; then
+  echo "${FAKE_SYSTEMD_RUN_FAIL_MSG:-fake systemd-run failure}" >&2
+  exit 1
+fi
+exit 0
