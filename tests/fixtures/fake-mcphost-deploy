@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# fixtures/fake-mcphost-deploy — stands in for the real `mcphost-deploy` CLI
+# in tests/loop_*.test.sh (PRD-grand-loop-scaffold). Controlled entirely by
+# env vars so each test can shape one scenario without touching this file:
+#
+#   FAKE_PROBE_MODE       ok (default) | fail    — probe exit status
+#   FAKE_HEALTHZ_JSON     JSON object embedded as probe --json's "healthz"
+#                         field (default: {"db_ok": true})
+#   FAKE_MEASURE_MODE     ok (default) | unvalidated | fail
+#   FAKE_UNVALIDATED_MSG  stdout text after "unvalidated: " (mode=unvalidated)
+#   FAKE_MEASURE_JSON     literal JSON written to <out>/measure.json (mode=ok)
+#   FAKE_TENANTS_JSONL    literal content written to <out>/tenants.jsonl, one
+#                         JSON object per line (mode=ok, optional)
+set -uo pipefail
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  probe)
+    if [ "${FAKE_PROBE_MODE:-ok}" = "fail" ]; then
+      echo "fake probe: forced failure" >&2
+      exit 1
+    fi
+    healthz_default='{"db_ok": true}'  # see the measure branch below for why
+                                        # this can't be inlined into the ${..:-..} expansion
+    hz="${FAKE_HEALTHZ_JSON:-$healthz_default}"
+    printf '{"healthz": %s}\n' "$hz"
+    ;;
+  measure)
+    out=""
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      if [ "${args[$i]}" = "--out" ]; then out="${args[$((i + 1))]}"; fi
+    done
+    case "${FAKE_MEASURE_MODE:-ok}" in
+      unvalidated)
+        echo "unvalidated: ${FAKE_UNVALIDATED_MSG:-2 labels, 5 required}"
+        exit 3
+        ;;
+      fail)
+        echo "fake measure: forced failure" >&2
+        exit 1
+        ;;
+      ok)
+        mkdir -p "$out"
+        measure_json_default='{}'  # NOT inlined into the expansion below: bash's
+                                    # ${VAR:-{}} parses the closing "}" of "{}" as
+                                    # ITS OWN terminator, leaking a stray "}" after
+                                    # the substitution when FAKE_MEASURE_JSON is set.
+        printf '%s' "${FAKE_MEASURE_JSON:-$measure_json_default}" > "$out/measure.json"
+        if [ -n "${FAKE_TENANTS_JSONL:-}" ]; then
+          printf '%s\n' "$FAKE_TENANTS_JSONL" > "$out/tenants.jsonl"
+        fi
+        ;;
+      *)
+        echo "fake-mcphost-deploy: unknown FAKE_MEASURE_MODE" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "fake-mcphost-deploy: unknown command '$cmd'" >&2
+    exit 2
+    ;;
+esac
