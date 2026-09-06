@@ -25,7 +25,7 @@ set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 PRD_DIR="${DREAM_PRD_DIR:-$HOME/Documents/PRDs}"; LOG="$HOME/brain/journal/vibeloop-measure.log"
 CRATE="$HOME/wintermute/mcphost"; DEPLOY="$HOME/repos/mcphost-deploy"; SYN="$HOME/repos/synthorg"
-BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://178-105-64-66.sslip.io/mcp}"; HOST=hub
+BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://mcphost.dev/mcp}"; HOST=mcphost-1
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
 PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcphost/admin-key"
 BASELINE="$PRD_DIR/vibeloop/baseline.json"  # PRD-mcphost-baseline-anchor: the standing baseline pointer; written only below (baseline_set/baseline_reanchored)

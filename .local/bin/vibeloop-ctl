@@ -237,7 +237,7 @@ PY2
     rb "systemctl --user is-active claude-vibeloop-measure.service 2>/dev/null" | sed 's/^/  run: /'
     rb "cat ~/.config/vibeloop/calibration-remaining 2>/dev/null" | sed 's/^/  calibration runs left: /'
     rb "tail -n 3 ~/brain/journal/vibeloop-measure.log 2>/dev/null" | cut -c1-160 | sed 's/^/  log: /'
-    curl -s --max-time 6 https://178-105-64-66.sslip.io/healthz | sed 's/^/  hub: /' ;;
+    curl -s --max-time 6 https://mcphost.dev/healthz | sed 's/^/  mcphost-1: /' ;;
   baseline)
     # PRD-mcphost-baseline-anchor req 5/AC6: the standing baseline's seven
     # fields, or "no baseline" — read-only, no claim check, exits 0 either way.
