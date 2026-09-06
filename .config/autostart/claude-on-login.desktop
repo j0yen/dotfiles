@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Claude (skip permissions)
-Comment=Open alacritty running `claude --dangerously-skip-permissions` on login. Re-fires on i3 restart (dex re-scans autostart).
-Exec=env BROWSER= alacritty -e claude --dangerously-skip-permissions
+Comment=Open alacritty with a bash shell running `claude --dangerously-skip-permissions` on login, matching a hand-opened terminal. Re-fires on i3 restart (dex re-scans autostart).
+Exec=alacritty -e bash -ic "claude --dangerously-skip-permissions; exec bash"
 Terminal=false
 X-GNOME-Autostart-enabled=true

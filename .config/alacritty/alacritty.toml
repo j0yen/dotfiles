@@ -5,6 +5,9 @@ size = 12
 [window]
 padding = { x = 0, y = 0 }
 decorations = "full"
+# Force dark titlebar; the login-autostart window otherwise falls back to light
+# because it opens before the desktop color-scheme setting is readable.
+decorations_theme_variant = "Dark"
 
 [scrolling]
 history = 10000
