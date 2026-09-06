@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-06 — grand-loop-scaffold
+
+The outer loop around `mcphost-deploy measure` (PRD-grand-loop-scaffold, depends on
+PRD-grand-loop-measure): `.local/bin/grand-loop-tick.sh` runs PREFLIGHT (probes the hub's
+`/healthz`, requires `db_ok`), MEASURE (`mcphost-deploy measure --host hub`, harness-prefix
+exclusions from `grand-loop.env`), and DIGEST (one ledger line appended to
+`~/Documents/PRDs/grand-loop/ledger.md`, plus the newest-dated `## Loop notes` line rewritten in
+`~/Documents/PRDs/projects/grand-loop.md` for vibeloop's dream to read) every six hours via
+`grand-loop.timer` (`OnCalendar=*-*-* 00,06,12,18:00 UTC`, `RandomizedDelaySec=300`,
+`Persistent=true`) driving the oneshot `grand-loop.service`. A `state.lock` flock makes a second
+concurrent tick exit 0 with `skip: tick running`; a `~/Documents/PRDs/grand-loop/STOP` file exits
+0 with `skip: STOP` (a companion `MEASURE-OK` touch file still forces the measure through and is
+consumed); `GRAND_LOOP_MAX_TICKS_PER_DAY` (default 4) caps ticks that reach MEASURE. Each cycle
+resolves to exactly one failure family — `instrument`, `distribution`, `activation`,
+`monetization`, `retention`, `discovery`, `growing`, or `flat` — evaluated against the ledger's own
+history, and the loop note carries that family's standing instruction from `grand-loop.env`
+verbatim. `grand-loop-status` prints the last tick's family, the last live `paid_mrr_usd` and
+`real_tenants`, ticks today against the cap, STOP state, and the timer's next fire. P1 folds a
+`## grand-loop` section (today's ledger lines + open needs) into vibeloop's daily digest page when
+one exists for today, else a standalone `grand-loop/daily/<date>.md`. The offline
+`tests/loop_ac{1..13}_*.test.sh` suite (13 files, fake `mcphost-deploy` on `PATH`) covers all P0/P1
+ACs — basic tick, flock, STOP/MEASURE-OK, unvalidated measure, every family, the daily cap, the
+tenant-accounting mismatch, loop-note replace-not-append, and the daily section — green offline in
+~12s. AC12's live half (enabling `grand-loop.timer` and reading a real `systemctl --user
+list-timers` next-fire time) is the PRD's own declared manual step, not a build side effect —
+`deferred_acs: [12]`; the offline-testable half (status output shape, unit-file directives checked
+statically) is covered by `tests/loop_ac12_status.test.sh`.
+
 ## 2026-09-06 — build-path-unit-overlap-exit0
 
 `.local/bin/claude-build-headless.sh` (PRD-build-path-unit-overlap-exit0) no longer exits 1 for any
