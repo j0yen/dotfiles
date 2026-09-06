@@ -48,6 +48,10 @@
           {
             "type": "command",
             "command": "sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/beacon-session-start.sh"
           }
         ]
       },
