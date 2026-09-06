@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# claude-build-status — one-shot health read for the /build path unit
+# (PRD-build-path-unit-overlap-exit0, P1). Prints the path unit's
+# ActiveState, the work unit's three states, the launcher's last five log
+# lines, and — when the work unit's cgroup is currently pinned — the pids
+# holding it open and their command names, so a session can see the jam
+# without reading journals.
+#
+# Test hooks (unset in production): CLAUDE_BUILD_STATE, CLAUDE_BUILD_LOG,
+# CLAUDE_BUILD_WORK_UNIT, CLAUDE_BUILD_PATH_UNIT, CLAUDE_BUILD_CGROOT,
+# CLAUDE_BUILD_PROC_ROOT let tests point this at a throwaway state dir,
+# log, cgroup tree, and /proc, with a fake `systemctl` earlier on PATH.
+set -uo pipefail
+
+STATE="${CLAUDE_BUILD_STATE:-$HOME/.claude/skills/build/state}"
+LOG="${CLAUDE_BUILD_LOG:-$HOME/brain/journal/build-auto.log}"
+WORK_UNIT="${CLAUDE_BUILD_WORK_UNIT:-claude-build-work.service}"
+PATH_UNIT="${CLAUDE_BUILD_PATH_UNIT:-claude-build.path}"
+CGROOT="${CLAUDE_BUILD_CGROOT:-/sys/fs/cgroup}"
+PROC_ROOT="${CLAUDE_BUILD_PROC_ROOT:-/proc}"
+
+path_active="$(systemctl --user show "$PATH_UNIT" -p ActiveState --value 2>/dev/null)"
+echo "path unit ($PATH_UNIT): ActiveState=${path_active:-unknown}"
+
+states="$(systemctl --user show "$WORK_UNIT" -p LoadState -p ActiveState -p SubState --value 2>/dev/null)"
+load_state="$(printf '%s\n' "$states" | sed -n '1p')"
+active_state="$(printf '%s\n' "$states" | sed -n '2p')"
+sub_state="$(printf '%s\n' "$states" | sed -n '3p')"
+echo "work unit ($WORK_UNIT): LoadState=${load_state:-unknown} ActiveState=${active_state:-unknown} SubState=${sub_state:-unknown}"
+
+echo "last 5 launcher log lines:"
+if [ -f "$LOG" ]; then
+  tail -5 "$LOG"
+else
+  echo "(no log at $LOG)"
+fi
+
+pids=""
+if [ "$load_state" = "loaded" ]; then
+  cgpath="$(systemctl --user show "$WORK_UNIT" -p ControlGroup --value 2>/dev/null)"
+  procs_file="$CGROOT${cgpath}/cgroup.procs"
+  if [ -n "$cgpath" ] && [ -r "$procs_file" ]; then
+    pids="$(tr '\n' ' ' < "$procs_file" | sed 's/[[:space:]]*$//')"
+  fi
+fi
+
+if [ -n "$pids" ]; then
+  names=""
+  for pid in $pids; do
+    comm="$(cat "$PROC_ROOT/$pid/comm" 2>/dev/null || echo unknown)"
+    names="${names:+$names }$comm"
+  done
+  echo "pinned pids: $pids ($names each)"
+else
+  echo "pinned pids: none"
+fi

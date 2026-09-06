@@ -2,13 +2,15 @@
 # tests/buildpath_test_helpers.sh — shared setup for tests/buildpath_ac*.test.sh
 # (PRD-build-path-unit-overlap-exit0). Not itself a test file (no ac<N> in
 # the name), sourced by every buildpath_ac*.test.sh. Puts a fake
-# `systemctl` and `systemd-run` on PATH ahead of the real ones, and points
-# the launcher at a throwaway state dir, log, cgroup tree, and /proc via
-# its CLAUDE_BUILD_* env hooks, so tests never touch the real system, run
-# no network call, and run offline in well under the suite's 10s budget.
+# `systemctl`, `systemd-run`, and `agorabus` on PATH ahead of the real
+# ones, and points the launcher/status script at a throwaway state dir,
+# log, cgroup tree, and /proc via their CLAUDE_BUILD_* env hooks, so tests
+# never touch the real system, run no network call, and run offline in
+# well under the suite's 10s budget.
 set -uo pipefail
 
 LAUNCHER="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.local/bin/claude-build-headless.sh"
+STATUS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.local/bin/claude-build-status"
 FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures"
 
 fail=0
@@ -35,6 +37,7 @@ buildpath_setup() {
   mkdir -p "$bin"
   ln -s "$FIXTURES/fake-systemctl" "$bin/systemctl"
   ln -s "$FIXTURES/fake-systemd-run" "$bin/systemd-run"
+  ln -s "$FIXTURES/fake-agorabus" "$bin/agorabus"
 
   state_dir="$work/state"
   mkdir -p "$state_dir"
@@ -50,10 +53,13 @@ buildpath_setup() {
   : > "$systemctl_calls"
   systemd_run_calls="$work/systemd-run-calls"
   : > "$systemd_run_calls"
+  agorabus_calls="$work/agorabus-calls"
+  : > "$agorabus_calls"
 
   export FAKE_SYSTEMCTL_STATE="$systemctl_state"
   export FAKE_SYSTEMCTL_CALLS="$systemctl_calls"
   export FAKE_SYSTEMD_RUN_CALLS="$systemd_run_calls"
+  export FAKE_AGORABUS_CALLS="$agorabus_calls"
   unset FAKE_SYSTEMCTL_FREE_ON_RESET FAKE_SYSTEMD_RUN_MODE FAKE_SYSTEMD_RUN_FAIL_MSG
 
   export CLAUDE_BUILD_STATE="$state_dir"

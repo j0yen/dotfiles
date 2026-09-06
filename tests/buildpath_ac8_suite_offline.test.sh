@@ -14,6 +14,7 @@ siblings=(
   buildpath_ac3_pinned.test.sh
   buildpath_ac4_notfound.test.sh
   buildpath_ac5_systemdrun_fail.test.sh
+  buildpath_ac10_pinned_bus_and_status.test.sh
 )
 
 fail=0

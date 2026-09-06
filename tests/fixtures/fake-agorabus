@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# fake-agorabus — stand-in for `agorabus` in buildpath_ac*.test.sh
+# (PRD-build-path-unit-overlap-exit0, P1). Records every invocation's
+# arguments, one line per call, to $FAKE_AGORABUS_CALLS so a test can
+# assert a bus event was published (topic, payload, session-id) without a
+# real daemon on PATH.
+set -uo pipefail
+
+calls_file="${FAKE_AGORABUS_CALLS:-/dev/null}"
+printf '%s\n' "$*" >> "$calls_file"
+exit 0

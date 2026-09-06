@@ -11,7 +11,7 @@
 # CLAUDE_BUILD_WORK_UNIT, CLAUDE_BUILD_CGROOT, CLAUDE_BUILD_PROC_ROOT let
 # tests point the launcher at a throwaway state dir, log, cgroup tree, and
 # /proc without touching the real system. A fake `systemctl` / `systemd-run`
-# earlier on PATH supplies the rest.
+# / `agorabus` earlier on PATH supplies the rest.
 set -uo pipefail
 
 STATE="${CLAUDE_BUILD_STATE:-$HOME/.claude/skills/build/state}"
@@ -58,6 +58,10 @@ if [ "$load_state" = "loaded" ] && [ "$sub_state" = "dead" ]; then
         names="${names:+$names }$comm"
       done
       logline "skip: work unit pinned by pids $pids ($names each)"
+      if command -v agorabus >/dev/null 2>&1; then
+        payload="$(printf '{"agent":"claude-build","status":"blocked","summary":"work unit pinned by pids %s (%s each)","paths":["%s"]}' "$pids" "$names" "$LOG")"
+        timeout 5 agorabus publish agent.activity "$payload" --session-id claude-activity >/dev/null 2>&1
+      fi
     else
       logline "skip: work unit pinned (no pids found in cgroup)"
     fi
