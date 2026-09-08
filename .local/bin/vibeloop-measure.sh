@@ -394,7 +394,10 @@ PY
     # first lift's result stands.
     if [ -f "$out/lift.json" ] && [ "${VIBELOOP_EXTEND_ROUNDS:-0}" -gt 0 ]; then
       for round in $(seq 1 "${VIBELOOP_EXTEND_ROUNDS}"); do
-        und=$(python3 -c "import json;d=json.load(open('$out/lift.json'));print(','.join(s['segment'] for s in d.get('by_segment',[]) if (s.get('decision') or {}).get('decision')=='undecided'))" 2>/dev/null)
+        # lift.json's per-segment list is `segments` (an array of {segment, decision:{decision,n,...}, satisfaction:{...}});
+        # `by_segment` is accepted as a fallback for older lift outputs. Reading the wrong key silently
+        # yields "nothing undecided" — which is exactly what happened on the first 0.27.0 candidate (2026-09-08 16:03Z).
+        und=$(python3 -c "import json;d=json.load(open('$out/lift.json'));segs=d.get('segments') or d.get('by_segment') or [];print(','.join(s['segment'] for s in segs if (s.get('decision') or {}).get('decision')=='undecided'))" 2>/dev/null)
         [ -n "$und" ] || { log "extend: every segment decided after round $((round-1))"; break; }
         log "extend round $round: undecided=$und add=${VIBELOOP_EXTEND_ADD:-3}"
         ext_rc=0
