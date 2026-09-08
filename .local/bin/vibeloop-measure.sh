@@ -185,8 +185,20 @@ runs24=$(awk -v s="$since24" '$1 > s' "$MLEDGER" 2>/dev/null | grep -o 'sessions
 git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 # --- what is built vs what is deployed ---
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
-# Compare versions BEFORE building: the crate manifest at HEAD says what main would ship; only build when the hub is behind.
-built=$(git -C "$CRATE" show HEAD:Cargo.toml 2>/dev/null | awk -F'"' '/^version *=/{print $2; exit}')
+# Compare versions BEFORE building. What "built" means (2026-09-08): the newest
+# release tag reachable from main, not HEAD. ship-tag.sh only tags a commit
+# whose gate passed, so a `v*` tag is a shipped release by construction —
+# while HEAD is whatever the build lanes landed since (untagged, mid-flight,
+# and legitimately gate-red on rollback-plan's head-untagged rule). Gating
+# HEAD here let an in-flight PRD block a finished release for hours
+# (0.27.0, 2026-09-08 13:50Z–14:55Z). No tag at all ⇒ the old HEAD path.
+git -C "$CRATE" fetch -q --tags origin >/dev/null 2>&1
+rel_tag=$(git -C "$CRATE" describe --tags --abbrev=0 --match 'v[0-9]*' origin/main 2>/dev/null || git -C "$CRATE" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)
+if [ -n "$rel_tag" ]; then
+  built="${rel_tag#v}"; build_ref="$rel_tag"
+else
+  built=$(git -C "$CRATE" show HEAD:Cargo.toml 2>/dev/null | awk -F'"' '/^version *=/{print $2; exit}'); build_ref=HEAD
+fi
 deployed=$(probe_deployed_version)
 [ -z "$deployed" ] && { log "skip: hub healthz unreachable"; bus "{\"event\":\"hub-unreachable\",\"ts\":\"$(ts)\"}"; exit 0; }
 [ -z "$built" ] && { log "skip: could not read crate version at HEAD"; exit 0; }
@@ -207,29 +219,44 @@ if [ "$VIBELOOP_CANDIDATE" = 1 ]; then
 fi
 cal=$(cat "$CAL"); reason=""
 if [ "$built" != "$deployed" ]; then
-  log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
-  # The fleet ships on extend-gate's verdict (pass OR delta-pass against the
-  # committed agent/gate-baseline.json, PRD-build-gate-delta-baseline) — raw
-  # `autobuilder gate` alone reads a baselined inherit as red and would never
-  # redeploy a crate carrying one. extend-gate replays its verdict cache when
-  # HEAD and the script are unchanged, so this is cheap on a quiet HEAD.
-  EXTEND_GATE="$HOME/.claude/skills/build/scripts/extend-gate.sh"
-  if [ -x "$EXTEND_GATE" ]; then
-    gate_ok=true; ( cd "$CRATE" && bash "$EXTEND_GATE" "$CRATE" --head "$(git rev-parse HEAD)" ) >/dev/null 2>&1 || gate_ok=false
+  if [ "$build_ref" != HEAD ]; then
+    # Release-tag path: the tag is gate-green by ship-tag's contract, so no
+    # gate run here (that was also the 7-minute fresh-gate cost that let a
+    # leaked producer sandbox outlive the tick). Build the tag's tree in a
+    # detached worktree so the lanes' main checkout is never touched.
+    tag_sha=$(git -C "$CRATE" rev-parse --short "$build_ref")
+    log "hub behind: release $build_ref ($tag_sha) says $built, hub runs $deployed — building the tag (HEAD $(git -C "$CRATE" rev-parse --short HEAD) may be mid-flight)"
+    wt="$HOME/.cache/vibeloop-build/mcphost-$built"
+    git -C "$CRATE" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    git -C "$CRATE" worktree add --detach -f "$wt" "$build_ref" >> "$LOG" 2>&1 || { log "worktree add failed for $build_ref"; exit 0; }
+    ( cd "$wt" && CARGO_TARGET_DIR="$wt/target" cargo build --release -q ) >> "$LOG" 2>&1 || { log "build failed at $build_ref"; git -C "$CRATE" worktree remove --force "$wt" >/dev/null 2>&1; exit 0; }
+    BUILT_BIN="$wt/target/release/mcphost"
   else
-    gate_ok=true; ( cd "$CRATE" && autobuilder gate --project . ) >/dev/null 2>&1 || gate_ok=false
+    log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
+    # The fleet ships on extend-gate's verdict (pass OR delta-pass against the
+    # committed agent/gate-baseline.json, PRD-build-gate-delta-baseline) — raw
+    # `autobuilder gate` alone reads a baselined inherit as red and would never
+    # redeploy a crate carrying one. extend-gate replays its verdict cache when
+    # HEAD and the script are unchanged, so this is cheap on a quiet HEAD.
+    EXTEND_GATE="$HOME/.claude/skills/build/scripts/extend-gate.sh"
+    if [ -x "$EXTEND_GATE" ]; then
+      gate_ok=true; ( cd "$CRATE" && bash "$EXTEND_GATE" "$CRATE" --head "$(git rev-parse HEAD)" ) >/dev/null 2>&1 || gate_ok=false
+    else
+      gate_ok=true; ( cd "$CRATE" && autobuilder gate --project . ) >/dev/null 2>&1 || gate_ok=false
+    fi
+    if [ "$gate_ok" != true ]; then
+      blocks=$( cd "$CRATE" && autobuilder gate --project . 2>&1 | grep -E '✗' | cut -c1-90 | tr '\n' ';' )
+      log "GATE RED at $(git -C "$CRATE" rev-parse --short HEAD): not redeploying $built. $blocks"
+      echo "$(ts) version=$built gate=RED redeploy=skipped hub=$deployed blocks=\"$blocks\" sessions_spent=0" >> "$MLEDGER"
+      git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: gate red at $built, redeploy skipped" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+      bus "{\"event\":\"gate-red\",\"version\":\"$built\",\"ts\":\"$(ts)\"}"; exit 0
+    fi
+    ( cd "$CRATE" && cargo build --release -q ) >> "$LOG" 2>&1 || { log "build failed at $(git -C "$CRATE" rev-parse --short HEAD)"; exit 0; }
+    BUILT_BIN="$CRATE/target/release/mcphost"
   fi
-  if [ "$gate_ok" != true ]; then
-    blocks=$( cd "$CRATE" && autobuilder gate --project . 2>&1 | grep -E '✗' | cut -c1-90 | tr '\n' ';' )
-    log "GATE RED at $(git -C "$CRATE" rev-parse --short HEAD): not redeploying $built. $blocks"
-    echo "$(ts) version=$built gate=RED redeploy=skipped hub=$deployed blocks=\"$blocks\" sessions_spent=0" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: gate red at $built, redeploy skipped" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
-    bus "{\"event\":\"gate-red\",\"version\":\"$built\",\"ts\":\"$(ts)\"}"; exit 0
-  fi
-  ( cd "$CRATE" && cargo build --release -q ) >> "$LOG" 2>&1 || { log "build failed at $(git -C "$CRATE" rev-parse --short HEAD)"; exit 0; }
-  bin_v=$("$CRATE/target/release/mcphost" version 2>/dev/null | awk '{print $NF}')
+  bin_v=$("$BUILT_BIN" version 2>/dev/null | awk '{print $NF}')
   [ "$bin_v" = "$built" ] || { log "skip: built binary reports $bin_v, manifest says $built"; exit 0; }
-  log "redeploying $built"
+  log "redeploying $built from $BUILT_BIN"
   # PRD-mcphost-deployed-head req 2/3/7, AC1/AC2/AC8: capture the tool's own
   # exit code (not just success/fail) and its stdout (the probe's
   # [ok]/[FAIL] check lines + compat_check verdict) so the ledger line below
@@ -237,8 +264,10 @@ if [ "$built" != "$deployed" ]; then
   # and the probe result — not just a journal-only note.
   hub_before="$deployed"
   redeploy_rc=0
-  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$CRATE/target/release/mcphost" 2>&1 ) || redeploy_rc=$?
+  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$BUILT_BIN" 2>&1 ) || redeploy_rc=$?
   echo "$redeploy_out" >> "$LOG"
+  # release-tag path: the detached worktree has served its purpose
+  [ "$build_ref" != HEAD ] && git -C "$CRATE" worktree remove --force "$HOME/.cache/vibeloop-build/mcphost-$built" >/dev/null 2>&1
   if [ "$redeploy_rc" -eq 0 ]; then
     deployed=$(probe_deployed_version)
     log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
