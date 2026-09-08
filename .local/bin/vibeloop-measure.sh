@@ -424,7 +424,12 @@ PY
         [ -n "$und" ] || { log "extend: every segment decided after round $((round-1))"; break; }
         log "extend round $round: undecided=$und add=${VIBELOOP_EXTEND_ADD:-3}"
         ext_rc=0
-        ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 3600 uv run synthorg consume "$BRIEF" --extend "$SYN/runs/mcp-host-project-consume" --segments "$und" --add "${VIBELOOP_EXTEND_ADD:-3}" --out "$out" --endpoint "$URL" --deployed-version "$deployed" ) >> "$LOG" 2>&1 || ext_rc=$?
+        # req 8 (2026-09-08T22:05Z re-lift refusal): an extend round that ran in non-compare
+        # mode against a compare-mode truth run left measure.json without compare_incumbent,
+        # and synthorg lift refused with "compare mode mismatch (baseline='compare',
+        # candidate='non-compare')" — extension sessions must run in the same mode as the
+        # run they extend, so this carries the identical conditional flag forward.
+        ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 3600 uv run synthorg consume "$BRIEF" --extend "$SYN/runs/mcp-host-project-consume" --segments "$und" --add "${VIBELOOP_EXTEND_ADD:-3}" --out "$out" --endpoint "$URL" --deployed-version "$deployed" ${VIBELOOP_COMPARE_INCUMBENT:+--compare-incumbent} ) >> "$LOG" 2>&1 || ext_rc=$?
         # (--extend names synthorg's own run directory — the one holding config.yaml/traces that the
         #  truth-tier consume just wrote — while --out stays the evidence dir; passing the evidence
         #  dir to --extend fails with FileNotFoundError config.yaml, seen 2026-09-08T17:04Z)
