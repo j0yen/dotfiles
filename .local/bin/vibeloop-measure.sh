@@ -159,6 +159,11 @@ PY
 # ledger_cost exist (it calls them) and before any guard runs (it's called from both the
 # redeploy branch and the harness-probe/measure tail below).
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/vibeloop-measure-guards.sh"
+# PRD-build-worktree-targets-off-root: function-only (cargo_target_root,
+# build_tag_worktree, cleanup_tag_worktree) — the release-tag build path
+# below uses these so its ~52G CARGO_TARGET_DIR never sits on the root
+# filesystem. tests/vibeloop-target-root.test.sh sources this file directly.
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/vibeloop-target-root.sh"
 mkdir -p "$EVD" "$PROXY_EVD" "$(dirname "$CAL")"; [ -f "$CAL" ] || echo 2 > "$CAL"
 VIBELOOP_WATCHDOG_SECS="${VIBELOOP_WATCHDOG_SECS:-1200}"
 SYNTHORG_SEED="${SYNTHORG_SEED:-0}"                                          # PRD-mcphost-measure-comparable req 5: fixed, never wall-clock.
@@ -238,11 +243,11 @@ if [ "$built" != "$deployed" ]; then
     # detached worktree so the lanes' main checkout is never touched.
     tag_sha=$(git -C "$CRATE" rev-parse --short "$build_ref")
     log "hub behind: release $build_ref ($tag_sha) says $built, hub runs $deployed — building the tag (HEAD $(git -C "$CRATE" rev-parse --short HEAD) may be mid-flight)"
-    wt="$HOME/.cache/vibeloop-build/mcphost-$built"
-    git -C "$CRATE" worktree remove --force "$wt" >/dev/null 2>&1 || true
-    git -C "$CRATE" worktree add --detach -f "$wt" "$build_ref" >> "$LOG" 2>&1 || { log "worktree add failed for $build_ref"; exit 0; }
-    ( cd "$wt" && CARGO_TARGET_DIR="$wt/target" cargo build --release -q ) >> "$LOG" 2>&1 || { log "build failed at $build_ref"; git -C "$CRATE" worktree remove --force "$wt" >/dev/null 2>&1; exit 0; }
-    BUILT_BIN="$wt/target/release/mcphost"
+    # PRD-build-worktree-targets-off-root: CARGO_TARGET_DIR lives under
+    # cargo_target_root() (off the root filesystem), not under the worktree
+    # itself; build_tag_worktree cleans up both worktree and target dir on
+    # its own failure.
+    BUILT_BIN="$(build_tag_worktree "$CRATE" "$built" "$build_ref" "$LOG")" || { log "build failed at $build_ref"; exit 0; }
   else
     log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
     # The fleet ships on extend-gate's verdict (pass OR delta-pass against the
@@ -278,8 +283,10 @@ if [ "$built" != "$deployed" ]; then
   redeploy_rc=0
   redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$BUILT_BIN" 2>&1 ) || redeploy_rc=$?
   echo "$redeploy_out" >> "$LOG"
-  # release-tag path: the detached worktree has served its purpose
-  [ "$build_ref" != HEAD ] && git -C "$CRATE" worktree remove --force "$HOME/.cache/vibeloop-build/mcphost-$built" >/dev/null 2>&1
+  # release-tag path: the detached worktree AND its cargo target-dir have
+  # served their purpose — free both now, redeploy succeeded or failed
+  # (PRD-build-worktree-targets-off-root req 5).
+  [ "$build_ref" != HEAD ] && cleanup_tag_worktree "$CRATE" "$built"
   if [ "$redeploy_rc" -eq 0 ]; then
     deployed=$(probe_deployed_version)
     log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
