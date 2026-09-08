@@ -401,7 +401,10 @@ PY
         [ -n "$und" ] || { log "extend: every segment decided after round $((round-1))"; break; }
         log "extend round $round: undecided=$und add=${VIBELOOP_EXTEND_ADD:-3}"
         ext_rc=0
-        ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 3600 uv run synthorg consume "$BRIEF" --extend "$out" --segments "$und" --add "${VIBELOOP_EXTEND_ADD:-3}" --out "$out" --endpoint "$URL" --deployed-version "$deployed" ) >> "$LOG" 2>&1 || ext_rc=$?
+        ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 3600 uv run synthorg consume "$BRIEF" --extend "$SYN/runs/mcp-host-project-consume" --segments "$und" --add "${VIBELOOP_EXTEND_ADD:-3}" --out "$out" --endpoint "$URL" --deployed-version "$deployed" ) >> "$LOG" 2>&1 || ext_rc=$?
+        # (--extend names synthorg's own run directory — the one holding config.yaml/traces that the
+        #  truth-tier consume just wrote — while --out stays the evidence dir; passing the evidence
+        #  dir to --extend fails with FileNotFoundError config.yaml, seen 2026-09-08T17:04Z)
         if [ "$ext_rc" -ne 0 ]; then log "extend round $round failed rc=$ext_rc — keeping the pre-extend lift"; break; fi
         if lift_txt=$(cd "$SYN" && uv run synthorg lift --baseline "$base_dir" --candidate "$out" --out "$out/lift.json" 2>&1); then
           lift_field=" lift=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\" extend_rounds=$round"
