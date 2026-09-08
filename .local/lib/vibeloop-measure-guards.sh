@@ -12,6 +12,15 @@
 # vibeloop-measure.sh), and the globals SYN, URL, LOG, ADMIN_KEY_FILE.
 set -uo pipefail
 
+# land_evidence is normally defined by vibeloop-measure.sh before this file is
+# sourced (line ~30, well before the source at line ~149) — but
+# tests/vibeloop-measure-guards.test.sh sources this file standalone, so
+# define it here too, guarded, rather than assume source order.
+if ! declare -F land_evidence >/dev/null; then
+  land_evidence() { # $1 = work dir, $2 = final dir inside $PRD_DIR
+    mkdir -p "$(dirname "$2")"; rm -rf "$2"; mv "$1" "$2"; }
+fi
+
 # -- pure decision logic (fixture-testable, no network/filesystem I/O) ------
 
 # Requirement 3: parse a `--tier proxy` measure.json's `bootstrap_by_segment`
@@ -149,9 +158,14 @@ cleanup_tenants() { # -> prints "cleanup=<n|failed|kept>[ tenants_after=<n>]"
 # at least one bootstrap, sets global PROXY_FIELD (" proxy=<k>/<n>") for the
 # caller to carry onto the truth-tier run's own ledger line (AC5) and
 # returns 0 to continue.
-run_proxy_gate() { # $1=version  $2=endpoint url  $3=out-dir
-  local ver="$1" url="$2" out="$3" k n ns
-  mkdir -p "$out"
+run_proxy_gate() { # $1=version  $2=endpoint url  $3=out-dir (final path inside $PRD_DIR)
+  local ver="$1" url="$2" out="$3" work k n ns
+  # $out is the final, git-tracked destination — do the actual (minutes-long)
+  # write under $WORK_EVD instead, and land_evidence it into $out only once
+  # everything is finished and about to be committed (see vibeloop-measure.sh
+  # for why: the PRD checkout is rebased/reset/autostashed concurrently).
+  work="$WORK_EVD/proxy/$(basename "$out")"
+  mkdir -p "$work"
   # synthorg derives its run_id from the brief's filename alone (`<slug>-consume`),
   # the same "$SYN/runs/mcp-host-project-consume" cache dir the harness probe and
   # the truth tier below also use regardless of --tier — clear it first so a proxy
@@ -160,26 +174,31 @@ run_proxy_gate() { # $1=version  $2=endpoint url  $3=out-dir
   log "proxy gate: running synthorg consume --tier proxy for $ver"
   ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli \
       ANTHROPIC_MODEL="${SYNTHORG_MODEL_SMALL:-claude-haiku-4-5}" \
-      timeout 400 uv run synthorg consume "$BRIEF" --endpoint "$url" --out "$out" \
+      timeout 400 uv run synthorg consume "$BRIEF" --endpoint "$url" --out "$work" \
         --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --tier proxy \
   ) >> "$LOG" 2>&1
-  if [ -f "$out/measure.json" ]; then
-    read -r k n <<< "$(proxy_parse "$out/measure.json")"
+  if [ -f "$work/measure.json" ]; then
+    read -r k n <<< "$(proxy_parse "$work/measure.json")"
   else
     k=0; n=0
   fi
-  ns=0; [ -f "$out/ledger.jsonl" ] && ns=$(wc -l < "$out/ledger.jsonl" 2>/dev/null || echo 0)
-  read -r px_usd px_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
+  ns=0; [ -f "$work/ledger.jsonl" ] && ns=$(wc -l < "$work/ledger.jsonl" 2>/dev/null || echo 0)
+  read -r px_usd px_known <<< "$(sum_session_cost "$work/ledger.jsonl")"
   ledger_cost proxy "$px_usd" "$ver" "$px_known"
   if proxy_should_skip "$k"; then
     log "proxy gate FAIL 0/$n bootstrapped for $ver — skipping the truth tier"
     local cleanup_field; cleanup_field=$(cleanup_tenants)
     echo "$(ts) version=$ver proxy=$k/$n truth=skipped sessions_spent=$ns $cleanup_field" >> "$MLEDGER"
+    land_evidence "$work" "$out"
     git -C "$PRD_DIR" add "$out" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: proxy gate failed on $ver ($k/$n)" -- "$out" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"proxy-failed\",\"version\":\"$ver\",\"proxy\":\"$k/$n\",\"ts\":\"$(ts)\"}"
     return 1
   fi
   log "proxy gate ok: $k/$n bootstrapped for $ver — continuing to the harness probe/truth tier"
+  # $out is landed here too: the caller never lands proxy dirs itself, and
+  # every later commit that names $PROXY_EVD (harness-probe-fail, and the
+  # script's final catch-all) must find this run already sitting inside it.
+  land_evidence "$work" "$out"
   PROXY_FIELD=" proxy=$k/$n"
   return 0
 }

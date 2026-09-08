@@ -28,6 +28,18 @@ CRATE="$HOME/wintermute/mcphost"; DEPLOY="$HOME/repos/mcphost-deploy"; SYN="$HOM
 BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://mcphost.dev/mcp}"; HOST=mcphost-1
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
 PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcphost/admin-key"
+# Long-running evidence (minutes to an hour of writes) must never live inside
+# $PRD_DIR while it's incomplete — claude-vibeloop-tick.sh's `git pull --rebase
+# --autostash`, /build's lane-claim.sh `git reset --hard`, and interactive
+# sessions all touch that checkout concurrently, and a directory caught
+# mid-write there can vanish under a rebase/autostash cycle (2026-09-08
+# 18:55Z: ledger.jsonl went missing mid-run, reappeared seconds later on
+# autostash pop). Write to $WORK_EVD instead and land_evidence() the finished
+# directory into $PRD_DIR only once, right before it's committed.
+WORK_EVD="${VIBELOOP_WORK_EVD:-$HOME/.cache/vibeloop-evidence}"; mkdir -p "$WORK_EVD"
+land_evidence() { # $1 = work dir, $2 = final dir inside $PRD_DIR
+  mkdir -p "$(dirname "$2")"; rm -rf "$2"; mv "$1" "$2"; }
+export WORK_EVD
 # Anonymous /healthz is `{"ok":true}` only (PRD-mcphost-healthz-minimal); the
 # version is served only with the admin bearer, the same header the deploy
 # prober sends (PRD-mcphost-deploy-healthz-auth). Without it every tick from
@@ -334,7 +346,7 @@ PY2
   fi
 fi
 # --- measure ---
-out="$EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$out"; rm -rf "$SYN/runs/mcp-host-project-consume"
+final_out="$EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"; out="$WORK_EVD/measure/$(basename "$final_out")"; mkdir -p "$out"; rm -rf "$SYN/runs/mcp-host-project-consume"
 log "measure start version=$deployed reason=$reason out=$out"
 # req 5/6/7: fixed seed + pinned composition + fail-before-any-call on a
 # panel the corpus can't serve, instead of a wall-clock seed and a
@@ -361,6 +373,10 @@ if [ ! -f "$out/measure.json" ]; then
     ledger_cost measure "$fail_usd" "$deployed" "$fail_known"
   fi
   rmdir "$out" 2>/dev/null
+  # land whatever's left (usually nothing, rmdir already cleaned the empty
+  # case) so the final catch-all `git add "$EVD"` below can see it.
+  [ -d "$out" ] && land_evidence "$out" "$final_out"
+  out="$final_out"
 else
   summary=$(python3 - "$out/measure.json" <<'PY'
 import json,sys;d=json.load(open(sys.argv[1]))
@@ -416,6 +432,11 @@ PY
       ns=$(python3 -c "import json;print(json.load(open('$out/measure.json')).get('sessions',0))" 2>/dev/null || echo "$ns")
     fi
   fi
+  # land the finished run into the PRD checkout now — this is the last point
+  # anything reads/writes it as a work-in-progress. Everything from here on
+  # (baseline.json's run_dir, EVD/LATEST, the ledger's dir= field, and the
+  # final git add) must name the landed, committed path, not the work dir.
+  land_evidence "$out" "$final_out"; out="$final_out"
   # req 1/3/4/AC1/AC3/AC5: a plain (non-candidate) comparable run sets the
   # baseline when none stands yet, or re-anchors it when the standing one
   # names a version other than what's deployed now. A candidate run, or a
