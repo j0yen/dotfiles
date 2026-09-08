@@ -310,7 +310,13 @@ log "measure start version=$deployed reason=$reason out=$out"
 # req 5/6/7: fixed seed + pinned composition + fail-before-any-call on a
 # panel the corpus can't serve, instead of a wall-clock seed and a
 # re-derived-per-run panel that check_comparable/attribution can't use.
-( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" timeout 5400 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$out" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --strict-segments --deployed-version "$deployed" ) >> "$LOG" 2>&1; rc=$?
+# SYNTHORG_JUDGE_PROVIDER (PRD-cross-model-judge): when set in limits, consume
+# re-judges every session on the second provider and fills
+# measure.json.judge_agreement (advisory; degrades silently if codex is
+# unauthenticated). VIBELOOP_COMPARE_INCUMBENT=1 adds the incumbent-compare leg
+# (switch verdicts per segment) to every truth-tier measure — roughly doubles
+# the run's sessions. Both are operator decisions of 2026-09-08.
+( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 5400 uv run synthorg consume "$BRIEF" --endpoint "$URL" --out "$out" --seed "$SYNTHORG_SEED" --composition "$COMPOSITION" --strict-segments --deployed-version "$deployed" ${VIBELOOP_COMPARE_INCUMBENT:+--compare-incumbent} ) >> "$LOG" 2>&1; rc=$?
 # req 1: the truth tier just finished (success or failure) — clean up now,
 # before either branch below writes the run's terminal ledger line.
 cleanup_field=$(cleanup_tenants)
@@ -348,6 +354,31 @@ PY
       lift_field=" lift=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
     else
       lift_field=" lift_error=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\""
+    fi
+    # PRD-mcphost-harness-sample-size req 3 (operator decision 2026-09-08):
+    # after the first lift, extend ONLY the segments lift left `undecided`,
+    # VIBELOOP_EXTEND_ROUNDS rounds of VIBELOOP_EXTEND_ADD sessions each
+    # (limits: 1 × 3 → at most 6 per segment; lift's own
+    # --max-sessions-per-segment stays the ceiling), re-lifting after each
+    # round. `--extend` refuses baseline-role runs and moved endpoints itself,
+    # so a baseline is never grown here. A failed round logs and stops; the
+    # first lift's result stands.
+    if [ -f "$out/lift.json" ] && [ "${VIBELOOP_EXTEND_ROUNDS:-0}" -gt 0 ]; then
+      for round in $(seq 1 "${VIBELOOP_EXTEND_ROUNDS}"); do
+        und=$(python3 -c "import json;d=json.load(open('$out/lift.json'));print(','.join(s['segment'] for s in d.get('by_segment',[]) if (s.get('decision') or {}).get('decision')=='undecided'))" 2>/dev/null)
+        [ -n "$und" ] || { log "extend: every segment decided after round $((round-1))"; break; }
+        log "extend round $round: undecided=$und add=${VIBELOOP_EXTEND_ADD:-3}"
+        ext_rc=0
+        ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli SYNTHORG_LLM_CONCURRENCY="${SYNTHORG_LLM_CONCURRENCY:-4}" ANTHROPIC_MODEL="${SYNTHORG_MODEL_MID:-claude-sonnet-4-6}" SYNTHORG_JUDGE_PROVIDER="${SYNTHORG_JUDGE_PROVIDER:-}" timeout 3600 uv run synthorg consume "$BRIEF" --extend "$out" --segments "$und" --add "${VIBELOOP_EXTEND_ADD:-3}" --out "$out" --endpoint "$URL" --deployed-version "$deployed" ) >> "$LOG" 2>&1 || ext_rc=$?
+        if [ "$ext_rc" -ne 0 ]; then log "extend round $round failed rc=$ext_rc — keeping the pre-extend lift"; break; fi
+        if lift_txt=$(cd "$SYN" && uv run synthorg lift --baseline "$base_dir" --candidate "$out" --out "$out/lift.json" 2>&1); then
+          lift_field=" lift=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\" extend_rounds=$round"
+        else
+          lift_field=" lift_error=\"$(echo "$lift_txt" | tr '\n' ' ' | tr -d '"')\" extend_rounds=$round"
+        fi
+      done
+      # session count and cost now include the extension rounds
+      ns=$(python3 -c "import json;print(json.load(open('$out/measure.json')).get('sessions',0))" 2>/dev/null || echo "$ns")
     fi
   fi
   # req 1/3/4/AC1/AC3/AC5: a plain (non-candidate) comparable run sets the
