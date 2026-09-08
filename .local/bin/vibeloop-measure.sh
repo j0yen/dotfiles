@@ -28,6 +28,15 @@ CRATE="$HOME/wintermute/mcphost"; DEPLOY="$HOME/repos/mcphost-deploy"; SYN="$HOM
 BRIEF="$HOME/Documents/Notes/mcp-host-project.md"; URL="${MCPHOST_PUBLIC_URL:-https://mcphost.dev/mcp}"; HOST=mcphost-1
 MLEDGER="$PRD_DIR/vibeloop/measure-ledger.md"; EVD="$PRD_DIR/evidence/mcp-host/measure"; CAL="$HOME/.config/vibeloop/calibration-remaining"
 PROXY_EVD="$PRD_DIR/evidence/mcp-host/proxy"; ADMIN_KEY_FILE="$HOME/.config/mcphost/admin-key"
+# Anonymous /healthz is `{"ok":true}` only (PRD-mcphost-healthz-minimal); the
+# version is served only with the admin bearer, the same header the deploy
+# prober sends (PRD-mcphost-deploy-healthz-auth). Without it every tick from
+# 2026-09-06T21:50Z on read an empty version and exited as "hub unreachable".
+probe_deployed_version() {
+  local hdr=()
+  [ -s "$ADMIN_KEY_FILE" ] && hdr=(-H "Authorization: Bearer $(cat "$ADMIN_KEY_FILE")")
+  curl -s --max-time 10 "${hdr[@]}" "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null
+}
 BASELINE="$PRD_DIR/vibeloop/baseline.json"  # PRD-mcphost-baseline-anchor: the standing baseline pointer; written only below (baseline_set/baseline_reanchored)
 [ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
@@ -178,7 +187,7 @@ git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
 # Compare versions BEFORE building: the crate manifest at HEAD says what main would ship; only build when the hub is behind.
 built=$(git -C "$CRATE" show HEAD:Cargo.toml 2>/dev/null | awk -F'"' '/^version *=/{print $2; exit}')
-deployed=$(curl -s --max-time 10 "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null)
+deployed=$(probe_deployed_version)
 [ -z "$deployed" ] && { log "skip: hub healthz unreachable"; bus "{\"event\":\"hub-unreachable\",\"ts\":\"$(ts)\"}"; exit 0; }
 [ -z "$built" ] && { log "skip: could not read crate version at HEAD"; exit 0; }
 # PRD-mcphost-baseline-anchor req 3/AC4: a candidate run is refused before
@@ -199,7 +208,18 @@ fi
 cal=$(cat "$CAL"); reason=""
 if [ "$built" != "$deployed" ]; then
   log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
-  if ! ( cd "$CRATE" && autobuilder gate --project . ) >/dev/null 2>&1; then
+  # The fleet ships on extend-gate's verdict (pass OR delta-pass against the
+  # committed agent/gate-baseline.json, PRD-build-gate-delta-baseline) — raw
+  # `autobuilder gate` alone reads a baselined inherit as red and would never
+  # redeploy a crate carrying one. extend-gate replays its verdict cache when
+  # HEAD and the script are unchanged, so this is cheap on a quiet HEAD.
+  EXTEND_GATE="$HOME/.claude/skills/build/scripts/extend-gate.sh"
+  if [ -x "$EXTEND_GATE" ]; then
+    gate_ok=true; ( cd "$CRATE" && bash "$EXTEND_GATE" "$CRATE" --head "$(git rev-parse HEAD)" ) >/dev/null 2>&1 || gate_ok=false
+  else
+    gate_ok=true; ( cd "$CRATE" && autobuilder gate --project . ) >/dev/null 2>&1 || gate_ok=false
+  fi
+  if [ "$gate_ok" != true ]; then
     blocks=$( cd "$CRATE" && autobuilder gate --project . 2>&1 | grep -E '✗' | cut -c1-90 | tr '\n' ';' )
     log "GATE RED at $(git -C "$CRATE" rev-parse --short HEAD): not redeploying $built. $blocks"
     echo "$(ts) version=$built gate=RED redeploy=skipped hub=$deployed blocks=\"$blocks\" sessions_spent=0" >> "$MLEDGER"
@@ -220,7 +240,7 @@ if [ "$built" != "$deployed" ]; then
   redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$CRATE/target/release/mcphost" 2>&1 ) || redeploy_rc=$?
   echo "$redeploy_out" >> "$LOG"
   if [ "$redeploy_rc" -eq 0 ]; then
-    deployed=$(curl -s --max-time 10 "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null)
+    deployed=$(probe_deployed_version)
     log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
     compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
     # AC1/AC8: the redeploy event's own ledger line — from/to versions,
