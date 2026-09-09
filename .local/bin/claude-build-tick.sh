@@ -23,9 +23,25 @@ mkdir -p "$STATE"
 tmp=$(mktemp "${TMPDIR:-/tmp}/claude-build-tick.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
+# Burst-lane lifecycle (PRD-build-burst-lane-ccx53 req 7 dispatch hook +
+# Phase-7 teardown): deterministic here, never left to the session. `up`
+# only when queued work can use the box (rust/python targets); `down`
+# decides keep/schedule/delete itself; `watchdog` enforces the TTL backstop.
+# All best-effort — a burst failure must never block the tick.
+BURST="$HOME/.claude/skills/build/scripts/burst-lane.sh"
+PRD_QUEUE="$HOME/Documents/PRDs/build-queue"
+if [ -x "$BURST" ] && grep -lqE '^- build_target: *(rust|python)' "$PRD_QUEUE"/*.md 2>/dev/null; then
+  timeout 420 "$BURST" up >>"$LOG" 2>&1 || true
+fi
+
 "$CLAUDE_BIN" -p "/build" --model sonnet --dangerously-skip-permissions --output-format text 2>&1 \
   | tee -a "$LOG" > "$tmp"
 rc=${PIPESTATUS[0]}
+
+if [ -x "$BURST" ]; then
+  timeout 120 "$BURST" down >>"$LOG" 2>&1 || true
+  timeout 120 "$BURST" watchdog >>"$LOG" 2>&1 || true
+fi
 
 limit_msg=$(grep -aoE "$LIMIT_RE.*" "$tmp" | head -1 | tr -d '\r')
 if [ -n "$limit_msg" ]; then
