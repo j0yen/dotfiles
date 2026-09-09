@@ -415,14 +415,14 @@
       }
     ]
   },
+  "enabledPlugins": {
+    "stripe@claude-plugins-official": true
+  },
   "modelSettings": {
     "claude-fable-5": {
       "effortLevel": "high"
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true,
-  "enabledPlugins": {
-    "stripe@claude-plugins-official": true
-  }
+  "skipAutoPermissionPrompt": true
 }
