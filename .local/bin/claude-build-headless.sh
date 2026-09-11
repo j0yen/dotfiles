@@ -77,7 +77,9 @@ fi
 run_out="$(systemd-run --user --unit=claude-build-work --collect --quiet \
   -p RuntimeMaxSec=1800 -p WorkingDirectory="$HOME" \
   -p StandardOutput="append:$LOG" -p StandardError="append:$LOG" \
-  --setenv=HOME="$HOME" --setenv=CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 --setenv=PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
+  --setenv=HOME="$HOME" --setenv=CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+  --setenv=CHAIN_MAX_STEPS="${CHAIN_MAX_STEPS:-2}" --setenv=BUILD_MAX_BRANCHES="${BUILD_MAX_BRANCHES:-2}" \
+  --setenv=PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
   "$HOME/.local/bin/claude-build-tick.sh" 2>&1)"
 run_rc=$?
 
