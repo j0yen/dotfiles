@@ -31,6 +31,21 @@ NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
 LIMITS="$HOME/.config/vibeloop/limits"
 # shellcheck disable=SC1090
 [ -f "$LIMITS" ] && . "$LIMITS"   # may set MAX_COST_USD_PER_DAY, MAX_COST_USD_PER_WEEK, NTFY_TOPIC
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/vibeloop-measure-guards.sh"   # drift_sustained (PRD-vibeloop-measure-deploy-last-pass req 3)
+
+# req 3: "a drift above 0 for more than two cycles raises a digest warning" —
+# read every deploy_drift=<n|unknown> reading ever recorded (oldest first,
+# same order the ledger was appended in) and let drift_sustained decide.
+DRIFT_WARN=0
+ML_PATH="$LOOP/measure-ledger.md"
+if [ -f "$ML_PATH" ]; then
+  drift_history=()
+  while IFS= read -r v; do drift_history+=("$v"); done < <(grep -o 'deploy_drift=[A-Za-z0-9]*' "$ML_PATH" | cut -d= -f2)
+  if [ "${#drift_history[@]}" -ge 3 ] && drift_sustained "${drift_history[@]}"; then
+    DRIFT_WARN=1
+  fi
+fi
 
 commit=1
 date_arg=""
@@ -52,6 +67,7 @@ DIGEST_MD="$(
   PRD_DIR="$PRD_DIR" DATE="$DATE" HEALTHZ_JSON="$HEALTHZ_JSON" \
   LOG_AUTO="$LOG_AUTO" LOG_MEASURE="$LOG_MEASURE" \
   MAX_COST_USD_PER_DAY="${MAX_COST_USD_PER_DAY:-}" MAX_COST_USD_PER_WEEK="${MAX_COST_USD_PER_WEEK:-}" \
+  DRIFT_WARN="$DRIFT_WARN" \
   python3 - <<'PY'
 import collections, datetime, json, os, re, sys, time, calendar
 
@@ -398,6 +414,13 @@ else:
     out.append(f"- {len(ml_today)} runs today  ({relpath(ml_path)})")
     for l in ml_today[-5:]:
         out.append(f"  - {l[:220]}")
+
+# req 3 (PRD-vibeloop-measure-deploy-last-pass): deploy_drift sustained > 0
+# for 3+ consecutive cycles (drift_sustained, computed in bash above from the
+# ledger's own history — see DRIFT_WARN) means prod is trailing the newest
+# gated release, not just mid-cycle noise.
+if os.environ.get("DRIFT_WARN") == "1":
+    out.append("- ⚠ deploy_drift has been > 0 for 3+ consecutive cycles — production is behind the newest gated release")
 
 evd = os.path.join(PRD_DIR, "evidence", "mcp-host", "measure")
 latest_path = os.path.join(evd, "LATEST")

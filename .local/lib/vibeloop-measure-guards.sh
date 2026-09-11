@@ -70,6 +70,76 @@ cleanup_field_from_counts() { # $1=removed $2=tenants_after -> "cleanup=<n> tena
   echo "cleanup=$1 tenants_after=${2:-unknown}"
 }
 
+# -- PRD-vibeloop-measure-deploy-last-pass: target-selection decision logic -
+# (test_prefix: lastpass) -- deploy the newest GATED commit, not HEAD, and
+# never treat a red HEAD as a failed redeploy.
+
+# Requirement 1: parse `mcphost-deploy doctor`'s rendered first line
+# ("main=<sha> last_pass=<sha|none> deployed=<sha|none> drift=<n|unknown>")
+# into "main last_pass deployed drift". Reads stdin so callers never have to
+# fight bash quoting on a multi-line value (doctor's second line is an
+# optional "warn: ..." the caller doesn't need here). Any field doctor didn't
+# print at all reads back as an empty string, same as an absent key anywhere
+# else in this file.
+doctor_parse() { # stdin=doctor's rendered text -> "main last_pass deployed drift"
+  python3 -c '
+import sys
+line = sys.stdin.readline()
+fields = {}
+for kv in line.split():
+    if "=" in kv:
+        k, v = kv.split("=", 1)
+        fields[k] = v
+print(fields.get("main", ""), fields.get("last_pass", ""), fields.get("deployed", ""), fields.get("drift", ""))
+'
+}
+
+# Requirement 1/2: the target-selection decision itself. "none" (doctor's
+# literal token for "nothing resolvable") and an empty string both count as
+# "no last_pass to deploy" -- never treated as something to build and ship.
+# Prints "redeploy <sha>" when last_pass is known and ahead of deployed,
+# "measure" otherwise (last_pass == deployed, or last_pass unknown).
+lastpass_target() { # $1=last_pass $2=deployed -> "redeploy <sha>" | "measure"
+  local lp="${1:-}" dep="${2:-}"
+  if [ -n "$lp" ] && [ "$lp" != "none" ] && [ "$lp" != "$dep" ]; then
+    echo "redeploy $lp"
+  else
+    echo "measure"
+  fi
+}
+
+# Requirement 3: normalize doctor's `drift` field for a ledger line -- an
+# empty or "unknown" reading (doctor couldn't resolve one side) prints
+# literally as "deploy_drift=unknown" rather than a blank field a ledger-line
+# parser would choke on (same convention as cleanup_field_from_counts above).
+deploy_drift_field() { # $1=drift value from doctor -> "deploy_drift=<n|unknown>"
+  case "${1:-}" in
+    ''|unknown) echo "deploy_drift=unknown" ;;
+    *) echo "deploy_drift=$1" ;;
+  esac
+}
+
+# Requirement 3: "a drift above 0 for more than two cycles raises a digest
+# warning" -- true when the most recent 3+ cycles (oldest first, as recorded
+# in the measure ledger) are ALL present, numeric, and > 0. Fewer than 3
+# recorded cycles, or any "unknown"/unparseable reading among the last 3,
+# never warns -- not enough clean history to call it sustained drift rather
+# than a transient doctor hiccup.
+drift_sustained() { # $@=drift values, oldest first -> exit 0 if sustained
+  local n=$# vals i
+  [ "$n" -ge 3 ] || return 1
+  vals=("$@")
+  for ((i = n - 3; i < n; i++)); do
+    case "${vals[$i]}" in
+      ''|unknown) return 1 ;;
+      *[!0-9]*) return 1 ;;
+      0) return 1 ;;
+      *) : ;;
+    esac
+  done
+  return 0
+}
+
 # -- I/O helpers (network/process; not fixture-tested, kept thin) -----------
 
 # /healthz's tenants_total, unauthenticated. Empty string on any failure.
@@ -188,7 +258,7 @@ run_proxy_gate() { # $1=version  $2=endpoint url  $3=out-dir (final path inside 
   if proxy_should_skip "$k"; then
     log "proxy gate FAIL 0/$n bootstrapped for $ver — skipping the truth tier"
     local cleanup_field; cleanup_field=$(cleanup_tenants)
-    echo "$(ts) version=$ver proxy=$k/$n truth=skipped sessions_spent=$ns $cleanup_field" >> "$MLEDGER"
+    echo "$(ts) version=$ver proxy=$k/$n truth=skipped ${DRIFT_FIELD:-deploy_drift=unknown} sessions_spent=$ns $cleanup_field" >> "$MLEDGER"
     land_evidence "$work" "$out"
     git -C "$PRD_DIR" add "$out" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: proxy gate failed on $ver ($k/$n)" -- "$out" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"proxy-failed\",\"version\":\"$ver\",\"proxy\":\"$k/$n\",\"ts\":\"$(ts)\"}"

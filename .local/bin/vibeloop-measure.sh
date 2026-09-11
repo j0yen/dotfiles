@@ -202,23 +202,27 @@ runs24=$(awk -v s="$since24" '$1 > s' "$MLEDGER" 2>/dev/null | grep -o 'sessions
 git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 # --- what is built vs what is deployed ---
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
-# Compare versions BEFORE building. What "built" means (2026-09-08): the newest
-# release tag reachable from main, not HEAD. ship-tag.sh only tags a commit
-# whose gate passed, so a `v*` tag is a shipped release by construction —
-# while HEAD is whatever the build lanes landed since (untagged, mid-flight,
-# and legitimately gate-red on rollback-plan's head-untagged rule). Gating
-# HEAD here let an in-flight PRD block a finished release for hours
-# (0.27.0, 2026-09-08 13:50Z–14:55Z). No tag at all ⇒ the old HEAD path.
 git -C "$CRATE" fetch -q --tags origin >/dev/null 2>&1
-rel_tag=$(git -C "$CRATE" describe --tags --abbrev=0 --match 'v[0-9]*' origin/main 2>/dev/null || git -C "$CRATE" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)
-if [ -n "$rel_tag" ]; then
-  built="${rel_tag#v}"; build_ref="$rel_tag"
-else
-  built=$(git -C "$CRATE" show HEAD:Cargo.toml 2>/dev/null | awk -F'"' '/^version *=/{print $2; exit}'); build_ref=HEAD
-fi
 deployed=$(probe_deployed_version)
 [ -z "$deployed" ] && { log "skip: hub healthz unreachable"; bus "{\"event\":\"hub-unreachable\",\"ts\":\"$(ts)\"}"; exit 0; }
-[ -z "$built" ] && { log "skip: could not read crate version at HEAD"; exit 0; }
+# PRD-vibeloop-measure-deploy-last-pass req 1: target selection comes from
+# `mcphost-deploy doctor` — the canonical main/last_pass/deployed-sha/drift
+# reckoning `mcphost-deploy-refuse-ungated` already computes for its own
+# `redeploy --sha ... --skip-if-ungated` gate — instead of this script's own
+# git-tag/HEAD heuristic (rel_tag/built/build_ref, removed here) and its own
+# hand-rolled extend-gate/autobuilder gate check (removed below with the old
+# GATE RED branch). Single source of truth for "is prod behind a green
+# main?", per SKILL.md's shipping-contract doctrine: new shipping/gate
+# responsibilities are added at their one authority, not re-enumerated here.
+doctor_txt=$( cd "$DEPLOY" && timeout 30 uv run mcphost-deploy doctor --host "$HOST" 2>&1 )
+doctor_rc=$?
+if [ "$doctor_rc" -ne 0 ] || [ -z "$doctor_txt" ]; then
+  log "skip: mcphost-deploy doctor unreachable/failed (rc=$doctor_rc): $(printf '%s' "$doctor_txt" | head -c 200)"
+  exit 0
+fi
+read -r doc_main doc_last_pass doc_deployed doc_drift <<< "$(doctor_parse <<< "$doctor_txt")"
+DRIFT_FIELD=$(deploy_drift_field "$doc_drift")
+[ -z "$doc_main" ] && { log "skip: doctor output unparseable: $(printf '%s' "$doctor_txt" | head -c 200)"; exit 0; }
 # PRD-mcphost-baseline-anchor req 3/AC4: a candidate run is refused before
 # any session opens (redeploy, harness probe, or truth-tier consume all sit
 # below this) when the standing baseline names a version other than what's
@@ -228,76 +232,72 @@ if [ "$VIBELOOP_CANDIDATE" = 1 ]; then
   bv=$(baseline_version)
   if [ -n "$bv" ] && [ "$bv" != "$deployed" ]; then
     log "candidate run refused: baseline stale (baseline=$bv deployed=$deployed)"
-    echo "$(ts) version=$deployed candidate_refused=1 baseline=baseline_stale baseline_version=$bv deployed_version=$deployed sessions_spent=0" >> "$MLEDGER"
+    echo "$(ts) version=$deployed candidate_refused=1 baseline=baseline_stale baseline_version=$bv deployed_version=$deployed $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: candidate refused, baseline stale ($bv != $deployed)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"baseline-stale\",\"baseline_version\":\"$bv\",\"deployed_version\":\"$deployed\",\"ts\":\"$(ts)\"}"
     exit 0
   fi
 fi
-cal=$(cat "$CAL"); reason=""
-if [ "$built" != "$deployed" ]; then
-  if [ "$build_ref" != HEAD ]; then
-    # Release-tag path: the tag is gate-green by ship-tag's contract, so no
-    # gate run here (that was also the 7-minute fresh-gate cost that let a
-    # leaked producer sandbox outlive the tick). Build the tag's tree in a
-    # detached worktree so the lanes' main checkout is never touched.
-    tag_sha=$(git -C "$CRATE" rev-parse --short "$build_ref")
-    log "hub behind: release $build_ref ($tag_sha) says $built, hub runs $deployed — building the tag (HEAD $(git -C "$CRATE" rev-parse --short HEAD) may be mid-flight)"
-    # PRD-build-worktree-targets-off-root: CARGO_TARGET_DIR lives under
-    # cargo_target_root() (off the root filesystem), not under the worktree
-    # itself; build_tag_worktree cleans up both worktree and target dir on
-    # its own failure.
-    BUILT_BIN="$(build_tag_worktree "$CRATE" "$built" "$build_ref" "$LOG")" || { log "build failed at $build_ref"; exit 0; }
-  else
-    log "hub behind: HEAD says $built, hub runs $deployed — checking the gate before building"
-    # The fleet ships on extend-gate's verdict (pass OR delta-pass against the
-    # committed agent/gate-baseline.json, PRD-build-gate-delta-baseline) — raw
-    # `autobuilder gate` alone reads a baselined inherit as red and would never
-    # redeploy a crate carrying one. extend-gate replays its verdict cache when
-    # HEAD and the script are unchanged, so this is cheap on a quiet HEAD.
-    EXTEND_GATE="$HOME/.claude/skills/build/scripts/extend-gate.sh"
-    if [ -x "$EXTEND_GATE" ]; then
-      gate_ok=true; ( cd "$CRATE" && bash "$EXTEND_GATE" "$CRATE" --head "$(git rev-parse HEAD)" ) >/dev/null 2>&1 || gate_ok=false
-    else
-      gate_ok=true; ( cd "$CRATE" && autobuilder gate --project . ) >/dev/null 2>&1 || gate_ok=false
-    fi
-    if [ "$gate_ok" != true ]; then
-      blocks=$( cd "$CRATE" && autobuilder gate --project . 2>&1 | grep -E '✗' | cut -c1-90 | tr '\n' ';' )
-      log "GATE RED at $(git -C "$CRATE" rev-parse --short HEAD): not redeploying $built. $blocks"
-      echo "$(ts) version=$built gate=RED redeploy=skipped hub=$deployed blocks=\"$blocks\" sessions_spent=0" >> "$MLEDGER"
-      git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: gate red at $built, redeploy skipped" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
-      bus "{\"event\":\"gate-red\",\"version\":\"$built\",\"ts\":\"$(ts)\"}"; exit 0
-    fi
-    ( cd "$CRATE" && cargo build --release -q ) >> "$LOG" 2>&1 || { log "build failed at $(git -C "$CRATE" rev-parse --short HEAD)"; exit 0; }
-    BUILT_BIN="$CRATE/target/release/mcphost"
+cal=$(cat "$CAL"); reason=""; redeployed=0
+target=$(lastpass_target "$doc_last_pass" "$doc_deployed")
+if [ "${target%% *}" = redeploy ]; then
+  lp_sha="${target#redeploy }"
+  # req 1: build exactly the sha doctor named as last_pass. `doctor` only
+  # ever names a TAGGED sha (GitLog.last_pass_sha() reads the newest tag),
+  # so the tag itself is the build_ref -- same worktree-off-root machinery
+  # the old release-tag path used (PRD-build-worktree-targets-off-root).
+  rel_tag=$(git -C "$CRATE" describe --tags --exact-match "$lp_sha" 2>/dev/null)
+  if [ -z "$rel_tag" ]; then
+    log "skip: doctor last_pass=$lp_sha has no matching tag in $CRATE — can't resolve a build target"
+    echo "$(ts) version=unknown redeploy=skipped cause=unresolvable-last-pass last_pass=$lp_sha $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass $lp_sha unresolvable, redeploy skipped" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    exit 0
   fi
+  built="${rel_tag#v}"
+  log "hub behind: last_pass $rel_tag ($lp_sha) ahead of deployed ($doc_deployed) — building the tag"
+  # PRD-build-worktree-targets-off-root: CARGO_TARGET_DIR lives under
+  # cargo_target_root() (off the root filesystem), not under the worktree
+  # itself; build_tag_worktree cleans up both worktree and target dir on
+  # its own failure.
+  BUILT_BIN="$(build_tag_worktree "$CRATE" "$built" "$rel_tag" "$LOG")" || { log "build failed at $rel_tag"; exit 0; }
   bin_v=$("$BUILT_BIN" version 2>/dev/null | awk '{print $NF}')
-  [ "$bin_v" = "$built" ] || { log "skip: built binary reports $bin_v, manifest says $built"; exit 0; }
-  log "redeploying $built from $BUILT_BIN"
+  if [ "$bin_v" != "$built" ]; then
+    log "skip: built binary reports $bin_v, manifest says $built"; cleanup_tag_worktree "$CRATE" "$built"; exit 0
+  fi
+  log "redeploying last_pass $lp_sha ($built) from $BUILT_BIN"
   # PRD-mcphost-deployed-head req 2/3/7, AC1/AC2/AC8: capture the tool's own
   # exit code (not just success/fail) and its stdout (the probe's
   # [ok]/[FAIL] check lines + compat_check verdict) so the ledger line below
   # can record from/to versions, `deploy_failed` with the numeric exit code,
-  # and the probe result — not just a journal-only note.
+  # and the probe result — not just a journal-only note. `--skip-if-ungated`
+  # is redeploy_mod's OWN gate check (PRD-mcphost-deploy-refuse-ungated) —
+  # doctor and this flag must agree, but the flag is authoritative: it's the
+  # one enforced at the actual deploy boundary.
   hub_before="$deployed"
   redeploy_rc=0
-  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host $HOST --binary "$BUILT_BIN" 2>&1 ) || redeploy_rc=$?
+  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host "$HOST" --binary "$BUILT_BIN" --sha "$lp_sha" --skip-if-ungated 2>&1 ) || redeploy_rc=$?
   echo "$redeploy_out" >> "$LOG"
-  # release-tag path: the detached worktree AND its cargo target-dir have
-  # served their purpose — free both now, redeploy succeeded or failed
-  # (PRD-build-worktree-targets-off-root req 5).
-  [ "$build_ref" != HEAD ] && cleanup_tag_worktree "$CRATE" "$built"
-  if [ "$redeploy_rc" -eq 0 ]; then
+  # the detached worktree AND its cargo target-dir have served their
+  # purpose — free both now, redeploy succeeded or failed (req 5).
+  cleanup_tag_worktree "$CRATE" "$built"
+  if [ "$redeploy_rc" -eq 0 ] && printf '%s' "$redeploy_out" | grep -q '^redeploy  skipped'; then
+    # Defensive: doctor said last_pass was gated but the tool's own
+    # (authoritative) check at deploy time disagreed -- e.g. a gate verdict
+    # cache changed between the doctor read and this call. Never claim a
+    # deploy happened; fall through to the req-2 clean-skip path below,
+    # exactly as if target had been "measure".
+    :
+  elif [ "$redeploy_rc" -eq 0 ]; then
     deployed=$(probe_deployed_version)
-    log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"
+    log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"; redeployed=1
     compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
-    # AC1/AC8: the redeploy event's own ledger line — from/to versions,
-    # sessions_spent=0 (no session opened yet), and the probe result. A
-    # successful `mcphost-deploy redeploy` only ever returns exit 0 when its
-    # own probe already passed (redeploy_mod.redeploy returns EXIT_ROLLBACK
-    # on a failed probe), so probe=pass is exact here, not assumed.
-    echo "$(ts) version=$built redeploy=ok from=$hub_before to=$deployed probe=pass compat_check=$compat sessions_spent=0" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $hub_before -> $deployed ok, probe pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    # req 1/AC1: the redeploy event's own ledger + journal lines — from/to
+    # versions, the last_pass sha it targeted, deploy_drift, and the probe
+    # result. A successful `mcphost-deploy redeploy` only ever returns exit
+    # 0 when its own probe already passed, so probe=pass is exact here.
+    log "redeploy  target=last_pass sha=$lp_sha"
+    echo "$(ts) version=$built redeploy=ok target=last_pass sha=$lp_sha from=$hub_before to=$deployed probe=pass compat_check=$compat $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $hub_before -> $deployed ok (last_pass $lp_sha), probe pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"redeploy-ok\",\"from\":\"$hub_before\",\"to\":\"$deployed\",\"ts\":\"$(ts)\"}"
     # req 3/AC3/AC4: proxy gate runs immediately after a successful redeploy,
     # before the harness probe or any truth-tier session — a zero-bootstrap
@@ -310,12 +310,24 @@ if [ "$built" != "$deployed" ]; then
     # $deployed — the hub's serving version — unchanged; `deploy_failed`
     # plus the numeric exit code is the literal token AC2 asks for.
     log "redeploy FAILED rc=$redeploy_rc (hub still $deployed) — not measuring"
-    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no sessions_spent=0" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $built failed rc=$redeploy_rc, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass redeploy $lp_sha failed rc=$redeploy_rc, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"redeploy-failed\",\"version\":\"$built\",\"exit_code\":$redeploy_rc,\"ts\":\"$(ts)\"}"; exit 0
   fi
-elif [ "$cal" -gt 0 ]; then reason="calibration($cal left)"
-else log "skip: $deployed already measured, no calibration runs left"; exit 0; fi
+fi
+if [ "$redeployed" -ne 1 ]; then
+  # req 2: nothing new gated to ship (target=measure), or the tool's own
+  # gate check disagreed with doctor's read and skipped defensively above --
+  # either way this is the clean-skip path: journal it once, never a
+  # failed-redeploy/rollback line, and still measure whatever is running.
+  if [ -n "$doc_main" ] && [ "$doc_main" != "$doc_last_pass" ]; then
+    log "redeploy  skipped  (cause=ungated sha=$doc_main deployed=$doc_deployed)"
+    echo "$(ts) version=$deployed redeploy=skipped cause=ungated head=$doc_main $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy skipped, head ungated (last_pass already deployed)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+  fi
+  if [ "$cal" -gt 0 ]; then reason="calibration($cal left)"
+  else log "skip: $deployed already measured, no calibration runs left"; exit 0; fi
+fi
 # --- harness gate: measure only once a live session has completed signup -> publish -> call ---
 VER="$HOME/.config/vibeloop/harness-verified"; PROBE_LAST="$HOME/.config/vibeloop/harness-probe-last"; PROBE_EVERY="${HARNESS_PROBE_SECS:-21600}"
 if [ ! -f "$VER" ]; then
@@ -341,13 +353,13 @@ PY2
   if [ "$verdict" = "pass" ]; then
     date -u +%FT%TZ > "$VER"; log "harness probe PASS — measurement enabled from now on"
     # req 1: a probe that ran spends one session — the day's cap must see it.
-    echo "$(ts) version=$deployed harness-probe=PASS sessions_spent=1" >> "$MLEDGER"
+    echo "$(ts) version=$deployed harness-probe=PASS $DRIFT_FIELD sessions_spent=1" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe passed on $deployed" -- vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"harness-verified\",\"ts\":\"$(ts)\"}"
   else
     log "harness probe FAIL ($verdict) — not measuring; will re-probe in $((PROBE_EVERY/3600))h"
     cleanup_field=$(cleanup_tenants)
-    echo "$(ts) version=$deployed harness-probe=FAIL $verdict sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+    echo "$(ts) version=$deployed harness-probe=FAIL $verdict $DRIFT_FIELD sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
     git -C "$PRD_DIR" add "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
@@ -374,7 +386,7 @@ if [ ! -f "$out/measure.json" ]; then
   # consume run, so a killed/failed run leaves nothing on disk to sum from.
   ns=0; [ -f "$out/ledger.jsonl" ] && ns=$(wc -l < "$out/ledger.jsonl" 2>/dev/null || echo 0)
   log "measure FAILED rc=$rc (no measure.json) sessions_spent=$ns"
-  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc sessions_spent=$ns${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc $DRIFT_FIELD sessions_spent=$ns${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   if [ "$ns" -gt 0 ]; then
     read -r fail_usd fail_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
     ledger_cost measure "$fail_usd" "$deployed" "$fail_known"
@@ -474,7 +486,7 @@ PY
     fi
   fi
   echo "$(basename "$out")" > "$EVD/LATEST"; [ "$reason" != "new-version" ] && echo $((cal-1)) > "$CAL"
-  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") $DRIFT_FIELD sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   log "measure ok: $summary sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field"
 fi
 git -C "$PRD_DIR" add "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null

@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-11 — vibeloop-measure-deploy-last-pass
+
+`vibeloop-measure.sh`'s deploy-target selection now comes from `mcphost-deploy doctor`
+(main/last_pass/deployed-sha/drift) instead of the script's own git-tag/HEAD heuristic and its
+hand-rolled extend-gate/autobuilder gate check — the same canonical reckoning
+`mcphost-deploy-refuse-ungated`'s `redeploy --sha ... --skip-if-ungated` already enforces at the
+deploy boundary, now the single source of truth here too. When `last_pass` is ahead of `deployed`
+the script builds and ships it (`redeploy --sha <last_pass> --skip-if-ungated`, journaling
+`redeploy  target=last_pass sha=<sha>`); when they're equal, a red HEAD produces one clean
+`redeploy  skipped  (cause=ungated sha=<head> deployed=<sha>)` line and the measurement phase still
+runs — the old "GATE RED … not redeploying" branch (which never itself deployed anything, so ten
+hours of a red main meant ten hours of skipped redeploys instead of the newest gated release ever
+reaching prod) is gone. Every measure-cycle ledger line now carries `deploy_drift=<n|unknown>`
+(`doctor`'s own drift count); `vibeloop-digest.sh` reads the ledger's own drift history and adds one
+warning line when drift has been > 0 for 3+ consecutive cycles. New pure decision-logic functions
+in `.local/lib/vibeloop-measure-guards.sh` — `doctor_parse`, `lastpass_target`,
+`deploy_drift_field`, `drift_sustained` — are covered offline by `tests/lastpass_guards.test.sh`
+(test_prefix `lastpass`) against fixture `doctor` output, no network/ssh/live mcphost-deploy
+needed. Also fixed in the same change: `vibeloop-digest.sh` sourcing `vibeloop-measure-guards.sh`
+via `$HOME/.local/lib/...` broke under any fixture `$HOME` (tests/vibeloop-digest.test.sh's own
+isolated-HOME convention) — switched to a script-relative path, matching every other sourced lib in
+this family.
+
 ## 2026-09-06 — grand-loop-scaffold
 
 The outer loop around `mcphost-deploy measure` (PRD-grand-loop-scaffold, depends on
