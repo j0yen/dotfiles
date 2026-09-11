@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
           },
           {
             "type": "command",
@@ -31,7 +31,7 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/scripts/claude-self-start.sh"
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/claude-self-start.sh"
           },
           {
             "type": "command",
@@ -39,7 +39,7 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/scripts/learning-candidates-start.sh"
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/learning-candidates-start.sh"
           },
           {
             "type": "command",
@@ -47,11 +47,15 @@
           },
           {
             "type": "command",
-            "command": "sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/scripts/beacon-session-start.sh"
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/beacon-session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/hooks/token-ledger-banner.sh"
           }
         ]
       },
@@ -291,6 +295,15 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/block-expensive-spawn.sh"
           }
         ]
       }

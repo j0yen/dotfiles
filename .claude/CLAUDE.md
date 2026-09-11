@@ -1,3 +1,12 @@
+# Token discipline (2026-09-11 post-burn; ledger ~/.cache/token-ledger/)
+
+- Context cap: compact or hand off near ~100K context; no marathon sessions (09-10 runaway: 1,119 req × ~500K cache-read = 2/3 of all weighted burn).
+- Tool output >2KB goes to a file; read back a summary/tail only. Raw logs never accumulate in a Fable/Opus context.
+- One job = one session. Pin one model per session (mid-session model switch = full cache rewrite).
+- Every Agent spawn passes an explicit `model:`; opus/fable/fork spawns are hook-blocked (override: `touch ~/.claude/.allow-expensive-spawn`).
+- Status lines: TOKENS (yesterday weighted, from ledger) + forecast, next to COST. Weighted = in + 1.25·cache_write + 0.1·cache_read + 5·out.
+- Daily weighted budget 10M input-equiv; ledger says OVER → stop non-essential work, tell Joe.
+
 # Model routing — cheapest capable model always
 
 Ladder: Haiku < Sonnet < Opus/Fable. Route every delegated task to the cheapest tier that can do it; escalate only on an `ESCALATE:` return or failed attempt.

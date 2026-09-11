@@ -18,5 +18,19 @@ else
     printf '\n=== CLAUDE_SELF.md ===\n'
 fi
 
-cat "$SELF"
+# Bound emission even as the file regrows: only the newest N changelog
+# comment entries (the leading `<!-- changelog: ... -->` block the build
+# loop prepends to) are emitted; everything else (non-changelog prose)
+# passes through unchanged. Rotation of the rest lives in
+# CLAUDE_SELF.archive.md (see 2026-09-11 token-discipline pass).
+CHANGELOG_KEEP=5
+awk -v limit="$CHANGELOG_KEEP" '
+    BEGIN { n = 0; done = 0 }
+    !done && /^<!-- changelog:/ {
+        n++
+        if (n <= limit) print
+        next
+    }
+    { done = 1; print }
+' "$SELF"
 printf '\n=== /CLAUDE_SELF.md ===\n'
