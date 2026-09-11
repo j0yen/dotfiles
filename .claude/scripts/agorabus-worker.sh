@@ -29,8 +29,13 @@ runner=/home/jsy/.claude/scripts/agorabus-delegate-runner.sh
 tickets_dir=/home/jsy/.cache/agorabus/tickets
 sid="${1:-}"
 worker_cwd="${2:-$HOME}"
+# Owner pid (Fix 2, 2026-09-11 worker-leak): the Claude session's root pid,
+# passed by agorabus-session-start.sh. OPTIONAL and backward compatible —
+# absent for old spawns or any other caller, in which case no self-exit
+# watchdog runs and behavior is unchanged from before this fix.
+owner_pid="${3:-}"
 if [ -z "$sid" ]; then
-    echo "usage: agorabus-worker.sh <sid> [cwd]" >&2
+    echo "usage: agorabus-worker.sh <sid> [cwd] [owner_pid]" >&2
     exit 2
 fi
 
@@ -151,6 +156,28 @@ spawn_delegate_runner() {
 
 log_event "worker-start sid=$sid"
 reap_stale_tickets
+
+# Fix 2 (2026-09-11, worker-leak): if the owning Claude session's root pid
+# is gone and no owner_pid arg was given, this worker used to run forever
+# once SessionEnd's pkill missed it (see agorabus-sid.sh for the matching
+# root cause). When owner_pid IS given, poll it every ~30s in the
+# background; once it's dead, SIGTERM our own process group — we are the
+# setsid leader (spawned via `setsid bash -c "exec agorabus-worker.sh ..."`)
+# so this also kills the subscribe process below. Not a busy-loop: the
+# watchdog just sleeps between checks. Cleaned up on normal worker exit via
+# the trap so it never outlives this script.
+watchdog_pid=""
+if [ -n "$owner_pid" ]; then
+    (
+        while kill -0 "$owner_pid" 2>/dev/null; do
+            sleep 30
+        done
+        log_event "owner-dead owner=$owner_pid — self-terminating"
+        kill -TERM -- "-$$" 2>/dev/null || true
+    ) &
+    watchdog_pid=$!
+    trap '[ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true' EXIT
+fi
 
 "$agorabus" subscribe "rpc.req.${sid}" --session-id "$worker_conn_sid" 2>/dev/null \
 | while IFS= read -r line; do

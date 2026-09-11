@@ -63,6 +63,40 @@ _log_handshake() {
         >> "$hlog" 2>/dev/null || true
 }
 
+# `setsid CMD & pid=$!` is NOT reliable for getting the real spawned pid:
+# setsid forks when the caller is already a process-group leader (observed
+# on this host — $! is the short-lived setsid wrapper, which exits right
+# after forking; the actual target gets a different pid). Have the target
+# report its own $$ (stable across `exec`, which keeps the pid) to a
+# pidfile instead, and poll briefly for it.
+_read_spawned_pid() {
+    local pidfile="$1" i
+    for i in 1 2 3 4 5; do
+        [ -s "$pidfile" ] && break
+        sleep 0.1
+    done
+    cat "$pidfile" 2>/dev/null || true
+    rm -f "$pidfile" 2>/dev/null || true
+}
+
+# Fix 2 (2026-09-11, worker-leak): detached setsid subscribers had no
+# parent-death exit — if the owning Claude session died without SessionEnd
+# ever running (crash, kill -9, disconnect), the subscriber ran forever.
+# Spawns a tiny detached watchdog that polls the owner every 30s and
+# SIGTERMs the target's whole process group (it is a setsid leader) once
+# the owner is gone. Self-cleaning: once it fires, or once its target is
+# already dead, the watchdog process itself exits. No-op if either arg is
+# empty (defensive; call sites always pass both).
+_spawn_death_watchdog() {
+    local owner_pid="$1" target_pgid="$2"
+    [ -n "$owner_pid" ] && [ -n "$target_pgid" ] || return 0
+    setsid bash -c "
+        while kill -0 $owner_pid 2>/dev/null; do sleep 30; done
+        kill -TERM -- -$target_pgid 2>/dev/null || true
+    " </dev/null >/dev/null 2>&1 &
+    disown
+}
+
 # Poll until `agorabus peers` lists a peer matching $1, up to $2 times at 0.3s.
 # Returns 0 if found, 1 if exhausted.
 _poll_peer() {
@@ -79,34 +113,48 @@ _poll_peer() {
 }
 
 # ── Derive session-id ────────────────────────────────────────────────────
-
-# Find Claude's PID. Hook may be invoked directly (PPID=claude) or via
-# a wrapper shell (PPID=sh, grandparent=claude). Walk up one if needed.
-root="$PPID"
-if [ -r "/proc/$PPID/comm" ]; then
-    parent_comm=$(cat "/proc/$PPID/comm" 2>/dev/null || true)
-    if [ "$parent_comm" != "claude" ]; then
-        grand=$(awk '{print $4}' "/proc/$PPID/stat" 2>/dev/null || true)
-        if [ -n "$grand" ] && [ "$grand" != "1" ]; then
-            root="$grand"
-        fi
-    fi
-fi
+# Shared with agorabus-session-end.sh via agorabus-sid.sh so both scripts
+# derive the IDENTICAL sid for the same session (2026-09-11: worker-leak
+# root cause — this script used the agentns-aware derivation, session-end
+# used the PID fallback only, so its pkill never matched on agentns
+# kernels and workers orphaned).
 
 cwd="${CLAUDE_PROJECT_DIR:-$PWD}"
 project=$(basename "$cwd")
 
-# Derive session-id from the kernel agentns when available (wintermute kernel).
-# The kernel writes a stable 32-char hex id into /proc/self/agent_session once
-# unshare(CLONE_NEWAGENT) has been called (via agentns-claude). Falls back to
-# the PID-based synthesis on stock kernels or when the id reads all zeros.
-sid_kernel=$(cat /proc/self/agent_session 2>/dev/null || true)
-if [[ -n "$sid_kernel" ]] && [[ "$sid_kernel" != "00000000000000000000000000000000" ]]; then
-    # Use first 16 hex chars (64 bits) as a compact stable prefix.
-    sid="claude-${sid_kernel:0:16}-${project}"
+sid_helper="$HOME/.claude/scripts/agorabus-sid.sh"
+if [ -r "$sid_helper" ]; then
+    # shellcheck disable=SC1090
+    source "$sid_helper"
+    root=$(agorabus_derive_root_pid "$PPID")
+    sid=$(agorabus_derive_sid "$root" "$project")
 else
-    # Fallback: PID-based synthesis (stock kernels / pre-agentns-claude sessions).
-    sid="claude-${root}-${project}"
+    # Fallback: helper not yet propagated to this host. Inline copy of the
+    # original derivation logic (kept identical to agorabus-sid.sh).
+    root="$PPID"
+    if [ -r "/proc/$PPID/comm" ]; then
+        parent_comm=$(cat "/proc/$PPID/comm" 2>/dev/null || true)
+        if [ "$parent_comm" != "claude" ]; then
+            grand=$(awk '{print $4}' "/proc/$PPID/stat" 2>/dev/null || true)
+            if [ -n "$grand" ] && [ "$grand" != "1" ]; then
+                root="$grand"
+            fi
+        fi
+    fi
+    sid_kernel=$(cat /proc/self/agent_session 2>/dev/null || true)
+    if [[ -n "$sid_kernel" ]] && [[ "$sid_kernel" != "00000000000000000000000000000000" ]]; then
+        sid="claude-${sid_kernel:0:16}-${project}"
+    else
+        sid="claude-${root}-${project}"
+    fi
+fi
+
+# Test hook only: dump the derived sid and exit before any daemon/subscriber
+# side effects, so the sid-matching fix can be verified without spawning
+# live processes. Never set in normal hook invocation.
+if [ -n "${AGORABUS_SID_DEBUG:-}" ]; then
+    printf '%s\n' "$sid"
+    exit 0
 fi
 
 hlog="$handshake_dir/${sid}.log"
@@ -152,8 +200,11 @@ if pgrep -f "agorabus subscribe --session-id $sid" >/dev/null 2>&1; then
     _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
         "$sid" "sub_attach" 0 "already_attached:ok" "$elapsed"
 else
-    setsid bash -c "exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
+    sub_pidfile="$cache/.sub-pid.${sid}.$$"
+    setsid bash -c "echo \$\$ >'$sub_pidfile'; exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
     disown
+    sub_pid=$(_read_spawned_pid "$sub_pidfile")
+    _spawn_death_watchdog "$root" "$sub_pid"
     # Brief moment for the subscriber's announce to land.
     sleep 0.2
 
@@ -168,8 +219,11 @@ else
         # Kill the failed subscriber if still alive.
         pkill -f "agorabus subscribe --session-id $sid" 2>/dev/null || true
         sleep 0.1
-        setsid bash -c "exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
+        sub_pidfile="$cache/.sub-pid.${sid}.$$"
+        setsid bash -c "echo \$\$ >'$sub_pidfile'; exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
         disown
+        sub_pid=$(_read_spawned_pid "$sub_pidfile")
+        _spawn_death_watchdog "$root" "$sub_pid"
         sleep 0.2
         if _poll_peer "$sid" 5; then
             elapsed=$(( $(_now_ms) - phase_start ))
@@ -209,7 +263,11 @@ else
     workers="$cache/workers"
     mkdir -p "$workers" 2>/dev/null || true
     spawn_log="$workers/${sid}.spawn.log"
-    setsid bash -c "exec '$worker' '$sid' '$cwd' >>'$spawn_log' 2>&1" </dev/null &
+    # Pass our derived root pid as the worker's owner-pid arg (Fix 2,
+    # 2026-09-11): lets the worker self-terminate if this Claude session
+    # dies without SessionEnd ever running. Backward compatible — an older
+    # worker script that ignores a 3rd arg behaves exactly as before.
+    setsid bash -c "exec '$worker' '$sid' '$cwd' '$root' >>'$spawn_log' 2>&1" </dev/null &
     disown
     sleep 0.2
 
@@ -223,7 +281,7 @@ else
             "$sid" "worker_attach" 1 "fail" "$(( $(_now_ms) - phase_start ))"
         pkill -f "agorabus-worker.sh $sid\$" 2>/dev/null || true
         sleep 0.1
-        setsid bash -c "exec '$worker' '$sid' '$cwd' >>'$spawn_log' 2>&1" </dev/null &
+        setsid bash -c "exec '$worker' '$sid' '$cwd' '$root' >>'$spawn_log' 2>&1" </dev/null &
         disown
         sleep 0.2
         if _poll_peer "$worker_sid" 5; then
