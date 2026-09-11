@@ -28,6 +28,19 @@ trap 'rm -f "$tmp"' EXIT
 # only when queued work can use the box (rust/python targets); `down`
 # decides keep/schedule/delete itself; `watchdog` enforces the TTL backstop.
 # All best-effort — a burst failure must never block the tick.
+# --- quota pacing (Joe 2026-09-11: 20% of the weekly quota in 12h) ----------
+# Hard cap on /build ticks per UTC day. Each tick is a full Sonnet session; retries of the
+# same red HEAD burned a day's budget on 2026-09-11. Journal every tick start so the count
+# is observable (fleet-status.sh reads it). Override with BUILD_TICKS_PER_DAY.
+TICK_CAP="${BUILD_TICKS_PER_DAY:-24}"
+today=$(date -u +%F)
+ticks_today=$(grep -c "^${today}.* tick: start" "$LOG" 2>/dev/null || echo 0)
+if [ "$ticks_today" -ge "$TICK_CAP" ]; then
+  echo "$(ts) tick: skipped (cause=tick-cap ticks_today=$ticks_today cap=$TICK_CAP)" >> "$LOG"
+  echo "$(ts)  loop  tick-cap  (ticks_today=$ticks_today cap=$TICK_CAP — no tick until the next UTC day)" >> "$HOME/brain/journal/build/$today.md"
+  exit 0
+fi
+echo "$(ts) tick: start (n=$((ticks_today+1))/$TICK_CAP)" >> "$LOG"
 BURST="$HOME/.claude/skills/build/scripts/burst-lane.sh"
 PRD_QUEUE="$HOME/Documents/PRDs/build-queue"
 if [ -x "$BURST" ] && grep -lqE '^- build_target: *(rust|python)' "$PRD_QUEUE"/*.md 2>/dev/null; then
