@@ -15,17 +15,34 @@ hcloud server list -o noheader -o columns=id,name,created 2>/dev/null | awk '/bu
   age=$(( now - created_s ))
   into_hour=$(( age % 3600 ))            # seconds into the current billed hour
   hour_start=$(( now - into_hour ))
-  [ "$into_hour" -lt 3240 ] && continue   # act only in the last 6 minutes of the billed hour
+  # Fast path (checked BEFORE the last-6-minutes billed-hour gate below): a
+  # box that has served zero runs across its entire lifetime and is already
+  # older than ~15 min is dead weight regardless of where it sits in the
+  # billed hour — waiting for the hour boundary just burns another full
+  # billed hour on nothing. Conservative: only fires when jq is present and
+  # session.json parses cleanly; any other case falls through to the
+  # existing gates unchanged.
+  cause=""
+  if command -v jq >/dev/null 2>&1 && [ -f "$S" ] && [ "$age" -gt 900 ]; then
+    runs_served=$(jq -er '.runs_served' "$S" 2>/dev/null)
+    [ "$runs_served" = "0" ] && cause="zero-runs-lifetime"
+  fi
+  if [ -z "$cause" ]; then
+    [ "$into_hour" -lt 3240 ] && continue   # act only in the last 6 minutes of the billed hour
+  fi
   runs_this_hour=0
   while read -r line; do
     t=$(date -d "${line:0:20}" +%s 2>/dev/null) || continue
     [ "$t" -ge "$hour_start" ] && runs_this_hour=$((runs_this_hour+1))
   done < <(grep -E 'run  routed|gate  .*host=' "$J" 2>/dev/null | tail -200)
-  cause=""
-  [ "$loop_active" != "active" ] && cause="loop-stopped"
+  [ -z "$cause" ] && [ "$loop_active" != "active" ] && cause="loop-stopped"
   [ -z "$cause" ] && [ "$runs_this_hour" -eq 0 ] && cause="idle-this-billed-hour"
   if [ -z "$cause" ]; then
     echo "$(date -u +%FT%TZ)  burst-lane  idle-guard  keep  (server_id=$id billed_hour=$((age/3600+1)) runs_this_hour=$runs_this_hour)" >> "$J"
+    continue
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "$(date -u +%FT%TZ)  burst-lane  idle-guard  DRY-RUN would-delete  (server_id=$id cause=idle-guard:$cause billed_hours=$((age/3600+1)) runs_this_hour=$runs_this_hour)" >> "$J"
     continue
   fi
   if hcloud server delete "$id" >/dev/null 2>&1; then

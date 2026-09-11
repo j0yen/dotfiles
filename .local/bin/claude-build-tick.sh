@@ -34,7 +34,7 @@ trap 'rm -f "$tmp"' EXIT
 # is observable (fleet-status.sh reads it). Override with BUILD_TICKS_PER_DAY.
 TICK_CAP="${BUILD_TICKS_PER_DAY:-24}"
 today=$(date -u +%F)
-ticks_today=$(grep -c "^${today}.* tick: start" "$LOG" 2>/dev/null || echo 0)
+ticks_today=$(grep -c "^${today}.* tick: start" "$LOG" 2>/dev/null); ticks_today=${ticks_today:-0}
 if [ "$ticks_today" -ge "$TICK_CAP" ]; then
   echo "$(ts) tick: skipped (cause=tick-cap ticks_today=$ticks_today cap=$TICK_CAP)" >> "$LOG"
   echo "$(ts)  loop  tick-cap  (ticks_today=$ticks_today cap=$TICK_CAP — no tick until the next UTC day)" >> "$HOME/brain/journal/build/$today.md"
@@ -44,7 +44,11 @@ echo "$(ts) tick: start (n=$((ticks_today+1))/$TICK_CAP)" >> "$LOG"
 BURST="$HOME/.claude/skills/build/scripts/burst-lane.sh"
 PRD_QUEUE="$HOME/Documents/PRDs/build-queue"
 if [ -x "$BURST" ] && grep -lqE '^- build_target: *(rust|python)' "$PRD_QUEUE"/*.md 2>/dev/null; then
-  timeout 420 "$BURST" up >>"$LOG" 2>&1 || true
+  if . "$HOME/.claude/skills/build/scripts/lib/burst-configured.sh" 2>/dev/null && burst_configured; then
+    timeout 420 "$BURST" up >>"$LOG" 2>&1 || true
+  else
+    echo "$(date -u +%FT%TZ) tick: burst skipped (RedBaron-local)" >>"$LOG"
+  fi
 fi
 
 "$CLAUDE_BIN" -p "/build" --model sonnet --dangerously-skip-permissions --output-format text 2>&1 \
