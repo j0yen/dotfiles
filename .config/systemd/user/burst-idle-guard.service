@@ -1,0 +1,6 @@
+[Unit]
+Description=Delete any idle burst box (loop stopped, or no routed run in 60 min, or age >= 6h) — Joe 2026-09-11: idle = delete
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -lc %h/.local/bin/burst-idle-guard.sh
