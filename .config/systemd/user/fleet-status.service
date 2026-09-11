@@ -1,0 +1,6 @@
+[Unit]
+Description=Hourly fleet status block (LOOP/QUEUE/PROD/COST/QUOTA/GATE/DISK) into the build journal; cargo/ssh only
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/fleet-status.sh --journal"
