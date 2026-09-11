@@ -309,8 +309,23 @@ if [ "${target%% *}" = redeploy ]; then
     # or a remote/ELF error before the switch ever took effect) leaves
     # $deployed — the hub's serving version — unchanged; `deploy_failed`
     # plus the numeric exit code is the literal token AC2 asks for.
+    #
+    # PRD-mcphost-deploy-incompatible-migration requirement 4: rc=5 is
+    # redeploy_mod.EXIT_INCOMPATIBLE -- this measure step never passes
+    # --migrate-incompatible/--authorized-by (that's an operator's own,
+    # gated decision), so an rc=5 here is always the plain, unauthorized
+    # refusal path, which `redeploy` itself already journaled. Re-reading
+    # `doctor` right after names how many consecutive cycles that streak
+    # is now at, in this same run record, rather than only in the next
+    # cycle's separately-timed doctor read.
+    deploy_refused_field=""
+    if [ "$redeploy_rc" -eq 5 ]; then
+      refused_doctor_txt=$( cd "$DEPLOY" && timeout 30 uv run mcphost-deploy doctor --host "$HOST" 2>&1 )
+      refused_n=$(echo "$refused_doctor_txt" | grep -oE 'deploy_refused_cycles=[0-9]+' | head -1 | cut -d= -f2)
+      deploy_refused_field=" deploy_refused=${refused_n:-1}"
+    fi
     log "redeploy FAILED rc=$redeploy_rc (hub still $deployed) — not measuring"
-    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no $DRIFT_FIELD sessions_spent=0$deploy_refused_field" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass redeploy $lp_sha failed rc=$redeploy_rc, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"redeploy-failed\",\"version\":\"$built\",\"exit_code\":$redeploy_rc,\"ts\":\"$(ts)\"}"; exit 0
   fi

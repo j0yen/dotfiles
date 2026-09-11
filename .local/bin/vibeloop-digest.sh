@@ -47,6 +47,25 @@ if [ -f "$ML_PATH" ]; then
   fi
 fi
 
+# PRD-mcphost-deploy-incompatible-migration requirement 4: "a repeated
+# deploy refusal is visible in the digest within the hour" -- `doctor`
+# already carries `deploy_refused_cycles`/`refusal_cause`/
+# `incompatible_since` (its own journal-derived counter, same idiom as
+# `--force-ungated`'s journal), so the digest just reads that one line
+# instead of re-deriving anything from the measure ledger the way
+# DRIFT_WARN above does. Best-effort: an unreachable/missing
+# mcphost-deploy leaves this at 0, never aborts the digest.
+DEPLOY_REFUSED_CYCLES=0
+DEPLOY_REFUSED_CAUSE=""
+DEPLOY_INCOMPATIBLE_SINCE=""
+DOCTOR_OUT="$(cd "$HOME/wintermute/mcphost-deploy" 2>/dev/null && timeout 30 uv run mcphost-deploy doctor --host mcphost-1 2>/dev/null)"
+if [ -n "$DOCTOR_OUT" ]; then
+  DEPLOY_REFUSED_CYCLES="$(echo "$DOCTOR_OUT" | grep -oE 'deploy_refused_cycles=[0-9]+' | head -1 | cut -d= -f2)"
+  DEPLOY_REFUSED_CYCLES="${DEPLOY_REFUSED_CYCLES:-0}"
+  DEPLOY_REFUSED_CAUSE="$(echo "$DOCTOR_OUT" | grep -oE 'cause=[^[:space:])]+' | head -1 | cut -d= -f2)"
+  DEPLOY_INCOMPATIBLE_SINCE="$(echo "$DOCTOR_OUT" | grep -oE 'incompatible_since=[^[:space:]]+' | head -1 | cut -d= -f2)"
+fi
+
 commit=1
 date_arg=""
 for a in "$@"; do
@@ -68,6 +87,8 @@ DIGEST_MD="$(
   LOG_AUTO="$LOG_AUTO" LOG_MEASURE="$LOG_MEASURE" \
   MAX_COST_USD_PER_DAY="${MAX_COST_USD_PER_DAY:-}" MAX_COST_USD_PER_WEEK="${MAX_COST_USD_PER_WEEK:-}" \
   DRIFT_WARN="$DRIFT_WARN" \
+  DEPLOY_REFUSED_CYCLES="$DEPLOY_REFUSED_CYCLES" DEPLOY_REFUSED_CAUSE="$DEPLOY_REFUSED_CAUSE" \
+  DEPLOY_INCOMPATIBLE_SINCE="$DEPLOY_INCOMPATIBLE_SINCE" \
   python3 - <<'PY'
 import collections, datetime, json, os, re, sys, time, calendar
 
@@ -421,6 +442,23 @@ else:
 # gated release, not just mid-cycle noise.
 if os.environ.get("DRIFT_WARN") == "1":
     out.append("- ⚠ deploy_drift has been > 0 for 3+ consecutive cycles — production is behind the newest gated release")
+
+# PRD-mcphost-deploy-incompatible-migration requirement 4/AC4: doctor's own
+# deploy_refused_cycles counter, loud here starting at 2 (same threshold
+# doctor's own render() warns at, and hawk-probe.sh's DEPLOY-REFUSED line
+# uses).
+try:
+    _refused_cycles = int(os.environ.get("DEPLOY_REFUSED_CYCLES") or "0")
+except ValueError:
+    _refused_cycles = 0
+if _refused_cycles >= 2:
+    _cause = os.environ.get("DEPLOY_REFUSED_CAUSE") or "unknown"
+    _since = os.environ.get("DEPLOY_INCOMPATIBLE_SINCE") or ""
+    _since_part = f", incompatible_since={_since}" if _since else ""
+    out.append(
+        f"- ⚠ deploy refused {_refused_cycles} consecutive cycles "
+        f"(cause={_cause}{_since_part}) — see `mcphost-deploy doctor`"
+    )
 
 evd = os.path.join(PRD_DIR, "evidence", "mcp-host", "measure")
 latest_path = os.path.join(evd, "LATEST")
