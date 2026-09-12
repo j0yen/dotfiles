@@ -254,13 +254,18 @@ target=$(lastpass_target "$doc_last_pass" "$doc_deployed")
 # every ledger line from here on carries (Goals: "one deploy outcome per
 # run with its cause"). Default is "nothing was due this cycle" -- the
 # redeploy branch below overwrites all four the moment it decides otherwise.
-deploy_outcome=not-due; deploy_cause=none; deploy_range=""; deployed_sha_field="$deployed"
+deploy_outcome=not-due; deploy_cause=none; deploy_range=""; deployed_sha_field="$doc_deployed"
 if [ "${target%% *}" = redeploy ]; then
   lp_sha="${target#redeploy }"
-  # req 1/2: the authorization range is built from the SAME doctor/healthz
-  # read used to pick this target -- $deployed and $lp_sha are both this
-  # run's own variables, never a cached file.
-  authorize_range=$(deploy_authorize_range "$deployed" "$lp_sha")
+  # req 1/2: the authorization range is built from the SAME doctor read used
+  # to pick this target -- $doc_deployed and $lp_sha are both this run's own
+  # variables, never a cached file. $deployed is the healthz semantic version
+  # (e.g. "0.43.0"), never a sha -- mcphost-deploy's authorize check compares
+  # against its own sha-based deployed reckoning and refuses on a version-vs-
+  # sha mismatch (observed live 2026-09-12T12:52Z: authorize
+  # '0.43.0..0f24e14...' did not match 'bb5b466...0f24e14...'). doc_deployed
+  # is the sha doctor_parse just read from the same doctor call.
+  authorize_range=$(deploy_authorize_range "$doc_deployed" "$lp_sha")
   if rolled_back_pending "$ROLLED_BACK_STATE" "$lp_sha"; then
     # req 8/AC8: the same range already rolled back once -- do not retry it
     # every hour; wait for last_pass itself to move (a new green build).
@@ -333,7 +338,12 @@ if [ "${target%% *}" = redeploy ]; then
     # tried to authorize the migration.
     [ "$unattended" != 1 ] && deploy_cause=disabled-by-step
     if [ "$deploy_outcome" = deployed ]; then
-      deployed=$(probe_deployed_version); deployed_sha_field="$deployed"
+      deployed=$(probe_deployed_version)
+      # deployed_sha (P0 req 3) is a sha, not the healthz semantic version --
+      # the tool only ever returns 0 here after its own probe confirmed
+      # $lp_sha is serving, so that's the post-run doctor-shaped truth
+      # without a second live doctor round-trip.
+      deployed_sha_field="$lp_sha"
       log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"; redeployed=1
       compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
       # req 1/AC1: the redeploy event's own ledger + journal lines — from/to
@@ -356,8 +366,10 @@ if [ "${target%% *}" = redeploy ]; then
       # this step — $deployed (the hub's serving version) is unchanged, the
       # outcome/cause are recorded, and the run falls through to measure
       # whatever is still deployed (no early `exit 0` here anymore) so the
-      # loop stays green and measuring.
-      deployed_sha_field="$deployed"
+      # loop stays green and measuring. deployed_sha stays $doc_deployed --
+      # the sha this run's own doctor read said was serving before the
+      # (failed) attempt; nothing changed it.
+      deployed_sha_field="$doc_deployed"
       [ "$deploy_outcome" = rolled-back ] && record_rolled_back_pending "$ROLLED_BACK_STATE" "$lp_sha"
       # PRD-mcphost-deploy-incompatible-migration requirement 4: re-reading
       # `doctor` right after names how many consecutive cycles this streak
