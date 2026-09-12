@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+# token-ledger — one row per UTC day of weighted Claude token usage across
+# the fleet (carbon, redbaron, ryzen7), bucketed by each record's OWN
+# timestamp, never by run time. PRD-token-ledger-day-buckets.
+#
+# Weighted = in + 1.25*cache_write + 0.1*cache_read + 5*out (CLAUDE.md
+# formula, 2026-09-11; unchanged by this PRD). Dedup key is message.id,
+# keeping the record with the latest timestamp (its final cumulative
+# usage) — a message can appear on more than one JSONL line as usage
+# accumulates while it streams.
+#
+# Usage:
+#   token-ledger [--since ISO] [--until ISO]  upsert day rows for [since,until)
+#   token-ledger --day YYYY-MM-DD             recompute exactly one day
+#   token-ledger --check                      validate ledger.tsv + message
+#                                              index, non-zero exit on
+#                                              corruption (P1)
+#   token-ledger --emit-local-records --since ISO
+#       internal: print this host's own raw (non-deduped) records as
+#       NDJSON. The exact same binary runs this mode over ssh on each
+#       remote fleet host — that's how the orchestrator on one node reads
+#       another node's data without duplicating the extraction logic.
+#
+# State lives under $TOKEN_LEDGER_STATE_DIR (default ~/.cache/token-ledger):
+#   ledger.tsv          one row per UTC day: date, per_model, weighted,
+#                        status, complete, hosts, missing, generated
+#   message-index.tsv   id -> day; an internal companion file that lets
+#                        --check catch a message double-counted across two
+#                        days without re-scanning every JSONL on disk
+#   today-summary.txt   the one line the SessionStart banner hook cats
+#
+# Testability knobs (env vars; all optional, all default to the real
+# thing): TOKEN_LEDGER_STATE_DIR, TOKEN_LEDGER_JSONL_ROOT,
+# TOKEN_LEDGER_HOSTS ("carbon redbaron ryzen7" default),
+# TOKEN_LEDGER_LOCAL_HOST (default `hostname -s`), TOKEN_LEDGER_SSH_TIMEOUT
+# (default 8s), TOKEN_LEDGER_NOW (fakes "now" for default-window math and
+# the summary's yesterday/today split), TOKEN_BUDGET_WEIGHTED (unset or 0
+# => "budget off" status, per CLAUDE.md 2026-09-12 removal of the daily cap).
+set -uo pipefail
+
+STATE_DIR="${TOKEN_LEDGER_STATE_DIR:-$HOME/.cache/token-ledger}"
+JSONL_ROOT="${TOKEN_LEDGER_JSONL_ROOT:-$HOME/.claude/projects}"
+HOSTS_STR="${TOKEN_LEDGER_HOSTS:-carbon redbaron ryzen7}"
+LOCAL_HOST="${TOKEN_LEDGER_LOCAL_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+SSH_TIMEOUT="${TOKEN_LEDGER_SSH_TIMEOUT:-8}"
+BUDGET="${TOKEN_BUDGET_WEIGHTED:-0}"
+NOW="${TOKEN_LEDGER_NOW:-$(date -u +%FT%TZ)}"
+
+LEDGER_TSV="$STATE_DIR/ledger.tsv"
+INDEX_TSV="$STATE_DIR/message-index.tsv"
+SUMMARY_TXT="$STATE_DIR/today-summary.txt"
+LEDGER_HEADER=$'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated'
+
+# jq filter: one assistant/usage record -> {id, ts, model, in, cw, cr, out}.
+JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id != null and .timestamp != null)
+  | {id: .message.id, ts: .timestamp, model: (.message.model // "unknown"),
+     in: (.message.usage.input_tokens // 0),
+     cw: (.message.usage.cache_creation_input_tokens // 0),
+     cr: (.message.usage.cache_read_input_tokens // 0),
+     out: (.message.usage.output_tokens // 0)}'
+
+die() { printf 'token-ledger: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage: token-ledger [--since ISO] [--until ISO]
+       token-ledger --day YYYY-MM-DD
+       token-ledger --check
+       token-ledger --emit-local-records --since ISO
+EOF
+}
+
+# status_for WEIGHTED -> "budget off" | "OVER" | "UNDER <budget>"
+status_for() {
+  local w="$1"
+  if [ -z "$BUDGET" ] || [ "$BUDGET" = "0" ]; then
+    echo "budget off"
+  elif [ "$w" -gt "$BUDGET" ]; then
+    echo "OVER"
+  else
+    echo "UNDER $BUDGET"
+  fi
+}
+
+# gather_raw SINCE -> this host's own raw (non-deduped) records as NDJSON,
+# tagged host=$LOCAL_HOST. The mtime prefilter only skips whole files that
+# could not possibly hold anything in range; the real per-record window
+# filter happens later, centrally, after dedup (a message's true final
+# line decides both its day and whether it's in scope).
+gather_raw() {
+  local since="$1" cutoff_epoch
+  cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
+  find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null \
+    | xargs -0 -r cat -- 2>/dev/null \
+    | jq -c --arg host "$LOCAL_HOST" "$JQ_EXTRACT | . + {host:\$host}" 2>/dev/null
+}
+
+# --emit-local-records is handled first and standalone: it never touches
+# $STATE_DIR, never talks to other hosts, and is what runs (via ssh, same
+# binary) on every OTHER fleet host when this script is the orchestrator.
+if [ "${1:-}" = "--emit-local-records" ]; then
+  shift
+  since_arg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) since_arg="${2:-}"; shift 2 ;;
+      --until) shift 2 ;;  # accepted for symmetry; emit mode never window-filters
+      *) shift ;;
+    esac
+  done
+  [ -n "$since_arg" ] || die "--emit-local-records requires --since"
+  gather_raw "$since_arg"
+  exit 0
+fi
+
+since=""
+until_=""
+day=""
+check=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --since) since="${2:-}"; shift 2 ;;
+    --until) until_="${2:-}"; shift 2 ;;
+    --day) day="${2:-}"; shift 2 ;;
+    --check) check=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
+
+mkdir -p "$STATE_DIR"
+
+# ---- migration: an old-format ledger.tsv (pre this PRD; overlapping
+# run-labeled rows) is renamed aside and rebuilt from JSONL for whatever
+# days are still on disk — never invented, never silently merged. ------
+migrate_legacy_ledger() {
+  [ -f "$LEDGER_TSV" ] || return 0
+  local first_line
+  first_line="$(head -n1 -- "$LEDGER_TSV" 2>/dev/null || true)"
+  [ "$first_line" = "$LEDGER_HEADER" ] && return 0
+  local bak="$STATE_DIR/ledger.tsv.pre-buckets"
+  [ -e "$bak" ] && bak="$STATE_DIR/ledger.tsv.pre-buckets.$(date -u +%Y%m%dT%H%M%SZ)"
+  mv -- "$LEDGER_TSV" "$bak"
+  printf 'token-ledger: migrated legacy ledger -> %s\n' "$bak" >&2
+}
+migrate_legacy_ledger
+
+# ---- --check (P1): validate current on-disk state, no JSONL rescan. ----
+if [ "$check" -eq 1 ]; then
+  fail=0
+  if [ -f "$LEDGER_TSV" ]; then
+    while IFS=$'\t' read -r c_date c_permodel c_weighted _rest; do
+      [ "$c_date" = "date" ] && continue
+      [ -z "$c_date" ] && continue
+      sum=0
+      if [ -n "$c_permodel" ]; then
+        IFS=';' read -ra parts <<< "$c_permodel"
+        for p in "${parts[@]}"; do
+          [ -z "$p" ] && continue
+          w="${p#*=}"
+          sum=$((sum + w))
+        done
+      fi
+      if [ "$sum" != "$c_weighted" ]; then
+        printf 'token-ledger --check: %s: weighted=%s but per_model sums to %s\n' "$c_date" "$c_weighted" "$sum" >&2
+        fail=1
+      fi
+    done < "$LEDGER_TSV"
+  fi
+  if [ -f "$INDEX_TSV" ]; then
+    declare -A id_date
+    while IFS=$'\t' read -r m_id m_date; do
+      [ -z "$m_id" ] && continue
+      if [ -n "${id_date[$m_id]:-}" ] && [ "${id_date[$m_id]}" != "$m_date" ]; then
+        printf 'token-ledger --check: message %s counted in day %s and %s\n' "$m_id" "${id_date[$m_id]}" "$m_date" >&2
+        fail=1
+      else
+        id_date[$m_id]="$m_date"
+      fi
+    done < "$INDEX_TSV"
+  fi
+  if [ "$fail" -eq 0 ]; then
+    echo "token-ledger --check: ok"
+  fi
+  exit "$fail"
+fi
+
+# ---- window: --day pins since/until to that day's UTC boundaries; ------
+# otherwise default until=now, default since=earliest incomplete day in
+# ledger.tsv (or yesterday 00:00Z when the file is empty/absent). --------
+if [ -n "$day" ]; then
+  since="${day}T00:00:00Z"
+  until_="$(date -u -d "$day +1 day" +%FT%TZ)"
+fi
+
+[ -n "$until_" ] || until_="$NOW"
+
+default_since() {
+  if [ -f "$LEDGER_TSV" ]; then
+    local earliest
+    earliest="$(tail -n +2 -- "$LEDGER_TSV" 2>/dev/null | awk -F'\t' '$5=="no"{print $1}' | sort | head -n1)"
+    if [ -n "$earliest" ]; then
+      printf '%sT00:00:00Z\n' "$earliest"
+      return
+    fi
+  fi
+  printf '%sT00:00:00Z\n' "$(date -u -d "$NOW -1 day" +%F)"
+}
+[ -n "$since" ] || since="$(default_since)"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+records_file="$work/records.ndjson"
+: > "$records_file"
+
+gather_raw "$since" >> "$records_file"
+
+missing_hosts=()
+reachable_hosts=("$LOCAL_HOST")
+for h in $HOSTS_STR; do
+  [ "$h" = "$LOCAL_HOST" ] && continue
+  hf="$work/remote-$h.ndjson"
+  if timeout "$SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" \
+       token-ledger --emit-local-records --since "$since" > "$hf" 2>/dev/null; then
+    cat -- "$hf" >> "$records_file"
+    reachable_hosts+=("$h")
+  else
+    missing_hosts+=("$h")
+  fi
+done
+
+hosts_csv="$(printf '%s\n' "${reachable_hosts[@]}" | sort -u | paste -sd, -)"
+missing_csv=""
+[ "${#missing_hosts[@]}" -gt 0 ] && missing_csv="$(printf '%s\n' "${missing_hosts[@]}" | sort -u | paste -sd, -)"
+
+# ---- dedup by message.id (keep the latest ts), THEN window-filter, THEN
+# bucket by the winning record's own day. -----------------------------
+agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
+  [inputs]
+  | group_by(.id)
+  | map(sort_by(.ts) | last)
+  | map(select(.ts >= $since and .ts < $until))
+  | group_by(.ts[0:10])
+  | map({
+      date: .[0].ts[0:10],
+      per_model: (
+        group_by(.model)
+        | map({model: .[0].model, w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
+        | sort_by(.model)
+      ),
+      ids: [.[].id]
+    })
+  | map(. + {weighted: ([.per_model[].w] | add // 0)})
+' "$records_file")"
+
+declare -A old_rows
+if [ -f "$LEDGER_TSV" ]; then
+  while IFS=$'\t' read -r r_date r_rest; do
+    [ "$r_date" = "date" ] && continue
+    [ -z "$r_date" ] && continue
+    old_rows["$r_date"]="$r_date"$'\t'"$r_rest"
+  done < "$LEDGER_TSV"
+fi
+
+generated="$NOW"
+new_index_entries="$work/new-index.tsv"
+: > "$new_index_entries"
+
+until_epoch="$(date -u -d "$until_" +%s)"
+while IFS= read -r day_obj; do
+  d_date="$(jq -r '.date' <<<"$day_obj")"
+  d_weighted="$(jq -r '.weighted' <<<"$day_obj")"
+  d_permodel="$(jq -r '[.per_model[] | "\(.model)=\(.w)"] | join(";")' <<<"$day_obj")"
+  day_end_epoch="$(date -u -d "$d_date +1 day" +%s)"
+  if [ "$day_end_epoch" -le "$until_epoch" ]; then d_complete="yes"; else d_complete="no"; fi
+  d_status="$(status_for "$d_weighted")"
+  old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"
+  jq -r --arg d "$d_date" '.ids[] | "\(.)\t\($d)"' <<<"$day_obj" >> "$new_index_entries"
+done < <(jq -c '.[]' <<<"$agg_json")
+
+tmp_ledger="$STATE_DIR/.ledger.tsv.tmp.$$"
+{
+  printf '%s\n' "$LEDGER_HEADER"
+  if [ "${#old_rows[@]}" -gt 0 ]; then
+    for d in "${!old_rows[@]}"; do printf '%s\n' "${old_rows[$d]}"; done | sort
+  fi
+} > "$tmp_ledger"
+mv -- "$tmp_ledger" "$LEDGER_TSV"
+
+tmp_index="$STATE_DIR/.message-index.tsv.tmp.$$"
+{ [ -f "$INDEX_TSV" ] && cat -- "$INDEX_TSV"; cat -- "$new_index_entries"; } 2>/dev/null \
+  | awk -F'\t' 'NF>=2{line[$1]=$0} END{for (k in line) print line[k]}' \
+  | sort \
+  > "$tmp_index"
+mv -- "$tmp_index" "$INDEX_TSV"
+
+# ---- today-summary.txt: always regenerated relative to $until_, not real
+# wall-clock time — this is what makes historical/fixture runs hermetic. -
+get_field() { # DATE COLUMN(1-based) DEFAULT
+  awk -F'\t' -v d="$1" -v c="$2" -v dflt="$3" '$1==d{print $c; f=1} END{if(!f) print dflt}' "$LEDGER_TSV" 2>/dev/null
+}
+
+today_date="$(date -u -d "$until_" +%F)"
+yesterday_date="$(date -u -d "$today_date -1 day" +%F)"
+y_weighted="$(get_field "$yesterday_date" 3 0)"
+y_status="$(get_field "$yesterday_date" 4 "budget off")"
+t_weighted="$(get_field "$today_date" 3 0)"
+
+hhmm="$(date -u -d "$until_" +%H:%M)"
+hh="$((10#$(date -u -d "$until_" +%H)))"
+today_00z_epoch="$(date -u -d "$today_date" +%s)"
+hours_elapsed_x100=$(( (until_epoch - today_00z_epoch) * 100 / 3600 ))
+
+if [ "$hh" -lt 2 ]; then
+  forecast="n/a"
+else
+  forecast="$(awk -v w="$t_weighted" -v h="$hours_elapsed_x100" 'BEGIN{printf "%.0f", (w*24*100)/h}')"
+fi
+
+summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today so far ${t_weighted} (${hhmm}Z) · forecast ${forecast} · hosts ${hosts_csv} missing ${missing_csv}"
+
+tmp_summary="$STATE_DIR/.today-summary.txt.tmp.$$"
+printf '%s\n' "$summary" > "$tmp_summary"
+mv -- "$tmp_summary" "$SUMMARY_TXT"
+
+exit 0

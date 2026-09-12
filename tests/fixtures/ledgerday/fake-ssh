@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# tests/fixtures/ledgerday/fake-ssh — stands in for `ssh` on PATH for
+# ledgerday_ac5 (one fleet host unreachable). Understands only the shape
+# token-ledger itself invokes: `ssh -o k=v ... <host> token-ledger
+# --emit-local-records --since ISO`. Any host named in
+# $FAKE_SSH_FAIL_HOSTS (space-separated) fails outright (exit 1), simulating
+# an ssh timeout/refusal. Every other host is served by re-invoking the
+# REAL token-ledger binary ($TOKEN_LEDGER_BIN) with
+# TOKEN_LEDGER_JSONL_ROOT=$FAKE_SSH_HOSTS_DIR/<host> and
+# TOKEN_LEDGER_LOCAL_HOST=<host> — i.e. this fixture exercises the same
+# --emit-local-records code path a real remote host would run, just without
+# a network hop.
+set -uo pipefail
+
+host=""
+rest=()
+skip_next=0
+for a in "$@"; do
+  if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+  if [ -z "$host" ]; then
+    case "$a" in
+      -o) skip_next=1; continue ;;   # ssh option with a value: drop both
+      -*) continue ;;                # other ssh flags before the host: drop
+      *) host="$a"; continue ;;      # first bare token is the host
+    esac
+  fi
+  rest+=("$a")
+done
+
+for f in ${FAKE_SSH_FAIL_HOSTS:-}; do
+  [ "$f" = "$host" ] && exit 1
+done
+
+# rest[0] is the remote command name ("token-ledger") — drop it, exec the
+# real binary directly with whatever args followed.
+args=("${rest[@]:1}")
+TOKEN_LEDGER_JSONL_ROOT="$FAKE_SSH_HOSTS_DIR/$host" \
+TOKEN_LEDGER_LOCAL_HOST="$host" \
+  exec "$TOKEN_LEDGER_BIN" "${args[@]}"

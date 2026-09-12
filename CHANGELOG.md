@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-09-12 — token-ledger-day-buckets
+
+`token-ledger` moves into dotfiles (`.local/bin/token-ledger`,
+`.config/systemd/user/token-ledger.{service,timer}`, installed by `install.sh`
+like every other tool here) and its aggregation is rewritten around UTC-day
+buckets instead of "everything since yesterday, labeled with today's date" —
+the bug that made 09-12's status line read 81.0M (a 34-hour window) against a
+true ~26.5M. Every record is bucketed by `date -u` of its OWN `timestamp`
+(never run time); `message.id` dedup keeps the record with the latest
+timestamp (its final cumulative usage); `ledger.tsv` is one row per day,
+upserted atomically, columns `date per_model weighted status complete hosts
+missing generated`. `today-summary.txt` (what the `token-ledger-banner.sh`
+SessionStart hook cats verbatim) now reports yesterday, today-so-far, and a
+linear forecast as three separate fields, plus which fleet hosts contributed
+and which were unreachable (`hosts=carbon,redbaron missing=ryzen7`, never a
+silent omission; a host that fails over ssh doesn't fail the run). `--day
+YYYY-MM-DD` recomputes one day; `--check` validates the ledger against an
+internal `message-index.tsv` companion file and catches a message
+double-counted across two days. `--emit-local-records` is the same binary's
+own remote-fetch mode — the orchestrator runs it over ssh on every other
+fleet host instead of duplicating the extraction pipeline. Covered by
+`tests/ledgerday_ac{1..8}.test.sh` (test_prefix `ledgerday`): day-boundary
+isolation, rerun idempotency, dedup-keeps-final-usage, the summary format's
+exact contract string, a fake-ssh-unreachable-host fixture, install.sh
+symlink wiring, `--check` corruption detection, and a meta-test that the
+whole ledgerday suite is green. `TOKEN_BUDGET_WEIGHTED` unset/0 (the
+2026-09-12 default, daily cap removed) prints `budget off` instead of
+OVER/UNDER.
+
 ## 2026-09-11 — vibeloop-measure-deploy-last-pass
 
 `vibeloop-measure.sh`'s deploy-target selection now comes from `mcphost-deploy doctor`

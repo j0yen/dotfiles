@@ -1,0 +1,6 @@
+[Unit]
+Description=Token ledger — UTC day-bucketed weighted usage rollup + banner summary
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/token-ledger
