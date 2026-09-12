@@ -32,10 +32,10 @@ trap 'rm -f "$tmp"' EXIT
 # Hard cap on /build ticks per UTC day. Each tick is a full Sonnet session; retries of the
 # same red HEAD burned a day's budget on 2026-09-11. Journal every tick start so the count
 # is observable (fleet-status.sh reads it). Override with BUILD_TICKS_PER_DAY.
-TICK_CAP="${BUILD_TICKS_PER_DAY:-24}"
+TICK_CAP="${BUILD_TICKS_PER_DAY:-0}"   # 0 = no daily cap (Joe 2026-09-12: "remove daily cap")
 today=$(date -u +%F)
 ticks_today=$(grep -c "^${today}.* tick: start" "$LOG" 2>/dev/null); ticks_today=${ticks_today:-0}
-if [ "$ticks_today" -ge "$TICK_CAP" ]; then
+if [ "$TICK_CAP" -gt 0 ] && [ "$ticks_today" -ge "$TICK_CAP" ]; then
   echo "$(ts) tick: skipped (cause=tick-cap ticks_today=$ticks_today cap=$TICK_CAP)" >> "$LOG"
   echo "$(ts)  loop  tick-cap  (ticks_today=$ticks_today cap=$TICK_CAP — no tick until the next UTC day)" >> "$HOME/brain/journal/build/$today.md"
   exit 0
