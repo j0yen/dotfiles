@@ -159,6 +159,12 @@ PY
 # ledger_cost exist (it calls them) and before any guard runs (it's called from both the
 # redeploy branch and the harness-probe/measure tail below).
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/vibeloop-measure-guards.sh"
+# PRD-vibeloop-measure-self-authorized-redeploy: MEASURE_UNATTENDED_DEPLOY=off
+# is the operator killswitch for the migrate flags/env var below (requirement
+# 5); ROLLED_BACK_STATE is the "don't retry a rolled-back range until
+# last_pass changes" pointer (requirement 8).
+MEASURE_UNATTENDED_DEPLOY="${MEASURE_UNATTENDED_DEPLOY:-on}"
+ROLLED_BACK_STATE="$(rolled_back_state_path)"
 # PRD-build-worktree-targets-off-root: function-only (cargo_target_root,
 # build_tag_worktree, cleanup_tag_worktree) — the release-tag build path
 # below uses these so its ~52G CARGO_TARGET_DIR never sits on the root
@@ -218,6 +224,10 @@ doctor_txt=$( cd "$DEPLOY" && timeout 30 uv run mcphost-deploy doctor --host "$H
 doctor_rc=$?
 if [ "$doctor_rc" -ne 0 ] || [ -z "$doctor_txt" ]; then
   log "skip: mcphost-deploy doctor unreachable/failed (rc=$doctor_rc): $(printf '%s' "$doctor_txt" | head -c 200)"
+  # req 6/AC7: doctor-unreachable is a recorded deploy outcome now, not a
+  # silent skip -- no last_pass was ever read, so deploy_range is empty.
+  echo "$(ts) version=$deployed $(deploy_ledger_fields skipped doctor-unreachable "" "$deployed") sessions_spent=0" >> "$MLEDGER"
+  git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: skip, doctor unreachable" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
   exit 0
 fi
 read -r doc_main doc_last_pass doc_deployed doc_drift <<< "$(doctor_parse <<< "$doctor_txt")"
@@ -240,8 +250,23 @@ if [ "$VIBELOOP_CANDIDATE" = 1 ]; then
 fi
 cal=$(cat "$CAL"); reason=""; redeployed=0
 target=$(lastpass_target "$doc_last_pass" "$doc_deployed")
+# PRD-vibeloop-measure-self-authorized-redeploy: the deploy-outcome fields
+# every ledger line from here on carries (Goals: "one deploy outcome per
+# run with its cause"). Default is "nothing was due this cycle" -- the
+# redeploy branch below overwrites all four the moment it decides otherwise.
+deploy_outcome=not-due; deploy_cause=none; deploy_range=""; deployed_sha_field="$deployed"
 if [ "${target%% *}" = redeploy ]; then
   lp_sha="${target#redeploy }"
+  # req 1/2: the authorization range is built from the SAME doctor/healthz
+  # read used to pick this target -- $deployed and $lp_sha are both this
+  # run's own variables, never a cached file.
+  authorize_range=$(deploy_authorize_range "$deployed" "$lp_sha")
+  if rolled_back_pending "$ROLLED_BACK_STATE" "$lp_sha"; then
+    # req 8/AC8: the same range already rolled back once -- do not retry it
+    # every hour; wait for last_pass itself to move (a new green build).
+    log "skip: rolled-back-pending-new-green for last_pass=$lp_sha (range $authorize_range)"
+    deploy_outcome=skipped; deploy_cause=rolled-back-pending-new-green; deploy_range="$authorize_range"
+  else
   # req 1: build exactly the sha doctor named as last_pass. `doctor` only
   # ever names a TAGGED sha (GitLog.last_pass_sha() reads the newest tag),
   # so the tag itself is the build_ref -- same worktree-off-root machinery
@@ -249,7 +274,8 @@ if [ "${target%% *}" = redeploy ]; then
   rel_tag=$(git -C "$CRATE" describe --tags --exact-match "$lp_sha" 2>/dev/null)
   if [ -z "$rel_tag" ]; then
     log "skip: doctor last_pass=$lp_sha has no matching tag in $CRATE — can't resolve a build target"
-    echo "$(ts) version=unknown redeploy=skipped cause=unresolvable-last-pass last_pass=$lp_sha $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    deploy_outcome=skipped; deploy_cause=unresolvable-last-pass; deploy_range="$authorize_range"
+    echo "$(ts) version=unknown redeploy=skipped cause=unresolvable-last-pass last_pass=$lp_sha $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass $lp_sha unresolvable, redeploy skipped" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
@@ -273,9 +299,21 @@ if [ "${target%% *}" = redeploy ]; then
   # is redeploy_mod's OWN gate check (PRD-mcphost-deploy-refuse-ungated) —
   # doctor and this flag must agree, but the flag is authoritative: it's the
   # one enforced at the actual deploy boundary.
+  #
+  # PRD-vibeloop-measure-self-authorized-redeploy req 1/5: the authorized
+  # path adds exactly two flags plus one env var on top of the existing
+  # invocation -- MEASURE_UNATTENDED_DEPLOY=off is the only thing that
+  # drops them, reverting to the old (always-refused-on-a-migration) call.
   hub_before="$deployed"
   redeploy_rc=0
-  redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy redeploy --host "$HOST" --binary "$BUILT_BIN" --sha "$lp_sha" --skip-if-ungated 2>&1 ) || redeploy_rc=$?
+  unattended=0; unattended_deploy_enabled && unattended=1
+  redeploy_args=(redeploy --host "$HOST" --binary "$BUILT_BIN" --sha "$lp_sha" --skip-if-ungated)
+  if [ "$unattended" = 1 ]; then
+    while IFS= read -r f; do redeploy_args+=("$f"); done < <(redeploy_migrate_flags 1)
+    redeploy_out=$( cd "$DEPLOY" && MCPHOST_DEPLOY_AUTHORIZE="$authorize_range" timeout 900 uv run mcphost-deploy "${redeploy_args[@]}" 2>&1 ) || redeploy_rc=$?
+  else
+    redeploy_out=$( cd "$DEPLOY" && timeout 900 uv run mcphost-deploy "${redeploy_args[@]}" 2>&1 ) || redeploy_rc=$?
+  fi
   echo "$redeploy_out" >> "$LOG"
   # the detached worktree AND its cargo target-dir have served their
   # purpose — free both now, redeploy succeeded or failed (req 5).
@@ -287,47 +325,57 @@ if [ "${target%% *}" = redeploy ]; then
     # deploy happened; fall through to the req-2 clean-skip path below,
     # exactly as if target had been "measure".
     :
-  elif [ "$redeploy_rc" -eq 0 ]; then
-    deployed=$(probe_deployed_version)
-    log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"; redeployed=1
-    compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
-    # req 1/AC1: the redeploy event's own ledger + journal lines — from/to
-    # versions, the last_pass sha it targeted, deploy_drift, and the probe
-    # result. A successful `mcphost-deploy redeploy` only ever returns exit
-    # 0 when its own probe already passed, so probe=pass is exact here.
-    log "redeploy  target=last_pass sha=$lp_sha"
-    echo "$(ts) version=$built redeploy=ok target=last_pass sha=$lp_sha from=$hub_before to=$deployed probe=pass compat_check=$compat $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $hub_before -> $deployed ok (last_pass $lp_sha), probe pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
-    bus "{\"event\":\"redeploy-ok\",\"from\":\"$hub_before\",\"to\":\"$deployed\",\"ts\":\"$(ts)\"}"
-    # req 3/AC3/AC4: proxy gate runs immediately after a successful redeploy,
-    # before the harness probe or any truth-tier session — a zero-bootstrap
-    # result writes its own terminal ledger line and this script exits here.
-    proxy_out="$PROXY_EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"
-    run_proxy_gate "$deployed" "$URL" "$proxy_out" || exit 0
   else
-    # AC2/AC4: any non-zero exit (probe-failed rollback, refused-incompatible,
-    # or a remote/ELF error before the switch ever took effect) leaves
-    # $deployed — the hub's serving version — unchanged; `deploy_failed`
-    # plus the numeric exit code is the literal token AC2 asks for.
-    #
-    # PRD-mcphost-deploy-incompatible-migration requirement 4: rc=5 is
-    # redeploy_mod.EXIT_INCOMPATIBLE -- this measure step never passes
-    # --migrate-incompatible/--authorized-by (that's an operator's own,
-    # gated decision), so an rc=5 here is always the plain, unauthorized
-    # refusal path, which `redeploy` itself already journaled. Re-reading
-    # `doctor` right after names how many consecutive cycles that streak
-    # is now at, in this same run record, rather than only in the next
-    # cycle's separately-timed doctor read.
-    deploy_refused_field=""
-    if [ "$redeploy_rc" -eq 5 ]; then
-      refused_doctor_txt=$( cd "$DEPLOY" && timeout 30 uv run mcphost-deploy doctor --host "$HOST" 2>&1 )
-      refused_n=$(echo "$refused_doctor_txt" | grep -oE 'deploy_refused_cycles=[0-9]+' | head -1 | cut -d= -f2)
-      deploy_refused_field=" deploy_refused=${refused_n:-1}"
+    read -r deploy_outcome deploy_cause <<< "$(classify_deploy_outcome "$redeploy_rc" "$redeploy_out")"
+    deploy_range="$authorize_range"
+    # req 5/AC6: the killswitch names ITS OWN reason -- whatever cause the
+    # tool's journal printed is a moot point when this step never even
+    # tried to authorize the migration.
+    [ "$unattended" != 1 ] && deploy_cause=disabled-by-step
+    if [ "$deploy_outcome" = deployed ]; then
+      deployed=$(probe_deployed_version); deployed_sha_field="$deployed"
+      log "redeploy ok: hub now $deployed"; echo 2 > "$CAL"; cal=2; reason="new-version"; redeployed=1
+      compat=$(echo "$redeploy_out" | grep -o 'compat_check: [a-z]*' | head -1 | awk '{print $2}'); compat=${compat:-unknown}
+      # req 1/AC1: the redeploy event's own ledger + journal lines — from/to
+      # versions, the last_pass sha it targeted, deploy_drift, and the probe
+      # result. A successful `mcphost-deploy redeploy` only ever returns exit
+      # 0 when its own probe already passed, so probe=pass is exact here.
+      log "redeploy  target=last_pass sha=$lp_sha"
+      echo "$(ts) version=$built redeploy=ok target=last_pass sha=$lp_sha from=$hub_before to=$deployed probe=pass compat_check=$compat $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+      git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy $hub_before -> $deployed ok (last_pass $lp_sha), probe pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+      bus "{\"event\":\"redeploy-ok\",\"from\":\"$hub_before\",\"to\":\"$deployed\",\"ts\":\"$(ts)\"}"
+      # a landed deploy proves the range is no longer stuck rolled-back.
+      clear_rolled_back_pending "$ROLLED_BACK_STATE"
+      # req 3/AC3/AC4: proxy gate runs immediately after a successful redeploy,
+      # before the harness probe or any truth-tier session — a zero-bootstrap
+      # result writes its own terminal ledger line and this script exits here.
+      proxy_out="$PROXY_EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"
+      run_proxy_gate "$deployed" "$URL" "$proxy_out" || exit 0
+    else
+      # req 4/AC3/AC4: a refused or rolled-back deploy is NOT an error for
+      # this step — $deployed (the hub's serving version) is unchanged, the
+      # outcome/cause are recorded, and the run falls through to measure
+      # whatever is still deployed (no early `exit 0` here anymore) so the
+      # loop stays green and measuring.
+      deployed_sha_field="$deployed"
+      [ "$deploy_outcome" = rolled-back ] && record_rolled_back_pending "$ROLLED_BACK_STATE" "$lp_sha"
+      # PRD-mcphost-deploy-incompatible-migration requirement 4: re-reading
+      # `doctor` right after names how many consecutive cycles this streak
+      # is now at, in this same run record, rather than only in the next
+      # cycle's separately-timed doctor read.
+      deploy_refused_field=""
+      if [ "$redeploy_rc" -eq 5 ]; then
+        refused_doctor_txt=$( cd "$DEPLOY" && timeout 30 uv run mcphost-deploy doctor --host "$HOST" 2>&1 )
+        refused_n=$(echo "$refused_doctor_txt" | grep -oE 'deploy_refused_cycles=[0-9]+' | head -1 | cut -d= -f2)
+        deploy_refused_field=" deploy_refused=${refused_n:-1}"
+      fi
+      log "redeploy $deploy_outcome rc=$redeploy_rc (hub still $deployed) cause=$deploy_cause — continuing to measure"
+      echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=0$deploy_refused_field" >> "$MLEDGER"
+      git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass redeploy $lp_sha $deploy_outcome rc=$redeploy_rc (cause=$deploy_cause)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+      bus "{\"event\":\"redeploy-$deploy_outcome\",\"version\":\"$built\",\"exit_code\":$redeploy_rc,\"cause\":\"$deploy_cause\",\"ts\":\"$(ts)\"}"
+      # no `exit 0` here (req 4) — falls through to the measure tail below.
     fi
-    log "redeploy FAILED rc=$redeploy_rc (hub still $deployed) — not measuring"
-    echo "$(ts) version=$built deploy_failed=1 exit_code=$redeploy_rc redeploy=FAILED-rolled-back-to-$deployed measured=no $DRIFT_FIELD sessions_spent=0$deploy_refused_field" >> "$MLEDGER"
-    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: last_pass redeploy $lp_sha failed rc=$redeploy_rc, rolled back" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
-    bus "{\"event\":\"redeploy-failed\",\"version\":\"$built\",\"exit_code\":$redeploy_rc,\"ts\":\"$(ts)\"}"; exit 0
+  fi
   fi
 fi
 if [ "$redeployed" -ne 1 ]; then
@@ -337,11 +385,16 @@ if [ "$redeployed" -ne 1 ]; then
   # failed-redeploy/rollback line, and still measure whatever is running.
   if [ -n "$doc_main" ] && [ "$doc_main" != "$doc_last_pass" ]; then
     log "redeploy  skipped  (cause=ungated sha=$doc_main deployed=$doc_deployed)"
-    echo "$(ts) version=$deployed redeploy=skipped cause=ungated head=$doc_main $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+    echo "$(ts) version=$deployed redeploy=skipped cause=ungated head=$doc_main $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy skipped, head ungated (last_pass already deployed)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
   fi
   if [ "$cal" -gt 0 ]; then reason="calibration($cal left)"
-  else log "skip: $deployed already measured, no calibration runs left"; exit 0; fi
+  else
+    log "skip: $deployed already measured, no calibration runs left"
+    echo "$(ts) version=$deployed $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") sessions_spent=0" >> "$MLEDGER"
+    git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: skip, no calibration left ($deployed)" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+    exit 0
+  fi
 fi
 # --- harness gate: measure only once a live session has completed signup -> publish -> call ---
 VER="$HOME/.config/vibeloop/harness-verified"; PROBE_LAST="$HOME/.config/vibeloop/harness-probe-last"; PROBE_EVERY="${HARNESS_PROBE_SECS:-21600}"
@@ -368,13 +421,13 @@ PY2
   if [ "$verdict" = "pass" ]; then
     date -u +%FT%TZ > "$VER"; log "harness probe PASS — measurement enabled from now on"
     # req 1: a probe that ran spends one session — the day's cap must see it.
-    echo "$(ts) version=$deployed harness-probe=PASS $DRIFT_FIELD sessions_spent=1" >> "$MLEDGER"
+    echo "$(ts) version=$deployed harness-probe=PASS $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=1" >> "$MLEDGER"
     git -C "$PRD_DIR" add vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe passed on $deployed" -- vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     bus "{\"event\":\"harness-verified\",\"ts\":\"$(ts)\"}"
   else
     log "harness probe FAIL ($verdict) — not measuring; will re-probe in $((PROBE_EVERY/3600))h"
     cleanup_field=$(cleanup_tenants)
-    echo "$(ts) version=$deployed harness-probe=FAIL $verdict $DRIFT_FIELD sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+    echo "$(ts) version=$deployed harness-probe=FAIL $verdict $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
     git -C "$PRD_DIR" add "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
@@ -401,7 +454,7 @@ if [ ! -f "$out/measure.json" ]; then
   # consume run, so a killed/failed run leaves nothing on disk to sum from.
   ns=0; [ -f "$out/ledger.jsonl" ] && ns=$(wc -l < "$out/ledger.jsonl" 2>/dev/null || echo 0)
   log "measure FAILED rc=$rc (no measure.json) sessions_spent=$ns"
-  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc $DRIFT_FIELD sessions_spent=$ns${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  echo "$(ts) version=$deployed reason=$reason measured=FAILED rc=$rc $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=$ns${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   if [ "$ns" -gt 0 ]; then
     read -r fail_usd fail_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
     ledger_cost measure "$fail_usd" "$deployed" "$fail_known"
@@ -421,6 +474,10 @@ PY
   ns=$(python3 -c "import json;print(json.load(open('$out/measure.json')).get('sessions',0))" 2>/dev/null || echo 0)
   read -r meas_usd meas_known <<< "$(sum_session_cost "$out/ledger.jsonl")"
   ledger_cost measure "$meas_usd" "$deployed" "$meas_known"
+  # req 3: fold this run's deploy decision into measure.json itself, not
+  # just the ledger line — a later reader of the evidence directory alone
+  # (no ledger context) still sees what the deploy step did this cycle.
+  merge_deploy_fields_json "$out/measure.json" "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field"
   # PRD-mcphost-baseline-anchor req 2: the prior-run-of-the-same-version
   # comparison this used to be (req 9) is superseded, not kept alongside —
   # lift now runs against whatever run.baseline.json names, read before this
@@ -501,7 +558,7 @@ PY
     fi
   fi
   echo "$(basename "$out")" > "$EVD/LATEST"; [ "$reason" != "new-version" ] && echo $((cal-1)) > "$CAL"
-  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") $DRIFT_FIELD sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
+  echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   log "measure ok: $summary sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field"
 fi
 git -C "$PRD_DIR" add "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null

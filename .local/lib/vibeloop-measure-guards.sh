@@ -220,6 +220,109 @@ cleanup_tenants() { # -> prints "cleanup=<n|failed|kept>[ tenants_after=<n>]"
   cleanup_field_from_counts "$removed" "$after"
 }
 
+# -- PRD-vibeloop-measure-self-authorized-redeploy: the measure step's own
+# authorization for `redeploy --migrate-incompatible` -- (test_prefix:
+# selfauth) range construction, migrate-flag decision, outcome classification
+# from the tool's own exit code + printed journal line, and the rolled-back
+# "don't retry the same range" state. All pure/fixture-testable; the actual
+# `uv run mcphost-deploy redeploy` shell-out itself stays in
+# vibeloop-measure.sh, same split as lastpass_target/doctor_parse above.
+
+# Requirement 1/2: MCPHOST_DEPLOY_AUTHORIZE's exact range string -- always
+# <currently-deployed>..<last_pass>, built from the same doctor/healthz read
+# used to pick the target (the caller never passes a cached value in).
+deploy_authorize_range() { # $1=deployed(from) $2=last_pass(to) -> "<from>..<to>"
+  echo "${1:-unknown}..${2:-unknown}"
+}
+
+# Requirement 5: MEASURE_UNATTENDED_DEPLOY=off is the one operator killswitch
+# for the migrate flags/env var; any other value (including unset) leaves
+# self-authorization on.
+unattended_deploy_enabled() { # $MEASURE_UNATTENDED_DEPLOY -> exit 0 if enabled
+  [ "${MEASURE_UNATTENDED_DEPLOY:-on}" != "off" ]
+}
+
+# Requirement 1/5: the two migrate flags, one per line so a caller can splice
+# them into an argv array with a `while read` loop; no output at all when
+# unattended deploy is disabled (the caller then sends the plain
+# `--skip-if-ungated` call requirement 5 describes).
+redeploy_migrate_flags() { # $1="1" when unattended_deploy_enabled held, else "0"
+  [ "${1:-0}" = "1" ] && printf '%s\n' --migrate-incompatible --authorized-by vibeloop-measure
+  return 0
+}
+
+# Requirement 4: classify a redeploy call's own exit code + printed
+# stdout+stderr into one of deployed|rolled-back|refused, plus the cause
+# token off the tool's own `redeploy  <verb>  (cause=<x> ...)` journal line
+# (the newest one printed, tail -1) -- "none" when the call printed no cause
+# at all (rc=0, a clean deploy with nothing gated in the way).
+classify_deploy_outcome() { # $1=rc $2=output text -> "<outcome> <cause>"
+  local rc="$1" out="$2" cause
+  cause=$(printf '%s' "$out" | grep -oE 'cause=[^[:space:])]+' | tail -1 | cut -d= -f2)
+  if [ "$rc" -eq 0 ]; then
+    echo "deployed ${cause:-none}"
+  elif printf '%s' "$out" | grep -q 'rolled-back'; then
+    echo "rolled-back ${cause:-none}"
+  else
+    echo "refused ${cause:-none}"
+  fi
+}
+
+# Requirement 8: where the "don't retry a rolled-back range until last_pass
+# changes" pointer lives -- $XDG_STATE_HOME/vibeloop/ per the requirement,
+# holding just the last_pass sha that was rolled back (last_pass, not the
+# full range, is what "changes" means for the retry rule).
+rolled_back_state_path() {
+  echo "${XDG_STATE_HOME:-$HOME/.local/state}/vibeloop/rolled-back-last-pass"
+}
+
+record_rolled_back_pending() { # $1=state path $2=last_pass sha
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' "$2" > "$1"
+}
+
+clear_rolled_back_pending() { # $1=state path
+  rm -f "$1"
+}
+
+# Requirement 8/AC8: still pending exactly when the state file names THIS
+# last_pass -- a changed last_pass (new green) always clears the hold, no
+# separate "clear" call required for that case.
+rolled_back_pending() { # $1=state path $2=current last_pass sha -> exit 0 if pending
+  [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "${2:-}" ]
+}
+
+# Requirement 3/AC2/AC3: the four measure.json/ledger fields plus one
+# digest-legible summary token -- "<outcome> <range>", the literal phrase
+# the digest line is required to contain (User story 4) -- for one run's
+# deploy decision. Callers append this string onto whatever measure-ledger
+# line they're already writing.
+deploy_ledger_fields() { # $1=outcome $2=cause $3=range $4=deployed_sha -> key=value string
+  printf 'deploy_outcome=%s deploy_cause=%s deploy_range=%s deployed_sha=%s deploy_summary="%s %s"' \
+    "$1" "$2" "$3" "$4" "$1" "$3"
+}
+
+# Requirement 3: fold the four structured fields (not deploy_summary --
+# that one is ledger-line-only, not part of the JSON schema) into an
+# existing measure.json. Existing keys are left alone; a run whose
+# measure.json doesn't exist yet is the caller's problem to create first --
+# this never creates the file, only patches one that's already there.
+merge_deploy_fields_json() { # $1=path $2=outcome $3=cause $4=range $5=deployed_sha
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, sys
+path, outcome, cause, rng, sha = sys.argv[1:6]
+with open(path) as f:
+    d = json.load(f)
+d["deploy_outcome"] = outcome
+d["deploy_cause"] = cause
+d["deploy_range"] = rng
+d["deployed_sha"] = sha
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+}
+
 # Requirement 3/4: run `synthorg consume --tier proxy` against the deployed
 # endpoint immediately after a successful redeploy, before the harness probe
 # or any truth-tier session. On zero bootstraps, writes the terminal ledger
