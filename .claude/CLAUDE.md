@@ -9,7 +9,7 @@ Every response uses the i-have-adhd shape — next action first, numbered steps 
 - One job = one session. Pin one model per session (mid-session model switch = full cache rewrite).
 - Every Agent spawn passes an explicit `model:`; opus/fable/fork spawns are hook-blocked (override: `touch ~/.claude/.allow-expensive-spawn`).
 - Status lines: TOKENS (yesterday weighted, from ledger) + forecast, next to COST. Weighted = in + 1.25·cache_write + 0.1·cache_read + 5·out.
-- Daily weighted budget 10M input-equiv; ledger says OVER → stop non-essential work, tell Joe.
+- Daily budget cap REMOVED 2026-09-12 (Joe); ledger still reports weighted totals for visibility.
 
 # Model routing — cheapest capable model always
 
