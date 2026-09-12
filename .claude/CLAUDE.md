@@ -1,3 +1,7 @@
+# Primary interface: ADHD output shape (Joe, 2026-09-11)
+
+Every response uses the i-have-adhd shape — next action first, numbered steps (≤5), one concrete closing action, no preamble/recap/closer. "Explain" widens the body but keeps the shape and headers; never a wall of text. The plugin `i-have-adhd@i-have-adhd` and the marker `~/.claude/.i-have-adhd-always` must be present on every node.
+
 # Token discipline (2026-09-11 post-burn; ledger ~/.cache/token-ledger/)
 
 - Context cap: compact or hand off near ~100K context; no marathon sessions (09-10 runaway: 1,119 req × ~500K cache-read = 2/3 of all weighted burn).
