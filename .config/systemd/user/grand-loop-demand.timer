@@ -1,0 +1,10 @@
+[Unit]
+Description=Fire grand-loop-demand.service once per day at 06:20 UTC (PRD-grand-loop-demand-cadence)
+
+[Timer]
+OnCalendar=*-*-* 06:20:00 UTC
+Persistent=true
+Unit=grand-loop-demand.service
+
+[Install]
+WantedBy=timers.target

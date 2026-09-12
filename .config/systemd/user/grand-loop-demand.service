@@ -1,0 +1,9 @@
+[Unit]
+Description=Run one grand-loop demand-cadence read (PRD-grand-loop-demand-cadence)
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/grand-loop-demand.sh run
+TimeoutStartSec=1800

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-12 — grand-loop-demand-cadence
+
+`mcphost-deploy measure` (the command computing the grand loop's own metric,
+`paid_mrr_usd`, plus `real_tenants`/`paying_tenants`/`real_wow_rate`/
+`gross_churn`) shipped 2026-09-06 and had never been run unattended: the
+five-hand-label validation gate deadlocks with itself while zero confirmed
+real tenants exist to label. `grand-loop-demand.sh` (`.local/bin/`,
+`.local/lib/grand-loop-demand-lib.sh`,
+`.config/systemd/user/grand-loop-demand.{service,timer}`, installed by
+`install.sh` like every other tool here, `grand-loop-demand.timer` firing
+daily at 06:20 UTC) reads it once a day with `--allow-unvalidated` (every
+number stamped `validated:false`) into a JSONL ledger inside a DEDICATED
+clone of the PRDs repo (self-healing: absent → clone, diverged → fetch +
+reset — never the operator's live `~/Documents/PRDs` checkout, which other
+tools rebase/autostash mid-write). A failed read is an alarm row + a
+journal line the same day, never a silent gap; two consecutive alarms
+publish an `agorabus` event; a `real_tenants` movement from the previous
+row's value publishes its own event carrying both values. One run per day
+(a second same-day invocation exits 0, `skip: already ran`, no new row); a
+push failure leaves the row local with a `push:"failed"` warning and the
+next successful run's push carries it through. `mcphost-deploy` is resolved
+once (PATH lookup, cached as an absolute path, `uv run` fallback against
+the source repo) rather than trusted to a systemd unit's stripped PATH —
+the recorded trap: `~/.local/bin` shadows `~/.cargo/bin` in units here.
+Covered by `tests/demandcadence_ac{1..9}.test.sh` (test_prefix
+`demandcadence`): the basic row + all named fields, alarm-row + 2-in-a-row
+streak event, real_tenants 0→1 event + row marking, same-day skip, clone
+self-heal (absent and diverged), push-failure-then-recovery, install's
+directory creation + one live fire, the `demand` block present/absent, and
+`status`'s one-screenful summary.
+
 ## 2026-09-12 — token-ledger-day-buckets
 
 `token-ledger` moves into dotfiles (`.local/bin/token-ledger`,
