@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# fixtures/fake-systemctl-explorefirst — stands in for `systemctl --user` in
+# tests/explorefirst_ac*.test.sh (PRD-mcphost-explore-first-light). Separate
+# from fixtures/fake-systemctl (which answers a different `show -p`-based
+# protocol for tests/buildpath_ac*.test.sh) because this PRD's runner only
+# ever calls `is-active --quiet <unit>` (the mid-cycle guard, requirement 1)
+# and `list-timers <unit> --no-legend` (the `status` P1 requirement 8).
+#
+#   FAKE_SYSTEMCTL_ACTIVE_UNIT   if set, `is-active --quiet` on exactly this
+#                                unit name exits 0 (active); everything else
+#                                exits 3 (inactive) — real systemctl's own
+#                                convention.
+set -uo pipefail
+
+args=()
+for a in "$@"; do
+  [ "$a" = "--user" ] && continue
+  [ "$a" = "--quiet" ] && continue
+  [ "$a" = "--no-legend" ] && continue
+  args+=("$a")
+done
+
+cmd="${args[0]:-}"
+
+case "$cmd" in
+  is-active)
+    unit="${args[1]:-}"
+    if [ -n "${FAKE_SYSTEMCTL_ACTIVE_UNIT:-}" ] && [ "$unit" = "$FAKE_SYSTEMCTL_ACTIVE_UNIT" ]; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  list-timers)
+    echo "Sun 2026-09-20 03:00:00 UTC 6 days left"
+    ;;
+  *)
+    echo "fake-systemctl-explorefirst: unhandled invocation: $*" >&2
+    exit 1
+    ;;
+esac

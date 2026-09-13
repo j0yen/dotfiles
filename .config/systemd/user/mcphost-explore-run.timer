@@ -1,0 +1,10 @@
+[Unit]
+Description=Fire mcphost-explore-run.service weekly, Sunday 03:00 UTC (PRD-mcphost-explore-first-light, operator decision 2026-09-12)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 UTC
+Persistent=true
+Unit=mcphost-explore-run.service
+
+[Install]
+WantedBy=timers.target

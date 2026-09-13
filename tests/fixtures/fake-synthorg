@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# fixtures/fake-synthorg — stands in for `synthorg` (normally invoked via
+# `uv run synthorg` in ~/repos/synthorg) in tests/explorefirst_ac*.test.sh
+# (PRD-mcphost-explore-first-light). Records every invocation's full
+# argument list to $FAKE_SYNTHORG_CALLS, one line per call, and produces
+# just enough of each real subcommand's artifacts for
+# mcphost-explore-run.sh's own reads to succeed:
+#
+#   explore <run_dir> --segments S --sessions N --host URL --composition P
+#     mode: FAKE_SYNTHORG_EXPLORE_MODE ok (default) | fail
+#     ok: creates <run_dir>, writes telemetry.json (weeks_or_stages.sessions=N)
+#   obs <run_dir> --assert CLAUSE
+#     mode: FAKE_SYNTHORG_OBS_MODE ok (default) | fail  (the budget gate)
+#   usecases <run_dir> --out <dir>
+#     mode: FAKE_SYNTHORG_USECASES_MODE ok (default) | fail
+#     ok: writes <dir>/usecases.json — candidates/novel_count from
+#         $FAKE_USECASES_JSON if set, else 4 candidates / novel_count=3
+#         (gate met)
+#   export-evidence <run_dir> --kind exploration --out <dir>
+#     mode: FAKE_SYNTHORG_EXPORT_MODE ok (default) | fail
+#     ok: writes <dir>/{catalog.json,manifest.json,citations.md}
+set -uo pipefail
+
+calls_file="${FAKE_SYNTHORG_CALLS:-/dev/null}"
+printf '%s\n' "$*" >> "$calls_file"
+
+cmd="${1:-}"; shift || true
+
+find_opt() { # $1=flag name -> value, from remaining "$@" (positional args after shift above)
+  local flag="$1" a prev=""
+  for a in "${ARGS[@]}"; do
+    if [ "$prev" = "$flag" ]; then echo "$a"; return 0; fi
+    prev="$a"
+  done
+}
+
+ARGS=("$@")
+first_positional=""
+for a in "${ARGS[@]}"; do
+  case "$a" in
+    --*) : ;;
+    *)
+      if [ -z "$first_positional" ]; then first_positional="$a"; fi
+      ;;
+  esac
+done
+
+case "$cmd" in
+  explore)
+    run_dir="$first_positional"
+    if [ "${FAKE_SYNTHORG_EXPLORE_MODE:-ok}" = "fail" ]; then
+      echo "fake-synthorg: forced explore failure" >&2
+      exit 2
+    fi
+    sessions="$(find_opt --sessions)"
+    mkdir -p "$run_dir"
+    cat > "$run_dir/telemetry.json" <<JSON
+{"schema": "synthorg.telemetry.v1", "entrypoint": "explore", "weeks_or_stages": {"sessions": ${sessions:-0}}, "est_cost_usd": 1.2345}
+JSON
+    echo "$run_dir"
+    echo "sessions: ${sessions:-0}"
+    exit 0
+    ;;
+  obs)
+    if [ "${FAKE_SYNTHORG_OBS_MODE:-ok}" = "fail" ]; then
+      echo "fake-synthorg: budget clause exceeded" >&2
+      exit 2
+    fi
+    echo "obs: within budget"
+    exit 0
+    ;;
+  usecases)
+    out_dir="$(find_opt --out)"
+    [ -n "$out_dir" ] || out_dir="$first_positional"
+    if [ "${FAKE_SYNTHORG_USECASES_MODE:-ok}" = "fail" ]; then
+      echo "fake-synthorg: forced usecases failure" >&2
+      exit 2
+    fi
+    mkdir -p "$out_dir"
+    if [ -n "${FAKE_USECASES_JSON:-}" ]; then
+      printf '%s' "$FAKE_USECASES_JSON" > "$out_dir/usecases.json"
+    else
+      cat > "$out_dir/usecases.json" <<'JSON'
+{"schema": "synthorg.usecases.v1", "novel_count": 3, "candidates": [
+  {"id": "uc-1", "novel": true}, {"id": "uc-2", "novel": true},
+  {"id": "uc-3", "novel": true}, {"id": "uc-4", "novel": false}
+]}
+JSON
+    fi
+    echo "$out_dir"
+    echo "candidates: 4  novel: 3"
+    exit 0
+    ;;
+  export-evidence)
+    out_dir="$(find_opt --out)"
+    if [ "${FAKE_SYNTHORG_EXPORT_MODE:-ok}" = "fail" ]; then
+      echo "fake-synthorg: forced export failure" >&2
+      exit 2
+    fi
+    mkdir -p "$out_dir"
+    echo '{"schema": "synthorg.evidence.exploration.v1", "candidates": 4}' > "$out_dir/catalog.json"
+    echo '{"pack": "exploration"}' > "$out_dir/manifest.json"
+    echo '# citations' > "$out_dir/citations.md"
+    echo "$out_dir"
+    exit 0
+    ;;
+  *)
+    echo "fake-synthorg: unknown command '$cmd'" >&2
+    exit 2
+    ;;
+esac

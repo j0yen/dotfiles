@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# fixtures/fake-mcphost — stands in for the real `mcphost` binary in
+# tests/explorefirst_ac*.test.sh (PRD-mcphost-explore-first-light). Records
+# every invocation (subcommand + the env vars mcphost-explore-run.sh sets)
+# to $FAKE_MCPHOST_CALLS, one line per call.
+#
+#   FAKE_MCPHOST_MIGRATE_MODE   ok (default) | fail
+#   FAKE_MCPHOST_SERVE_MODE     ok (default; blocks until TERM) | fail (exits 1 immediately)
+set -uo pipefail
+
+calls_file="${FAKE_MCPHOST_CALLS:-/dev/null}"
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  migrate)
+    echo "migrate data_dir=${MCPHOST_DATA_DIR:-}" >> "$calls_file"
+    if [ "${FAKE_MCPHOST_MIGRATE_MODE:-ok}" = "fail" ]; then
+      echo "fake-mcphost: forced migrate failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  serve)
+    echo "serve data_dir=${MCPHOST_DATA_DIR:-} bind=${MCPHOST_BIND:-} admin_key_set=$([ -n "${MCPHOST_ADMIN_KEY:-}" ] && echo yes || echo no)" >> "$calls_file"
+    if [ "${FAKE_MCPHOST_SERVE_MODE:-ok}" = "fail" ]; then
+      echo "fake-mcphost: forced serve failure" >&2
+      exit 1
+    fi
+    trap 'exit 0' TERM INT
+    while true; do sleep 1; done
+    ;;
+  version)
+    echo "fake-mcphost 0.0.0-test"
+    exit 0
+    ;;
+  *)
+    echo "fake-mcphost: unknown command '$cmd'" >&2
+    exit 2
+    ;;
+esac

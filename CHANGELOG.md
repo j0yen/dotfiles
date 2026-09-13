@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-09-12 — mcphost-explore-first-light
+
+The revealed-preference exploration pipeline (synthorg's `explore` ->
+`usecases` -> `export-evidence --kind exploration`, all shipped 2026-09-10..11)
+had never run: no entrypoint wired it to a schedule, so every capability
+call kept resting on stated preference — the basis synthorg's own Critic
+formally refuses. `mcphost-explore-run.sh` (`.local/bin/`,
+`.local/lib/mcphost-explore-lifecycle.sh` for the fixture-testable decision
+logic, `.config/systemd/user/mcphost-explore-run.{service,timer}` firing
+weekly Sunday 03:00 UTC, installed by `install.sh` like every other tool
+here) runs Joe's 2026-09-10 pinned parameters (24 sessions/week, pinned
+panel composition, local RedBaron instance only) end to end: resolves the
+newest tagged `mcphost` release (reusing a cached vibeloop release build
+when one already exists, else a bounded local build via
+`.local/lib/vibeloop-target-root.sh`'s `build_tag_worktree`), stands it up
+on an ephemeral port/data-dir/admin-key, waits for `/healthz`, drives
+`explore` -> the pinned budget's `obs --assert` -> `usecases` ->
+`export-evidence`, scores the novelty gate (`novel_count >= 3`) into the
+pack's own `novelty-result.txt` and a dated `notes/dream-log.md` note, and
+tears the instance down completely on every exit path — success, a named
+mid-stage failure, or a skip alike. Skips (exit 0, no instance started) when
+a pack already exists for the current ISO week or when
+`claude-vibeloop-work.service` is active (checked via `systemctl --user
+is-active`, never assumed); any real failure names its stage (build, start,
+explore, mine, export, commit), tears down anyway, and two consecutive
+weekly failures publish one `agorabus` event naming both weeks. The pack
+commit stages only the pack path, its week marker, and the dream-log note
+(never `git add -A`) and is idempotent — a re-attempt against the same pack
+is a no-op, not a duplicate commit. `status` prints the last run, pack
+path, novelty result, and next scheduled fire; `--dry-run` proves the
+lifecycle (instance up, healthy, torn down) with zero sessions and no pack
+written, for cheap post-upgrade verification.
+
+The exact `obs --assert` budget-ceiling clause was left open by
+visions/mcp-host.md ("at build of explore-sessions") and never actually
+pinned to a number anywhere upstream; the script ships a conservative
+default, overridable without a code change via
+`~/.config/mcphost-explore/budget-assert` — a genuine pipeline gap this
+PRD's own Non-goals send to its own follow-on PRD, not a reason to hold the
+runner back.
+
+Covered by `tests/explorefirst_ac{1..10}.test.sh` (test_prefix
+`explorefirst`, fixtures: `fake-mcphost`, `fake-synthorg`, `fake-curl`,
+`fake-systemctl-explorefirst`, shared `fake-agorabus`): the full ordered
+cycle against a fake instance and fake synthorg entrypoints, the weekly and
+vibeloop-mid-cycle skips, an explore-stage failure's named exit + verified
+teardown, a budget-assert failure exporting nothing, the atomic-commit
+no-op, the two-consecutive-failures bus event, the P1 manifest cost/session
+fields, the P1 `status` line, and the P2 `--dry-run` path.
+
 ## 2026-09-12 — grand-loop-demand-cadence
 
 `mcphost-deploy measure` (the command computing the grand loop's own metric,

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# fixtures/fake-curl — stands in for `curl` in tests/explorefirst_ac*.test.sh
+# (PRD-mcphost-explore-first-light). mcphost-explore-run.sh's only curl call
+# is the /healthz poll in wait_health(); this fixture answers it without a
+# real listener, controlled by:
+#   FAKE_CURL_HEALTH_MODE   ok (default: prints {"ok": true}) | fail (never healthy)
+#   FAKE_CURL_HEALTH_AFTER  N (default 0): fail the first N calls, then ok
+#                           (exercises the poll loop itself, not just one shot)
+set -uo pipefail
+
+counter_file="${FAKE_CURL_HEALTH_COUNTER:-/dev/null}"
+
+if [ "${FAKE_CURL_HEALTH_MODE:-ok}" = "fail" ]; then
+  exit 7
+fi
+
+after="${FAKE_CURL_HEALTH_AFTER:-0}"
+if [ "$after" -gt 0 ]; then
+  n=0
+  [ -f "$counter_file" ] && n="$(cat "$counter_file" 2>/dev/null || echo 0)"
+  n=$((n + 1))
+  echo "$n" > "$counter_file"
+  if [ "$n" -le "$after" ]; then
+    exit 7
+  fi
+fi
+
+echo '{"ok": true}'
+exit 0
