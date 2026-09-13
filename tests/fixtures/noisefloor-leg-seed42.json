@@ -1,0 +1,21 @@
+{
+  "tier": "proxy",
+  "seed": 42,
+  "sessions": 3,
+  "satisfaction": {
+    "overall": 0.90,
+    "by_segment": {
+      "rapid_prototyper": 0.90,
+      "data_analyst": 0.75,
+      "ops_lead": 0.80
+    }
+  },
+  "wow_rate": {
+    "overall": 0.50,
+    "by_segment": {
+      "rapid_prototyper": 0.50,
+      "data_analyst": 0.40,
+      "ops_lead": 0.40
+    }
+  }
+}

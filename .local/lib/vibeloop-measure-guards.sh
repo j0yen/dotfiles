@@ -10,6 +10,16 @@
 # Callers (vibeloop-measure.sh) must define, before sourcing this file: ts(),
 # log(), bus(), sum_session_cost(), ledger_cost() (all already in
 # vibeloop-measure.sh), and the globals SYN, URL, LOG, ADMIN_KEY_FILE.
+#
+# PRD-mcphost-seed-noise-floor adds `run_noise_floor_sweep` (called at the
+# bottom of this file) for the same reason, needing the globals PRD_DIR,
+# MLEDGER, WORK_EVD, PROXY_EVD, BRIEF, COMPOSITION, NOISE_FLOOR,
+# MAX_MEASURES_PER_DAY, runs24, SYNTHORG_MODEL_SMALL/NOISE_FLOOR_SEED_2/3
+# (all already defined in vibeloop-measure.sh by the time it's called) —
+# its pure helpers (noise_floor_seeds, noise_floor_budget_ok,
+# noise_floor_compute, noise_floor_spread_field, noise_floor_ledger_line)
+# need none of that and are exercised directly by
+# tests/noisefloor_ac*.test.sh.
 set -uo pipefail
 
 # land_evidence is normally defined by vibeloop-measure.sh before this file is
@@ -373,5 +383,244 @@ run_proxy_gate() { # $1=version  $2=endpoint url  $3=out-dir (final path inside 
   # script's final catch-all) must find this run already sitting inside it.
   land_evidence "$work" "$out"
   PROXY_FIELD=" proxy=$k/$n"
+  return 0
+}
+
+# -- PRD-mcphost-seed-noise-floor: the post-redeploy three-seed proxy-tier
+# sweep (test_prefix: noisefloor) -- pure/fixture-testable pieces first,
+# the impure orchestration (`run_noise_floor_sweep`, shells into `uv run
+# synthorg` exactly like `run_proxy_gate` above) last. Per Requirement 1's
+# "the truth tier keeps its single fixed seed" and Technical
+# considerations' "this PRD adds invocations, not a new tier": the proxy
+# gate `run_proxy_gate` already ran IS leg one of this sweep — this file
+# never re-runs it, only adds two more legs at two more pinned seeds.
+
+# Requirement 1: the pinned three-seed set's env contract. Seed one is
+# whatever seed the gate leg (leg one) already ran at — passed in, never
+# re-derived — so this function has nothing to do with SYNTHORG_SEED as a
+# global; seeds two/three are NOISE_FLOOR_SEED_2/3, named constants
+# (default 17/42), overridable only via env, never `date +%s` (the
+# cycle-19 randomized-seed defect this whole PRD exists to bury). Prints
+# "seed1 seed2 seed3".
+noise_floor_seeds() { # $1=leg-one seed
+  echo "${1:-0} ${NOISE_FLOOR_SEED_2:-17} ${NOISE_FLOOR_SEED_3:-42}"
+}
+
+# Requirement 3/AC2: budget honesty -- the sweep's two extra legs must
+# count against the SAME daily cap `MAX_MEASURES_PER_DAY` already
+# enforces (sessions, never log lines -- the cycle-19 rule). `leg_sessions`
+# is leg one's own observed session count (same composition/segments, so
+# the two floor legs are expected to spend about the same amount); a cap
+# of 0 or less means uncapped, mirroring vibeloop-measure.sh's own
+# `budget_hit` convention for `MAX_MEASURES_PER_DAY<=0`. Exit 0 means the
+# remaining budget covers both extra legs.
+noise_floor_budget_ok() { # $1=runs24 (sessions already spent today) $2=MAX_MEASURES_PER_DAY $3=leg_sessions (one leg's own session count)
+  local runs24="${1:-0}" max="${2:-0}" leg="${3:-0}" need
+  [ "$max" -le 0 ] && return 0
+  need=$(( leg * 2 ))
+  [ $(( runs24 + need )) -le "$max" ]
+}
+
+# Requirement 2, AC1: builds `noise-floor.json` from whichever legs
+# actually produced a `measure.json` -- version, the seed set, per-segment
+# and overall satisfaction/wow values per seed, and the spread (max-min +
+# population stddev) per segment and overall. A segment value that isn't
+# numeric (the proxy tier's tiny bootstrap panel commonly reads
+# `"n/a (n=1<3)"` below `PANEL_MIN_PER_SEGMENT` -- see synthorg's
+# `_segment_value`) is carried as `null`, never coerced into the spread
+# math -- "absent, not zero", the same convention synthorg's own
+# `measure.json` uses elsewhere. Fewer than 2 numeric values for a given
+# metric makes that spread `null` (unmeasurable), not a fake 0.0. Pure
+# file I/O on the paths it's given -- no network, fixture-testable.
+noise_floor_compute() { # $1=version $2=out_json_path $3=failed_seeds_csv ("" if none) $4...=seed:measure_json_path pairs (succeeded legs only)
+  local version="$1" outpath="$2" failed="$3"; shift 3
+  python3 - "$version" "$outpath" "$failed" "$@" <<'PY'
+import json, statistics, sys
+
+version, outpath, failed_csv, *pairs = sys.argv[1:]
+failed_seeds = sorted(int(s) for s in failed_csv.split(",") if s)
+
+per_seed = {}
+for pair in pairs:
+    seed_s, path = pair.split(":", 1)
+    try:
+        per_seed[int(seed_s)] = json.load(open(path))
+    except Exception:
+        pass
+
+
+def numeric(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def spread(values):
+    nums = [v for v in values if numeric(v)]
+    if len(nums) < 2:
+        return {"max_min": None, "stddev": None, "n": len(nums)}
+    return {"max_min": max(nums) - min(nums), "stddev": statistics.pstdev(nums), "n": len(nums)}
+
+
+overall_sat, overall_wow = {}, {}
+seg_sat, seg_wow = {}, {}
+segments = set()
+for seed, d in sorted(per_seed.items()):
+    sat = d.get("satisfaction") or {}
+    wow = d.get("wow_rate") or {}
+    overall_sat[str(seed)] = sat.get("overall", 0.0)
+    overall_wow[str(seed)] = wow.get("overall", 0.0)
+    for seg, val in (sat.get("by_segment") or {}).items():
+        segments.add(seg)
+        seg_sat.setdefault(seg, {})[str(seed)] = val if numeric(val) else None
+    for seg, val in (wow.get("by_segment") or {}).items():
+        segments.add(seg)
+        seg_wow.setdefault(seg, {})[str(seed)] = val if numeric(val) else None
+
+by_segment = {}
+for seg in sorted(segments):
+    sat_vals = seg_sat.get(seg, {})
+    wow_vals = seg_wow.get(seg, {})
+    by_segment[seg] = {
+        "satisfaction": sat_vals,
+        "wow_rate": wow_vals,
+        "spread": {
+            "satisfaction": spread(list(sat_vals.values())),
+            "wow_rate": spread(list(wow_vals.values())),
+        },
+    }
+
+out = {
+    "version": version,
+    "seeds": sorted(per_seed.keys()),
+    "failed_seeds": failed_seeds,
+    "complete": len(failed_seeds) == 0,
+    "by_segment": by_segment,
+    "overall": {
+        "satisfaction": overall_sat,
+        "wow_rate": overall_wow,
+        "spread": {
+            "satisfaction": spread(list(overall_sat.values())),
+            "wow_rate": spread(list(overall_wow.values())),
+        },
+    },
+}
+with open(outpath, "w") as f:
+    json.dump(out, f, indent=2)
+    f.write("\n")
+PY
+}
+
+# Requirement 2/5: the `noise-floor.json`-derived fragment of the ledger
+# line -- just the overall spread, formatted `<max_min>/<stddev>` or
+# `n/a` when unmeasurable (fewer than 2 numeric legs). Pure file read,
+# fixture-testable with a noise-floor.json built by noise_floor_compute
+# (or a hand-written one).
+noise_floor_spread_field() { # $1=noise_floor_json_path
+  python3 - "$1" <<'PY'
+import json, sys
+
+d = json.load(open(sys.argv[1]))
+sat = d["overall"]["spread"]["satisfaction"]
+wow = d["overall"]["spread"]["wow_rate"]
+
+
+def fmt(s):
+    mm, sd = s.get("max_min"), s.get("stddev")
+    return f"{mm:.4f}/{sd:.4f}" if mm is not None else "n/a"
+
+
+print(f"overall_satisfaction_spread={fmt(sat)} overall_wow_spread={fmt(wow)}")
+PY
+}
+
+# Requirement 2/5, AC2/AC3/AC5: the one ledger-line body this sweep
+# contributes -- version, the pinned seed set, and (mode-dependent) the
+# budget-skip marker, the incomplete marker + failed seed(s), or the
+# overall spread. Pure -- the caller (`run_noise_floor_sweep`) prepends
+# "$(ts) " and appends the line to $MLEDGER; this function never touches
+# the filesystem except to read $6 (the already-written noise-floor.json)
+# on the `ok`/`incomplete` modes.
+noise_floor_ledger_line() { # $1=mode(ok|incomplete|skip-budget) $2=version $3=seed1 $4=seed2 $5=seed3 $6=noise_floor_json_path (ok|incomplete only) $7=failed_seeds_csv (incomplete only)
+  local mode="$1" ver="$2" s1="$3" s2="$4" s3="$5" nf="${6:-}" failed="${7:-}"
+  case "$mode" in
+    skip-budget)
+      printf 'version=%s noise-floor="skip: budget" seeds=%s,%s,%s\n' "$ver" "$s1" "$s2" "$s3"
+      ;;
+    ok)
+      printf 'version=%s noise-floor=ok seeds=%s,%s,%s %s file=vibeloop/noise-floor.json\n' \
+        "$ver" "$s1" "$s2" "$s3" "$(noise_floor_spread_field "$nf")"
+      ;;
+    incomplete)
+      printf 'version=%s noise-floor=incomplete failed_seeds=%s seeds=%s,%s,%s %s file=vibeloop/noise-floor.json\n' \
+        "$ver" "$failed" "$s1" "$s2" "$s3" "$(noise_floor_spread_field "$nf")"
+      ;;
+    *)
+      printf 'version=%s noise-floor=error:unknown-mode:%s seeds=%s,%s,%s\n' "$ver" "$mode" "$s1" "$s2" "$s3"
+      ;;
+  esac
+}
+
+# Requirement 1/2/3/4, AC1-AC5: orchestrates the two extra proxy-tier legs
+# against the live endpoint and lands `noise-floor.json` + the ledger
+# line. Never blocks or reddens the gate verdict (AC4): every exit path
+# here is 0, and the caller in vibeloop-measure.sh does not guard this
+# call with `|| exit` -- a failure here only ever shows up as
+# `noise-floor: incomplete` or `skip: budget` in the ledger, never as a
+# changed gate/truth-tier outcome. Deliberately NOT unit-tested directly
+# -- same reason `run_proxy_gate` above isn't: it shells into `uv run
+# synthorg`. The pure pieces above (noise_floor_seeds,
+# noise_floor_budget_ok, noise_floor_compute, noise_floor_spread_field,
+# noise_floor_ledger_line) carry the fixture tests
+# (tests/noisefloor_ac*.test.sh); this function is smoke-tested by hand
+# and validated operationally the same way run_proxy_gate always has
+# been. Does NOT commit/push -- same convention run_proxy_gate's PASS
+# path already follows: it only writes files the caller's own downstream
+# commits (harness-probe-fail, final catch-all) already thread through
+# vibeloop-measure.sh's $NOISE_FLOOR conditional-pathspec guard.
+run_noise_floor_sweep() { # $1=version $2=endpoint url $3=leg-one measure.json path (already landed) $4=leg-one seed
+  local ver="$1" url="$2" leg1_json="$3" seed1 seed2 seed3 leg1_sessions failed_seeds="" legs seed work landed leg_usd leg_known
+  read -r seed1 seed2 seed3 <<< "$(noise_floor_seeds "${4:-0}")"
+  if [ ! -f "$leg1_json" ]; then
+    log "noise-floor: skip: no leg-one measure.json at $leg1_json -- cannot anchor the sweep"
+    return 0
+  fi
+  leg1_sessions=$(python3 -c "import json;print(json.load(open('$leg1_json')).get('sessions',0))" 2>/dev/null)
+  leg1_sessions="${leg1_sessions:-0}"
+  if ! noise_floor_budget_ok "${runs24:-0}" "${MAX_MEASURES_PER_DAY:-0}" "$leg1_sessions"; then
+    log "noise-floor: skip: budget (runs24=${runs24:-0} max=${MAX_MEASURES_PER_DAY:-0} leg_sessions=$leg1_sessions)"
+    echo "$(ts) $(noise_floor_ledger_line skip-budget "$ver" "$seed1" "$seed2" "$seed3")" >> "$MLEDGER"
+    return 0
+  fi
+  legs=("$seed1:$leg1_json")
+  for seed in "$seed2" "$seed3"; do
+    work="$WORK_EVD/noise-floor/$ver-seed$seed-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$work"
+    rm -rf "$SYN/runs/mcp-host-project-consume"
+    log "noise-floor: running synthorg consume --tier proxy seed=$seed for $ver"
+    ( cd "$SYN" && SYNTHORG_LLM_MODE=record SYNTHORG_LLM_BACKEND=cli \
+        ANTHROPIC_MODEL="${SYNTHORG_MODEL_SMALL:-claude-haiku-4-5}" \
+        timeout 400 uv run synthorg consume "$BRIEF" --endpoint "$url" --out "$work" \
+          --seed "$seed" --composition "$COMPOSITION" --tier proxy \
+    ) >> "$LOG" 2>&1
+    read -r leg_usd leg_known <<< "$(sum_session_cost "$work/ledger.jsonl")"
+    ledger_cost noise-floor "$leg_usd" "$ver" "$leg_known"
+    if [ -f "$work/measure.json" ]; then
+      landed="$PROXY_EVD/$ver-noisefloor-seed$seed-$(date -u +%Y%m%dT%H%M%SZ)"
+      land_evidence "$work" "$landed"
+      legs+=("$seed:$landed/measure.json")
+    else
+      log "noise-floor: leg seed=$seed FAILED (no measure.json)"
+      failed_seeds="${failed_seeds:+$failed_seeds,}$seed"
+      rm -rf "$work"
+    fi
+  done
+  noise_floor_compute "$ver" "$NOISE_FLOOR" "$failed_seeds" "${legs[@]}"
+  if [ -n "$failed_seeds" ]; then
+    log "noise-floor: incomplete -- failed seed(s) $failed_seeds"
+    echo "$(ts) $(noise_floor_ledger_line incomplete "$ver" "$seed1" "$seed2" "$seed3" "$NOISE_FLOOR" "$failed_seeds")" >> "$MLEDGER"
+  else
+    log "noise-floor: ok -- $(noise_floor_spread_field "$NOISE_FLOOR")"
+    echo "$(ts) $(noise_floor_ledger_line ok "$ver" "$seed1" "$seed2" "$seed3" "$NOISE_FLOOR")" >> "$MLEDGER"
+  fi
+  bus "{\"event\":\"noise-floor\",\"version\":\"$ver\",\"complete\":$([ -z "$failed_seeds" ] && echo true || echo false),\"ts\":\"$(ts)\"}"
   return 0
 }

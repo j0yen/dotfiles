@@ -50,6 +50,14 @@ probe_deployed_version() {
   curl -s --max-time 10 "${hdr[@]}" "${URL%/mcp}/healthz" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null
 }
 BASELINE="$PRD_DIR/vibeloop/baseline.json"  # PRD-mcphost-baseline-anchor: the standing baseline pointer; written only below (baseline_set/baseline_reanchored)
+# PRD-mcphost-seed-noise-floor: the sweep's own output, beside the measure
+# ledger (Requirement 2). Pinned three-seed env contract: leg one reuses
+# the proxy gate's own $SYNTHORG_SEED below (never re-run); legs two/three
+# are NOISE_FLOOR_SEED_2/3 — named constants, overridable, never
+# `date +%s` (the cycle-19 randomized-seed defect this PRD exists to bury).
+NOISE_FLOOR="$PRD_DIR/vibeloop/noise-floor.json"
+NOISE_FLOOR_SEED_2="${NOISE_FLOOR_SEED_2:-17}"
+NOISE_FLOOR_SEED_3="${NOISE_FLOOR_SEED_3:-42}"
 [ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
 VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
@@ -361,6 +369,12 @@ if [ "${target%% *}" = redeploy ]; then
       # result writes its own terminal ledger line and this script exits here.
       proxy_out="$PROXY_EVD/$deployed-$(date -u +%Y%m%dT%H%M%SZ)"
       run_proxy_gate "$deployed" "$URL" "$proxy_out" || exit 0
+      # PRD-mcphost-seed-noise-floor requirement 1/4: two more proxy-tier
+      # legs at two more pinned seeds, riding the gate that just passed as
+      # leg one. Never guarded with `|| exit 0` — a sweep failure must
+      # never turn the gate red (AC4); run_noise_floor_sweep always
+      # returns 0 and records its own incomplete/skip state in the ledger.
+      run_noise_floor_sweep "$deployed" "$URL" "$proxy_out/measure.json" "$SYNTHORG_SEED"
     else
       # req 4/AC3/AC4: a refused or rolled-back deploy is NOT an error for
       # this step — $deployed (the hub's serving version) is unchanged, the
@@ -440,7 +454,14 @@ PY2
     log "harness probe FAIL ($verdict) — not measuring; will re-probe in $((PROBE_EVERY/3600))h"
     cleanup_field=$(cleanup_tenants)
     echo "$(ts) version=$deployed harness-probe=FAIL $verdict $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=1${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
-    git -C "$PRD_DIR" add "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
+    # PRD-mcphost-seed-noise-floor: a sweep may have already landed
+    # noise-floor.json + its own ledger line before the harness probe
+    # failed and exited here — thread it into this commit (when it
+    # exists — `git add` on a not-yet-written path is fatal, not a no-op)
+    # so it's never stranded uncommitted.
+    add_paths=("$PROXY_EVD" vibeloop/measure-ledger.md "$CL")
+    [ -f "$NOISE_FLOOR" ] && add_paths+=(vibeloop/noise-floor.json)
+    git -C "$PRD_DIR" add "${add_paths[@]}" && git -C "$PRD_DIR" commit -q -m "measure: harness probe failed on $deployed" -- "${add_paths[@]}" && git -C "$PRD_DIR" push -q 2>/dev/null
     exit 0
   fi
 fi
@@ -573,5 +594,10 @@ PY
   echo "$(ts) version=$deployed reason=$reason $summary dir=$(basename "$out") $(deploy_ledger_fields "$deploy_outcome" "$deploy_cause" "$deploy_range" "$deployed_sha_field") $DRIFT_FIELD sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field" >> "$MLEDGER"
   log "measure ok: $summary sessions_spent=$ns$lift_field$baseline_field${PROXY_FIELD} $cleanup_field"
 fi
-git -C "$PRD_DIR" add "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL" && git -C "$PRD_DIR" push -q 2>/dev/null
+# PRD-mcphost-seed-noise-floor: same conditional-pathspec guard as the
+# harness-probe-FAIL commit above — noise-floor.json only exists once a
+# sweep has actually written it at least once.
+final_add_paths=("$EVD" "$PROXY_EVD" vibeloop/measure-ledger.md "$CL")
+[ -f "$NOISE_FLOOR" ] && final_add_paths+=(vibeloop/noise-floor.json)
+git -C "$PRD_DIR" add "${final_add_paths[@]}" && git -C "$PRD_DIR" commit -q -m "measure: $deployed ($reason) — $(tail -n1 "$MLEDGER" | cut -c21-120)" -- "${final_add_paths[@]}" && git -C "$PRD_DIR" push -q 2>/dev/null
 bus "{\"event\":\"measured\",\"version\":\"$deployed\",\"reason\":\"$reason\",\"line\":$(tail -n1 "$MLEDGER" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read().strip()))'),\"ts\":\"$(ts)\"}"
