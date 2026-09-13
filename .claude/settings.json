@@ -7,6 +7,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "claude-fable-5-1",
   "hooks": {
     "SessionStart": [
       {
@@ -449,5 +450,12 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "skipAutoPermissionPrompt": true,
-  "model": "claude-fable-5-1[1m]"
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/home/jsy/.claude/statusline.sh",
+    "padding": 0
+  }
 }
