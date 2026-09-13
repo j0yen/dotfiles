@@ -7,7 +7,6 @@
     ],
     "defaultMode": "auto"
   },
-  "model": "claude-fable-5-1[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -251,6 +250,10 @@
             "command": "/home/jsy/.claude/scripts/spool-hook.sh start",
             "timeout": 5,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/dream-marker.sh"
           }
         ]
       },
@@ -262,6 +265,10 @@
             "command": "/home/jsy/.claude/scripts/procstat-cargo.sh start",
             "timeout": 5,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
           }
         ]
       },
@@ -284,6 +291,10 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
           }
         ]
       },
@@ -437,5 +448,6 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "model": "claude-fable-5-1[1m]"
 }
