@@ -74,13 +74,21 @@ elif [ "$load_state" != "not-found" ]; then
   exit 0
 fi
 
+# Forward every build/burst/gate knob the service drop-ins define into the tick
+# unit. A hand-picked --setenv list silently dropped BUILD_BURST_ENABLED,
+# BUILD_DISTINCT_TARGETS and EXTEND_GATE_PRODUCER_LOCK_WAIT on 2026-09-15; any
+# variable in these families is a tick knob by definition.
+knob_setenv=()
+while IFS='=' read -r k v; do
+  case "$k" in BUILD_MAX_BRANCHES|CHAIN_MAX_STEPS) continue ;; esac
+  knob_setenv+=("--setenv=$k=$v")
+done < <(env | grep -E '^(BUILD_|BURST_|EXTEND_GATE_|CARGO_BUDGET_|CHAIN_)[A-Z0-9_]*=' | sort)
 run_out="$(systemd-run --user --unit=claude-build-work --collect --quiet \
   -p RuntimeMaxSec=3600 -p WorkingDirectory="$HOME" \
   -p StandardOutput="append:$LOG" -p StandardError="append:$LOG" \
   --setenv=HOME="$HOME" --setenv=CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
   ${CHAIN_MAX_STEPS:+--setenv=CHAIN_MAX_STEPS="$CHAIN_MAX_STEPS"} --setenv=BUILD_MAX_BRANCHES="${BUILD_MAX_BRANCHES:-2}" \
-  ${BUILD_DISTINCT_TARGETS:+--setenv=BUILD_DISTINCT_TARGETS="$BUILD_DISTINCT_TARGETS"} ${BUILD_BURST_ENABLED:+--setenv=BUILD_BURST_ENABLED="$BUILD_BURST_ENABLED"} \
-  ${BUILD_SAME_TARGET_CAP_BURST:+--setenv=BUILD_SAME_TARGET_CAP_BURST="$BUILD_SAME_TARGET_CAP_BURST"} ${BURST_GATE_REMOTE:+--setenv=BURST_GATE_REMOTE="$BURST_GATE_REMOTE"} \
+  "${knob_setenv[@]}" \
   --setenv=PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
   "$HOME/.local/bin/claude-build-tick.sh" 2>&1)"
 run_rc=$?
