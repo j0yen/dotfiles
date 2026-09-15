@@ -22,6 +22,9 @@ set -uo pipefail
 SUMMA_VAULT="${SUMMA_VAULT:-$HOME/Notes}"
 SUMMA_VAULT_REMOTE="${SUMMA_VAULT_REMOTE:-https://github.com/j0yen/notes.git}"
 SYNC_LOG="${SYNC_LOG:-$HOME/.cache/summa/sync.log}"
+# Resolve the summa binary explicitly — non-interactive ssh sessions and
+# the hermes gateway unit's PATH may not include ~/.local/bin.
+SUMMA_BIN="${SUMMA_BIN:-$(command -v summa || echo "$HOME/.local/bin/summa")}"
 
 mkdir -p "$(dirname "$SYNC_LOG")" 2>/dev/null || true
 host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
@@ -67,10 +70,10 @@ before_head="$(git -C "$SUMMA_VAULT" rev-parse HEAD 2>/dev/null || true)"
 if timeout 45 git -C "$SUMMA_VAULT" pull --rebase --autostash --quiet >/dev/null 2>"$err_file"; then
     log "pull" "ok"
     after_head="$(git -C "$SUMMA_VAULT" rev-parse HEAD 2>/dev/null || true)"
-    if [ -n "$before_head" ] && [ "$before_head" != "$after_head" ] && command -v summa >/dev/null 2>&1; then
+    if [ -n "$before_head" ] && [ "$before_head" != "$after_head" ] && [ -x "$SUMMA_BIN" ]; then
         changed="$(git -C "$SUMMA_VAULT" diff --name-only "$before_head" "$after_head" -- wiki/ 2>/dev/null)"
         if [ -n "$changed" ]; then
-            if SUMMA_VAULT="$SUMMA_VAULT" timeout 60 summa index >/dev/null 2>&1; then
+            if SUMMA_VAULT="$SUMMA_VAULT" timeout 60 "$SUMMA_BIN" index >/dev/null 2>&1; then
                 log "index" "ok"
             else
                 log "index" "fail"
