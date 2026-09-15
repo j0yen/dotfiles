@@ -1,0 +1,10 @@
+[Unit]
+Description=mcphost-buildloop deploy→measure step (event-driven; see vibeloop-measure.sh)
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/jsy
+ExecCondition=%h/.local/bin/wm-node should-run vibeloop-measure
+ExecStart=/home/jsy/.local/bin/vibeloop-measure.sh
+TimeoutStartSec=7200
+MemoryMax=12G

@@ -1,0 +1,10 @@
+[Unit]
+Description=Generate today's vibeloop daily digest (mcphost-buildloop) — PRD-vibeloop-daily-digest
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/jsy
+Environment=PATH=/home/jsy/.local/bin:/home/jsy/.cargo/bin:/home/jsy/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecCondition=%h/.local/bin/wm-node should-run vibeloop-digest
+ExecStart=/home/jsy/.local/bin/vibeloop-digest.sh
+TimeoutStartSec=60
