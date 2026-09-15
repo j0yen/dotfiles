@@ -23,7 +23,7 @@ hcloud server list -o noheader -o columns=id,name,created 2>/dev/null | awk '/bu
   # session.json parses cleanly; any other case falls through to the
   # existing gates unchanged.
   cause=""
-  if command -v jq >/dev/null 2>&1 && [ -f "$S" ] && [ "$age" -gt 900 ]; then
+  if command -v jq >/dev/null 2>&1 && [ -f "$S" ] && [ "$age" -gt "${BURST_IDLE_GUARD_ZERO_RUNS_AGE_S:-900}" ]; then
     runs_served=$(jq -er '.runs_served' "$S" 2>/dev/null)
     [ "$runs_served" = "0" ] && cause="zero-runs-lifetime"
   fi
