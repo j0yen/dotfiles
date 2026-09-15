@@ -79,6 +79,8 @@ run_out="$(systemd-run --user --unit=claude-build-work --collect --quiet \
   -p StandardOutput="append:$LOG" -p StandardError="append:$LOG" \
   --setenv=HOME="$HOME" --setenv=CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
   ${CHAIN_MAX_STEPS:+--setenv=CHAIN_MAX_STEPS="$CHAIN_MAX_STEPS"} --setenv=BUILD_MAX_BRANCHES="${BUILD_MAX_BRANCHES:-2}" \
+  ${BUILD_DISTINCT_TARGETS:+--setenv=BUILD_DISTINCT_TARGETS="$BUILD_DISTINCT_TARGETS"} ${BUILD_BURST_ENABLED:+--setenv=BUILD_BURST_ENABLED="$BUILD_BURST_ENABLED"} \
+  ${BUILD_SAME_TARGET_CAP_BURST:+--setenv=BUILD_SAME_TARGET_CAP_BURST="$BUILD_SAME_TARGET_CAP_BURST"} ${BURST_GATE_REMOTE:+--setenv=BURST_GATE_REMOTE="$BURST_GATE_REMOTE"} \
   --setenv=PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin" \
   "$HOME/.local/bin/claude-build-tick.sh" 2>&1)"
 run_rc=$?
