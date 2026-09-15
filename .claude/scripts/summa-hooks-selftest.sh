@@ -236,6 +236,52 @@ else
     fail "case12_settings_wiring"
 fi
 
+# ---- Case 13: entity match is case-insensitive but prints ORIGINAL case ---
+out="$(run_lookup "we need to talk about wintermute hub capacity today" "c13")"
+if printf '%s' "$out" | grep -qF 'entity  wiki/entities/Wintermute Hub.md' \
+    && ! printf '%s' "$out" | grep -qF 'wiki/entities/wintermute hub.md'; then
+    ok
+else
+    fail "case13_entity_case_preserved"
+fi
+
+# ---- Case 14: harness-injected prompt (system-reminder) is skipped --------
+before_lines=$(wc -l < "$LEDGER")
+out="$(printf '{"prompt":%s,"session_id":%s}' \
+        "$(jq -Rn --arg p $'<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT] casper burst provisioning downsize' '$p')" \
+        "$(jq -Rn --arg s "c14" '$s')" \
+    | SUMMA_VAULT="$tmp/vault" SUMMA_LEDGER="$LEDGER" bash "$LOOKUP")"
+after_lines=$(wc -l < "$LEDGER")
+if [ -z "$out" ] && [ "$before_lines" -eq "$after_lines" ]; then
+    ok
+else
+    fail "case14_injected_prompt_skipped"
+fi
+
+# ---- Case 15: answer-candidate skips <cross-session-message content -------
+sid15="selftest-summa-c15-$$"
+sess15="$projdir/$sid15.jsonl"
+python3 - "$sess15" "$long_answer" <<'PYEOF' 2>/dev/null
+import json, sys
+sess_file, answer = sys.argv[1], sys.argv[2]
+recs = [
+  {"type": "user", "message": {"role": "user", "content": '<cross-session-message from="other">How does casper burst provisioning work end to end for the fleet?</cross-session-message>'}},
+  {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}},
+]
+with open(sess_file, "w") as f:
+    for r in recs:
+        f.write(json.dumps(r) + "\n")
+PYEOF
+
+cand_dir15="$tmp/candidates15"
+run_candidate "$sid15" "$tmp/ledger8.jsonl" "$cand_dir15"
+if [ ! -f "$cand_dir15/$sid15.md" ] && grep -q "session=$sid15 decision=below_threshold" "$cand_dir15/.audit.log"; then
+    ok
+else
+    fail "case15_cross_session_message_skipped"
+fi
+rm -f "$sess15"
+
 echo "$OK ok, $FAIL FAIL"
 if [ "$FAIL" -gt 0 ]; then
     printf 'FAILED: %s\n' "${fail_names[*]}"

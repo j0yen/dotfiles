@@ -85,6 +85,13 @@ fi
 
 recent=$(tail -n "$N" "$sess_file")
 
+# JQ_HUMAN_PROMPT_DEF (above) already excludes <task-notification>,
+# <system-reminder>, <command-name>, <local-command, and
+# "[SYSTEM NOTIFICATION" — but NOT <cross-session-message (checked:
+# recall's shared def doesn't carry that guard either), so it's added
+# as an extra clause at the one call site below rather than forked
+# into the copied def itself.
+#
 # Build (user_prompt, next_assistant_text) pairs in record order: a
 # qualifying human user record opens a pending prompt; every assistant
 # record's text blocks accumulate onto that prompt's answer until the
@@ -93,7 +100,9 @@ recent=$(tail -n "$N" "$sess_file")
 pairs_program="$JQ_HUMAN_PROMPT_DEF"'
     (reduce .[] as $rec (
       {prompt: null, answer: "", pairs: []};
-      if $rec.type == "user" and ($rec.message.content | is_human_prompt) then
+      if $rec.type == "user"
+         and ($rec.message.content | is_human_prompt)
+         and ($rec.message.content | (type != "string") or (contains("<cross-session-message") | not)) then
         (if .prompt != null then .pairs += [{prompt: .prompt, answer: .answer}] else . end)
         | .prompt = $rec.message.content
         | .answer = ""

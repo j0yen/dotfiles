@@ -43,6 +43,11 @@ case "$prompt" in
     /*) exit 0 ;;
 esac
 
+# Skip harness-injected prompts — never real typed user input.
+case "$prompt" in
+    '<system-reminder>'*|*'[SYSTEM NOTIFICATION'*|*'<task-notification>'*|*'<cross-session-message'*) exit 0 ;;
+esac
+
 # ---- Keyword extraction -------------------------------------------------
 # Lowercase, split on non-alphanumerics, drop tokens <4 chars and a small
 # stopword list, keep up to 6 distinct tokens in order of first appearance.
@@ -123,12 +128,27 @@ if [ -d "$entities_dir" ]; then
         done
     } >"$names_file"
     if [ -s "$names_file" ]; then
-        matched="$(grep -o -i -w -F -f "$names_file" <<<"$prompt" 2>/dev/null \
+        # grep -o returns the matched TEXT AS IT APPEARED IN THE PROMPT
+        # (whatever case the user typed), not the pattern's original
+        # case — so resolve each match back to its original-case
+        # basename via a case-insensitive exact-line lookup in
+        # names_file before using it to build a wiki path.
+        matched_raw="$(grep -o -i -w -F -f "$names_file" <<<"$prompt" 2>/dev/null \
             | awk '!seen[tolower($0)]++' || true)"
-        if [ -n "$matched" ]; then
-            entity_count="$(printf '%s\n' "$matched" | grep -c . || true)"
-            top_entities="$(printf '%s\n' "$matched" | head -n 3)"
-            entity_hits="$top_entities"
+        if [ -n "$matched_raw" ]; then
+            resolved=""
+            while IFS= read -r m; do
+                [ -n "$m" ] || continue
+                orig="$(grep -m1 -ixF "$m" "$names_file" 2>/dev/null)"
+                [ -n "$orig" ] || orig="$m"
+                resolved="$resolved$orig"$'\n'
+            done <<<"$matched_raw"
+            matched="$(printf '%s' "$resolved" | grep -v '^$' | awk '!seen[tolower($0)]++' || true)"
+            if [ -n "$matched" ]; then
+                entity_count="$(printf '%s\n' "$matched" | grep -c . || true)"
+                top_entities="$(printf '%s\n' "$matched" | head -n 3)"
+                entity_hits="$top_entities"
+            fi
         fi
     fi
     rm -f "$names_file"
