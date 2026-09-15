@@ -11,6 +11,10 @@ set -uo pipefail
 STATE="${STATE:-$HOME/.claude/skills/build/state}"
 LOG="${LOG:-$HOME/brain/journal/build-auto.log}"
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+# PRD-build-tick-lock-held requirement 2: route through the lock-holding
+# entrypoint instead of calling claude -p directly, so tick.lock's
+# lifetime is this process tree's lifetime, not one Bash tool call's.
+TICK_RUN="${TICK_RUN:-$HOME/.claude/skills/build/scripts/tick-run.sh}"
 LIMIT_RE="${LIMIT_RE:-You.ve hit your [a-z ]*limit}"
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 bus_event() { # best-effort: local agorabus topic build.quota + fleet NATS subject wm.build.quota (carbon/ryzen7 monitor via the hub)
@@ -51,9 +55,19 @@ if [ -x "$BURST" ] && grep -lqE '^- build_target: *(rust|python)' "$PRD_QUEUE"/*
   fi
 fi
 
-"$CLAUDE_BIN" -p "/build${BUILD_TICK_ARGS:+ $BUILD_TICK_ARGS}" --model sonnet --dangerously-skip-permissions --output-format text 2>&1 \
+# tick-run.sh builds the same "claude -p /build..." invocation itself
+# (from $CLAUDE_BIN / $BUILD_TICK_ARGS, both already set above) and execs
+# it holding tick.lock's fd for its whole life. rc=75 is a clean
+# tick-lock-held skip (another coordinator already running), not a
+# failure — see the tick-lock-held branch below.
+"$TICK_RUN" 2>&1 \
   | tee -a "$LOG" > "$tmp"
 rc=${PIPESTATUS[0]}
+
+if [ "$rc" -eq 75 ]; then
+  echo "$(ts) tick: skipped (cause=tick-lock-held)" >> "$LOG"
+  exit 0
+fi
 
 if [ -x "$BURST" ]; then
   timeout 120 "$BURST" down >>"$LOG" 2>&1 || true
