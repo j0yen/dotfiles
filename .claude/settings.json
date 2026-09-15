@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
+  },
   "permissions": {
     "allow": [
       "Bash(sudo:*)",
@@ -66,6 +69,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/summa-candidates-start.sh",
+            "timeout": 5
           }
         ]
       }
@@ -168,6 +181,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/summa-lookup-inject.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -199,6 +222,17 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/scripts/recall-learning-candidate.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/summa-answer-candidate.sh",
             "timeout": 10,
             "async": true
           }
@@ -440,6 +474,11 @@
       }
     ]
   },
+  "statusLine": {
+    "type": "command",
+    "command": "/home/jsy/.claude/statusline.sh",
+    "padding": 0
+  },
   "enabledPlugins": {
     "stripe@claude-plugins-official": true
   },
@@ -449,13 +488,5 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true,
-  "env": {
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "/home/jsy/.claude/statusline.sh",
-    "padding": 0
-  }
+  "skipAutoPermissionPrompt": true
 }
