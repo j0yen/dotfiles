@@ -51,7 +51,7 @@ if [ -x "$BURST" ] && grep -lqE '^- build_target: *(rust|python)' "$PRD_QUEUE"/*
   fi
 fi
 
-"$CLAUDE_BIN" -p "/build" --model sonnet --dangerously-skip-permissions --output-format text 2>&1 \
+"$CLAUDE_BIN" -p "/build${BUILD_TICK_ARGS:+ $BUILD_TICK_ARGS}" --model sonnet --dangerously-skip-permissions --output-format text 2>&1 \
   | tee -a "$LOG" > "$tmp"
 rc=${PIPESTATUS[0]}
 
