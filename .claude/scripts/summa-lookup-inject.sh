@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# summa-lookup-inject.sh — UserPromptSubmit hook (sync, runs before Claude
-# processes the prompt). Extracts keywords from the prompt and checks the
-# summa wiki (~/Notes/wiki/{answers,entities}) for pages that already
-# answer or name what's being asked, so Claude reads the page instead of
+# summa-lookup-inject.sh — dual-mode hook.
+#   Claude Code: UserPromptSubmit (sync, runs before Claude processes the
+#     prompt). Plain-text stdout context block.
+#   hermes (wintermute-agent, hub): pre_llm_call. hermes sends the
+#     Claude Code wire shape but with the prompt at .extra.user_message
+#     (not .prompt) and a .hook_event_name field; its context-injection
+#     response must be JSON on stdout: {"context":"<text>"} — plain text
+#     is ignored. hermes fires pre_llm_call on every LLM call inside one
+#     turn, so hermes-mode dedupes per (session_id, prompt) so a single
+#     turn logs/emits once even across repeated calls.
+#
+# Both modes: extracts keywords from the prompt and checks the summa
+# wiki (~/Notes/wiki/{answers,entities}) for pages that already answer
+# or name what's being asked, so the caller reads the page instead of
 # re-deriving the answer from scratch.
 #
 # Emits at most a 6-line context block (paths only, never page bodies) and
-# appends one hit/miss line per evaluated prompt to a ledger, so
-# summa-lookups-report.sh can later show what the vault is missing.
+# appends one hit/miss line per evaluated prompt to a ledger (now also
+# recording "mode" and "host" per line, so a fleet-wide ledger can be
+# told apart by node/caller), so summa-lookups-report.sh can later show
+# what the vault is missing.
 #
 # Wall-budget target: <300ms against the real vault (1394 entities).
 # Skips short prompts and slash commands. Silent on every failure.
@@ -25,10 +37,18 @@ command -v "$JQ" >/dev/null 2>&1 || exit 0
 
 prompt=""
 sid=""
+mode="claude"
 if [ ! -t 0 ]; then
     raw="$(cat -)"
     if [ -n "$raw" ]; then
-        prompt="$("$JQ" -r '.prompt // empty' <<<"$raw" 2>/dev/null || true)"
+        raw_prompt_field="$("$JQ" -r '.prompt // empty' <<<"$raw" 2>/dev/null || true)"
+        hook_event_name="$("$JQ" -r '.hook_event_name // empty' <<<"$raw" 2>/dev/null || true)"
+        # hermes mode: the wire payload carries .hook_event_name but no
+        # top-level .prompt (its prompt lives at .extra.user_message).
+        if [ -n "$hook_event_name" ] && [ -z "$raw_prompt_field" ]; then
+            mode="hermes"
+        fi
+        prompt="$("$JQ" -r '.prompt // .extra.user_message // empty' <<<"$raw" 2>/dev/null || true)"
         sid="$("$JQ" -r '.session_id // empty' <<<"$raw" 2>/dev/null || true)"
     fi
 fi
@@ -47,6 +67,21 @@ esac
 case "$prompt" in
     '<system-reminder>'*|*'[SYSTEM NOTIFICATION'*|*'<task-notification>'*|*'<cross-session-message'*) exit 0 ;;
 esac
+
+prompt_sha="$(printf '%s' "$prompt" | sha256sum 2>/dev/null | cut -c1-12)"
+
+# hermes fires pre_llm_call once per LLM call inside a turn, and each
+# call in that turn resends the same user_message — so if the LAST
+# ledger line for this session_id already has this prompt_sha, this is
+# a repeat call within the same turn: skip silently (no output, no new
+# ledger line).
+if [ "$mode" = "hermes" ] && [ -n "$sid" ] && [ -f "$SUMMA_LEDGER" ]; then
+    last_for_sid="$(grep -F "\"sid\":\"$sid\"" "$SUMMA_LEDGER" 2>/dev/null | tail -n1)"
+    if [ -n "$last_for_sid" ]; then
+        last_sha="$("$JQ" -r '.prompt_sha // empty' <<<"$last_for_sid" 2>/dev/null || true)"
+        [ "$last_sha" != "$prompt_sha" ] || exit 0
+    fi
+fi
 
 # ---- Keyword extraction -------------------------------------------------
 # Lowercase, split on non-alphanumerics, drop tokens <4 chars and a small
@@ -182,16 +217,27 @@ fi
 hit_count=$((n_ans_out + n_ent_out))
 
 if [ "$hit_count" -ge 1 ]; then
-    printf '=== summa: wiki pages for this prompt (read before re-deriving) ===\n%s=== /summa ===\n' "$out"
+    # Capture the exact same block text for both modes ($(...) strips
+    # only the trailing newline; re-added below so Claude Code mode
+    # stays byte-identical to before this dual-mode change).
+    block="$(printf '=== summa: wiki pages for this prompt (read before re-deriving) ===\n%s=== /summa ===\n' "$out")"
+    if [ "$mode" = "hermes" ]; then
+        "$JQ" -n --arg c "$block" '{context:$c}' 2>/dev/null
+    else
+        printf '%s\n' "$block"
+    fi
 fi
+# hermes: nothing on stdout on a miss (never {}). Claude Code: same —
+# no output on a miss, as before.
 
 # ---- Ledger --------------------------------------------------------------
 # One JSON line per evaluated prompt (hit or miss), built with jq for safe
-# quoting. Single printf >> append.
+# quoting. Single printf >> append. Records mode + host so a fleet-wide
+# ledger can tell node/caller apart.
 mkdir -p "$(dirname "$SUMMA_LEDGER")" 2>/dev/null || true
 
-prompt_sha="$(printf '%s' "$prompt" | sha256sum 2>/dev/null | cut -c1-12)"
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
 result="miss"
 [ "$hit_count" -ge 1 ] && result="hit"
 
@@ -210,7 +256,9 @@ line="$("$JQ" -nc \
     --argjson entities "$n_ent_out" \
     --arg result "$result" \
     --argjson pages "${pages_json:-[]}" \
-    '{ts:$ts, sid:$sid, prompt_sha:$sha, keywords:$keywords, answers:$answers, entities:$entities, result:$result, pages:$pages}' \
+    --arg mode "$mode" \
+    --arg host "$host" \
+    '{ts:$ts, sid:$sid, prompt_sha:$sha, keywords:$keywords, answers:$answers, entities:$entities, result:$result, pages:$pages, mode:$mode, host:$host}' \
     2>/dev/null)"
 
 if [ -n "$line" ]; then

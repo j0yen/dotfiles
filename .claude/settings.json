@@ -81,6 +81,17 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/summa-vault-sync.sh",
+            "timeout": 20,
+            "async": true
+          }
+        ]
       }
     ],
     "SessionEnd": [

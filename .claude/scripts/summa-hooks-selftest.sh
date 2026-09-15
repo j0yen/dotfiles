@@ -10,6 +10,7 @@ set -uo pipefail
 SCRIPTS_DIR="$HOME/dotfiles/.claude/scripts"
 LOOKUP="$SCRIPTS_DIR/summa-lookup-inject.sh"
 CANDIDATE="$SCRIPTS_DIR/summa-answer-candidate.sh"
+SYNC="$SCRIPTS_DIR/summa-vault-sync.sh"
 
 OK=0
 FAIL=0
@@ -230,7 +231,8 @@ settings="$HOME/.claude/settings.json"
 if jq empty "$settings" >/dev/null 2>&1 \
     && jq -e '.hooks.UserPromptSubmit[].hooks[]?.command | select(endswith("summa-lookup-inject.sh"))' "$settings" >/dev/null 2>&1 \
     && jq -e '.hooks.Stop[].hooks[]?.command | select(endswith("summa-answer-candidate.sh"))' "$settings" >/dev/null 2>&1 \
-    && jq -e '.hooks.SessionStart[].hooks[]?.command | select(endswith("summa-candidates-start.sh"))' "$settings" >/dev/null 2>&1; then
+    && jq -e '.hooks.SessionStart[].hooks[]?.command | select(endswith("summa-candidates-start.sh"))' "$settings" >/dev/null 2>&1 \
+    && jq -e '.hooks.SessionStart[].hooks[]?.command | select(endswith("summa-vault-sync.sh"))' "$settings" >/dev/null 2>&1; then
     ok
 else
     fail "case12_settings_wiring"
@@ -281,6 +283,140 @@ else
     fail "case15_cross_session_message_skipped"
 fi
 rm -f "$sess15"
+
+# ---- Case 16: hermes-mode hit -> {"context":...} with the wiki path -------
+hermes_payload() {
+    local msg="$1" sid="$2"
+    jq -n --arg m "$msg" --arg s "$sid" \
+        '{hook_event_name:"pre_llm_call",tool_name:null,tool_input:null,session_id:$s,cwd:"/home/jsy",extra:{user_message:$m,turn_id:"t1",task_id:1,is_first_turn:true,conversation_history:[]}}'
+}
+
+hermes_ledger="$tmp/hermes_ledger.jsonl"
+out="$(hermes_payload "what did we decide about the wintermute hub downsize" "h16" \
+    | SUMMA_VAULT="$tmp/vault" SUMMA_LEDGER="$hermes_ledger" bash "$LOOKUP")"
+ctx="$(printf '%s' "$out" | jq -r '.context // empty' 2>/dev/null)"
+if printf '%s' "$out" | jq empty >/dev/null 2>&1 \
+    && printf '%s' "$ctx" | grep -qF 'wiki/entities/Wintermute Hub.md'; then
+    ok
+else
+    fail "case16_hermes_hit"
+fi
+
+# ---- Case 17: hermes-mode second call, same sid+prompt -> no output/ledger
+before_lines=$(wc -l < "$hermes_ledger")
+out2="$(hermes_payload "what did we decide about the wintermute hub downsize" "h16" \
+    | SUMMA_VAULT="$tmp/vault" SUMMA_LEDGER="$hermes_ledger" bash "$LOOKUP")"
+after_lines=$(wc -l < "$hermes_ledger")
+if [ -z "$out2" ] && [ "$before_lines" -eq "$after_lines" ]; then
+    ok
+else
+    fail "case17_hermes_dedupe_per_turn"
+fi
+
+# ---- Case 18: hermes-mode miss -> empty stdout (not {}), ledger miss line -
+out3="$(hermes_payload "completely unrelated banana question right now" "h18" \
+    | SUMMA_VAULT="$tmp/vault" SUMMA_LEDGER="$hermes_ledger" bash "$LOOKUP")"
+last_line="$(tail -n1 "$hermes_ledger")"
+if [ -z "$out3" ] && [ "$out3" != "{}" ] \
+    && printf '%s' "$last_line" | jq -e '.sid=="h18" and .result=="miss" and .mode=="hermes"' >/dev/null 2>&1; then
+    ok
+else
+    fail "case18_hermes_miss"
+fi
+
+# ---- summa-vault-sync.sh fixtures ------------------------------------------
+sync_tmp="$tmp/sync"
+mkdir -p "$sync_tmp"
+bare="$sync_tmp/bare.git"
+git init --quiet --bare -b main "$bare" >/dev/null 2>&1
+
+seed="$sync_tmp/seed"
+git clone --quiet "$bare" "$seed" >/dev/null 2>&1
+git -C "$seed" config user.email test@test.com
+git -C "$seed" config user.name Test
+mkdir -p "$seed/wiki"
+echo "seed" > "$seed/wiki/log.md"
+git -C "$seed" add wiki/log.md
+git -C "$seed" commit --quiet -m seed
+git -C "$seed" push --quiet -u origin main >/dev/null 2>&1
+
+# ---- Case 19: clone-if-absent -----------------------------------------------
+vault19="$sync_tmp/vault19"
+sync_log19="$sync_tmp/sync19.log"
+out="$(SUMMA_VAULT="$vault19" SUMMA_VAULT_REMOTE="$bare" SYNC_LOG="$sync_log19" bash "$SYNC")"
+if [ -z "$out" ] && [ -d "$vault19/.git" ] && grep -q ' clone ok$' "$sync_log19"; then
+    ok
+else
+    fail "case19_vault_sync_clone_if_absent"
+fi
+
+# ---- Case 20: pull with a local untracked file preserved (no divergence) --
+vault20="$sync_tmp/vault20"
+git clone --quiet "$bare" "$vault20" >/dev/null 2>&1
+git -C "$vault20" config user.email test@test.com
+git -C "$vault20" config user.name Test
+echo "untracked" > "$vault20/scratch-untracked.txt"
+echo "remote-only update" > "$seed/wiki/case20.md"
+git -C "$seed" add wiki/case20.md
+git -C "$seed" commit --quiet -m "case20 remote update"
+git -C "$seed" push --quiet >/dev/null 2>&1
+
+sync_log20="$sync_tmp/sync20.log"
+out="$(SUMMA_VAULT="$vault20" SYNC_LOG="$sync_log20" bash "$SYNC")"
+if [ -z "$out" ] && [ -f "$vault20/scratch-untracked.txt" ] \
+    && [ -f "$vault20/wiki/case20.md" ] && grep -q ' pull ok$' "$sync_log20"; then
+    ok
+else
+    fail "case20_vault_sync_pull_preserves_untracked"
+fi
+
+# ---- Case 21: diverged local commit — autostash + rebase succeeds --------
+vault21="$sync_tmp/vault21"
+git clone --quiet "$bare" "$vault21" >/dev/null 2>&1
+git -C "$vault21" config user.email test@test.com
+git -C "$vault21" config user.name Test
+echo "another untracked" > "$vault21/scratch-untracked.txt"
+echo "local entity" > "$vault21/wiki/case21-local.md"
+git -C "$vault21" add wiki/case21-local.md
+git -C "$vault21" commit --quiet -m "case21 local divergent commit"
+echo "remote entity" > "$seed/wiki/case21-remote.md"
+git -C "$seed" add wiki/case21-remote.md
+git -C "$seed" commit --quiet -m "case21 remote update"
+git -C "$seed" push --quiet >/dev/null 2>&1
+
+sync_log21="$sync_tmp/sync21.log"
+out="$(SUMMA_VAULT="$vault21" SYNC_LOG="$sync_log21" bash "$SYNC")"
+if [ -z "$out" ] && [ -f "$vault21/scratch-untracked.txt" ] \
+    && [ -f "$vault21/wiki/case21-local.md" ] && [ -f "$vault21/wiki/case21-remote.md" ] \
+    && git -C "$vault21" log --oneline | grep -q "case21 local divergent commit" \
+    && grep -q ' pull ok$' "$sync_log21"; then
+    ok
+else
+    fail "case21_vault_sync_diverged_rebase_succeeds"
+fi
+
+# ---- Case 22: remote unreachable -> logs fail, exits 0, within timeout ----
+vault22="$sync_tmp/vault22"
+mkdir -p "$vault22/wiki"
+git init --quiet "$vault22" >/dev/null 2>&1
+git -C "$vault22" config user.email test@test.com
+git -C "$vault22" config user.name Test
+git -C "$vault22" remote add origin "https://127.0.0.1:1/no-such-repo.git"
+echo x > "$vault22/wiki/log.md"
+git -C "$vault22" add wiki/log.md
+git -C "$vault22" commit --quiet -m x
+
+sync_log22="$sync_tmp/sync22.log"
+t0=$(date +%s)
+out="$(timeout 50 env SUMMA_VAULT="$vault22" SYNC_LOG="$sync_log22" bash "$SYNC")"
+rc=$?
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+if [ -z "$out" ] && [ "$rc" -eq 0 ] && [ "$elapsed" -lt 50 ] && grep -q ' pull fail ' "$sync_log22"; then
+    ok
+else
+    fail "case22_vault_sync_remote_unreachable (rc=$rc elapsed=${elapsed}s)"
+fi
 
 echo "$OK ok, $FAIL FAIL"
 if [ "$FAIL" -gt 0 ]; then
