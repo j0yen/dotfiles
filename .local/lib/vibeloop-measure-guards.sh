@@ -261,6 +261,19 @@ redeploy_migrate_flags() { # $1="1" when unattended_deploy_enabled held, else "0
   return 0
 }
 
+# PRD-mcphost-deploy-caddy-reload-safety requirement 6/AC9: mirrors
+# `mcphost_deploy.redeploy.EXIT_ROLLBACK` (kept in sync by hand -- that
+# module is the source of truth; see its own module-level comment). The
+# 09-14/09-16 incident: `redeploy` exits this code on every rollback, but
+# the text grep below only matched the ledger's own hyphenated
+# `rolled-back` token, which `cli.py` used to print as `rolled back` (a
+# space) -- 25 rollbacks over 27 hours never wrote the "skip repeat
+# rollback" pointer (`record_rolled_back_pending`) because the text match
+# never fired. Checking the exit code FIRST makes this classification
+# correct even if the printed text ever drifts from the ledger's wording
+# again.
+MCPHOST_DEPLOY_EXIT_ROLLBACK=3
+
 # Requirement 4: classify a redeploy call's own exit code + printed
 # stdout+stderr into one of deployed|rolled-back|refused, plus the cause
 # token off the tool's own `redeploy  <verb>  (cause=<x> ...)` journal line
@@ -271,7 +284,7 @@ classify_deploy_outcome() { # $1=rc $2=output text -> "<outcome> <cause>"
   cause=$(printf '%s' "$out" | grep -oE 'cause=[^[:space:])]+' | tail -1 | cut -d= -f2)
   if [ "$rc" -eq 0 ]; then
     echo "deployed ${cause:-none}"
-  elif printf '%s' "$out" | grep -q 'rolled-back'; then
+  elif [ "$rc" -eq "$MCPHOST_DEPLOY_EXIT_ROLLBACK" ] || printf '%s' "$out" | grep -q 'rolled-back'; then
     echo "rolled-back ${cause:-none}"
   else
     echo "refused ${cause:-none}"
@@ -300,6 +313,29 @@ clear_rolled_back_pending() { # $1=state path
 # separate "clear" call required for that case.
 rolled_back_pending() { # $1=state path $2=current last_pass sha -> exit 0 if pending
   [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "${2:-}" ]
+}
+
+# PRD-mcphost-deploy-caddy-reload-safety requirement 7/AC11: the backstop
+# alarm for a repeated rollback -- "this only fires if R6's pointer was
+# cleared or bypassed" (the PRD's own wording), since R6's fix above
+# (checking the exit code) is what's supposed to make
+# rolled_back_pending/record_rolled_back_pending catch a repeat before it
+# ever gets this far. Pure/fixture-testable: takes the current and
+# previous run's already-classified outcome+sha (vibeloop-measure.sh reads
+# the previous values off its own ledger's last line for the same sha) --
+# this function never reads the ledger file itself, same split as
+# `deploy_ledger_fields`/`merge_deploy_fields_json` above (decision logic
+# here, I/O in the caller).
+repeated_rollback() { # $1=outcome $2=sha $3=previous_outcome $4=previous_sha -> exit 0 if repeated
+  [ "${1:-}" = "rolled-back" ] || return 1
+  [ "${3:-}" = "rolled-back" ] || return 1
+  [ -n "${2:-}" ] && [ "${2:-}" = "${4:-}" ]
+}
+
+# Requirement 7: the exact alarm text, written to both
+# ~/brain/journal/vibeloop-measure.log and the measure ledger line.
+rollback_alarm_line() { # $1=sha $2=cause -> "ALARM redeploy-rolled-back-twice sha=<sha> cause=<cause>"
+  echo "ALARM redeploy-rolled-back-twice sha=${1:-unknown} cause=${2:-none}"
 }
 
 # Requirement 3/AC2/AC3: the four measure.json/ledger fields plus one
