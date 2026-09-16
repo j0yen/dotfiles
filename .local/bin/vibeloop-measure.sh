@@ -58,7 +58,7 @@ BASELINE="$PRD_DIR/vibeloop/baseline.json"  # PRD-mcphost-baseline-anchor: the s
 NOISE_FLOOR="$PRD_DIR/vibeloop/noise-floor.json"
 NOISE_FLOOR_SEED_2="${NOISE_FLOOR_SEED_2:-17}"
 NOISE_FLOOR_SEED_3="${NOISE_FLOOR_SEED_3:-42}"
-[ -f "$HOME/.config/vibeloop/limits" ] && . "$HOME/.config/vibeloop/limits"
+[ -f "$HOME/.config/vibeloop/limits" ] && { set -a; . "$HOME/.config/vibeloop/limits"; set +a; }
 MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
 VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
 # PRD-mcphost-baseline-anchor: set by a future candidate-run trigger — no invocation path in
