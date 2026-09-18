@@ -21,14 +21,14 @@ s="$HOME/.cache/token-ledger/today-summary.txt"
 # fresh — this script never ssh's itself (statusline fires on every
 # render; a network call here would be far too slow). On RedBaron reads
 # the skill's own state directly; elsewhere reads gates-banner.sh's
-# ~/.cache/gate-red.summary cache, which may be up to its own 10-minute
+# ~/.cache/gate-red.summary cache, which may be up to its own 10-minute  # lint:gate-red-age-shown
 # TTL stale — acceptable for a statusline field, never gating.
 gates=""
 on_rb=0
 if [ "$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "redbaron" ]; then
-  on_rb=1; g="$HOME/.claude/skills/build/state/gate-red.summary"
+  on_rb=1; g="$HOME/.claude/skills/build/state/gate-red.summary"  # lint:gate-red-age-shown
 else
-  g="$HOME/.cache/gate-red.summary"
+  g="$HOME/.cache/gate-red.summary"  # lint:gate-red-age-shown
 fi
 # The cache used to refresh only at SessionStart, so a red could sit in the
 # status line for hours after RedBaron went green (2026-09-17). Now: refresh
@@ -36,7 +36,7 @@ fi
 # and mark the reading stale past 15 min so old state never reads as current.
 gage=99999
 [ -f "$g" ] && gage=$(( $(date +%s) - $(stat -c %Y "$g" 2>/dev/null || echo 0) ))
-gb="$HOME/.claude/hooks/gates-banner.sh"  # lint:gate-red-age-shown (stale Nm suffix below)
+gb="$HOME/.claude/hooks/gates-banner.sh"
 if [ "$on_rb" = 0 ] && [ "$gage" -gt 600 ] && [ -x "$gb" ]; then
   setsid -f flock -n "$g.lock" bash "$gb" >/dev/null 2>&1 </dev/null || true
 fi
