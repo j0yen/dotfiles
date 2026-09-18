@@ -24,22 +24,21 @@ s="$HOME/.cache/token-ledger/today-summary.txt"
 # ~/.cache/gate-red.summary cache, which may be up to its own 10-minute
 # TTL stale — acceptable for a statusline field, never gating.
 gates=""
-if [ "$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "redbaron" ]; then
-  gsum_file="$HOME/.claude/skills/build/state/gate-red.summary"
-else
-  gsum_file="$HOME/.cache/gate-red.summary"
+g="$HOME/.cache/gate-red.summary"
+# The cache used to refresh only at SessionStart, so a red could sit in the
+# status line for hours after RedBaron went green (2026-09-17). Now: refresh
+# in the background when older than 10 min (gates-banner.sh owns the fetch),
+# and mark the reading stale past 15 min so old state never reads as current.
+gage=99999
+[ -f "$g" ] && gage=$(( $(date +%s) - $(stat -c %Y "$g" 2>/dev/null || echo 0) ))
+gb="$HOME/.claude/hooks/gates-banner.sh"
+if [ "$gage" -gt 600 ] && [ -x "$gb" ]; then
+  setsid -f flock -n "$g.lock" bash "$gb" >/dev/null 2>&1 </dev/null || true
 fi
-if [ -r "$gsum_file" ]; then
-  gline="$(sed -n '1p' "$gsum_file" 2>/dev/null)"
-  gred=$(printf '%s' "$gline" | grep -oE 'red=[0-9]+' | head -1 | cut -d= -f2)
-  ggreen=$(printf '%s' "$gline" | grep -oE 'green=[0-9]+' | head -1 | cut -d= -f2)
-  if [ -n "$gred" ]; then
-    if [ "$gred" -gt 0 ] 2>/dev/null; then
-      gates="🔴 GATES red=${gred} green=${ggreen:-0}"
-    else
-      gates="GATES green=${ggreen:-0} red=0"
-    fi
-  fi
+if [ -r "$g" ]; then
+  r=$(grep -oE 'red=[0-9]+' "$g" | head -1 | cut -d= -f2); gr=$(grep -oE 'green=[0-9]+' "$g" | head -1 | cut -d= -f2)
+  stale=""; [ "$gage" -gt 900 ] && stale=" stale $(( gage / 60 ))m"
+  if [ -n "$r" ]; then if [ "$r" -gt 0 ]; then gates="🔴 GATES red=$r green=${gr:-0}${stale}"; else gates="GATES green=${gr:-0} red=0${stale}"; fi; fi
 fi
 out="$model"
 [ -n "$ctx" ] && out="$out · $ctx"
