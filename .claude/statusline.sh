@@ -36,7 +36,7 @@ fi
 # and mark the reading stale past 15 min so old state never reads as current.
 gage=99999
 [ -f "$g" ] && gage=$(( $(date +%s) - $(stat -c %Y "$g" 2>/dev/null || echo 0) ))
-gb="$HOME/.claude/hooks/gates-banner.sh"
+gb="$HOME/.claude/hooks/gates-banner.sh"  # lint:gate-red-age-shown (stale Nm suffix below)
 if [ "$on_rb" = 0 ] && [ "$gage" -gt 600 ] && [ -x "$gb" ]; then
   setsid -f flock -n "$g.lock" bash "$gb" >/dev/null 2>&1 </dev/null || true
 fi
