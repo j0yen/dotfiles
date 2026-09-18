@@ -202,6 +202,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/dream-marker.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
