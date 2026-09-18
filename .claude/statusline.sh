@@ -24,7 +24,12 @@ s="$HOME/.cache/token-ledger/today-summary.txt"
 # ~/.cache/gate-red.summary cache, which may be up to its own 10-minute
 # TTL stale — acceptable for a statusline field, never gating.
 gates=""
-g="$HOME/.cache/gate-red.summary"
+on_rb=0
+if [ "$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "redbaron" ]; then
+  on_rb=1; g="$HOME/.claude/skills/build/state/gate-red.summary"
+else
+  g="$HOME/.cache/gate-red.summary"
+fi
 # The cache used to refresh only at SessionStart, so a red could sit in the
 # status line for hours after RedBaron went green (2026-09-17). Now: refresh
 # in the background when older than 10 min (gates-banner.sh owns the fetch),
@@ -32,7 +37,7 @@ g="$HOME/.cache/gate-red.summary"
 gage=99999
 [ -f "$g" ] && gage=$(( $(date +%s) - $(stat -c %Y "$g" 2>/dev/null || echo 0) ))
 gb="$HOME/.claude/hooks/gates-banner.sh"
-if [ "$gage" -gt 600 ] && [ -x "$gb" ]; then
+if [ "$on_rb" = 0 ] && [ "$gage" -gt 600 ] && [ -x "$gb" ]; then
   setsid -f flock -n "$g.lock" bash "$gb" >/dev/null 2>&1 </dev/null || true
 fi
 if [ -r "$g" ]; then
