@@ -325,6 +325,10 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/probe-gate.sh"
           }
         ]
       },
