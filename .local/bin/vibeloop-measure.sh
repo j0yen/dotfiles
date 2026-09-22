@@ -257,7 +257,30 @@ if [ "$VIBELOOP_CANDIDATE" = 1 ]; then
   fi
 fi
 cal=$(cat "$CAL"); reason=""; redeployed=0
+# PRD-mcphost-deploy-on-green-land requirement 2/5 (P0/AC6): take the SAME
+# shared lock `deploy-on-land`'s `redeploy_lock`/`constants.
+# redeploy_lock_path()` uses before deciding anything -- `flock(2)` locks
+# are keyed by the underlying file, not which program opened it, so this
+# and Python's `fcntl.flock` on the same path genuinely exclude each other.
+# Held for the whole decision+redeploy window below (released before the
+# harness-probe/truth-tier tail, which can run minutes and has nothing to
+# do with mutual exclusion on the box).
+REDEPLOY_LOCK_PATH="${MCPHOST_DEPLOY_LOCK_PATH:-$HOME/.cache/mcphost-deploy/redeploy.lock}"
+mkdir -p "$(dirname "$REDEPLOY_LOCK_PATH")"
+exec 9>"$REDEPLOY_LOCK_PATH"
+if ! flock -w 300 9; then
+  log "skip: redeploy lock busy (deploy-on-land or another measure cycle holds it)"
+  exit 0
+fi
 target=$(lastpass_target "$doc_last_pass" "$doc_deployed")
+# requirement 5/AC6: deployed == last_pass is the on-land idempotence case
+# this requirement exists for -- distinct from "no last_pass known at all"
+# (empty/"none"), which stays silent here exactly as before.
+if [ "${target%% *}" != redeploy ] && [ -n "$doc_last_pass" ] && [ "$doc_last_pass" != "none" ] && [ "$doc_last_pass" = "$doc_deployed" ]; then
+  log "redeploy skipped (on-land already)"
+  echo "$(ts) version=$deployed redeploy=skipped cause=on-land-already last_pass=$doc_last_pass $(deploy_ledger_fields skipped on-land-already "" "$doc_deployed") $DRIFT_FIELD sessions_spent=0" >> "$MLEDGER"
+  git -C "$PRD_DIR" add vibeloop/measure-ledger.md && git -C "$PRD_DIR" commit -q -m "measure: redeploy skipped, on-land already deployed last_pass=$doc_last_pass" -- vibeloop/measure-ledger.md && git -C "$PRD_DIR" push -q 2>/dev/null
+fi
 # PRD-vibeloop-measure-self-authorized-redeploy: the deploy-outcome fields
 # every ledger line from here on carries (Goals: "one deploy outcome per
 # run with its cause"). Default is "nothing was due this cycle" -- the
@@ -404,6 +427,11 @@ if [ "${target%% *}" = redeploy ]; then
   fi
   fi
 fi
+# requirement 2/5 (P0/AC6): release the shared lock now -- the decision and
+# any redeploy this cycle made are done; the harness-probe/truth-tier tail
+# below has nothing to do with mutual exclusion on the box and can run
+# minutes, so it must not hold `deploy-on-land` out for that long.
+flock -u 9
 if [ "$redeployed" -ne 1 ]; then
   # req 2: nothing new gated to ship (target=measure), or the tool's own
   # gate check disagreed with doctor's read and skipped defensively above --
