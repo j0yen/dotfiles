@@ -59,6 +59,10 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/hooks/token-ledger-banner.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/grand-loop-banner-start.sh"
           }
         ]
       },

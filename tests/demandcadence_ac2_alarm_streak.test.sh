@@ -16,7 +16,7 @@ run_demand run >/dev/null
 line1="$(tail -n1 "$ledger" 2>/dev/null)"
 assert_contains "$line1" "\"alarm\":true" "first failing run: row is an alarm row"
 assert_contains "$line1" "\"exit_code\":1" "first failing run: exit code recorded"
-assert_contains "$(cat "$GRAND_LOOP_DEMAND_LOG")" "ALARM" "first failing run: journal has an ALARM line"
+assert_contains "$(cat "$GRAND_LOOP_DEMAND_LOG")" "alarm:" "first failing run: journal has an alarm: line"
 assert_not_contains "$(cat "$agorabus_calls")" "demand-alarm-streak" "one alarm alone does not publish a streak event"
 
 export GRAND_LOOP_DEMAND_TODAY=2026-09-14

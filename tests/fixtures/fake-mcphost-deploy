@@ -4,6 +4,9 @@
 # env vars so each test can shape one scenario without touching this file:
 #
 #   FAKE_PROBE_MODE       ok (default) | fail    — probe exit status
+#   FAKE_PROBE_STDERR     stderr text on probe failure (mode=fail), one or
+#                         more lines; default: a single "fake probe: forced
+#                         failure" line (PRD-grand-loop-liveness-contract AC5)
 #   FAKE_HEALTHZ_JSON     JSON object embedded as probe --json's "healthz"
 #                         field (default: {"db_ok": true})
 #   FAKE_LISTINGS_JSON    JSON object embedded as probe --json's "listings"
@@ -21,7 +24,7 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   probe)
     if [ "${FAKE_PROBE_MODE:-ok}" = "fail" ]; then
-      echo "fake probe: forced failure" >&2
+      printf '%s\n' "${FAKE_PROBE_STDERR:-fake probe: forced failure}" >&2
       exit 1
     fi
     healthz_default='{"db_ok": true}'  # see the measure branch below for why

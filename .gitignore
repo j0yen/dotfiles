@@ -1,2 +1,5 @@
 .claude/settings.local.json
 *.bak.*
+
+# wm-build gate artifacts (autobuilder receipts)
+/target/

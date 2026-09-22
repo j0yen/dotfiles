@@ -99,16 +99,19 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 preflight_json="$tmpdir/preflight.json"
+preflight_stderr="$tmpdir/preflight.stderr"
 healthz_json="$tmpdir/healthz.json"
 
 # ---- PREFLIGHT --------------------------------------------------------
 bl_phase "$STATE" PREFLIGHT running
-if ! mcphost-deploy probe --host "$HOST" --json > "$preflight_json" 2>>"$GRAND_LOOP_LOG"; then
+if ! mcphost-deploy probe --host "$HOST" --json > "$preflight_json" 2>"$preflight_stderr"; then
+  cat "$preflight_stderr" >> "$GRAND_LOOP_LOG" 2>/dev/null || true
   bl_phase "$STATE" DIGEST failed
-  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "" "preflight: probe command failed" 0
+  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "" "preflight: probe command failed" 0 "$preflight_stderr"
   log "instrument: preflight probe command failed"
   exit 0
 fi
+cat "$preflight_stderr" >> "$GRAND_LOOP_LOG" 2>/dev/null || true
 python3 -c "
 import json, sys
 try:
@@ -146,18 +149,20 @@ IFS=',' read -ra _pfx <<< "$GRAND_LOOP_EXCLUDE_PREFIXES"
 for p in "${_pfx[@]}"; do [ -n "$p" ] && exclude_args+=(--exclude-prefix "$p"); done
 
 measure_out="$tmpdir/measure.out"
+measure_stderr="$tmpdir/measure.stderr"
 measure_rc=0
-mcphost-deploy measure --host "$HOST" --out "$out_dir" "${exclude_args[@]}" > "$measure_out" 2>>"$GRAND_LOOP_LOG" || measure_rc=$?
+mcphost-deploy measure --host "$HOST" --out "$out_dir" "${exclude_args[@]}" > "$measure_out" 2>"$measure_stderr" || measure_rc=$?
+cat "$measure_stderr" >> "$GRAND_LOOP_LOG" 2>/dev/null || true
 
 if [ "$measure_rc" -eq 3 ]; then
   detail="$(grep -o 'unvalidated:.*' "$measure_out" | head -1)"
   bl_phase "$STATE" DIGEST failed
-  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "$out_dir" "${detail:-unvalidated}" 1
+  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "$out_dir" "${detail:-unvalidated}" 1 "$measure_stderr"
   log "instrument: measure unvalidated ($detail)"
   exit 0
 elif [ "$measure_rc" -ne 0 ]; then
   bl_phase "$STATE" DIGEST failed
-  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "$out_dir" "measure failed rc=$measure_rc" 1
+  finish_instrument "$STATE" "$LEDGER" "$PROFILE" "$PRD_DIR" "$out_dir" "measure failed rc=$measure_rc" 1 "$measure_stderr"
   log "instrument: measure failed rc=$measure_rc"
   exit 0
 fi
@@ -181,6 +186,19 @@ write_ledger_line "$LEDGER" "$measure_json" "$family" "$reason" 1
 write_loop_note "$PROFILE" "$today" "$family" "$measure_json" "$(family_instruction "$family")"
 daily_target="$(update_daily_section "$PRD_DIR" "$LOOP_DIR" "$LEDGER" "$today")"
 commit_prd_repo "$PRD_DIR" "$out_dir" "$LEDGER" "$STATE" "$PROFILE" "$daily_target"
+
+# Requirement 2 (AC7): reaching DIGEST ok is the loop's one definition of
+# "succeeded" — stamp state/last-success.json so bl_liveness/the banner
+# have a fresh row to measure age against, regardless of family.
+deployed_version="$(python3 -c "
+import json
+try:
+    d = json.load(open('$measure_json'))
+except Exception:
+    d = {}
+print(d.get('deployed_version') or '-')
+" 2>/dev/null || echo -)"
+bl_success_stamp "$LOOP_DIR/state/last-success.json" DIGEST "$deployed_version"
 
 bl_phase "$STATE" DIGEST ok
 bl_phase "$STATE" IDLE ok

@@ -4,11 +4,13 @@
 # state.json, ledger.md, or the PRDs repo, so it's safe to run from any
 # machine that has the repo cloned (mcphost-deploy is never invoked here).
 #
-# Prints: the last tick's stamp and family, the last *live* (non-instrument,
-# reached-MEASURE) paid_mrr_usd and real_tenants, ticks today against the
-# daily MEASURE cap, whether STOP is set, the timer's next scheduled fire
-# (via `systemctl --user list-timers`, when the unit is installed), and the
-# newest `## Loop notes` line.
+# Prints: the liveness verdict first (PRD-grand-loop-liveness-contract
+# Requirement 7 — ok/stale/never/stuck, same bl_liveness the SessionStart
+# banner uses), then the last tick's stamp and family, the last *live*
+# (non-instrument, reached-MEASURE) paid_mrr_usd and real_tenants, ticks
+# today against the daily MEASURE cap, whether STOP is set, the timer's
+# next scheduled fire (via `systemctl --user list-timers`, when the unit is
+# installed), and the newest `## Loop notes` line.
 #
 # NOT YET: --json (P1, for the fleet dashboard).
 #
@@ -26,6 +28,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRD_DIR="${GRAND_LOOP_PRD_DIR:-$HOME/Documents/PRDs}"
 LOOP_DIR="$PRD_DIR/grand-loop"
 LEDGER="$LOOP_DIR/ledger.md"
+STATE="$LOOP_DIR/state.json"
+SUCCESS="$LOOP_DIR/state/last-success.json"
 STOP_FILE="$LOOP_DIR/STOP"
 PROFILE="$PRD_DIR/projects/grand-loop.md"
 
@@ -35,6 +39,9 @@ ENV_FILE="${GRAND_LOOP_ENV:-$HOME/.config/grand-loop/env}"
 GRAND_LOOP_MAX_TICKS_PER_DAY="${GRAND_LOOP_MAX_TICKS_PER_DAY:-4}"
 
 today="$(date -u +%F)"
+
+liveness="$(bl_liveness "$STATE" "$SUCCESS" 2>/dev/null)"
+echo "liveness:    $liveness"
 
 last_line="$(last_ledger_line "$LEDGER")"
 if [ -n "$last_line" ]; then

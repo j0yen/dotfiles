@@ -309,12 +309,16 @@ else:
 PY
 }
 
-# write_ledger_line <ledger.md> <measure.json|""> <family> <reason> <reached_measure 0|1> [exclusions_summary]
+# write_ledger_line <ledger.md> <measure.json|""> <family> <reason> <reached_measure 0|1> [stderr_tail_escaped]
 # Appends the one required line per the DIGEST bullet: stamp, deployed
 # version, billing_mode, real_tenants, new_real_tenants, real_wow_rate,
 # paying_tenants, paid_mrr_usd, gross_churn, exclusions, family, reason.
+# The optional 6th arg (PRD-grand-loop-liveness-contract Requirement 4) is
+# the failing command's stderr tail, already newline-escaped by
+# bl_escape_newlines — folded in as a trailing `stderr_tail="..."` field
+# when non-empty.
 write_ledger_line() {
-  local ledger="$1" measure_json="$2" family="$3" reason="$4" reached="$5"
+  local ledger="$1" measure_json="$2" family="$3" reason="$4" reached="$5" stderr_tail="${6:-}"
   local line
   line="$(python3 - "$measure_json" "$family" "$reason" "$reached" <<'PY'
 import json, os, sys
@@ -348,30 +352,47 @@ fields = [
 print(" ".join(fields))
 PY
 )"
+  if [ -n "$stderr_tail" ]; then
+    line="$line stderr_tail=\"$stderr_tail\""
+  fi
   mkdir -p "$(dirname "$ledger")"
   echo "$(ts) $line" >> "$ledger"
 }
 
-# finish_instrument_line <ledger.md> <reason> <reached_measure 0|1> — the
-# no-measure.json paths (STOP skip, preflight failure, measure failure /
+# finish_instrument_line <ledger.md> <reason> <reached_measure 0|1> [stderr_tail_escaped]
+# the no-measure.json paths (STOP skip, preflight failure, measure failure /
 # unvalidated exit 3) share this blank-fields shape.
 finish_instrument_line() {
-  local ledger="$1" reason="$2" reached="$3"
-  write_ledger_line "$ledger" "" "instrument" "$reason" "$reached"
+  local ledger="$1" reason="$2" reached="$3" stderr_tail="${4:-}"
+  write_ledger_line "$ledger" "" "instrument" "$reason" "$reached" "$stderr_tail"
 }
 
-# finish_instrument <state.json> <ledger.md> <profile.md> <prd_dir> <out_dir|""> <reason> <reached_measure 0|1>
+# finish_instrument <state.json> <ledger.md> <profile.md> <prd_dir> <out_dir|""> <reason> <reached_measure 0|1> [stderr_file]
 # One call for every instrument-family exit path (preflight failure, measure
 # failure, exit-3 unvalidated, missing measure.json): writes the ledger line,
 # folds the reason into the loop note's "next" text so AC4's "the loop note
 # says how many labels are missing" holds without a reason field the fixed
 # template doesn't otherwise carry, commits, and marks DIGEST/IDLE in
 # state.json. Does not exit — the caller does that, right after.
+#
+# The optional 8th arg (PRD-grand-loop-liveness-contract Requirement 4) is a
+# path to the failing command's captured stderr: when it exists and is
+# non-empty, its last 20 lines are written verbatim to
+# <loop_dir>/state/last-failure.txt and (newline-escaped) into the ledger
+# row's stderr_tail= field, so the on-call reader of ledger.md sees why
+# PREFLIGHT/MEASURE failed without opening a log.
 finish_instrument() {
-  local state="$1" ledger="$2" profile="$3" prd_dir="$4" out_dir="$5" reason="$6" reached="$7" today loop_dir daily_target
+  local state="$1" ledger="$2" profile="$3" prd_dir="$4" out_dir="$5" reason="$6" reached="$7" stderr_file="${8:-}"
+  local today loop_dir daily_target stderr_tail="" stderr_tail_escaped=""
   today="$(date -u +%F)"
   loop_dir="$(dirname "$ledger")"
-  finish_instrument_line "$ledger" "$reason" "$reached"
+  if [ -n "$stderr_file" ] && [ -s "$stderr_file" ]; then
+    stderr_tail="$(tail -n 20 "$stderr_file")"
+    mkdir -p "$loop_dir/state"
+    printf '%s\n' "$stderr_tail" > "$loop_dir/state/last-failure.txt"
+    stderr_tail_escaped="$(bl_escape_newlines "$stderr_tail")"
+  fi
+  finish_instrument_line "$ledger" "$reason" "$reached" "$stderr_tail_escaped"
   write_loop_note "$profile" "$today" instrument "" "$(family_instruction instrument) ($reason)"
   daily_target="$(update_daily_section "$prd_dir" "$loop_dir" "$ledger" "$today")"
   commit_prd_repo "$prd_dir" "$out_dir" "$ledger" "$state" "$profile" "$daily_target"
@@ -461,12 +482,18 @@ PY
 
 # ---- P1 daily section (PRD-grand-loop-scaffold, AC13) --------------------
 
-# grand_loop_open_needs <ledger.md> <date> <publish_ok_path> — one open-need
-# line per condition that applies today (labels missing, billing off,
-# PUBLISH-OK absent), or "none" when none do. Prints one need per line.
+# grand_loop_open_needs <ledger.md> <date> <publish_ok_path> [loop_dir] —
+# one open-need line per condition that applies today (labels missing,
+# billing off, PUBLISH-OK absent, instrument stale — Requirement 8/AC10),
+# or "none" when none do. Prints one need per line. The optional 4th arg
+# (loop_dir) is where state.json and state/last-success.json live; when
+# given and bl_liveness reports anything but ok, a
+# "instrument stale since <ts>" need is added — <ts> is the PREFLIGHT
+# stamp for stuck, the last success's own ts for stale, or the literal
+# "never" when no success row exists yet (bl_liveness_since).
 grand_loop_open_needs() {
-  local ledger="$1" date="$2" publish_ok="$3"
-  local needs=() labels_reason labels_detail last_today bm
+  local ledger="$1" date="$2" publish_ok="$3" loop_dir="${4:-}"
+  local needs=() labels_reason labels_detail last_today bm verdict since
 
   labels_reason="$(awk -v d="$date" '$0 ~ "^"d && /family=instrument/' "$ledger" 2>/dev/null \
     | grep -o 'reason="[^"]*label[^"]*"' | tail -1)"
@@ -482,6 +509,14 @@ grand_loop_open_needs() {
   fi
 
   [ -f "$publish_ok" ] || needs+=("PUBLISH-OK absent")
+
+  if [ -n "$loop_dir" ]; then
+    verdict="$(bl_liveness "$loop_dir/state.json" "$loop_dir/state/last-success.json" 2>/dev/null)"
+    if [ "$verdict" != "ok" ]; then
+      since="$(bl_liveness_since "$loop_dir/state.json" "$loop_dir/state/last-success.json")"
+      needs+=("instrument stale since $since")
+    fi
+  fi
 
   if [ "${#needs[@]}" -eq 0 ]; then
     echo "none"
@@ -570,7 +605,7 @@ PY
 update_daily_section() {
   local prd_dir="$1" loop_dir="$2" ledger="$3" date="$4" target open_needs
   target="$(daily_page_target "$prd_dir" "$loop_dir" "$date")"
-  open_needs="$(grand_loop_open_needs "$ledger" "$date" "$loop_dir/PUBLISH-OK")"
+  open_needs="$(grand_loop_open_needs "$ledger" "$date" "$loop_dir/PUBLISH-OK" "$loop_dir")"
   write_daily_section "$target" "$ledger" "$date" "$open_needs"
   echo "$target"
 }
@@ -638,4 +673,196 @@ newest_loop_note() {
 ledger_field() {
   local line="$1" field="$2"
   printf '%s\n' "$line" | grep -o "${field}=[^ ]*" | head -1 | cut -d= -f2-
+}
+
+# ---- liveness (PRD-grand-loop-liveness-contract) --------------------------
+#
+# The grand loop is the only reader of paid_mrr_usd; nothing else notices
+# when it stops writing rows. bl_liveness gives every reader (bl_liveness
+# itself, grand-loop-banner.sh, grand-loop-status) one answer, computed the
+# same way: ok | stale | never | stuck.
+
+# bl_liveness <state.json> <last-success.json> — prints ok|stale|never|stuck
+# and exits 0 for ok, 2 otherwise. A PREFLIGHT still `running` in state.json
+# older than GRAND_LOOP_PHASE_MAX_WALL (default 30m) is "stuck" regardless
+# of how fresh the last success row is — a hung tick is its own failure
+# mode. Otherwise: no last-success.json (or one with no `ts`) is "never"
+# (migration note: existing installs read this way until their first
+# success under this contract); older than GRAND_LOOP_MAX_AGE (default 26h)
+# is "stale"; anything else is "ok".
+bl_liveness() {
+  local state="$1" success="$2"
+  local max_age="${GRAND_LOOP_MAX_AGE:-26h}"
+  local phase_wall="${GRAND_LOOP_PHASE_MAX_WALL:-30m}"
+  python3 - "$state" "$success" "$max_age" "$phase_wall" <<'PY'
+import json, os, re, sys
+from datetime import datetime, timezone
+
+state_path, success_path, max_age_s, phase_wall_s = sys.argv[1:5]
+
+def parse_duration(v):
+    m = re.match(r'^(\d+)([smhd]?)$', v.strip())
+    if not m:
+        return 0
+    n, unit = int(m.group(1)), m.group(2) or 's'
+    return n * {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}[unit]
+
+def parse_ts(s):
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+def load(p):
+    if not p or not os.path.isfile(p):
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+max_age = parse_duration(max_age_s)
+phase_wall = parse_duration(phase_wall_s)
+now = datetime.now(timezone.utc)
+
+state = load(state_path) or {}
+preflight = (state.get("phases") or {}).get("PREFLIGHT") or {}
+if state.get("phase") == "PREFLIGHT" and preflight.get("status") == "running" and preflight.get("stamp"):
+    try:
+        age = (now - parse_ts(preflight["stamp"])).total_seconds()
+    except Exception:
+        age = None
+    if age is not None and age > phase_wall:
+        print("stuck")
+        sys.exit(2)
+
+success = load(success_path)
+if not success or not success.get("ts"):
+    print("never")
+    sys.exit(2)
+
+try:
+    age = (now - parse_ts(success["ts"])).total_seconds()
+except Exception:
+    print("never")
+    sys.exit(2)
+
+if age > max_age:
+    print("stale")
+    sys.exit(2)
+
+print("ok")
+sys.exit(0)
+PY
+}
+
+# bl_liveness_since <state.json> <last-success.json> — the timestamp behind
+# whatever bl_liveness just decided: the PREFLIGHT stamp for stuck, the last
+# success's own ts for ok/stale, or the literal "never" when no success row
+# exists yet. Used by the daily-note "Open needs" line (AC10) so it names a
+# concrete moment, not just the verdict word.
+bl_liveness_since() {
+  local state="$1" success="$2" verdict
+  verdict="$(bl_liveness "$state" "$success" 2>/dev/null)"
+  case "$verdict" in
+    stuck)
+      python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print((d.get('phases') or {}).get('PREFLIGHT', {}).get('stamp', 'unknown'))
+" "$state" 2>/dev/null || echo unknown
+      ;;
+    ok|stale)
+      python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print(d.get('ts', 'unknown'))
+" "$success" 2>/dev/null || echo unknown
+      ;;
+    *)
+      echo never
+      ;;
+  esac
+}
+
+# bl_age_human <ISO ts> — best-effort "N min" / "N h" age string for banner
+# text; "?" when the timestamp is missing or unparseable.
+bl_age_human() {
+  local iso="$1"
+  python3 -c "
+import sys
+from datetime import datetime, timezone
+try:
+    dt = datetime.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+except Exception:
+    print('?')
+    sys.exit()
+secs = (datetime.now(timezone.utc) - dt).total_seconds()
+if secs < 3600:
+    print(f'{int(secs // 60)} min')
+else:
+    print(f'{secs / 3600:.0f} h')
+" "$iso"
+}
+
+# bl_success_stamp <last-success.json> <phase> <version> — Requirement 2:
+# stamps a fresh success row (ts, phase, version) so bl_liveness has
+# something to measure age against. Called once DIGEST reaches ok.
+bl_success_stamp() {
+  local success_file="$1" phase="$2" version="$3"
+  mkdir -p "$(dirname "$success_file")"
+  python3 - "$success_file" "$phase" "$version" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+path, phase, version = sys.argv[1:4]
+d = {
+    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "phase": phase,
+    "version": version,
+}
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+# bl_escape_newlines <raw text> -> stdout: backslashes/quotes escaped and
+# real newlines replaced with the two-char sequence \n, so the result is
+# safe to embed as one ledger field's quoted value (Requirement 4). Takes
+# the text as an argument, not stdin: `python3 -` already reads the script
+# body itself from stdin via the heredoc below, so stdin isn't free to
+# carry the caller's text too.
+bl_escape_newlines() {
+  python3 - "$1" <<'PY'
+import sys
+s = sys.argv[1]
+s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+sys.stdout.write(s)
+PY
+}
+
+# bl_deliver_stale_alert <loop_dir> <verdict> <detail> — Requirement 6
+# (AC8): delivers one alert per UTC day through the build loop's existing
+# alert-deliver.sh, PATH-resolved and best-effort like commit_prd_repo's
+# push — grand-loop never depends on it being installed. The dedupe marker
+# is written whether or not alert-deliver.sh is even present, so a missing
+# binary can't turn into a retry-every-SessionStart loop either.
+bl_deliver_stale_alert() {
+  local loop_dir="$1" verdict="$2" detail="$3" marker today
+  today="$(date -u +%F)"
+  marker="$loop_dir/state/last-alert-date.txt"
+  mkdir -p "$(dirname "$marker")"
+  if [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$today" ]; then
+    return 0
+  fi
+  if command -v alert-deliver.sh >/dev/null 2>&1; then
+    alert-deliver.sh "grand-loop: $verdict — $detail" >/dev/null 2>&1 || true
+  fi
+  printf '%s' "$today" > "$marker"
 }

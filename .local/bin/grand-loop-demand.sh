@@ -122,7 +122,7 @@ cmd_run() {
   local ledger="$CLONE_DIR/$LEDGER_REL"
 
   if [ "$clone_rc" -ne 0 ]; then
-    log_line "$LOG" "ALARM clone unhealthy state=$clone_state date=$today"
+    log_line "$LOG" "alarm: clone unhealthy state=$clone_state date=$today (see ledger)"
     if [ -d "$CLONE_DIR/.git" ]; then
       mkdir -p "$(dirname "$ledger")"
       local row pstate streak
@@ -139,8 +139,8 @@ cmd_run() {
         log_line "$LOG" "bus: demand-alarm-streak count=$streak"
       fi
     fi
-    echo "alarm: clone unhealthy ($clone_state)"
-    return 0
+    echo "alarm: clone unhealthy ($clone_state) (see ledger)"
+    return 1
   fi
 
   mkdir -p "$(dirname "$ledger")"
@@ -190,7 +190,7 @@ cmd_run() {
   local commit_msg
   if [ "$is_alarm" -eq 1 ]; then
     commit_msg="grand-loop-demand: $today alarm exit=$measure_rc"
-    log_line "$LOG" "ALARM demand read failed exit=$measure_rc date=$today out_dir=$out_dir_rel"
+    log_line "$LOG" "alarm: demand read failed exit=$measure_rc date=$today out_dir=$out_dir_rel (see ledger)"
   else
     commit_msg="grand-loop-demand: $today row"
     log_line "$LOG" "ok: demand row appended date=$today out_dir=$out_dir_rel"
@@ -209,18 +209,21 @@ cmd_run() {
       bus_publish "$BUS_TOPIC" "$(printf '{"event":"demand-alarm-streak","count":%s,"date":"%s"}' "$streak" "$today")"
       log_line "$LOG" "bus: demand-alarm-streak count=$streak"
     fi
-  else
-    local changed; changed="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants_changed'))" "$row" 2>/dev/null)"
-    if [ "$changed" = "True" ]; then
-      local rt rtp
-      rt="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants'))" "$row")"
-      rtp="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants_prev'))" "$row")"
-      bus_publish "$BUS_TOPIC" "$(printf '{"event":"real-tenants-moved","from":%s,"to":%s,"date":"%s"}' "$rtp" "$rt" "$today")"
-      log_line "$LOG" "bus: real-tenants-moved $rtp -> $rt"
-    fi
+    echo "alarm: demand row appended for $today (see ledger)"
+    return 1
+  fi
+
+  local changed; changed="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants_changed'))" "$row" 2>/dev/null)"
+  if [ "$changed" = "True" ]; then
+    local rt rtp
+    rt="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants'))" "$row")"
+    rtp="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('real_tenants_prev'))" "$row")"
+    bus_publish "$BUS_TOPIC" "$(printf '{"event":"real-tenants-moved","from":%s,"to":%s,"date":"%s"}' "$rtp" "$rt" "$today")"
+    log_line "$LOG" "bus: real-tenants-moved $rtp -> $rt"
   fi
 
   echo "ok: demand row appended for $today"
+  return 0
 }
 
 cmd="${1:-run}"
