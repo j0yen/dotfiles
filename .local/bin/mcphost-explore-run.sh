@@ -329,7 +329,14 @@ main() {
 
   stage="explore"
   local explore_out
-  if ! explore_out="$(run_synthorg explore "$run_dir" --segments "$segments" --sessions "$SESSIONS" --host "$url" --composition "$COMPOSITION" 2>&1)"; then
+  # PRD-synthorg-explore-auth-failure-attribution Requirement 6: explicit,
+  # not omitted -- omitted used to take the legacy argument-only path with
+  # no `Authorization` header and no `auth_mode` recorded anywhere, which is
+  # exactly what made the 2026-09-29 run's 24 `tenant_key`-missing calls
+  # read as an authentication outage. `synthorg explore`'s own summary line
+  # (`auth: {...}`), captured in `$explore_out` below, is what lands the
+  # resolved mix in this journal.
+  if ! explore_out="$(run_synthorg explore "$run_dir" --segments "$segments" --sessions "$SESSIONS" --host "$url" --composition "$COMPOSITION" --auth mixed 2>&1)"; then
     log "explore stage output: $explore_out"
     record_fail explore "explore entrypoint failed"
     exit 1
