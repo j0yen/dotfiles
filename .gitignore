@@ -3,3 +3,5 @@
 
 # wm-build gate artifacts (autobuilder receipts)
 /target/
+*.bak
+*.bak-*
