@@ -1,7 +1,4 @@
 {
-  "env": {
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
-  },
   "permissions": {
     "allow": [
       "Bash(sudo:*)",
@@ -10,6 +7,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "claude-fable-5-1[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -17,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
+            "command": "/home/jsy/.claude/skills/self-review/scripts/check-review-due.sh"
           },
           {
             "type": "command",
@@ -33,7 +31,7 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/claude-self-start.sh"
+            "command": "/home/jsy/.claude/scripts/claude-self-start.sh"
           },
           {
             "type": "command",
@@ -41,7 +39,7 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/learning-candidates-start.sh"
+            "command": "/home/jsy/.claude/scripts/learning-candidates-start.sh"
           },
           {
             "type": "command",
@@ -49,29 +47,11 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
+            "command": "sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'"
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/beacon-session-start.sh"
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/hooks/token-ledger-banner.sh"
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/grand-loop-banner-start.sh"
-          },
-          {
-            "type": "command",
-            "command": "sh -c 'case \"$(hostname 2>/dev/null)\" in *carbon*) echo \"CARBON IS A LAPTOP (Joe 10-05/10-07): terminal only. Operator seat = orch (ssh -t orch tmux attach). Do not start loops, timers, or runbooks that need carbon. Memory: feedback_move_everything_off_carbon_laptop_20261007\";; esac; exit 0'",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/scripts/resource-guard-start.sh",
-            "timeout": 10
+            "command": "/home/jsy/.claude/scripts/beacon-session-start.sh"
           }
         ]
       },
@@ -82,27 +62,6 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/peon-ping/peon.sh",
             "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/scripts/summa-candidates-start.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/scripts/summa-vault-sync.sh",
-            "timeout": 20,
-            "async": true
           }
         ]
       }
@@ -205,26 +164,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/scripts/summa-lookup-inject.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/dream-marker.sh",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "Stop": [
@@ -256,17 +195,6 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/scripts/recall-learning-candidate.sh",
-            "timeout": 10,
-            "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/scripts/summa-answer-candidate.sh",
             "timeout": 10,
             "async": true
           }
@@ -319,10 +247,6 @@
             "command": "/home/jsy/.claude/scripts/spool-hook.sh start",
             "timeout": 5,
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/dream-marker.sh"
           }
         ]
       },
@@ -334,14 +258,6 @@
             "command": "/home/jsy/.claude/scripts/procstat-cargo.sh start",
             "timeout": 5,
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/probe-gate.sh"
           }
         ]
       },
@@ -364,10 +280,6 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
-          },
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
           }
         ]
       },
@@ -379,15 +291,6 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "Agent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/block-expensive-spawn.sh"
           }
         ]
       }
@@ -511,11 +414,6 @@
         ]
       }
     ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "/home/jsy/.claude/statusline.sh",
-    "padding": 0
   },
   "enabledPlugins": {
     "stripe@claude-plugins-official": true
