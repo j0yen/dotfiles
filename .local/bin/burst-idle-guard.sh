@@ -37,6 +37,15 @@ hcloud server list -o noheader -o columns=id,name,created 2>/dev/null | awk '/bu
   done < <(grep -E 'run  routed|gate  .*host=' "$J" 2>/dev/null | tail -200)
   [ -z "$cause" ] && [ "$loop_active" != "active" ] && cause="loop-stopped"
   [ -z "$cause" ] && [ "$runs_this_hour" -eq 0 ] && cause="idle-this-billed-hour"
+  # 2026-09-18 (operator): branch agents still implementing toward a routed gate
+  # are pending work, not idleness — keep through the first two billed hours only.
+  if [ "$cause" = "idle-this-billed-hour" ] && [ $((age/3600+1)) -le 2 ]; then
+    active_agents=$(systemctl --user list-units --no-legend "build-branch-*" 2>/dev/null | grep -c running || true)
+    if [ "${active_agents:-0}" -gt 0 ]; then
+      echo "$(date -u +%FT%TZ)  burst-lane  idle-guard  keep  (server_id=$id billed_hour=$((age/3600+1)) runs_this_hour=0 cause=branch-agents-active agents=$active_agents)" >> "$J"
+      continue
+    fi
+  fi
   if [ -z "$cause" ]; then
     echo "$(date -u +%FT%TZ)  burst-lane  idle-guard  keep  (server_id=$id billed_hour=$((age/3600+1)) runs_this_hour=$runs_this_hour)" >> "$J"
     continue
