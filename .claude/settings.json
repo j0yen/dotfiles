@@ -225,6 +225,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/agorabus-intent.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -269,6 +279,16 @@
             "command": "/home/jsy/.claude/scripts/summa-answer-candidate.sh",
             "timeout": 10,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/agorabus-intent.sh stop",
+            "timeout": 5
           }
         ]
       }
@@ -323,6 +343,11 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/dream-marker.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/agorabus-intent.sh",
+            "timeout": 5
           }
         ]
       },
