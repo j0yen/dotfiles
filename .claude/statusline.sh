@@ -5,6 +5,8 @@
 #   🔨 N = open daemon runs, 📋 N = eligible PRDs in the queue, read from a cache file that
 #   statusline-prd-counts.sh refreshes in the background every ≤30 s — only on the host whose
 #   wm-build daemon is alive, so another node never shows a stale clone's numbers.
+# PRDs/hour added 2026-10-09 (Joe: "add PRDs/hour over last 6 hours"): 🚀 <shipped6/6>/h (<shipped6>/6h), shipped =
+#   release tag written in `land_versions` within 6 h (merged + tagged, the status-rule PRDs/hour).
 set -uo pipefail
 in=$(cat)
 model=$(printf '%s' "$in" | jq -r '.model.display_name // .model.id // "?"')
@@ -24,11 +26,12 @@ if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; the
   cache="$HOME/.cache/wm-build-statusline/counts"
   now=$(date +%s); ts=0
   if [ -r "$cache" ]; then
-    read -r b q t <"$cache"
-    building=${b#building=}; queued=${q#queued=}; ts=${t#ts=}
+    read -r b q s t <"$cache"
+    building=${b#building=}; queued=${q#queued=}; shipped=${s#shipped6=}; ts=${t#ts=}
+    rate=$(awk -v n="${shipped:-0}" 'BEGIN{printf "%.2f", n/6}')
     age=$(( now - ts ))
     stale=""; [ "$age" -gt 180 ] && stale=" (${age}s old)"
-    prd="🔨 ${building} building · 📋 ${queued} queued${stale}"
+    prd="🔨 ${building} building · 📋 ${queued} queued · 🚀 ${rate}/h (${shipped}/6h)${stale}"
   fi
   if [ $(( now - ts )) -gt 30 ]; then
     setsid -f "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1 </dev/null
