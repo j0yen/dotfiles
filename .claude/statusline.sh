@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# statusline.sh — model · context used% (warn ≥50% = ~100K on a 200K window).
+# statusline.sh — model · context used% (warn ≥50% = ~100K on a 200K window) · PRD counts.
 # GATES, TOKENS, and cost fields removed 2026-10-06 (Joe: not useful).
+# PRD counts added 2026-10-09 (Joe: "live count on the number of prds being built and the number in queue"):
+#   🔨 N = open daemon runs, 📋 N = eligible PRDs in the queue, read from a cache file that
+#   statusline-prd-counts.sh refreshes in the background every ≤30 s — only on the host whose
+#   wm-build daemon is alive, so another node never shows a stale clone's numbers.
 set -uo pipefail
 in=$(cat)
 model=$(printf '%s' "$in" | jq -r '.model.display_name // .model.id // "?"')
@@ -13,6 +17,25 @@ if [ -n "$pct" ]; then
   elif [ "$pct" -ge 50 ]; then ctx="⚠ ctx ${used_k}${pct}% >100K — /compact or hand off"
   else ctx="ctx ${used_k}${pct}%"; fi
 fi
+
+prd=""
+pidfile="$HOME/.local/state/wm-build/daemon.pid"
+if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+  cache="$HOME/.cache/wm-build-statusline/counts"
+  now=$(date +%s); ts=0
+  if [ -r "$cache" ]; then
+    read -r b q t <"$cache"
+    building=${b#building=}; queued=${q#queued=}; ts=${t#ts=}
+    age=$(( now - ts ))
+    stale=""; [ "$age" -gt 180 ] && stale=" (${age}s old)"
+    prd="🔨 ${building} building · 📋 ${queued} queued${stale}"
+  fi
+  if [ $(( now - ts )) -gt 30 ]; then
+    setsid -f "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1 </dev/null
+  fi
+fi
+
 out="$model"
 [ -n "$ctx" ] && out="$out · $ctx"
+[ -n "$prd" ] && out="$out · $prd"
 printf '%s' "$out"
