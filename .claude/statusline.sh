@@ -6,7 +6,7 @@
 #   statusline-prd-counts.sh refreshes in the background every ≤30 s — only on the host whose
 #   wm-build daemon is alive, so another node never shows a stale clone's numbers.
 # PRDs/hour added 2026-10-09 (Joe: "add PRDs/hour over last 6 hours"): 🚀 <shipped6/6>/h (<shipped6>/6h), shipped =
-#   release tag written in `land_versions` within 6 h (merged + tagged, the status-rule PRDs/hour).
+#   `wm-build ledger --since 6h` shipped (runs tagged in the window, at/after archived; fixed in 0.73.4 #195).
 set -uo pipefail
 in=$(cat)
 model=$(printf '%s' "$in" | jq -r '.model.display_name // .model.id // "?"')
