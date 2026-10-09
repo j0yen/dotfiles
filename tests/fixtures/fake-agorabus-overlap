@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# fake-agorabus-overlap — stand-in for `agorabus` in
+# agorabus-overlap-warning-hook_ac*.test.sh. `intent list` and `claim list`
+# cat the JSON files named by FAKE_INTENT_JSON / FAKE_CLAIM_JSON (default
+# `[]`); every other call is recorded to $FAKE_AGORABUS_CALLS and succeeds.
+set -uo pipefail
+case "${1:-} ${2:-}" in
+  "intent list") cat "${FAKE_INTENT_JSON:-/dev/null}" 2>/dev/null || echo '[]' ;;
+  "claim list") cat "${FAKE_CLAIM_JSON:-/dev/null}" 2>/dev/null || echo '[]' ;;
+  *) printf '%s\n' "$*" >>"${FAKE_AGORABUS_CALLS:-/dev/null}" ;;
+esac
+exit 0
