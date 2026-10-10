@@ -18,6 +18,8 @@ db="$HOME/.local/state/wm-build/state.db"
 building=$(sqlite3 -readonly "$db" "select count(*) from runs where ended is null;" 2>/dev/null)
 shipped6=$(timeout 10 wm-build ledger --since 6h --json 2>/dev/null | jq -r '.shipped' 2>/dev/null)
 queued=$(timeout 30 wm-build queue 2>/dev/null | jq '[.[]|select(.eligible)]|length' 2>/dev/null)
+# total = PRD files still `Status: queued` (eligible + waiting on Depends-on/claims); 10-10 Joe "status bar prd queue count seems wrong" — 191 ready read as the whole queue of 377
+total=$(grep -l '^- Status: queued' "$HOME/Documents/PRDs/build-queue/"*.md 2>/dev/null | wc -l)
 [ -n "${building:-}" ] && [ -n "${queued:-}" ] && [ -n "${shipped6:-}" ] || exit 1
-printf 'building=%s queued=%s shipped6=%s ts=%s\n' "$building" "$queued" "$shipped6" "$(date +%s)" >"$dir/counts.tmp" \
+printf 'building=%s queued=%s shipped6=%s ts=%s total=%s\n' "$building" "$queued" "$shipped6" "$(date +%s)" "${total:-?}" >"$dir/counts.tmp" \
   && mv -f "$dir/counts.tmp" "$dir/counts"

@@ -26,12 +26,12 @@ if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; the
   cache="$HOME/.cache/wm-build-statusline/counts"
   now=$(date +%s); ts=0
   if [ -r "$cache" ]; then
-    read -r b q s t <"$cache"
-    building=${b#building=}; queued=${q#queued=}; shipped=${s#shipped6=}; ts=${t#ts=}
+    read -r b q s t tt <"$cache"
+    building=${b#building=}; queued=${q#queued=}; shipped=${s#shipped6=}; ts=${t#ts=}; total=${tt#total=}
     rate=$(awk -v n="${shipped:-0}" 'BEGIN{printf "%.2f", n/6}')
     age=$(( now - ts ))
     stale=""; [ "$age" -gt 180 ] && stale=" (${age}s old)"
-    prd="🔨 ${building} building · 📋 ${queued} queued · 🚀 ${rate}/h (${shipped}/6h)${stale}"
+    prd="🔨 ${building} building · 📋 ${queued} ready/${total:-?} queued · 🚀 ${rate}/h (${shipped}/6h)${stale}"
   fi
   if [ $(( now - ts )) -gt 30 ]; then
     setsid -f "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1 </dev/null
