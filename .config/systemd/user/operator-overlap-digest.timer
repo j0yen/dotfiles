@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly sibling overlap digest (enable by hand: systemctl --user enable --now operator-overlap-digest.timer)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -21,3 +21,9 @@ id = "park-fresh-fact"
 description = "Park freshness hook: park-fresh-fact.sh PreToolUse hook, settings wiring, proven by the pfact_ac* shell tests."
 globs = [".claude/hooks/park-fresh-fact.sh", ".claude/settings.json", "tests/pfact_*"]
 required_commands = ["for t in tests/pfact_ac*.test.sh; do bash \"$t\" || exit 1; done"]
+
+[[lane]]
+id = "overlap-digest"
+description = "Sibling overlap digest: overlap-digest.sh, its hourly user timer/service, proven by the sodig_ac* shell tests."
+globs = [".local/bin/overlap-digest.sh", ".config/systemd/user/operator-overlap-digest.*", "tests/sodig_*"]
+required_commands = ["for t in tests/sodig_ac*.test.sh; do bash \"$t\" || exit 1; done"]

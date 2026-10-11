@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-11 — dotfiles-sibling-overlap-digest (patch)
+
+`.local/bin/overlap-digest.sh [--since 1h] [--out <path>]` joins the PRD repo's
+git log, `~/.cache/agorabus/sessions/*.ndjson` activity events and
+`state.db` (`runs`, `operator_actions`) into `(actor, slug, action, ts)` rows and
+writes `~/.cache/operator/overlap-digest.md`: one row per line, an `OVERLAP`
+line for each pair of distinct actors on one slug within `OVERLAP_WINDOW_MIN`
+(30), and `overlaps: N` last. A new `OVERLAP` also lands in
+`~/.cache/operator/notices/<ts>-overlap.txt`. Hourly user timer
+`operator-overlap-digest.{service,timer}` (not enabled by the build).
+
 ## 2026-10-11 — dotfiles-park-requires-fresh-fact (patch)
 
 `.claude/hooks/park-fresh-fact.sh` (PreToolUse `Bash`, `Edit`, `Write`,

@@ -1,0 +1,7 @@
+[Unit]
+Description=Hourly sibling overlap digest: who touched which PRD slug, OVERLAP when two actors collide (PRD dotfiles-sibling-overlap-digest)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+ExecStart=%h/.local/bin/overlap-digest.sh --since 1h
