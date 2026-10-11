@@ -27,3 +27,9 @@ id = "overlap-digest"
 description = "Sibling overlap digest: overlap-digest.sh, its hourly user timer/service, proven by the sodig_ac* shell tests."
 globs = [".local/bin/overlap-digest.sh", ".config/systemd/user/operator-overlap-digest.*", "tests/sodig_*"]
 required_commands = ["for t in tests/sodig_ac*.test.sh; do bash \"$t\" || exit 1; done"]
+
+[[lane]]
+id = "handoff-generated"
+description = "Generated handoff: handoff-gen.sh (SessionEnd), handoff-lint.sh, settings wiring, status-gen refresh hook, proven by the hgen_ac* shell tests."
+globs = [".claude/scripts/handoff-gen.sh", ".claude/scripts/handoff-lint.sh", ".claude/scripts/operator-status-gen.sh", ".claude/settings.json", "tests/hgen_*", "tests/fixtures/hgen-*"]
+required_commands = ["for t in tests/hgen_ac*.test.sh; do bash \"$t\" || exit 1; done"]

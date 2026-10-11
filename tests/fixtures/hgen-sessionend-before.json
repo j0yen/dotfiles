@@ -1,0 +1,1 @@
+[{"hooks":[{"type":"command","command":"/home/jsy/.claude/scripts/ctrace-session-end.sh"},{"type":"command","command":"/home/jsy/.claude/scripts/agorabus-session-end.sh"}]},{"matcher":"","hooks":[{"type":"command","command":"/home/jsy/.claude/hooks/peon-ping/peon.sh","timeout":10,"async":true}]}]

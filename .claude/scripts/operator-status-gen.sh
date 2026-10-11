@@ -166,4 +166,14 @@ jq -n --arg ga "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg host "$(hostname -s 2>/dev
   '{generated_at:$ga, host:$host, runs:$runs, queue:$queue, decisions_open:$dec, chain:$chain, siblings:$sib, daemon:$daemon, config:$config, sources:$src}' >"$tmp" 2>/dev/null \
   && mv -f "$tmp" "$out"
 rm -f "$tmp" 2>/dev/null
+
+# PRD dotfiles-handoff-generated R5: a fresh status.json also refreshes the
+# generated handoff when that file is > 20 min old. Only where the memory dir
+# exists, never from inside handoff-gen.sh's own call (HANDOFF_GEN_ACTIVE).
+hmem="${HANDOFF_MEMORY_DIR:-$HOME/.claude/projects/-home-jsy/memory}"
+hgen="$(dirname "${BASH_SOURCE[0]}")/handoff-gen.sh"
+if [ -z "${HANDOFF_GEN_ACTIVE:-}" ] && [ -d "$hmem" ] && [ -x "$hgen" ] \
+   && [ -z "$(find "$hmem/handoff-generated.md" -mmin -20 2>/dev/null)" ]; then
+  ( setsid "$hgen" >/dev/null 2>&1 & ) 2>/dev/null
+fi
 exit 0

@@ -11,6 +11,20 @@ line for each pair of distinct actors on one slug within `OVERLAP_WINDOW_MIN`
 `~/.cache/operator/notices/<ts>-overlap.txt`. Hourly user timer
 `operator-overlap-digest.{service,timer}` (not enabled by the build).
 
+## 2026-10-11 — dotfiles-handoff-generated (patch)
+
+`.claude/scripts/handoff-gen.sh [--out <path>]` writes
+`~/.claude/projects/-home-jsy/memory/handoff-generated.md` (≤ 80 lines, eight
+sourced sections: Generated, Runs, Queue, Decisions open, Versions, Chain,
+Sessions alive, Config) from `~/.cache/operator/status.json` plus runs ended in
+24 h, mcphost prod (2 s timeout) and the synthorg tag. Idempotent except the
+`Generated:` line, atomic, fail-open per section (`not on this host`), exit 0
+in < 3 s. A `status.json` older than 60 s is regenerated first. It inserts the
+index line as line 2 of `MEMORY.md` once. Wired in SessionEnd after
+`agorabus-session-end.sh`; `operator-status-gen.sh` also refreshes a handoff
+older than 20 min. `handoff-lint.sh <prose-file>` prints
+`line N restates <source> <key>` (advisory, exit 0).
+
 ## 2026-10-11 — dotfiles-park-requires-fresh-fact (patch)
 
 `.claude/hooks/park-fresh-fact.sh` (PreToolUse `Bash`, `Edit`, `Write`,

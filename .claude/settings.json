@@ -122,6 +122,11 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/scripts/agorabus-session-end.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/scripts/handoff-gen.sh",
+            "timeout": 10
           }
         ]
       },
