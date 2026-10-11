@@ -33,3 +33,9 @@ id = "handoff-generated"
 description = "Generated handoff: handoff-gen.sh (SessionEnd), handoff-lint.sh, settings wiring, status-gen refresh hook, proven by the hgen_ac* shell tests."
 globs = [".claude/scripts/handoff-gen.sh", ".claude/scripts/handoff-lint.sh", ".claude/scripts/operator-status-gen.sh", ".claude/settings.json", "tests/hgen_*", "tests/fixtures/hgen-*"]
 required_commands = ["for t in tests/hgen_ac*.test.sh; do bash \"$t\" || exit 1; done"]
+
+[[lane]]
+id = "config-reload-check"
+description = "Config edit reload check: PostToolUse hook answering a wm-build config.toml edit with what the daemon loaded, proven by the crchk_ac* shell tests."
+globs = [".claude/hooks/config-reload-check.sh", ".claude/settings.json", "tests/crchk_*"]
+required_commands = ["for t in tests/crchk_ac*.test.sh; do bash \"$t\" || exit 1; done"]

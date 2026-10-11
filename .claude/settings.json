@@ -510,6 +510,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/config-reload-check.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

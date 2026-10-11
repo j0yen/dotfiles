@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-11 — dotfiles-config-edit-reload-check (patch)
+
+`.claude/hooks/config-reload-check.sh` (PostToolUse `Edit|Write|MultiEdit|Bash`)
+answers an edit to `~/.config/wm-build/config.toml` with `wm-build config
+effective`'s verdict per key, then a detached single waiter writes
+`~/.cache/operator/notices/<ts>-config-reload.txt` (`loaded <old>→<new>`,
+`NOT loaded (restart-required)`, or `no tick within <n> s — daemon stalled?`,
+ending `admission: N admitted / M skipped in that tick`). `--last` reprints the
+newest notice. Inactive daemon: one line, no waiter.
+
 ## 2026-10-11 — dotfiles-sibling-overlap-digest (patch)
 
 `.local/bin/overlap-digest.sh [--since 1h] [--out <path>]` joins the PRD repo's
