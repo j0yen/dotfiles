@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-11 — dotfiles-park-requires-fresh-fact (patch)
+
+`.claude/hooks/park-fresh-fact.sh` (PreToolUse `Bash`, `Edit`, `Write`,
+`MultiEdit`, after `prd-write-gate.sh`): a `git mv … parked/`,
+`requeue-prd.sh --park`, or an edit setting `- Status: parked|blocked` must
+carry `because: run=<id>|decision=<id>|commit=<sha>`, and the cited fact (run
+`ended`/open `started`, decision `opened`, commit time) must not be older than
+any commit touching the slug in the last `PARK_FRESH_WINDOW_MIN` (60) minutes;
+otherwise exit 2 naming that commit. Fails open with one `cannot verify` line;
+`PARK_FRESH_FACT=off` bypasses; passes append to `~/.cache/operator/park-audit.jsonl`.
+
 ## 2026-09-12 — mcphost-explore-first-light
 
 The revealed-preference exploration pipeline (synthorg's `explore` ->

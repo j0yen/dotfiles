@@ -15,3 +15,9 @@ id = "operator-status-card"
 description = "Operator status card: generator, SessionStart renderer, UserPromptSubmit notices hook, settings wiring, proven by the ocard_ac* shell tests."
 globs = [".claude/scripts/operator-status-gen.sh", ".claude/scripts/operator-status-card.sh", ".claude/hooks/operator-notices.sh", ".claude/settings.json", "tests/ocard_*", "tests/fixtures/ocard-*"]
 required_commands = ["for t in tests/ocard_ac*.test.sh; do bash \"$t\" || exit 1; done"]
+
+[[lane]]
+id = "park-fresh-fact"
+description = "Park freshness hook: park-fresh-fact.sh PreToolUse hook, settings wiring, proven by the pfact_ac* shell tests."
+globs = [".claude/hooks/park-fresh-fact.sh", ".claude/settings.json", "tests/pfact_*"]
+required_commands = ["for t in tests/pfact_ac*.test.sh; do bash \"$t\" || exit 1; done"]

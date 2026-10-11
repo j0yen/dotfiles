@@ -386,6 +386,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/probe-gate.sh"
           }
         ]
@@ -398,6 +402,10 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
           }
         ]
       },
@@ -413,6 +421,10 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/prd-write-gate.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
           }
         ]
       },
@@ -424,6 +436,10 @@
             "command": "/home/jsy/.claude/scripts/wchg-scope-check.sh pre",
             "timeout": 3,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
           }
         ]
       },
