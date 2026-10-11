@@ -65,6 +65,11 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/operator-status-card.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "sh -c 'case \"$(hostname 2>/dev/null)\" in *carbon*) echo \"CARBON IS A LAPTOP (Joe 10-05/10-07): terminal only. Operator seat = orch (ssh -t orch tmux attach). Do not start loops, timers, or runbooks that need carbon. Memory: feedback_move_everything_off_carbon_laptop_20261007\";; esac; exit 0'",
             "timeout": 5
           },
@@ -242,6 +247,11 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/agorabus-overlap.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/operator-notices.sh",
             "timeout": 5
           }
         ]

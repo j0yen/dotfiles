@@ -9,3 +9,9 @@ id = "all"
 description = "Catch-all: every path in this repo, proven by its full test suite. Auto-generated -- narrow into scoped lanes as the repo's test layout is established."
 globs = ["**"]
 required_commands = ["cargo test"]
+
+[[lane]]
+id = "operator-status-card"
+description = "Operator status card: generator, SessionStart renderer, UserPromptSubmit notices hook, settings wiring, proven by the ocard_ac* shell tests."
+globs = [".claude/scripts/operator-status-gen.sh", ".claude/scripts/operator-status-card.sh", ".claude/hooks/operator-notices.sh", ".claude/settings.json", "tests/ocard_*", "tests/fixtures/ocard-*"]
+required_commands = ["for t in tests/ocard_ac*.test.sh; do bash \"$t\" || exit 1; done"]
