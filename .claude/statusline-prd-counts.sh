@@ -18,11 +18,22 @@ pidfile="$HOME/.local/state/wm-build/daemon.pid"
 if ! { [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; }; then
   # 10-12: no daemon here (carbon/orch seat) -- refresh on the build host and copy its line back.
   # Build host = $WM_BUILD_STATUS_HOST or redbaron (daemon moved there 10-08). BatchMode: never prompt.
-  host="${WM_BUILD_STATUS_HOST:-redbaron}"
-  line=$(timeout 50 ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-    'bash "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1; cat "$HOME/.cache/wm-build-statusline/counts" 2>/dev/null' 2>/dev/null)
-  case "$line" in building=*) ;; *) exit 1 ;; esac
-  printf '%s src=%s\n' "$line" "$host" >"$dir/counts.tmp" && mv -f "$dir/counts.tmp" "$dir/counts"
+  # 10-12 3:5x pm: TWO build hosts (RedBaron = mcphost, ryzen7 = synthorg; Joe "utilize ryzen7 for build however best"):
+  # building and shipped6 are summed across hosts; queued/total come from the first host that answers
+  # (the PRDs repo is shared, so the queue is one queue). src= lists the hosts that answered.
+  hosts="${WM_BUILD_STATUS_HOSTS:-redbaron ryzen7}"
+  bsum=0; ssum=0; q=""; tot=""; answered=""
+  for host in $hosts; do
+    line=$(timeout 50 ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
+      'bash "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1; cat "$HOME/.cache/wm-build-statusline/counts" 2>/dev/null' 2>/dev/null)
+    case "$line" in building=*) ;; *) continue ;; esac
+    read -r b qq s t tt _ <<<"$line"
+    bsum=$(( bsum + ${b#building=} )); ssum=$(( ssum + ${s#shipped6=} ))
+    [ -z "$q" ] && { q=${qq#queued=}; tot=${tt#total=}; }
+    answered="${answered:+$answered+}$host"
+  done
+  [ -n "$answered" ] || exit 1
+  printf 'building=%s queued=%s shipped6=%s ts=%s total=%s src=%s\n' "$bsum" "$q" "$ssum" "$(date +%s)" "${tot:-?}" "$answered" >"$dir/counts.tmp" && mv -f "$dir/counts.tmp" "$dir/counts"
   exit 0
 fi
 db="$HOME/.local/state/wm-build/state.db"
