@@ -14,6 +14,17 @@ set -uo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 dir="$HOME/.cache/wm-build-statusline"; mkdir -p "$dir"
 exec 9>"$dir/lock"; flock -n 9 || exit 0
+pidfile="$HOME/.local/state/wm-build/daemon.pid"
+if ! { [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; }; then
+  # 10-12: no daemon here (carbon/orch seat) -- refresh on the build host and copy its line back.
+  # Build host = $WM_BUILD_STATUS_HOST or redbaron (daemon moved there 10-08). BatchMode: never prompt.
+  host="${WM_BUILD_STATUS_HOST:-redbaron}"
+  line=$(timeout 50 ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
+    'bash "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1; cat "$HOME/.cache/wm-build-statusline/counts" 2>/dev/null' 2>/dev/null)
+  case "$line" in building=*) ;; *) exit 1 ;; esac
+  printf '%s src=%s\n' "$line" "$host" >"$dir/counts.tmp" && mv -f "$dir/counts.tmp" "$dir/counts"
+  exit 0
+fi
 db="$HOME/.local/state/wm-build/state.db"
 building=$(sqlite3 -readonly "$db" "select count(*) from runs where ended is null;" 2>/dev/null)
 shipped6=$(timeout 10 wm-build ledger --since 6h --json 2>/dev/null | jq -r '.shipped' 2>/dev/null)

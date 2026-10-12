@@ -21,21 +21,26 @@ if [ -n "$pct" ]; then
 fi
 
 prd=""
+# 10-12 (Joe, carbon: "i dont see the status bar with prds/hour in this carbon session"): the daemon
+# lives on RedBaron, so a seat without a local daemon pid now shows RedBaron's counts, fetched by
+# statusline-prd-counts.sh over ssh (cache line carries src=<host>; refreshed every ≤60 s).
 pidfile="$HOME/.local/state/wm-build/daemon.pid"
-if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
-  cache="$HOME/.cache/wm-build-statusline/counts"
-  now=$(date +%s); ts=0
-  if [ -r "$cache" ]; then
-    read -r b q s t tt <"$cache"
-    building=${b#building=}; queued=${q#queued=}; shipped=${s#shipped6=}; ts=${t#ts=}; total=${tt#total=}
-    rate=$(awk -v n="${shipped:-0}" 'BEGIN{printf "%.2f", n/6}')
-    age=$(( now - ts ))
-    stale=""; [ "$age" -gt 180 ] && stale=" (${age}s old)"
-    prd="🔨 ${building} building · 📋 ${queued} ready/${total:-?} queued · 🚀 ${rate}/h (${shipped}/6h)${stale}"
-  fi
-  if [ $(( now - ts )) -gt 30 ]; then
-    setsid -f "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1 </dev/null
-  fi
+local_daemon=0
+if [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then local_daemon=1; fi
+cache="$HOME/.cache/wm-build-statusline/counts"
+now=$(date +%s); ts=0
+if [ -r "$cache" ]; then
+  read -r b q s t tt src _ <"$cache"
+  building=${b#building=}; queued=${q#queued=}; shipped=${s#shipped6=}; ts=${t#ts=}; total=${tt#total=}; src=${src#src=}
+  rate=$(awk -v n="${shipped:-0}" 'BEGIN{printf "%.2f", n/6}')
+  age=$(( now - ts ))
+  stale=""; [ "$age" -gt 180 ] && stale=" (${age}s old)"
+  host=""; [ "$local_daemon" = 0 ] && [ -n "${src:-}" ] && host=" @${src}"
+  prd="🔨 ${building} building · 📋 ${queued} ready/${total:-?} queued · 🚀 ${rate}/h (${shipped}/6h)${host}${stale}"
+fi
+interval=30; [ "$local_daemon" = 0 ] && interval=60
+if [ $(( now - ts )) -gt "$interval" ]; then
+  setsid -f "$HOME/.claude/statusline-prd-counts.sh" >/dev/null 2>&1 </dev/null
 fi
 
 out="$model"
