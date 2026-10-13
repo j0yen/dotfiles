@@ -52,5 +52,18 @@ queued=$(timeout 30 wm-build queue 2>/dev/null | jq '[.[]|select(.eligible)]|len
 # total = PRD files still `Status: queued` (eligible + waiting on Depends-on/claims); 10-10 Joe "status bar prd queue count seems wrong" — 191 ready read as the whole queue of 377
 total=$(grep -l '^- Status: queued' "$HOME/Documents/PRDs/build-queue/"*.md 2>/dev/null | wc -l)
 [ -n "${building:-}" ] && [ -n "${queued:-}" ] && [ -n "${shipped6:-}" ] || exit 1
+# 10-12 10:1x pm (Joe via carbon: "keep the status line's combined 🚀 figure as the PRDs/h clause"): ryzen7 runs a
+# second daemon (synthorg- only, decision 2026-10-12-ryzen7-second-build-daemon-synthorg). Its shipped6/building are
+# fetched over ssh at most every 120 s into counts.ryzen7 (fallback: the last value, or 0 when never reached) and SUMMED
+# into shipped6/building here; the per-host split stays in counts.hosts so `counts` keeps its 5-field shape.
+r7="$dir/counts.ryzen7"; r7_age=999999; [ -r "$r7" ] && r7_age=$(( $(date +%s) - $(stat -c %Y "$r7") ))
+if [ "$r7_age" -gt 120 ]; then
+  out=$(timeout 12 ssh -o BatchMode=yes -o ConnectTimeout=4 ryzen7 'export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH; s=$(timeout 8 wm-build ledger --since 6h --json 2>/dev/null | python3 -I -c "import json,sys;print(json.load(sys.stdin)[\"shipped\"])" 2>/dev/null); b=$(python3 -I -c "import sqlite3,os;print(sqlite3.connect(os.path.expanduser(\"~/.local/state/wm-build/state.db\")).execute(\"select count(*) from runs where ended is null\").fetchone()[0])" 2>/dev/null); [ -n "$s" ] && [ -n "$b" ] && echo "shipped6=$s building=$b"' 2>/dev/null)
+  case "$out" in shipped6=*) printf '%s ts=%s\n' "$out" "$(date +%s)" >"$r7.tmp" && mv -f "$r7.tmp" "$r7";; esac
+fi
+r7_shipped=0; r7_building=0
+if [ -r "$r7" ]; then read -r rs rb _ <"$r7"; r7_shipped=${rs#shipped6=}; r7_building=${rb#building=}; fi
+printf 'redbaron shipped6=%s building=%s\nryzen7 shipped6=%s building=%s age=%ss\n' "$shipped6" "$building" "$r7_shipped" "$r7_building" "$r7_age" >"$dir/counts.hosts"
+shipped6=$(( shipped6 + r7_shipped )); building=$(( building + r7_building ))
 printf 'building=%s queued=%s shipped6=%s ts=%s total=%s\n' "$building" "$queued" "$shipped6" "$(date +%s)" "${total:-?}" >"$dir/counts.tmp" \
   && mv -f "$dir/counts.tmp" "$dir/counts"
