@@ -21,7 +21,7 @@ if ! { [ -r "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null;
   # 10-12 3:5x pm: TWO build hosts (RedBaron = mcphost, ryzen7 = synthorg; Joe "utilize ryzen7 for build however best"):
   # building and shipped6 are summed across hosts; queued/total come from the first host that answers
   # (the PRDs repo is shared, so the queue is one queue). src= lists the hosts that answered.
-  hosts="${WM_BUILD_STATUS_HOSTS:-redbaron ryzen7}"
+  hosts="${WM_BUILD_STATUS_HOSTS:-redbaron}"  # 11:4x pm: RedBaron's line already includes ryzen7 (its script sums the peer), so fetch it alone
   bsum=0; ssum=0; q=""; tot=""; answered=""
   for host in $hosts; do
     line=$(timeout 50 ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
@@ -56,6 +56,9 @@ total=$(grep -l '^- Status: queued' "$HOME/Documents/PRDs/build-queue/"*.md 2>/d
 # second daemon (synthorg- only, decision 2026-10-12-ryzen7-second-build-daemon-synthorg). Its shipped6/building are
 # fetched over ssh at most every 120 s into counts.ryzen7 (fallback: the last value, or 0 when never reached) and SUMMED
 # into shipped6/building here; the per-host split stays in counts.hosts so `counts` keeps its 5-field shape.
+# 10-12 11:4x pm (carbon): ONLY RedBaron aggregates the fleet figure; ryzen7 must not ssh to itself and double its own
+# numbers, and a seat without a daemon fetches RedBaron's (already fleet-wide) line — see the no-daemon branch above.
+if [ "$(hostname -s)" = redbaron ]; then
 r7="$dir/counts.ryzen7"; r7_age=999999; [ -r "$r7" ] && r7_age=$(( $(date +%s) - $(stat -c %Y "$r7") ))
 if [ "$r7_age" -gt 120 ]; then
   out=$(timeout 12 ssh -o BatchMode=yes -o ConnectTimeout=4 ryzen7 'export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH; s=$(timeout 8 wm-build ledger --since 6h --json 2>/dev/null | python3 -I -c "import json,sys;print(json.load(sys.stdin)[\"shipped\"])" 2>/dev/null); b=$(python3 -I -c "import sqlite3,os;print(sqlite3.connect(os.path.expanduser(\"~/.local/state/wm-build/state.db\")).execute(\"select count(*) from runs where ended is null\").fetchone()[0])" 2>/dev/null); [ -n "$s" ] && [ -n "$b" ] && echo "shipped6=$s building=$b"' 2>/dev/null)
@@ -65,5 +68,6 @@ r7_shipped=0; r7_building=0
 if [ -r "$r7" ]; then read -r rs rb _ <"$r7"; r7_shipped=${rs#shipped6=}; r7_building=${rb#building=}; fi
 printf 'redbaron shipped6=%s building=%s\nryzen7 shipped6=%s building=%s age=%ss\n' "$shipped6" "$building" "$r7_shipped" "$r7_building" "$r7_age" >"$dir/counts.hosts"
 shipped6=$(( shipped6 + r7_shipped )); building=$(( building + r7_building ))
+fi
 printf 'building=%s queued=%s shipped6=%s ts=%s total=%s\n' "$building" "$queued" "$shipped6" "$(date +%s)" "${total:-?}" >"$dir/counts.tmp" \
   && mv -f "$dir/counts.tmp" "$dir/counts"
