@@ -18,11 +18,11 @@ save_to_clipboard = true
 # Green phosphor — the original wintermute terminal (constellation 2026-06-05, 4491792)
 [colors.primary]
 background = '#000000'
-foreground = '#28FE14'
+foreground = '#1FC710'
 
 [colors.cursor]
 text   = '#000000'
-cursor = '#28FE14'
+cursor = '#1FC710'
 
 [colors.normal]
 black   = '#000000'
