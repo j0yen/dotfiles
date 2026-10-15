@@ -15,13 +15,13 @@ history = 10000
 [selection]
 save_to_clipboard = true
 
-# Everforest Dark (hard) (Joe 2026-10-15)
+# Everforest Dark (hard, bg_dim base) (Joe 2026-10-15)
 [colors.primary]
-background = '#272e33'
+background = '#1e2326'
 foreground = '#d3c6aa'
 
 [colors.cursor]
-text   = '#272e33'
+text   = '#1e2326'
 cursor = '#d3c6aa'
 
 [colors.selection]
