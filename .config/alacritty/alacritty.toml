@@ -15,74 +15,38 @@ history = 10000
 [selection]
 save_to_clipboard = true
 
-# Catppuccin Mocha (Joe 2026-10-15)
+# Everforest Dark (medium) (Joe 2026-10-15)
 [colors.primary]
-background = '#1e1e2e'
-foreground = '#cdd6f4'
-dim_foreground = '#7f849c'
-bright_foreground = '#cdd6f4'
+background = '#2d353b'
+foreground = '#d3c6aa'
 
 [colors.cursor]
-text   = '#1e1e2e'
-cursor = '#f5e0dc'
-
-[colors.vi_mode_cursor]
-text   = '#1e1e2e'
-cursor = '#b4befe'
-
-[colors.search.matches]
-foreground = '#1e1e2e'
-background = '#a6adc8'
-
-[colors.search.focused_match]
-foreground = '#1e1e2e'
-background = '#a6e3a1'
-
-[colors.footer_bar]
-foreground = '#1e1e2e'
-background = '#a6adc8'
-
-[colors.hints.start]
-foreground = '#1e1e2e'
-background = '#f9e2af'
-
-[colors.hints.end]
-foreground = '#1e1e2e'
-background = '#a6adc8'
+text   = '#2d353b'
+cursor = '#d3c6aa'
 
 [colors.selection]
-text       = '#1e1e2e'
-background = '#f5e0dc'
+text       = 'CellForeground'
+background = '#475258'
 
 [colors.normal]
-black   = '#45475a'
-red     = '#f38ba8'
-green   = '#a6e3a1'
-yellow  = '#f9e2af'
-blue    = '#89b4fa'
-magenta = '#f5c2e7'
-cyan    = '#94e2d5'
-white   = '#bac2de'
+black   = '#475258'
+red     = '#e67e80'
+green   = '#a7c080'
+yellow  = '#dbbc7f'
+blue    = '#7fbbb3'
+magenta = '#d699b6'
+cyan    = '#83c092'
+white   = '#d3c6aa'
 
 [colors.bright]
-black   = '#585b70'
-red     = '#f38ba8'
-green   = '#a6e3a1'
-yellow  = '#f9e2af'
-blue    = '#89b4fa'
-magenta = '#f5c2e7'
-cyan    = '#94e2d5'
-white   = '#a6adc8'
-
-[colors.dim]
-black   = '#45475a'
-red     = '#f38ba8'
-green   = '#a6e3a1'
-yellow  = '#f9e2af'
-blue    = '#89b4fa'
-magenta = '#f5c2e7'
-cyan    = '#94e2d5'
-white   = '#bac2de'
+black   = '#7a8478'
+red     = '#e67e80'
+green   = '#a7c080'
+yellow  = '#dbbc7f'
+blue    = '#7fbbb3'
+magenta = '#d699b6'
+cyan    = '#83c092'
+white   = '#d3c6aa'
 
 [cursor]
 style = { shape = "Block", blinking = "Off" }
