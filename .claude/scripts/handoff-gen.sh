@@ -19,7 +19,7 @@ state="${WM_BUILD_STATE_DIR:-$HOME/.local/state/wm-build}"
 db="$state/state.db"
 mc_url="${HANDOFF_MCPHOST_URL:-https://mcphost.dev/status.json}"
 syn_repo="${HANDOFF_SYNTHORG_REPO:-$HOME/repos/synthorg}"
-out="$memdir/handoff-generated.md"
+out="$memdir/handoff-generated-$(hostname -s 2>/dev/null || echo unknown).md" # per-host: concurrent hosts never share a file (Fable review 10-20)
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="${2:-$out}"; shift 2 ;;
@@ -140,9 +140,9 @@ render >"$tmp" 2>/dev/null && mv -f "$tmp" "$out"
 rm -f "$tmp" 2>/dev/null
 
 # R4: index line as line 2 of MEMORY.md, once; no other line is touched
-idx_line='- [GENERATED HANDOFF — read first](handoff-generated.md) — rewritten at every SessionEnd by handoff-gen.sh; the prose handoff keeps decisions and traps only'
+idx_line='- [GENERATED HANDOFF — read first](handoff-generated-carbon.md) · [redbaron](handoff-generated-redbaron.md) · [ryzen7](handoff-generated-ryzen7.md) — per-host, rewritten at every SessionEnd by handoff-gen.sh; the prose handoff keeps decisions and traps only'
 mem="$memdir/MEMORY.md"
-if [ -f "$mem" ] && ! grep -qF 'handoff-generated.md' "$mem"; then
+if [ -f "$mem" ] && ! grep -qF 'handoff-generated-' "$mem"; then
   mem=$(readlink -f "$mem")
   mtmp="$mem.tmp.$$"
   sed -e '1a\' -e "$idx_line" "$mem" >"$mtmp" 2>/dev/null && mv -f "$mtmp" "$mem"

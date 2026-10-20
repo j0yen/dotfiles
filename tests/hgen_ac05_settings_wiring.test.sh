@@ -22,7 +22,7 @@ assert_contains "$("$ROOT/install.sh" --dry-run 2>&1)" ".claude/scripts/handoff-
 
 # R5: status regeneration refreshes the handoff only when it is > 20 min old
 hgen_setup
-H="$HANDOFF_MEMORY_DIR/handoff-generated.md"
+H="$HANDOFF_MEMORY_DIR/handoff-generated-$(hostname -s).md"
 "$GEN" --out "$work/cache/status.json"; sleep 1.5
 [ -s "$H" ] && echo "ok - missing handoff is generated after a status regen" || { echo "NOT OK - handoff not generated"; fail=1; }
 touch -d '30 minutes ago' "$H"; before=$(stat -c %Y "$H")

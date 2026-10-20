@@ -173,7 +173,7 @@ rm -f "$tmp" 2>/dev/null
 hmem="${HANDOFF_MEMORY_DIR:-$HOME/.claude/projects/-home-jsy/memory}"
 hgen="$(dirname "${BASH_SOURCE[0]}")/handoff-gen.sh"
 if [ -z "${HANDOFF_GEN_ACTIVE:-}" ] && [ -d "$hmem" ] && [ -x "$hgen" ] \
-   && [ -z "$(find "$hmem/handoff-generated.md" -mmin -20 2>/dev/null)" ]; then
+   && [ -z "$(find "$hmem/handoff-generated-$(hostname -s 2>/dev/null).md" -mmin -20 2>/dev/null)" ]; then
   ( setsid "$hgen" >/dev/null 2>&1 & ) 2>/dev/null
 fi
 exit 0
