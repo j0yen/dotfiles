@@ -110,6 +110,16 @@
             "async": true
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/adhd-always-on.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [
