@@ -78,7 +78,10 @@ esac
 printf 'recall: relevant memories for this session\n'
 emit_section "user"             "user:"
 emit_section "project:$project" "project:$project:"
-emit_section "self"             "self:"
+# CLAUDE_LEAN_START=1 / SEAT_LEAN=1 (operator seat, controller): drop the self-review history; keep user + project.
+if [ "${CLAUDE_LEAN_START:-}" != 1 ] && [ "${SEAT_LEAN:-}" != 1 ]; then
+  emit_section "self"             "self:"
+fi
 
 # weather: write the surfaced IDs so the Stop hook can implicit-accept.
 # Also writes surfaced.json (AC4 — PRD-recall-surfaced-tracking): for
