@@ -1,0 +1,6 @@
+{
+  "name": "library-skills",
+  "version": "1.0.0",
+  "description": "28 reference/library skills (PM, data, strategy, writing frameworks) moved out of ~/.claude/skills so lean operator seats (SEAT_LEAN=1) can disable them; enabled everywhere else.",
+  "author": { "name": "j0yen" }
+}

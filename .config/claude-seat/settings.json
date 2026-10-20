@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "stripe@claude-plugins-official": false,
+    "library-skills@skills-dir": false
+  }
+}
