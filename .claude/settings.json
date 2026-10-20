@@ -451,15 +451,6 @@
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
           }
         ]
-      },
-      {
-        "matcher": "Agent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/block-expensive-spawn.sh"
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -606,6 +597,5 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true,
-  "model": "claude-fable-5-1"
+  "skipAutoPermissionPrompt": true
 }
