@@ -33,7 +33,7 @@
 # thing): TOKEN_LEDGER_STATE_DIR, TOKEN_LEDGER_JSONL_ROOT,
 # TOKEN_LEDGER_HOSTS ("carbon redbaron ryzen7" default),
 # TOKEN_LEDGER_LOCAL_HOST (default `hostname -s`), TOKEN_LEDGER_SSH_TIMEOUT
-# (default 8s), TOKEN_LEDGER_NOW (fakes "now" for default-window math and
+# (default 30s), TOKEN_LEDGER_NOW (fakes "now" for default-window math and
 # the summary's yesterday/today split), TOKEN_BUDGET_WEIGHTED (unset or 0
 # => "budget off" status, per CLAUDE.md 2026-09-12 removal of the daily cap).
 set -uo pipefail
@@ -42,7 +42,7 @@ STATE_DIR="${TOKEN_LEDGER_STATE_DIR:-$HOME/.cache/token-ledger}"
 JSONL_ROOT="${TOKEN_LEDGER_JSONL_ROOT:-$HOME/.claude/projects}"
 HOSTS_STR="${TOKEN_LEDGER_HOSTS:-carbon redbaron ryzen7}"
 LOCAL_HOST="${TOKEN_LEDGER_LOCAL_HOST:-$(hostname -s 2>/dev/null || hostname)}"
-SSH_TIMEOUT="${TOKEN_LEDGER_SSH_TIMEOUT:-8}"
+SSH_TIMEOUT="${TOKEN_LEDGER_SSH_TIMEOUT:-30}"
 BUDGET="${TOKEN_BUDGET_WEIGHTED:-0}"
 NOW="${TOKEN_LEDGER_NOW:-$(date -u +%FT%TZ)}"
 
@@ -221,7 +221,7 @@ for h in $HOSTS_STR; do
   [ "$h" = "$LOCAL_HOST" ] && continue
   hf="$work/remote-$h.ndjson"
   if timeout "$SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" \
-       token-ledger --emit-local-records --since "$since" > "$hf" 2>/dev/null; then
+       '"$HOME/.local/bin/token-ledger"' --emit-local-records --since "$since" > "$hf" 2>/dev/null; then
     cat -- "$hf" >> "$records_file"
     reachable_hosts+=("$h")
   else
