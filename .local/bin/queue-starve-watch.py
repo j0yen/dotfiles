@@ -98,6 +98,8 @@ def breakdown(rows):
 
 def undreamed(seed_text):
     fams = re.split(r"(?m)^## Family: ", seed_text)[1:]
+    # a family block ends at the next "## " heading; the last one must not swallow ## Candidates
+    fams = [re.split(r"(?m)^## ", f, maxsplit=1)[0] for f in fams]
     none = sum(1 for f in fams if re.search(r"(?m)^- covered-by: none\s*$", f))
     return none, len(fams)
 
