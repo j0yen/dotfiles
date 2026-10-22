@@ -1,0 +1,8 @@
+[Unit]
+Description=seat-tick@%i failed: raise a SEAT-TICK FAILED event to ctl (OnFailure= of seat-tick@%i.service)
+
+[Service]
+Type=oneshot
+Environment=EVENT_SOURCE=seat-tick-failed
+Environment=PATH=%h/.local/seat-bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/seat-tick-failed.sh %i

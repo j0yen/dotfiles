@@ -53,7 +53,7 @@ assert_eq "$rc" "0" "goal: same-host claim does not block"
 python3 - "$repo/vibeloop/operator.json" <<'PY'
 import json,datetime,sys
 now=datetime.datetime.now(datetime.UTC)
-d={"host":"carbon","user":"jsy","session_hint":"carbon-x","note":"fixing the gate, 2h",
+d={"host":"otherhost","user":"jsy","session_hint":"otherhost-x","note":"fixing the gate, 2h",
    "claimed_at":now.strftime("%Y-%m-%dT%H:%M:%SZ"),
    "expires_at":(now+datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")}
 json.dump(d, open(sys.argv[1], "w"))
@@ -82,7 +82,7 @@ assert_eq "$rc" "0" "ledger: unaffected by another host's claim"
 python3 - <<PY
 import json,datetime
 now=datetime.datetime.now(datetime.UTC)
-d={"host":"carbon","user":"jsy","session_hint":"carbon-x","note":"stale",
+d={"host":"otherhost","user":"jsy","session_hint":"otherhost-x","note":"stale",
    "claimed_at":(now-datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
    "expires_at":(now-datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")}
 json.dump(d, open("$repo/vibeloop/operator.json","w"))

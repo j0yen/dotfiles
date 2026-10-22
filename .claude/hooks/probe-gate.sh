@@ -84,6 +84,17 @@ if ! printf '%s' "$MODEL_LC" | grep -qE '(^|-)(opus|fable)($|-)'; then
     exit 0
 fi
 
+# --- 1b. Aide exemption (Joe 2026-10-22 4:3x PM "yes, exempt the aide") ---
+# The aide is Joe's interactive channel on carbon: no WM_SEAT, no TMUX,
+# hostname carbon — the same predicate seat-context-start.sh uses to print
+# the AIDE CARD. It does carbon-local reads itself; every seat (tmux or
+# seat-tick unit, which exports WM_SEAT) stays gated. PROBE_GATE_HOSTNAME
+# exists for the test only.
+if [ -z "${WM_SEAT:-}" ] && [ -z "${TMUX:-}" ] \
+    && [ "${PROBE_GATE_HOSTNAME:-$(hostname 2>/dev/null)}" = carbon ]; then
+    exit 0
+fi
+
 # --- 2. One-shot override -------------------------------------------------
 if [ -f "$OVERRIDE_FLAG" ]; then
     rm -f "$OVERRIDE_FLAG" 2>/dev/null

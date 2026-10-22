@@ -8,7 +8,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ocard_setup
 rm -f "$work/bin/agorabus"; rm -rf "$work/syn"
 # PATH without any agorabus: the fixture bin (systemctl, wm-build) plus system dirs only
-export PATH="$work/bin:/usr/bin:/bin"
+# (plus wherever sqlite3 lives: the runs/config sources need it and are not what this test removes)
+sqld=$(dirname "$(command -v sqlite3 2>/dev/null || echo /usr/bin/sqlite3)")
+export PATH="$work/bin:$sqld:/usr/bin:/bin"
 command -v agorabus >/dev/null 2>&1 && { echo "SKIP - a real agorabus lives in /usr/bin"; exit 0; }
 t="$work/t.json"
 "$GEN" --out "$t"; assert_eq "$?" "0" "generator exits 0"
