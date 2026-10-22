@@ -21,7 +21,7 @@
 # approvals_new / status_age exist for ctl only (log is read-only here; approvals_seen in ctl-tick.json is the high-water mark).
 # LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
 # flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design;
-# its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({"autoCompactEnabled": true, "autoCompactWindow": "auto"}: ~/.claude/settings.local.json turns auto-compact off / sets a 500000 window for $HOME and the --settings layer beats it; rb/r7 get the same from claude-seat/settings.json).
+# its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({env: CLAUDE_CODE_AUTO_COMPACT_WINDOW 360000 + CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 50, autoCompactEnabled: true, autoCompactWindow: auto} = seats compact at 180K; ~/.claude/settings.local.json runs the aide at 1000000×50 % = 500K for $HOME and the --settings layer beats it; rb/r7 get the same pin from claude-seat/settings.json).
 # Env overrides: SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
@@ -244,8 +244,8 @@ FAKE
   grep -q -- ' --strict-mcp-config ' <(grep -m1 '^ARGV' "$T/orb") && grep -q '^lean_env=SEAT_LEAN=1 CLAUDE_LEAN_START=1$' "$T/orb"; chk "rb LEAN: fake claude got --strict-mcp-config and env SEAT_LEAN=1 CLAUDE_LEAN_START=1" $?
   ! grep -q -- 'strict-mcp-config' <(grep -m1 '^ARGV' "$T/o1") && ! grep -q -- '--mcp-config' <(grep -m1 '^ARGV' "$T/o1") && grep -q '^lean_env=SEAT_LEAN= CLAUDE_LEAN_START=$' "$T/o1"; chk "ctl NOT lean: sweep 1 has no --strict-mcp-config / --mcp-config and no SEAT_LEAN/CLAUDE_LEAN_START env" $?
   grep -m1 '^ARGV' "$T/o1" | grep -q -- " $CA --resume "; chk "ctl argv carries --settings ctl-settings.json (autoCompactEnabled) and nothing else lean" $?
-  [ "$(jq -c . "$HOME/.config/claude-seat/ctl-settings.json")" = '{"autoCompactEnabled":true,"autoCompactWindow":"auto"}' ]; chk "real ctl-settings.json is exactly {autoCompactEnabled: true, autoCompactWindow: auto} (no hooks/plugins keys)" $?
-  [ "$(jq -r '[.autoCompactEnabled, .autoCompactWindow] | join(" ")' "$HOME/.config/claude-seat/settings.json")" = "true auto" ]; chk "rb/r7 lean settings.json carries autoCompactEnabled=true autoCompactWindow=auto" $?
+  [ "$(jq -c . "$HOME/.config/claude-seat/ctl-settings.json")" = '{"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"360000","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"},"autoCompactEnabled":true,"autoCompactWindow":"auto"}' ]; chk "real ctl-settings.json is exactly {env: 360000/50 compact pin, autoCompactEnabled: true, autoCompactWindow: auto} (no hooks/plugins keys)" $?
+  [ "$(jq -r '[.autoCompactEnabled, .autoCompactWindow, .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, .env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE] | join(" ")' "$HOME/.config/claude-seat/settings.json")" = "true auto 360000 50" ]; chk "rb/r7 lean settings.json carries autoCompactEnabled=true autoCompactWindow=auto + env pin 360000/50 (seats compact at 180K while \$HOME runs 500K)" $?
   SEAT_CTL_SETTINGS="$T/nonexistent.json" FAKE_SLEEP=0 "$SELF" ctl >"$T/octlm" 2>"$T/ectlm"; ! grep -q -- '--settings' <(grep -m1 '^ARGV' "$T/octlm") && grep -q 'WARN .*nonexistent.json missing' "$T/ectlm"; chk "ctl-settings.json missing: WARN on stderr, tick still runs without the flag" $?
   rm -f "$T/dash/fleet-status.md"   # that extra ctl sweep wrote its boundary marker; the rb/r7 "no --open" checks below look for its absence
   [ ! -e "$T/dash/fleet-status.md" ]; chk "rb: no --open written (fleet-status.md absent)" $?

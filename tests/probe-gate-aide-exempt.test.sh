@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# probe-gate aide exemption: a fable session with no WM_SEAT, no TMUX, on
+# carbon is NOT gated; the same call under WM_SEAT=ctl or TMUX set IS gated
+# (exit 2); a non-carbon host without a seat is gated too.
+set -uo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd)
+gate="$here/.claude/hooks/probe-gate.sh"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tr="$tmp/transcript.jsonl"
+id="toolu_test_aide_exempt_01"
+printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5-1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"$id\",\"name\":\"Bash\",\"input\":{\"command\":\"cat /etc/hostname\"}}]}}" > "$tr"
+input="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat /etc/hostname\"},\"session_id\":\"s\",\"transcript_path\":\"$tr\",\"tool_use_id\":\"$id\"}"
+fail=0
+run() { # name expected_rc env...
+    local name="$1" want="$2"; shift 2
+    local rc=0
+    printf '%s' "$input" | env -u WM_SEAT -u TMUX HOME="$tmp" "$@" bash "$gate" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = "$want" ]; then echo "PASS $name (rc=$rc)"; else echo "FAIL $name (rc=$rc want $want)"; fail=1; fi
+}
+run aide-on-carbon-exempt      0 PROBE_GATE_HOSTNAME=carbon
+run seat-unit-gated            2 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
+run tmux-seat-gated            2 PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0
+run other-host-gated           2 PROBE_GATE_HOSTNAME=redbaron
+grep -q 'PROBE_GATE_HOSTNAME' "$gate" && echo "PASS gate-has-aide-predicate" || { echo "FAIL gate-has-aide-predicate"; fail=1; }
+exit $fail
