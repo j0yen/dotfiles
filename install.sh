@@ -63,4 +63,18 @@ while IFS= read -r -d '' src; do
   link "$src" "$home/$rel"
 done < <(find "$repo_root" -type f -print0)
 
+# fleet-sync post-apply check of the shared watcher lib: writes ~/.local/state/watchers/_lib.json
+# (sha, bash -n, source test, every discovered consumer's --selftest). Its exit code is install.sh's, so
+# fleet-sync reports "post-apply FAILED" when the lib or a consumer is broken; the links above are already in place.
+post_rc=0
+postapply="$repo_root/.local/bin/watcher-lib-postapply.sh"
+if [[ -x "$postapply" ]]; then
+  if [[ $DRY -eq 1 ]]; then
+    printf 'would run: %s\n' "$postapply"
+  else
+    "$postapply" || post_rc=$?
+  fi
+fi
+
 printf 'done.\n'
+exit "$post_rc"
