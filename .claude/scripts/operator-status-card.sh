@@ -9,6 +9,9 @@ cache="${OPERATOR_CACHE_DIR:-$HOME/.cache/operator}"
 sj="$cache/status.json"
 gen="${OPERATOR_GEN:-$(dirname "${BASH_SOURCE[0]}")/operator-status-gen.sh}"
 chain_host="${OPERATOR_CHAIN_HOST:-orch}"
+# seat correction rates: fleet-dash's status.json (decisions.per_agent from swarm-decide's stats.json, alarms[] from collect.sh)
+fleet_sj="${OPERATOR_FLEET_STATUS:-$HOME/.cache/fleet-dash/status.json}"
+seats="${OPERATOR_SEATS:-rb r7 controller}"
 
 mode=card; section=""
 while [ $# -gt 0 ]; do
@@ -60,6 +63,12 @@ render_decisions() {
   src_ok decisions || { echo "decisions: ?"; return; }
   echo "decisions: $(j '.decisions_open|length') open$(j '.decisions_open[0:3] | map(" " + (.id|tostring) + ":" + (.cause//"?")) | join(",")')"
 }
+render_seats() {
+  # per-seat n20 corrected share over the seat's last 20 own decisions, then every seat-* alarm (seat-upgrade, seat-upgrade-held, seat-hold-error)
+  if [ ! -r "$fleet_sj" ] || ! jq -e '.decisions.per_agent' "$fleet_sj" >/dev/null 2>&1; then echo "seats: ?"; return; fi
+  echo "seats (n20 corrected/n share): $(jq -r --arg seats "$seats" '.decisions.per_agent as $p | ($seats|split(" ")) | map(select($p[.] != null) | "\(.) \($p[.].n20) \($p[.].corrected20) \($p[.].share // "n/a")") | join(" · ")' "$fleet_sj" 2>/dev/null)"
+  jq -r '(.alarms // []) | map(select((.text // "") | startswith("seat-"))) | .[0:4][] | "  " + .text' "$fleet_sj" 2>/dev/null
+}
 render_chain() {
   if ! src_ok chain; then echo "chain: not on this host ($(j '.chain.host // empty' | grep . || echo "$chain_host"))"; return; fi
   echo "chain: $(j '.chain|"\(.chain_run_id) \(.link) \(.status)"') at $(t "$(j '.chain.ts')")"
@@ -87,13 +96,13 @@ render_config() {
 
 if [ "$mode" = section ]; then
   case "$section" in
-    runs|queue|chain|siblings|daemon|config) "render_$section" ;;
+    runs|queue|seats|chain|siblings|daemon|config) "render_$section" ;;
     *) echo "operator card: unknown section '$section'" ;;
   esac
   exit 0
 fi
 
 echo "operator card ($(j '.host // "?"'))"
-render_runs; render_queue; render_decisions; render_chain; render_siblings; render_daemon; render_config
+render_runs; render_queue; render_decisions; render_seats; render_chain; render_siblings; render_daemon; render_config
 echo "status.json generated ${age}s ago"
 exit 0
