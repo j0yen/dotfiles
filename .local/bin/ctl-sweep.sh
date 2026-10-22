@@ -68,6 +68,7 @@ selftest() {
 echo "START $(date +%s.%N)"
 echo "ARGV: $*"
 echo "token_set=${CLAUDE_CODE_OAUTH_TOKEN:+yes} cwd=$PWD"
+echo "seat_env=WM_SEAT=${WM_SEAT:-} CLAUDE_SESSION_NAME=${CLAUDE_SESSION_NAME:-}"
 echo "status_line2=$(sed -n 2p "$FLEET_DASH_DIR/fleet-status.md" 2>/dev/null)"
 sleep "${FAKE_SLEEP:-2}"
 echo "END $(date +%s.%N)"
@@ -82,6 +83,7 @@ FAKE
   grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 --resume $SELFSID SWEEP $ts_re tick=1 status_age=none approvals_new=3\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
   grep -q "model test-model-1" "$T/o1"; chk "model comes from MRC_TABLE controller row" $?
   grep -q "token_set=yes cwd=$HOME\$" "$T/o1"; chk "oauth env sourced (token present, value not shown), cwd=\$HOME" $?
+  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl$' "$T/o1"; chk "SWEEP: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   grep -q '^status_line2=boundary: open$' "$T/o1"; chk "SWEEP wrote 'boundary: open' before claude ran" $?
   grep -q '^ARGV:' "$T/dash/ctl-sweep-last.log"; chk "ctl-sweep-last.log holds the run output" $?
   [ "$(j .sends_total)" = 1 ] && [ "$(j .last_exit)" = 0 ] && [ "$(j .last_prompt_kind)" = sweep ] && [ "$(j .ticks_skipped)" = 0 ] && [ "$(j .approvals_seen)" = 3 ] && [ "$(j .last_duration_s)" -ge 2 ] && [ "$(j .last_sent)" -gt 0 ]; chk "state: sends_total=1 last_exit=0 kind=sweep approvals_seen=3 duration=$(j .last_duration_s)s" $?
@@ -98,6 +100,7 @@ FAKE
   "$SELF" --ask "what is rb doing?" >"$T/o3" 2>"$T/e3"; rc=$?
   [ "$rc" = 0 ]; chk "ask: exit 0" $?
   grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 --resume $SELFSID ASK $ts_re approvals_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
+  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl$' "$T/o3"; chk "ASK: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   [ ! -e "$T/dash/fleet-status.md" ]; chk "ASK did not write the boundary marker (SWEEP only)" $?
   [ -s "$T/dash/ctl-ask-last.log" ]; chk "ctl-ask-last.log written" $?
   [ "$(j .last_prompt_kind)" = ask ] && [ "$(j .sends_total)" = 2 ] && [ "$(j .last_exit)" = 0 ]; chk "ask: kind=ask, sends_total stays 2" $?
@@ -227,6 +230,7 @@ fi
 MODEL="$(awk '$1=="controller"{print $2}' "$MRC" 2>/dev/null | head -1)"
 if [ -z "$MODEL" ]; then echo "ALARM ctl: no controller model in $MRC" >&2; S_reason="no-model"; save; exit 3; fi
 [ -r "$OAUTH_ENV" ] && { set -a; . "$OAUTH_ENV"; set +a; }
+export WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl      # SessionStart hooks (model-role-check.sh, seat-context-start.sh) read the seat from WM_SEAT
 LOG="$DASH/ctl-sweep-last.log"; [ "$KIND" = ask ] && LOG="$DASH/ctl-ask-last.log"
 echo "ctl-sweep: $KIND model=$MODEL sid=$SID prompt='$PROMPT'"
 start="$(date +%s)"

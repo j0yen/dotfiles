@@ -4,5 +4,6 @@ Description=fleet controller sweep: one claude -p turn on the controller session
 [Service]
 Type=oneshot
 WorkingDirectory=%h
+Environment=WM_SEAT=ctl
 ExecStart=%h/.local/bin/ctl-sweep.sh
 TimeoutStartSec=1500
