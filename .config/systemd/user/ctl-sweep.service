@@ -1,0 +1,8 @@
+[Unit]
+Description=fleet controller sweep: one claude -p turn on the controller session (daemon-shaped, like wm-build)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/ctl-sweep.sh
+TimeoutStartSec=1500

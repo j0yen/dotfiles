@@ -1,0 +1,11 @@
+[Unit]
+Description=fleet controller sweep tick every 20 min (ctl-sweep.service)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
