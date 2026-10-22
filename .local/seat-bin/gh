@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# gh shim for the operator SEATS (rb, r7, ctl): refuses a merge that did not go through `wm-decide merge-gate`.
+#   * everything except `gh pr merge` (and the API/GraphQL spellings of a merge) is exec'd to the real gh UNTOUCHED (args, stdin, exit code);
+#   * `gh pr merge` (incl. --auto) is refused with exit 2 unless WM_DECIDE_GATE_OK=<verdict-id> is set AND merge-events.jsonl holds a gate-pass
+#     for that verdict and that PR number (rb-merge.sh sets the variable after the gate returned 0; the variable alone is not trusted);
+#   * every refusal is a wm-decide row: kind gate, model deterministic, decision=<verdict id | none> (C1), so Fable regrades refusals too.
+# SCOPE (C2): this directory (~/.local/seat-bin) is put on PATH ONLY in the seat launch command (seat-relaunch.sh: `env PATH=$HOME/.local/seat-bin:$PATH claude ...`).
+# It must NEVER be in ~/.local/bin, environment.d, a profile, or any systemd unit Environment: wm-build.service's PATH is ~/.cargo/bin:~/.local/bin:/usr/local/bin:/usr/bin:/bin
+# and the daemon merges through gh. `seat-gh-scope-check` proves both halves. This is a guard against an unreviewed merge by mistake, not a lock against a seat
+# that calls /usr/bin/gh by absolute path.
+set -uo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+selfdir="$(dirname "$self")"
+linkdir="$(dirname "${BASH_SOURCE[0]}")"
+
+real_gh() {   # the next gh on PATH that is not this shim (GH_REAL overrides, for tests)
+  if [ -n "${GH_REAL:-}" ]; then printf '%s' "$GH_REAL"; return; fi
+  local d c IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    c="$d/gh"
+    [ -x "$c" ] || continue
+    [ "$(readlink -f "$c")" = "$self" ] && continue
+    printf '%s' "$c"; return
+  done
+  return 1
+}
+
+POS=()        # the non-flag arguments (the value after -R/--repo/--hostname is skipped)
+REPO=""       # the value of -R/--repo, else the O/R of an api path
+APIHIT=""     # an argument naming a pulls/<n>/merge path or a merge GraphQL mutation
+parse_args() {
+  local a skip=0 prev=""
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; [ "$prev" = hostname ] || REPO="$a"; continue; fi
+    case "$a" in
+      -R|--repo) skip=1; prev=repo; continue ;;
+      --hostname) skip=1; prev=hostname; continue ;;
+      --repo=*) REPO="${a#--repo=}" ;;
+      -*) ;;
+      *) POS+=("$a") ;;
+    esac
+    case "$a" in
+      */pulls/*/merge|*/pulls/*/merge\?*|*mergePullRequest*|*enablePullRequestAutoMerge*)
+        if [ -z "$APIHIT" ]; then
+          APIHIT="$a"
+          case "$a" in repos/*/*/pulls/*) REPO="$(printf '%s' "$a" | cut -d/ -f2,3)" ;; esac
+        fi ;;
+    esac
+  done
+}
+
+is_merge() {   # 0 when argv is `pr merge ...`, or an api call naming a pulls/<n>/merge path or the merge / auto-merge GraphQL mutations (a GET of that path is refused too)
+  [ "${POS[0]:-}" = pr ] && [ "${POS[1]:-}" = merge ] && return 0
+  [ "${POS[0]:-}" = api ] && [ -n "$APIHIT" ] && return 0
+  return 1
+}
+
+pr_number() {   # the PR number: `pr merge <n | url>`, else the /pulls/<n>/ component of the api path; empty when none
+  local x="${POS[2]:-}"
+  if [ "${POS[0]:-}" = pr ]; then
+    x="${x%/}"; x="${x##*/}"
+    case "$x" in ''|*[!0-9]*) ;; *) printf '%s' "$x" ;; esac
+  elif [ -n "$APIHIT" ]; then
+    x="${APIHIT#*/pulls/}"; x="${x%%/*}"
+    case "$x" in ''|*[!0-9]*) ;; *) printf '%s' "$x" ;; esac
+  fi
+}
+
+seat_agent() {   # the ledger agent id for this process: WM_DECIDE_AGENT, else the tmux session name (ctl -> controller), else an explicit unknown coder id
+  local s="${WM_DECIDE_AGENT:-}"
+  [ -n "$s" ] || { [ -z "${TMUX:-}" ] || s="$(tmux display-message -p '#S' 2>/dev/null || true)"; }
+  case "$s" in rb|r7|controller|joe) printf '%s' "$s" ;; ctl) printf 'controller' ;; *) printf 'coder:gh-shim-unknown-seat' ;; esac
+}
+
+gate_passed() {   # $1 = verdict id, $2 = pr number, $3 = owner/name (the last two may be empty): a gate-pass event for all of them exists
+  local ev="${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/merge-events.jsonl" v="$1" n="$2" r="$3" hits
+  [ -r "$ev" ] || return 1
+  hits="$(grep -F -e '"event": "gate-pass"' "$ev" | grep -F -e "\"verdict\": \"$v\"")" || return 1
+  [ -z "$n" ] || { printf '%s\n' "$hits" | grep -q -F -e "\"pr\": $n," || return 1; hits="$(printf '%s\n' "$hits" | grep -F -e "\"pr\": $n,")"; }
+  [ -z "$r" ] || printf '%s\n' "$hits" | grep -q -F -e "\"repo\": \"$r\"" || return 1
+  return 0
+}
+
+log_refusal() {   # $1 = decision ref (verdict id or none), $2 = reason. Best effort: a failed log never changes the refusal.
+  command -v wm-decide >/dev/null 2>&1 || { echo "gh-shim: (refusal not logged: wm-decide not on PATH)" >&2; return 0; }
+  local ref="$1" why="$2" argv agent; shift 2
+  argv="$(printf '%s ' "$@" | sed -E 's/sk-ant[A-Za-z0-9_-]*/[redacted]/g' | cut -c1-200)"
+  agent="$(seat_agent)"
+  timeout 15 wm-decide record --agent "$agent" --kind gate --model deterministic \
+    --what "gh shim refused pr merge: decision=$ref" --why "$why" \
+    --evidence "argv=gh ${argv% } pr=$(pr_number) decision=$ref" \
+    --reverse-text "no change was made: the merge did not run; re-run through rb-merge.sh <verdict-id> <pr> <owner/name>" >/dev/null 2>&1 \
+    || echo "gh-shim: (refusal row not recorded: wm-decide record failed; the refusal stands)" >&2
+}
+
+gh_bin="$(real_gh)" || { echo "gh-shim: no real gh on PATH after $selfdir" >&2; exit 127; }
+
+parse_args "$@"
+if is_merge; then
+  ok="${WM_DECIDE_GATE_OK:-}"
+  n="$(pr_number)"
+  case " $* " in *" --auto "*|*" --auto="*) auto=1 ;; *) auto=0 ;; esac
+  if [ -n "$ok" ] && [ "$auto" = 0 ] && gate_passed "$ok" "$n" "$REPO"; then
+    exec "$gh_bin" "$@"
+  fi
+  if [ -z "$ok" ]; then why="WM_DECIDE_GATE_OK is not set"; ref=none
+  elif [ "$auto" = 1 ]; then why="--auto is refused: the gate runs before the merge, an armed auto-merge would fire after it"; ref="$ok"
+  else why="no gate-pass event for verdict $ok${n:+ and PR $n} in merge-events.jsonl"; ref="$ok"; fi
+  echo "gh-shim: REFUSED gh $* : $why. Merge only through: rb-merge.sh <verdict-id> <pr> <owner/name> (wm-decide merge-gate ... && gh pr merge --squash --match-head-commit <oid>)" >&2
+  log_refusal "$ref" "$why" "$@"
+  exit 2
+fi
+exec "$gh_bin" "$@"
