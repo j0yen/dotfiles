@@ -5,6 +5,26 @@
 
 set -u
 
+# HEADLESS = NO TRACER (10-22 4:00 PM): a seat unit's `claude -p` turn (WM_SEAT rb|r7|ctl, or any of the first 4 ancestors running in print mode: ` -p ` / `--print`)
+# must not start `sudo bpftrace` here nor stop/render one at SessionEnd: the root-owned tracer lingers in the unit's cgroup, user-systemd cannot kill it
+# ("Operation not permitted"), the SessionEnd hook is cancelled and the unit fails. Same test as ~/.claude/hooks/adhd-always-on.sh (adhd_headless).
+# CTRACE_SKIP_ANCESTORS=1 is a test-only seam (the real ancestry cannot change a result).
+ctrace_headless() {
+    case "${WM_SEAT:-}" in rb|r7|ctl) return 0 ;; esac
+    [ "${CTRACE_SKIP_ANCESTORS:-}" = 1 ] && return 1
+    local pid=$PPID i cmd c stat
+    for i in 1 2 3 4; do
+        [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || return 1
+        cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || return 1
+        c=" ${cmd%" "} "
+        [[ "$c" == *" -p "* || "$c" == *"--print"* ]] && return 0
+        stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+        pid=$(set -- ${stat##*) }; echo "${2:-}")
+    done
+    return 1
+}
+ctrace_headless && exit 0
+
 # Never trace the ephemeral headless /build sessions. ctrace launches a
 # root-owned `sudo bpftrace`; when it runs inside claude-build-work.service it
 # lingers in that cgroup as root, and user-systemd can't kill it ("Operation

@@ -24,6 +24,14 @@ selftest() {
   [ ! -s "$T/calls" ]; chk "exit 5 (lock busy) -> no event" $?
   : >"$T/calls"; : >"$T/empty"; SEAT_FAILED_JOURNAL="$T/empty" SEAT_FAILED_STATUS=124 "$SELF" r7
   grep -q 'seat=r7: exit 124, no journal output$' "$T/calls"; chk "empty journal -> 'exit 124, no journal output'" $?
+  printf '%s\n' 'seat-tick: ctl tick model=x' 'some progress line' '/home/jsy/.local/bin/seat-tick.sh: line 443: $!: unbound variable' 'SessionEnd hook [x] failed: Hook cancelled' \
+    "seat-tick@ctl.service: Main process exited, code=exited, status=1/FAILURE" "Failed to start seat-tick@ctl.service - operator seat ctl." 'Consumed 25min CPU time.' \
+    'Starting seat-tick@ctl.service - operator seat ctl: one claude -p turn...' 'Finished something.' '' >"$T/journal2"
+  : >"$T/calls"; SEAT_FAILED_JOURNAL="$T/journal2" SEAT_FAILED_STATUS=1 "$SELF" ctl
+  [[ "$(cat "$T/calls")" == *'seat=ctl: /home/jsy/.local/bin/seat-tick.sh: line 443: $!: unbound variable' ]]; chk "journal with a Starting/Finished line after the real error: the error line is picked ($(cut -c1-140 "$T/calls"))" $?
+  printf '%s\n' 'seat-tick: rb tick model=x' 'ALARM rb something plain' 'Starting seat-tick@rb.service - op' 'Finished x.' >"$T/journal3"
+  : >"$T/calls"; SEAT_FAILED_JOURNAL="$T/journal3" SEAT_FAILED_STATUS=4 "$SELF" rb
+  [[ "$(cat "$T/calls")" == *'seat=rb: ALARM rb something plain' ]]; chk "no error-looking line: the last non-lifecycle line (not Starting/Finished)" $?
   "$SELF" >/dev/null 2>&1; [ $? = 64 ]; chk "no seat: exit 64" $?
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"; return "$fail"
 }
@@ -33,7 +41,12 @@ seat="$1"; unit="seat-tick@$seat.service"
 st="${SEAT_FAILED_STATUS:-$(systemctl --user show "$unit" -p ExecMainStatus --value 2>/dev/null)}"
 [ "$st" = 5 ] && exit 0
 if [ -n "${SEAT_FAILED_JOURNAL:-}" ]; then jl="$(cat "$SEAT_FAILED_JOURNAL")"; else jl="$(journalctl --user -u "$unit" -n 40 -o cat --no-pager 2>/dev/null)"; fi
-last="$(printf '%s\n' "$jl" | grep -v -e "^seat-tick@$seat.service: " -e '^Failed to start' -e '^Consumed ' -e '^Started ' -e '^$' | tail -n1 | cut -c1-200)"
+# diagnostic line = the last line of the journal tail that is neither a systemd lifecycle line (Starting/Started/Finished/Failed/Consumed/Deactivated...) nor empty;
+# a line that names the error (unbound variable|error|Error|exit=[1-9]|FAIL) wins over a later plain line (10-22 4:00 PM: "Starting seat-tick@ctl.service ..." was picked)
+useful="$(printf '%s\n' "$jl" | grep -v -E -e "^seat-tick@$seat\.service: " -e '^(Starting|Started|Finished|Failed|Consumed|Deactivated|Stopping|Stopped) ' -e '^[[:space:]]*$')"
+last="$(printf '%s\n' "$useful" | grep -E 'unbound variable|error|Error|exit=[1-9]|FAIL' | tail -n1)"
+[ -n "$last" ] || last="$(printf '%s\n' "$useful" | tail -n1)"
+last="${last:0:200}"
 [ -n "$last" ] || last="exit ${st:-?}, no journal output"
 export EVENT_SOURCE=seat-tick-failed
 [ "$seat" = ctl ] && export SEAT_EVENT_NOWAKE=1

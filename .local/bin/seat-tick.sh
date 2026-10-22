@@ -45,6 +45,18 @@ EVENT_RULE='every EVENT line gets a read and, if real, a mitigation this turn; l
 RULES_LINE='Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; '"$EVENT_RULE"'; this turn ends when you print the timestamped STATUS block.'
 EV_MAX=40   # event lines shown in one prompt
 
+# EXIT trap, armed right after the pre-turn state save: any exit before the tail's own save (an unset variable, a signal, a failed command) still
+# records last_exit and keeps the already-incremented tick count (10-22 4:00 PM: a crash in the tail lost the count and the next tick restarted at 1).
+on_exit() {
+  local c=$?
+  [ "${TURN_DONE:-1}" = 1 ] && return 0
+  trap - EXIT
+  S_exit="$c"; [ "$c" = 0 ] && S_exit="${TURN_RC:-1}"; [ "$S_exit" = 0 ] && S_exit=1   # a signal exit reaches the trap with $?=0
+  now="$(date +%s)"; iso="$(date -Iseconds)"; S_dur=$(( now - ${start:-$now} )); S_evnew="${EV_NEW:-0}"
+  save 2>/dev/null
+  echo "seat-tick: ${SEAT:-?} ${KIND:-?} ABORTED before the end-of-turn save (exit=$S_exit); state recorded" >&2
+}
+
 usage() { echo 'usage: seat-tick.sh <seat> [--ask "<text>" | --event | --status | --guard-check]   |   seat-tick.sh --selftest' >&2; exit 64; }
 
 # seat row from the table; sets ROLE SID TICK_MIN TIMEOUT_SEC GOAL_RE OLD_PID or returns 1
@@ -115,6 +127,9 @@ echo "seat_env=WM_SEAT=${WM_SEAT:-} CLAUDE_SESSION_NAME=${CLAUDE_SESSION_NAME:-}
 echo "lean_env=SEAT_LEAN=${SEAT_LEAN:-} CLAUDE_LEAN_START=${CLAUDE_LEAN_START:-}"
 echo "status_line2=$(sed -n 2p "$FLEET_DASH_DIR/fleet-status.md" 2>/dev/null)"
 printf '%s' "${@: -1}" >"$FLEET_DASH_DIR/prompt.${WM_SEAT:-x}.txt"
+if [ -n "${FAKE_CLOBBER:-}" ]; then   # rewrite the running script IN PLACE (same inode), longer than before: the incident of 10-22 4:00 PM
+  { yes 'echo CLOBBERED' | head -400; cat "$FAKE_CLOBBER"; } >"$FAKE_CLOBBER.new" && cat "$FAKE_CLOBBER.new" >"$FAKE_CLOBBER"
+fi
 sleep "${FAKE_SLEEP:-2}"
 echo "END $(date +%s.%N)"
 exit "${FAKE_EXIT:-0}"
@@ -433,10 +448,29 @@ FAKE
   for tm in $(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $4}' "$real" | sort -u); do grep -q "^OnUnitActiveSec=${tm}min\$" "$tim" 2>/dev/null || tm_ok=0; done
   [ "$tm_ok" = 1 ]; chk "unit contract: seat-tick@.timer OnUnitActiveSec equals every tick_min in the real table" $?
 
+  # 10. (10-22 4:00 PM incident) main() wrap, set -u-safe tail, tick count survives a failed tick
+  [ "$(grep -c '^main "\$@"$' "$SELF")" = 1 ] && [ "$(grep -c '^main() {$' "$SELF")" = 1 ] && [ "$(tail -n1 "$SELF")" = 'main "$@"' ]; chk "main() wrap: exactly one 'main \"\$@\"' call and it is the last line of the file" $?
+  ! sed -n '/^# f\. auth/,$p' "$SELF" | grep -Eq '\$!|\$\{!'; chk "post-turn tail never reads \$! (unbound under set -u when no background job exists)" $?
+  mkdir -p "$T/bin" && cp "$HERE/seat-tick.sh" "$HERE/seat-lean.sh" "$HERE/fleet-status-write.sh" "$T/bin/"
+  FAKE_CLOBBER="$T/bin/seat-tick.sh" FAKE_SLEEP=1 SEAT_TICK_CHAINED=1 "$T/bin/seat-tick.sh" ctl >"$T/oc1" 2>"$T/ec1"; rc=$?
+  [ "$(head -n1 "$T/bin/seat-tick.sh")" = 'echo CLOBBERED' ] && [ "$rc" = 0 ] && ! grep -q CLOBBERED "$T/oc1" "$T/ec1" && grep -q 'ctl tick exit=0 duration' "$T/oc1"; chk "script rewritten in place (400 lines longer) while the turn runs: the running tick still ends cleanly (rc=$rc)" $?
+  local cs0 w cpid; cs0="$(j .sends_total)"
+  FAKE_SLEEP=2 "$SELF" ctl >"$T/oc2" 2>"$T/ec2" & cpid=$!; ST_PIDS="$ST_PIDS $cpid"
+  for w in 1 2 3 4 5 6 7 8 9 10; do grep -q '^START' "$T/oc2" 2>/dev/null && break; sleep 0.5; done
+  kill -TERM "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null; sleep 2.5   # the orphaned fake claude holds the seat lock until it ends
+  [ "$(j .sends_total)" = "$((cs0 + 1))" ] && [ "$(j .last_exit)" != 0 ] && [ "$(j .last_exit)" != null ] && grep -q 'ABORTED before the end-of-turn save' "$T/ec2"; chk "tick killed mid-turn: sends_total +1 kept (was $cs0, now $(j .sends_total)) and last_exit=$(j .last_exit) recorded by the EXIT trap" $?
+  FAKE_SLEEP=0 "$SELF" ctl >/dev/null 2>&1
+  [ "$(j .sends_total)" = "$((cs0 + 2))" ] && pl ctl 1 | grep -Eq "tick=$((cs0 + 2)) "; chk "the next tick continues the count (tick=$((cs0 + 2)) in the prompt, not 1)" $?
+
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
 }
 
+# ---- run ------------------------------------------------------------------------------------------
+# Everything from here to the last line is ONE function, so bash parses the whole body before running any of it: a coder editing this file while a
+# tick is running (10-22 3:35-4:00 PM, three commits) can no longer make the running process execute the new file at the old byte offsets. The body is
+# deliberately not re-indented (git diff -w shows the change). The last line of the file is the call.
+main() {
 # ---- arguments -----------------------------------------------------------------------------------
 SEAT=""; MODE=tick; ASK_TEXT=""
 while [ $# -gt 0 ]; do
@@ -582,6 +616,13 @@ CAP=$(( TIMEOUT_SEC * 95 / 100 ))
 LOG="$DASH/$SEAT-tick-last.log"; [ "$KIND" = ask ] && LOG="$DASH/$SEAT-ask-last.log"; [ "$KIND" = event ] && LOG="$DASH/$SEAT-event-last.log"
 echo "seat-tick: $SEAT $KIND model=$MODEL sid=$SID cap=${CAP}s prompt='${PROMPT//$'\n'/ | }'"
 start="$(date +%s)"
+# the count moves BEFORE the turn (sends_total, last_sent); last_exit / last_duration_s move at its end, or in on_exit if the tail never gets there
+S_kind="$KIND"; [ "$SEAT" = ctl ] && [ "$KIND" = tick ] && S_kind=sweep
+if [ "$KIND" = tick ]; then S_sends=$((S_sends + 1)); S_last_sent="$start"; fi
+now="$start"; iso="$(date -Iseconds)"; S_evnew="$EV_NEW"
+TURN_DONE=0; TURN_RC=""
+save || echo "seat-tick: WARN pre-turn state save failed" >&2
+trap on_exit EXIT
 LEAN_ARGV=()
 case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, full hook set
   rb|r7) for _kv in $LEAN_ENV_VARS; do export "$_kv"; done
@@ -589,18 +630,15 @@ case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, ful
   controller) if [ -r "$CTL_SETTINGS" ]; then LEAN_ARGV=(--settings "$CTL_SETTINGS"); else echo "seat-tick: WARN $CTL_SETTINGS missing, ctl runs without autoCompactEnabled=true" >&2; fi ;;
 esac
 ( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
-rc="${PIPESTATUS[0]}"
+rc="${PIPESTATUS[0]:-1}"; TURN_RC="$rc"
 end="$(date +%s)"
 echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"
 
 now="$end"; iso="$(date -Iseconds)"
-st="$(status)"; S_skipped="$(sget '.ticks_skipped // 0')"; S_sends="$(sget '.sends_total // 0')"   # re-read: nothing else writes under the lock, but be exact
-S_exit="$rc"; S_dur=$((end - start)); S_kind="$KIND"
-[ "$SEAT" = ctl ] && [ "$KIND" = tick ] && S_kind=sweep
-if [ "$KIND" = tick ]; then S_sends=$((S_sends + 1)); S_last_sent="$start"; fi
-S_evnew="$EV_NEW"
+st="$(status)"; S_skipped="$(sget '.ticks_skipped // 0')"   # re-read: nothing else writes under the lock, but be exact (sends_total / last_sent were written before the turn)
+S_exit="$rc"; S_dur=$((end - start))
 if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; fi
-save
+save && TURN_DONE=1
 
 # g. chain: a bell that arrived while this turn ran (a .wake file, or log bytes past the delivered offset) is handled now, not at the next 20-min tick.
 # Exit-0 turns only (a failing claude must not loop), at most one chain per unit run (SEAT_TICK_CHAINED), and only while half the unit's time budget is left.
@@ -616,3 +654,5 @@ if [ "$rc" = 0 ] && [ "$S_chained" != 1 ]; then
   fi
 fi
 exit "$rc"
+}
+main "$@"

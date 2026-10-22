@@ -2,7 +2,7 @@
 # seat-event.sh <seat> "<line>": a watcher's bell to an operator seat (10-22, "the operator should closely monitor the build engine").
 #   1. appends `<ISO time> | <source> | <line>` to $EVENTS_DIR/<seat>-events.log (0600). source = $EVENT_SOURCE, else the caller's comm.
 #   2. debounce: an identical <line> already appended within 600 s (EVENT_DEBOUNCE_S) is dropped (counted as dropped_dup), exit 0.
-#   3. wake: seat lock FREE (flock -n test, released at once) -> `systemd-run --user --collect --unit seat-event-<seat>-<epoch>
+#   3. wake: seat lock FREE (flock -n test, released at once) -> `systemd-run --user --collect --unit seat-event-<seat>-<epoch ns>-<pid>
 #      seat-tick.sh <seat> --event` (an EVENT turn now); lock HELD (a turn is running) -> touch $EVENTS_DIR/<seat>.wake, and that turn
 #      chains one more EVENT turn when it ends (seat-tick.sh step g). Either way the seat's next prompt carries the new lines (events_new=<k>).
 #   Counters: $EVENTS_DIR/<seat>-events.json {appended, dropped_dup, woke_tick, woke_deferred, last_event, last_wake}.
@@ -20,16 +20,16 @@ known_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{ex
 
 # bump <key> [<set key> <value>]: counters in <seat>-events.json, tmp+mv, caller holds the events lock
 bump() {
-  local key="$1" tmp; tmp="$(mktemp "$DIR/.$SEAT-events.XXXXXX")" || return 1
-  jq --arg k "$key" --arg iso "$(date -Iseconds)" \
-     '({appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,last_event:null,last_wake:null} + (. // {}))
-      | .[$k] += 1 | (if $k=="appended" then .last_event=$iso elif ($k=="woke_tick" or $k=="woke_deferred") then .last_wake=$iso else . end)' \
-     "$JSON" >"$tmp" 2>/dev/null || echo '{}' | jq --arg k "$key" '{appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,last_event:null,last_wake:null} | .[$k]=1' >"$tmp"
+  local key="$1" tmp prog; tmp="$(mktemp "$DIR/.$SEAT-events.XXXXXX")" || return 1
+  prog='({appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,last_event:null,last_wake:null} + (. // {}))
+      | .[$k] += 1 | (if $k=="appended" then .last_event=$iso elif ($k=="woke_tick" or $k=="woke_deferred") then .last_wake=$iso else . end)'
+  jq --arg k "$key" --arg iso "$(date -Iseconds)" "$prog" "$JSON" >"$tmp" 2>/dev/null \
+    || echo '{}' | jq --arg k "$key" --arg iso "$(date -Iseconds)" "$prog" >"$tmp"   # no/garbled json yet: same program on {} (the first append sets last_event)
   chmod 600 "$tmp"; mv -f "$tmp" "$JSON"
 }
 
 selftest() {
-  local T fail=0 out rc; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
+  local T fail=0 out rc r1 r2; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
   export EVENTS_DIR="$T/ev" SEATS_TABLE="$T/seats.tsv" EVENT_SOURCE=selftest
   printf '# t\ntst\trb\tsid-x\t20\t100\t^x\t-\n' >"$SEATS_TABLE"
@@ -45,6 +45,7 @@ selftest() {
   [[ "$out" == "systemd-run --user --collect --unit seat-event-tst-"*" -p WorkingDirectory=$HOME $T/fake-tick tst --event" ]]; chk "free lock: spawn command (dry): '${out:0:150}'" $?
   [ ! -e "$T/spawned" ] && [ ! -e "$EVENTS_DIR/tst.wake" ]; chk "dry run started nothing and touched no .wake" $?
   [ "$(jq -r '.appended' "$J")" = 1 ] && [ "$(jq -r '.woke_tick' "$J")" = 1 ]; chk "json: appended=1 woke_tick=1" $?
+  [ "$(jq -r '.last_event' "$J")" != null ] && [ "$(jq -r '.last_wake' "$J")" != null ]; chk "json: the FIRST-ever append sets last_event and last_wake (not null): $(jq -c '[.last_event,.last_wake]' "$J")" $?
 
   # 2. debounce: identical line within 600 s -> nothing appended, dropped_dup counted, no wake
   out="$(SEAT_EVENT_DRY=1 "$SELF" tst "ALARM landrisk: 1025 CI red" 2>&1)"; rc=$?
@@ -68,6 +69,13 @@ selftest() {
   "$SELF" tst "real spawn" >/dev/null 2>&1; rc=$?
   for _ in $(seq 1 40); do [ -s "$T/spawned" ] && break; sleep 0.25; done
   [ "$rc" = 0 ] && [ "$(cat "$T/spawned" 2>/dev/null)" = "tst --event" ]; chk "free lock, no dry: transient unit ran 'fake-tick tst --event' (rc=$rc: $(cat "$T/spawned" 2>/dev/null))" $?
+
+  # 4b. two bells in the same second both start a unit (10-22: the name was seat-event-<seat>-<epoch s>, the second systemd-run failed "unit name taken")
+  mkdir -p "$T/fakebin" "$T/units"
+  printf '#!/bin/bash\nwhile [ $# -gt 0 ]; do [ "$1" = --unit ] && u="$2"; shift; done\n[ -e "%s/units/$u" ] && exit 1\n: >"%s/units/$u"\n' "$T" "$T" >"$T/fakebin/systemd-run"; chmod +x "$T/fakebin/systemd-run"
+  PATH="$T/fakebin:$PATH" "$SELF" tst "bell one" >/dev/null 2>&1; r1=$?; PATH="$T/fakebin:$PATH" "$SELF" tst "bell two" >/dev/null 2>&1; r2=$?
+  [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ "$(ls "$T/units" | wc -l)" = 2 ] && [ "$(ls "$T/units" | sort -u | wc -l)" = 2 ]; chk "two back-to-back bells: both rc 0, two distinct unit names ($(ls "$T/units" | tr '\n' ' '))" $?
+  rm -rf "$T/fakebin" "$T/units"
 
   # 5. refusals
   "$SELF" nosuchseat "x" >/dev/null 2>&1; [ $? = 64 ]; chk "unknown seat: exit 64" $?
@@ -119,7 +127,7 @@ dup=0
 
 # wake: is a turn running? (flock -n, released at once; the lock file is the one seat-tick.sh holds for a whole turn)
 if ( flock -n 9 ) 9>>"$DIR/$SEAT.lock" 2>/dev/null; then
-  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s)" -p "WorkingDirectory=$HOME" "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
+  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s%N)-$$" -p "WorkingDirectory=$HOME" "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
   { flock 7; bump woke_tick; } 7>>"$DIR/$SEAT-events.lock"
   if [ "${SEAT_EVENT_DRY:-}" = 1 ]; then echo "${cmd[*]}"; exit 0; fi
   # a same-second duplicate unit name fails: harmless, the first unit's turn reads this line (it composes its prompt after taking the lock)
