@@ -1,5 +1,5 @@
 [Unit]
-Description=fleet controller sweep tick every 20 min (ctl-sweep.service)
+Description=operator seat %i tick every 20 min (seat-tick@%i.service; cadence = tick_min in ~/.claude/state/seats.tsv)
 
 [Timer]
 OnBootSec=5min

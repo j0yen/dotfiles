@@ -1,0 +1,10 @@
+[Unit]
+Description=operator seat %i: one claude -p turn on the seat's session (daemon-shaped)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+Environment=WM_SEAT=%i
+ExecStart=%h/.local/bin/seat-tick.sh %i
+# one turn can run for hours; seat-tick.sh caps claude at 95 % of the seat's timeout_sec (seats.tsv, 14400), so this must stay >= that column
+TimeoutStartSec=14400
