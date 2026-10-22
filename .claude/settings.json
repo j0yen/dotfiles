@@ -120,6 +120,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/model-role-check.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -270,6 +280,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/model-role-check.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -410,6 +430,10 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/cargo-block-carbon.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/cargo-slot-gate.sh"
           }
         ]
       },
@@ -607,5 +631,6 @@
     }
   },
   "skipDangerousModePermissionPrompt": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "model": "claude-fable-5-1[1m]"
 }
