@@ -1,5 +1,7 @@
 [Unit]
 Description=operator seat %i: one claude -p turn on the seat's session (daemon-shaped)
+# a failed turn tells ctl in seconds (seat-event.sh ctl "SEAT-TICK FAILED seat=%i: ..."; ctl's own failure = event log only, no wake)
+OnFailure=seat-tick-failed@%i.service
 
 [Service]
 Type=oneshot
