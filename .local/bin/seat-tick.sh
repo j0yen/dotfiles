@@ -14,6 +14,8 @@
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead.
 # The goal loop (/goal stop hook) is disabled in `claude -p`, so a rb/r7 tick carries the seat's /goal line itself.
 # approvals_new / status_age exist for ctl only (log is read-only here; approvals_seen in ctl-tick.json is the high-water mark).
+# LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
+# flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design.
 # Env overrides: FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
@@ -30,6 +32,7 @@ UNIT_DIR="${SEAT_UNIT_DIR:-$HOME/.config/systemd/user}"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 HERE="$(dirname "$SELF")"
 WRITER="$HERE/fleet-status-write.sh"
+. "$HERE/seat-lean.sh"   # LEAN_ENV_VARS + LEAN_FLAGS: ONE source with seat-relaunch.sh (10-22)
 ALARM_AT=3
 RULES_LINE='Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; this turn ends when you print the timestamped STATUS block.'
 
@@ -70,6 +73,8 @@ st_cleanup() { local p; for p in $ST_PIDS; do kill "$p" 2>/dev/null; done; [ -n 
 selftest() {
   local T fail=0 rc ts_re='[0-9]{1,2}:[0-9]{2} (AM|PM) [A-Za-z0-9+-]+ [0-9]{4}-[0-9]{2}-[0-9]{2}'
   T="$(mktemp -d)"; ST_T="$T"; trap st_cleanup EXIT
+  unset SEAT_LEAN CLAUDE_LEAN_START   # a selftest run from inside a lean seat must not make ctl look lean
+  local LA="--settings $HOME/.config/claude-seat/settings.json --mcp-config $HOME/.config/claude-seat/mcp.json --strict-mcp-config"
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
   local CS=selftest-ctl-sid-0001 RS=selftest-rb-sid-0002 SS=selftest-r7-sid-0003 TS=selftest-tmo-sid-0004
   export FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
@@ -97,6 +102,7 @@ echo "START $(date +%s.%N)"
 echo "ARGV: $*"
 echo "token_set=${CLAUDE_CODE_OAUTH_TOKEN:+yes} cwd=$PWD"
 echo "seat_env=WM_SEAT=${WM_SEAT:-} CLAUDE_SESSION_NAME=${CLAUDE_SESSION_NAME:-}"
+echo "lean_env=SEAT_LEAN=${SEAT_LEAN:-} CLAUDE_LEAN_START=${CLAUDE_LEAN_START:-}"
 echo "status_line2=$(sed -n 2p "$FLEET_DASH_DIR/fleet-status.md" 2>/dev/null)"
 printf '%s' "${@: -1}" >"$FLEET_DASH_DIR/prompt.${WM_SEAT:-x}.txt"
 sleep "${FAKE_SLEEP:-2}"
@@ -205,11 +211,13 @@ FAKE
   rm -f "$T/dash/fleet-status.md"
   "$SELF" rb >"$T/orb" 2>"$T/erb"; rc=$?
   [ "$rc" = 0 ]; chk "rb tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --resume $RS TICK $ts_re seat=rb tick=1\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb $LA --resume $RS TICK $ts_re seat=rb tick=1\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
   [ "$(pl rb 2 | head -1)" = "$goal_rb" ] && [ "$goal_rb" != "" ]; chk "rb: prompt line 2 = the /goal CLEARWATER: line verbatim ('$(pl rb 2 | cut -c1-70)...')" $?
   [ "$(pl rb 3)" = 'Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; this turn ends when you print the timestamped STATUS block.' ] && [ "$(wc -l <"$T/dash/prompt.rb.txt")" = 2 ]; chk "rb: prompt line 3 = the rules line verbatim, exactly 3 lines" $?
   ! grep -q 'approvals_new\|status_age' "$T/dash/prompt.rb.txt"; chk "rb: no approvals_new / status_age in the prompt" $?
   grep -q '^seat_env=WM_SEAT=rb CLAUDE_SESSION_NAME=rb$' "$T/orb"; chk "rb: fake claude saw WM_SEAT=rb CLAUDE_SESSION_NAME=rb" $?
+  grep -q -- ' --strict-mcp-config ' <(grep -m1 '^ARGV' "$T/orb") && grep -q '^lean_env=SEAT_LEAN=1 CLAUDE_LEAN_START=1$' "$T/orb"; chk "rb LEAN: fake claude got --strict-mcp-config and env SEAT_LEAN=1 CLAUDE_LEAN_START=1" $?
+  ! grep -q -- 'strict-mcp-config' <(grep -m1 '^ARGV' "$T/o1") && grep -q '^lean_env=SEAT_LEAN= CLAUDE_LEAN_START=$' "$T/o1"; chk "ctl NOT lean: sweep 1 has no --strict-mcp-config and no SEAT_LEAN/CLAUDE_LEAN_START env" $?
   [ ! -e "$T/dash/fleet-status.md" ]; chk "rb: no --open written (fleet-status.md absent)" $?
   [ -e "$T/dash/rb.lock" ] && [ -s "$T/dash/rb-tick-last.log" ]; chk "rb: lock path rb.lock, log rb-tick-last.log" $?
   [ "$(jseat rb .sends_total)" = 1 ] && [ "$(jseat rb .last_prompt_kind)" = tick ] && [ "$(jseat rb .last_exit)" = 0 ] && [ "$(jseat rb .status_file)" = null ] && [ "$(jseat rb .approvals_seen)" = 0 ]; chk "rb: state rb-tick.json sends_total=1 kind=tick exit 0 status_file null approvals_seen 0" $?
@@ -232,12 +240,12 @@ FAKE
   ( cd "$T/notes" && git checkout -q -- wiki/goal.md ) 2>/dev/null
   # rb ASK
   "$SELF" rb --ask "status of 1025?" >"$T/orba" 2>&1; rc=$?
-  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --resume $RS ASK $ts_re seat=rb: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
+  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb $LA --resume $RS ASK $ts_re seat=rb: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
 
   # 10. r7 TICK
   "$SELF" r7 >"$T/or7" 2>"$T/er7"; rc=$?
   [ "$rc" = 0 ]; chk "r7 tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --resume $SS TICK $ts_re seat=r7 tick=1\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 $LA --resume $SS TICK $ts_re seat=r7 tick=1\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
   [ "$(pl r7 2)" = "$goal_r7" ] && [ "$(pl r7 3 | cut -c1-23)" = "Rules of this shape: on" ] && [ "$(wc -l <"$T/dash/prompt.r7.txt")" = 2 ]; chk "r7: line 2 = the /goal CLEARWATER-R7 line verbatim (not the rb line), line 3 = rules, 3 lines" $?
   grep -q '^seat_env=WM_SEAT=r7 CLAUDE_SESSION_NAME=r7$' "$T/or7" && [ -e "$T/dash/r7.lock" ] && [ -s "$T/dash/r7-tick-last.log" ] && [ ! -e "$T/dash/fleet-status.md" ] && ! grep -q 'approvals_new' "$T/dash/prompt.r7.txt"; chk "r7: WM_SEAT=r7, r7.lock, r7-tick-last.log, no --open, no approvals_new" $?
   [ "$(jseat r7 .sends_total)" = 1 ] && [ "$(jseat r7 .last_prompt_kind)" = tick ]; chk "r7: state r7-tick.json sends_total=1 kind=tick" $?
@@ -439,7 +447,12 @@ CAP=$(( TIMEOUT_SEC * 95 / 100 )); [ "$CAP" -ge 1 ] || CAP=1
 LOG="$DASH/$SEAT-tick-last.log"; [ "$KIND" = ask ] && LOG="$DASH/$SEAT-ask-last.log"
 echo "seat-tick: $SEAT $KIND model=$MODEL sid=$SID cap=${CAP}s prompt='${PROMPT//$'\n'/ | }'"
 start="$(date +%s)"
-( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
+LEAN_ARGV=()
+case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, full hook set
+  rb|r7) for _kv in $LEAN_ENV_VARS; do export "$_kv"; done
+         read -ra LEAN_ARGV <<<"${LEAN_FLAGS//\$HOME/$HOME}" ;;
+esac
+( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
 rc="${PIPESTATUS[0]}"
 end="$(date +%s)"
 echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"

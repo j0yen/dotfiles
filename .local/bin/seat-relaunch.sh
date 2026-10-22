@@ -21,6 +21,7 @@
 #   only creates the session and sends the launch command. SEAT_DRY_RUN=1 never runs the guard.
 # 10-22 ONE SEAT TABLE: seat -> role, SID and old pid come from ~/.claude/state/seats.tsv (SEATS_TABLE overrides), no hardcoded map here.
 #   seat-tick.sh and seat-exit.sh read the same table; `--drift-test` asserts every seat's dry-run --resume SID and --model against it.
+# 10-22 ONE LEAN SOURCE: LEAN_ENV_VARS + LEAN_FLAGS live in seat-lean.sh, sourced here and by seat-tick.sh (rb/r7 ticks were launching without them).
 # 10-22 SEAT-BIN: both launch branches type `export PATH=$HOME/.local/seat-bin:$PATH` right before `claude`, so a seat's shell-outs find ~/.local/seat-bin first
 #   (same prefix as Environment=PATH in seat-tick@.service); SEAT_DRY_RUN=1 prints the full typed line, so the export shows in it.
 set -uo pipefail
@@ -38,13 +39,14 @@ seat_model() {  # $1 = seat -> model id (SEAT_MODEL override, else the controlle
   local role="${ROLE[$1]:-$1}"
   awk -v r="$role" '$1==r {print $2; exit}' "$TABLE" 2>/dev/null
 }
-LEAN_ENV=""; LEAN_FLAGS=""
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"   # 10-22: LEAN_ENV_VARS + LEAN_FLAGS, shared with seat-tick.sh (one source)
+LEAN_ENV=""; LEAN_ARGS=""
 if [ "${SEAT_LEAN:-1}" = 1 ]; then   # 10-20 C2/C5: lean is now the DEFAULT for seat launches; SEAT_LEAN=0 = old full-banner/mcphost launch
-  LEAN_ENV="env SEAT_LEAN=1 CLAUDE_LEAN_START=1 "
-  LEAN_FLAGS=" --settings \$HOME/.config/claude-seat/settings.json --mcp-config \$HOME/.config/claude-seat/mcp.json --strict-mcp-config"
+  LEAN_ENV="env $LEAN_ENV_VARS "
+  LEAN_ARGS=" $LEAN_FLAGS"
 fi
 launch_cmd() {  # $1 = seat
-  local m lenv="$LEAN_ENV" lflags="$LEAN_FLAGS"; m=$(seat_model "$1")
+  local m lenv="$LEAN_ENV" lflags="$LEAN_ARGS"; m=$(seat_model "$1")
   [ "$1" = ctl ] && { lenv=""; lflags=""; }   # ctl = default settings, full hook set
   if [ "${SEAT_AUTH:-token}" = login ]; then echo "export PATH=\$HOME/.local/seat-bin:\$PATH; env -u CLAUDE_CODE_OAUTH_TOKEN ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"
   else echo "set -a; . ~/.config/environment.d/90-claude-oauth.conf; set +a; export PATH=\$HOME/.local/seat-bin:\$PATH; ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"; fi
@@ -66,6 +68,13 @@ drift_test() {  # every seat's dry-run --resume SID must equal seats.tsv and --m
     sid_got=$(printf '%s' "$line" | grep -oE -- '--resume [^ ]+' | head -n1 | sed 's/^--resume //')
     if [ -n "$want" ] && [ "$got" = "$want" ]; then echo "PASS $s: dry-run --model $got == table row $role $want"; else echo "FAIL $s: dry-run --model '$got' != table row $role '$want'"; rc=1; fi
     if [ -n "$sid_want" ] && [ "$sid_got" = "$sid_want" ]; then echo "PASS $s: dry-run --resume $sid_got == seats.tsv sid"; else echo "FAIL $s: dry-run --resume '$sid_got' != seats.tsv sid '$sid_want'"; rc=1; fi
+  done
+  # 10-22: the lean overlay has ONE source (seat-lean.sh); its LEAN_FLAGS / LEAN_ENV_VARS must appear verbatim in the rb and r7 dry-run lines
+  local lf le; lf=$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"; printf '%s' "$LEAN_FLAGS"); le=$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"; printf '%s' "$LEAN_ENV_VARS")
+  for s in rb r7; do
+    line=$(env -u SEAT_MODEL -u SEAT_LEAN SEAT_DRY_RUN=1 "$0" "$s")
+    if [ -n "$lf" ] && [[ "$line" == *"$lf"* ]]; then echo "PASS $s: dry-run carries seat-lean.sh LEAN_FLAGS verbatim"; else echo "FAIL $s: dry-run missing seat-lean.sh LEAN_FLAGS '$lf'"; rc=1; fi
+    if [ -n "$le" ] && [[ "$line" == *"env $le claude"* ]]; then echo "PASS $s: dry-run carries seat-lean.sh LEAN_ENV_VARS verbatim"; else echo "FAIL $s: dry-run missing seat-lean.sh LEAN_ENV_VARS '$le'"; rc=1; fi
   done
   [ $rc -eq 0 ] && echo "DRIFT-TEST PASS" || echo "DRIFT-TEST FAIL"; return $rc
 }
