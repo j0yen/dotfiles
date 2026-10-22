@@ -53,6 +53,12 @@ After this, run `~/wintermute/dotfiles/install.sh` too, so `settings.json` is in
 
 The personal half of a two-repo split: this repo holds `CLAUDE_SELF.md` and its tooling; [`wintermute/dotfiles`](https://github.com/j0yen/wintermute/tree/master/dotfiles) holds the public settings and shared hook scripts.
 
-## Shared watcher lib (`.local/lib/watcher-premise.sh` + `.spec`)
+## Shared watcher lib (`.local/lib/watcher-premise.sh` + `.local/lib/watcher-premise.spec`)
 
 Sourced by every write-capable watcher (PREMISE + EXPIRES + `--selftest`). `install.sh` links it into `~/.local/lib`, so a hand copy is moved aside as `*.bak.<ts>` and replaced by the symlink with the same bytes. After linking, `install.sh` runs `.local/bin/watcher-lib-postapply.sh` (the dotfiles source's fleet-sync `post`, so it runs when fleet-sync fast-forwards the clone), which writes `~/.local/state/watchers/_lib.json` atomically: `{sha, bash_n_ok, source_ok, selftests{<consumer>: ok|fail|no-selftest}}`. Consumers are discovered (scripts in `~/.local/bin` with a non-comment `watcher-premise.sh` line), never hand-listed. Self-test: `.local/bin/watcher-lib-postapply.sh --selftest`.
+
+`_lib.json` also carries `checked_at` (ISO UTC). The post-apply step runs only when fleet-sync fast-forwards the clone (and a failure is only echoed), so an hourly user timer re-runs it: `.config/systemd/user/watcher-lib-postapply.{service,timer}` (`OnCalendar=hourly`, `Persistent=true`). `install.sh` links the unit files but nothing in dotfiles or fleet-sync enables them; each host needs this once after the apply:
+
+```sh
+systemctl --user daemon-reload && systemctl --user enable --now watcher-lib-postapply.timer
+```
