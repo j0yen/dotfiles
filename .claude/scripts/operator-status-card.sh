@@ -64,10 +64,23 @@ render_decisions() {
   echo "decisions: $(j '.decisions_open|length') open$(j '.decisions_open[0:3] | map(" " + (.id|tostring) + ":" + (.cause//"?")) | join(",")')"
 }
 render_seats() {
-  # per-seat n20 corrected share over the seat's last 20 own decisions, then every seat-* alarm (seat-upgrade, seat-upgrade-held, seat-hold-error)
+  # per seat: corrected/n over its last 20 own decisions (mixed models), the current-model run when it is under 20 rows, the hold or flag state; then every seat-* / verifier-rate alarm
   if [ ! -r "$fleet_sj" ] || ! jq -e '.decisions.per_agent' "$fleet_sj" >/dev/null 2>&1; then echo "seats: ?"; return; fi
-  echo "seats (n20 corrected/n share): $(jq -r --arg seats "$seats" '.decisions.per_agent as $p | ($seats|split(" ")) | map(select($p[.] != null) | "\(.) \($p[.].n20) \($p[.].corrected20) \($p[.].share // "n/a")") | join(" · ")' "$fleet_sj" 2>/dev/null)"
-  jq -r '(.alarms // []) | map(select((.text // "") | startswith("seat-"))) | .[0:4][] | "  " + .text' "$fleet_sj" 2>/dev/null
+  echo "seats (corrected/n last 20, share):"
+  local name c n share thr flag held exp nc model since status line
+  while IFS=$'\t' read -r name c n share thr flag held exp nc model since status; do
+    line="  $name $c/$n $share"
+    [ "$thr" = true ] && line="$line at threshold"
+    if [ "$status" = unmeasured ] && [ "$nc" != "?" ]; then line="$line ($nc on $model since $(t "$since"), unmeasured until 20)"
+    elif [ "$nc" != "?" ] && [ "$model" != "?" ]; then line="$line ($nc on $model since $(t "$since"))"; fi
+    if [ "$held" != "-" ]; then line="$line · held until $held"
+    elif [ "$flag" = true ] && [ "$exp" = true ]; then line="$line · hold expired, flag up, awaiting Joe"
+    elif [ "$flag" = true ]; then line="$line · UPGRADE flag up"; fi
+    echo "$line"
+  done < <(jq -r --arg seats "$seats" '.decisions.per_agent as $p | ($seats|split(" "))[] | select($p[.] != null) | . as $k | $p[$k] |
+    [$k, (.corrected_all // .corrected20 // "?"), (.n20_all // .n20 // "?"), (.share // "n/a"), (.share == 0.25), (.upgrade_flag // "null"), (.held_until // "-"),
+     ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
+  jq -r '(.alarms // []) | map(select((.text // "") | test("^(seat-|verifier-rate)"))) | .[0:6][] | "  " + .text' "$fleet_sj" 2>/dev/null
 }
 render_chain() {
   if ! src_ok chain; then echo "chain: not on this host ($(j '.chain.host // empty' | grep . || echo "$chain_host"))"; return; fi
