@@ -10,7 +10,7 @@
 #   seat-tick.sh --selftest              fake claude only, never the real one, never a real seat SID
 # State keys: seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
-# anything) -> compose prompt -> [ctl tick only: fleet-status-write.sh --open] -> claude -p under `timeout` (95 % of timeout_sec).
+# anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead.
 # The goal loop (/goal stop hook) is disabled in `claude -p`, so a rb/r7 tick carries the seat's /goal line itself.
 # approvals_new / status_age exist for ctl only (log is read-only here; approvals_seen in ctl-tick.json is the high-water mark).
@@ -294,6 +294,21 @@ FAKE
   [[ "$out" == *"systemd-run --user --collect --unit seat-ask-r7-"*"seat-tick.sh r7 --ask hello there"* ]]; chk "seat-ask.sh r7 (dry): '${out:0:170}'" $?
   SEAT_ASK_DRY=1 "$HERE/seat-ask.sh" nosuchseat x >/dev/null 2>&1; [ $? = 64 ]; chk "seat-ask.sh: unknown seat -> exit 64" $?
 
+  # 15b. preconditions run before --open: a missing model row refuses (exit 3) and leaves no fleet-status.md (no `boundary: open`)
+  printf 'rb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"; rm -f "$T/dash/fleet-status.md"
+  "$SELF" ctl >"$T/o15b" 2>"$T/e15b"; rc=$?
+  [ "$rc" = 3 ] && grep -q "ALARM ctl: no 'controller' model row" "$T/e15b" && ! grep -q '^ARGV' "$T/o15b" && [ ! -e "$T/dash/fleet-status.md" ] && [ "$(j .last_skip_reason)" = no-model ]; chk "ctl tick, no controller model row: exit 3, claude not run, fleet-status.md NOT written (no boundary: open)" $?
+  printf 'controller test-model-2\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
+
+  # 15c. seat-ask.sh: a refused ASK is visible (fake tick bin, real transient unit; nothing touches a seat)
+  printf '#!/bin/bash\necho "ALARM $1 guard: fake refusal"\nexit "$(cat "$0.rc")"\n' >"$T/fake-tick"; chmod +x "$T/fake-tick"; echo 4 >"$T/fake-tick.rc"
+  out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "refuse me" 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 4 ] && [ "$out" = "ASK REFUSED r7: ALARM r7 guard: fake refusal" ]; chk "seat-ask.sh: unit exit 4 -> exit 4 + 'ASK REFUSED r7: <last line>' on stderr ($rc: ${out:0:70})" $?
+  echo 6 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "refuse me" 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 6 ] && [[ "$out" == "ASK REFUSED r7: "* ]]; chk "seat-ask.sh: unit exit 6 -> exit 6 + ASK REFUSED" $?
+  echo 0 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "fine" 2>"$T/e15c")"; rc=$?
+  [ "$rc" = 0 ] && [[ "$out" == seat-ask-r7-* ]] && [ ! -s "$T/e15c" ]; chk "seat-ask.sh: unit exit 0 -> exit 0, prints the unit name, nothing on stderr" $?
+
   # 16. contracts against the REAL table, goal.md and unit files (read-only; no-drift)
   local real="$HOME/.claude/state/seats.tsv" realgoal="$HOME/Notes/wiki/goal.md" bad=""
   local rs rp rn
@@ -306,6 +321,7 @@ FAKE
   local max_to tm_ok=1 svc="$UNIT_DIR/seat-tick@.service" tim="$UNIT_DIR/seat-tick@.timer" tm
   max_to="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $5+0>m {m=$5+0} END{print m+0}' "$real")"
   [ -r "$svc" ] && [ "$(sed -n 's/^TimeoutStartSec=//p' "$svc")" -ge "$max_to" ] && grep -q '^ExecStart=%h/.local/bin/seat-tick.sh %i$' "$svc"; chk "unit contract: seat-tick@.service TimeoutStartSec >= max timeout_sec ($max_to), ExecStart seat-tick.sh %i" $?
+  grep -q '^Environment=PATH=%h/.local/seat-bin:' "$svc" 2>/dev/null; chk "unit contract: seat-tick@.service Environment=PATH starts with %h/.local/seat-bin:" $?
   for tm in $(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $4}' "$real" | sort -u); do grep -q "^OnUnitActiveSec=${tm}min\$" "$tim" 2>/dev/null || tm_ok=0; done
   [ "$tm_ok" = 1 ]; chk "unit contract: seat-tick@.timer OnUnitActiveSec equals every tick_min in the real table" $?
 
@@ -406,15 +422,17 @@ else
   PROMPT="TICK $stamp seat=$SEAT tick=$n"$'\n'"${pull_note}${goal_line}"$'\n'"$RULES_LINE"
 fi
 
-# d. ctl tick only: boundary marker
+# d. model row: a missing row refuses (exit 3) before anything is written
+MODEL="$(awk -v r="$ROLE" '$1==r{print $2}' "$MRC" 2>/dev/null | head -1)"
+if [ -z "$MODEL" ]; then echo "ALARM $SEAT: no '$ROLE' model row in $MRC" >&2; S_reason="no-model"; save; exit 3; fi
+
+# e. ctl tick only: boundary marker. LAST precondition: every exit-3/exit-6 above has passed, so a refusal never leaves `boundary: open`
 if [ "$SEAT" = ctl ] && [ "$KIND" = tick ]; then
   FLEET_STATUS_DIR="$DASH" FLEET_STATUS_SESSION="${FLEET_STATUS_SESSION:-seat-tick-ctl}" "$WRITER" --open </dev/null \
     || echo "seat-tick: WARN fleet-status-write.sh --open failed" >&2
 fi
 
-# e. auth (token mode, as seat-relaunch.sh) + run, capped at 95 % of timeout_sec so the script records its own exit before systemd's TimeoutStartSec
-MODEL="$(awk -v r="$ROLE" '$1==r{print $2}' "$MRC" 2>/dev/null | head -1)"
-if [ -z "$MODEL" ]; then echo "ALARM $SEAT: no '$ROLE' model row in $MRC" >&2; S_reason="no-model"; save; exit 3; fi
+# f. auth (token mode, as seat-relaunch.sh) + run, capped at 95 % of timeout_sec so the script records its own exit before systemd's TimeoutStartSec
 [ -r "$OAUTH_ENV" ] && { set -a; . "$OAUTH_ENV"; set +a; }
 export WM_SEAT="$SEAT" CLAUDE_SESSION_NAME="$SEAT"      # SessionStart hooks (model-role-check.sh, seat-context-start.sh) read the seat from WM_SEAT
 CAP=$(( TIMEOUT_SEC * 95 / 100 )); [ "$CAP" -ge 1 ] || CAP=1
