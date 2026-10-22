@@ -2,9 +2,12 @@
 # watcher-lib-postapply.sh -- fleet-sync post-apply check of the shared watcher lib (dotfiles .local/lib/watcher-premise.sh).
 # Called at the end of install.sh (the dotfiles source's fleet-sync `post`), i.e. after fleet-sync shipped the lib to this host.
 # Writes ~/.local/state/watchers/_lib.json atomically:
-#   {"sha": <sha256 of the lib|null>, "bash_n_ok": bool, "source_ok": bool, "selftests": {"<consumer>": "ok"|"fail"|"no-selftest"}}
+#   {"sha": <sha256 of the lib|null>, "bash_n_ok": bool, "source_ok": bool, "checked_at": <ISO UTC>, "selftests": {"<consumer>": "ok"|"fail"|"no-selftest"}}
+# Runs from install.sh (only when fleet-sync fast-forwards dotfiles) AND hourly from watcher-lib-postapply.timer (retries a failed check;
+# picks up a consumer fixed outside dotfiles).
 # Consumers are DISCOVERED, never hand-listed: files in ~/.local/bin with a non-comment line that mentions watcher-premise.sh.
 # A consumer whose text has no --selftest is recorded "no-selftest" and is NOT run (running an unknown script could write).
+# A jq failure replaces the file with a failed record (error write-failed), rc 2.
 # Exit 0 = lib parses + sources and no consumer selftest failed; 1 otherwise (the JSON is written either way).
 # Usage: watcher-lib-postapply.sh [--selftest]
 # Env: WPA_LIB (default ~/.local/lib/watcher-premise.sh)  WPA_BIN (~/.local/bin)  WPA_OUT (~/.local/state/watchers/_lib.json)  WPA_TIMEOUT (120 s per consumer)
@@ -28,6 +31,31 @@ wpa_discover() {
     [ "$(readlink -f "$f")" = "$SELF_PATH" ] && continue
     grep -Iv '^[[:space:]]*#' "$f" 2>/dev/null | grep -q 'watcher-premise\.sh' && printf '%s\n' "$n"
   done | sort
+}
+
+# Atomic write of $WPA_OUT: tmp in the SAME dir, mv -f. WPA_TMP is global so the EXIT trap can see it (a `local` is out of
+# scope when the trap fires and `set -u` then errors). If jq fails, replace the previous file with a FAILED record
+# (printf only, no jq; "error":"write-failed", sha null, both flags false) so a stale pass can never be read as current.
+WPA_TMP=""
+wpa_write() {  # sha bash_n source pairs
+  local sha=$1 bn=$2 so=$3 pairs=$4 out_dir now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  out_dir=$(dirname "$WPA_OUT")
+  mkdir -p "$out_dir" || return 2
+  WPA_TMP=$(mktemp "$out_dir/.${SELF_NAME%.sh}.XXXXXX") || { WPA_TMP=""; return 2; }
+  trap 'rm -f "${WPA_TMP:-}"' EXIT
+  if printf '%s' "$pairs" | jq -R -s --argjson sha "$(jq -n --arg s "$sha" 'if $s == "null" then null else $s end')" \
+      --argjson bn "$bn" --argjson so "$so" --arg now "$now" \
+      '{sha: $sha, bash_n_ok: $bn, source_ok: $so, checked_at: $now,
+        selftests: (split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]}) | from_entries)}' > "$WPA_TMP" 2>/dev/null; then
+    chmod 644 "$WPA_TMP"; mv -f "$WPA_TMP" "$WPA_OUT" || return 2
+    trap - EXIT; WPA_TMP=""; return 0
+  fi
+  printf '{"sha":null,"bash_n_ok":false,"source_ok":false,"selftests":{},"checked_at":"%s","error":"write-failed"}\n' "$now" > "$WPA_TMP" \
+    && chmod 644 "$WPA_TMP" && mv -f "$WPA_TMP" "$WPA_OUT"
+  rm -f "$WPA_TMP"; trap - EXIT; WPA_TMP=""
+  echo "watcher-lib-postapply: jq failed; wrote a failed record to $WPA_OUT" >&2
+  return 2
 }
 
 wpa_run() {
@@ -56,18 +84,7 @@ wpa_run() {
     pairs+="$n"$'\t'"$res"$'\n'
   done < <(wpa_discover)
 
-  local out_dir tmp
-  out_dir=$(dirname "$WPA_OUT")
-  mkdir -p "$out_dir" || return 2
-  tmp=$(mktemp "$out_dir/.${SELF_NAME%.sh}.XXXXXX") || return 2
-  trap 'rm -f "$tmp"' EXIT
-  printf '%s' "$pairs" | jq -R -s --argjson sha "$(jq -n --arg s "$sha" 'if $s == "null" then null else $s end')" \
-      --argjson bn "$bash_n" --argjson so "$src" \
-      '{sha: $sha, bash_n_ok: $bn, source_ok: $so,
-        selftests: (split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: .[1]}) | from_entries)}' > "$tmp" || return 2
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$WPA_OUT" || return 2
-  trap - EXIT
+  wpa_write "$sha" "$bash_n" "$src" "$pairs" || return 2
   echo "watcher-lib: sha=${sha:0:12} bash_n_ok=$bash_n source_ok=$src -> $WPA_OUT" >&2
   return $rc
 }
@@ -98,6 +115,7 @@ EOF
   ck "sha"       "$(jq -r .sha <<<"$out")" "$want_sha"
   ck "bash_n_ok" "$(jq -r .bash_n_ok <<<"$out")" true
   ck "source_ok" "$(jq -r .source_ok <<<"$out")" true
+  ck "checked_at is ISO UTC" "$(jq -r .checked_at <<<"$out" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$')" 1
   ck "selftests" "$(jq -cS .selftests <<<"$out")" '{"c-fail.sh":"fail","c-none.sh":"no-selftest","c-ok.sh":"ok"}'
   ck "no tmp left behind" "$(ls -A "$T/state/watchers" | tr '\n' ' ')" "_lib.json "
 
@@ -123,6 +141,18 @@ EOF
   env "${env[@]}" bash "$SELF_PATH" >/dev/null 2>&1; rc=$?
   ck "rc absent lib" "$rc" 1
   ck "absent lib sha" "$(jq -c '[.sha,.bash_n_ok,.source_ok]' "$T/state/watchers/_lib.json")" '[null,false,false]'
+
+  # 6. jq fails on -R (failure path): rc 2, no tmp left behind, no "unbound variable", the previous good file is replaced by a failed record.
+  printf 'wp_arm() { :; }; wp_gate() { :; }; wp_emit_write() { :; }; wp_selftest() { :; }\n' > "$T/lib.sh"
+  env "${env[@]}" bash "$SELF_PATH" >/dev/null 2>&1   # a good record first
+  ck "good record before failure" "$(jq -r .sha "$T/state/watchers/_lib.json")" "$(sha256sum "$T/lib.sh" | cut -d' ' -f1)"
+  mkdir -p "$T/shim"
+  printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = -R ] && exit 5; done\nexec %s "$@"\n' "$(command -v jq)" > "$T/shim/jq"; chmod +x "$T/shim/jq"
+  local err; err=$(env "${env[@]}" PATH="$T/shim:$PATH" bash "$SELF_PATH" 2>&1 >/dev/null); rc=$?
+  ck "rc jq failure" "$rc" 2
+  ck "no unbound-variable error" "$(grep -c 'unbound variable' <<<"$err")" 0
+  ck "no tmp left after jq failure" "$(ls -A "$T/state/watchers" | tr '\n' ' ')" "_lib.json "
+  ck "failed record replaces the old file" "$(jq -c '[.sha,.bash_n_ok,.source_ok,.error]' "$T/state/watchers/_lib.json")" '[null,false,false,"write-failed"]'
 
   if [ "$pass" = "$total" ]; then echo "SELFTEST PASS $pass/$total"; return 0; fi
   echo "SELFTEST FAIL $pass/$total"; return 1
