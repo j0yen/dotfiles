@@ -1,5 +1,5 @@
 # r7-watch-lib.sh -- SOURCED by the r7 seat bell units (r7-mon-journal, r7-mon-inner-stall, r7-mon-host). Copy of rb-watch-lib.sh, host=ryzen7, R7- prefix.
-# Shape (rb d-20261021-185321-rb-c116): watchers survive ssh failure, write a heartbeat, run as systemd-user units, --selftest first.
+# Shape (rb d-20261021-185321-rb-c116): watchers survive ssh failure, write a heartbeat, run as systemd-user units, each consumer runs its own selftest first (this lib has no entry point).
 #   r7_hb NAME            heartbeat: epoch -> $R7_HB_DIR/NAME (tmp + mv); the seat tick reads it
 #   r7_hb_ticker NAME     background heartbeat file every 20 s + one "R7-HB" log line every 120 s while the calling script lives
 #   r7_ssh_fail RC NAME   one "SSH-FAIL <ts> rc=<n>" line (NEVER a bell, never seat-event.sh), heartbeat, sleep $R7_RETRY_SLEEP (default 60), return
