@@ -129,14 +129,14 @@ selftest() {
   mkdir -p "$d/bin"
   for sn in ctl rb r7 other; do
     printf '#!/bin/sh\necho %s\n' "$sn" > "$d/bin/tmux"; chmod +x "$d/bin/tmux"
-    out=$(unset TMUX_PANE MRC_FORCE_ROLE; PATH="$d/bin:$PATH" TMUX=fake detect_role)
+    out=$(unset TMUX_PANE MRC_FORCE_ROLE WM_SEAT; PATH="$d/bin:$PATH" TMUX=fake detect_role)
     case "$sn:$out" in ctl:controller|rb:rb|r7:r7|other:) echo "PASS tmux '$sn' -> role '${out:-<none>}'" ;; *) echo "FAIL tmux '$sn' -> '$out'"; fail=1 ;; esac
   done
   for sn in rb r7 ctl bogus; do
     out=$(unset TMUX TMUX_PANE MRC_FORCE_ROLE; WM_SEAT=$sn detect_role)
     case "$sn:$out" in rb:rb|r7:r7|ctl:controller) echo "PASS WM_SEAT=$sn (no tmux) -> role '$out'" ;; bogus:aide|bogus:) echo "PASS WM_SEAT=bogus ignored -> '${out:-<none>}'" ;; *) echo "FAIL WM_SEAT=$sn -> '$out'"; fail=1 ;; esac
   done
-  printf '#!/bin/sh\necho rb\n' > "$d/bin/tmux"; out=$(unset TMUX_PANE MRC_FORCE_ROLE; PATH="$d/bin:$PATH" TMUX=fake WM_SEAT=ctl detect_role)
+  printf '#!/bin/sh\necho rb\n' > "$d/bin/tmux"; out=$(unset TMUX_PANE MRC_FORCE_ROLE WM_SEAT; PATH="$d/bin:$PATH" TMUX=fake WM_SEAT=ctl detect_role)
   [ "$out" = controller ] && echo "PASS WM_SEAT wins over tmux session name" || { echo "FAIL WM_SEAT vs tmux: '$out'"; fail=1; }
   out=$(unset TMUX TMUX_PANE MRC_FORCE_ROLE WM_SEAT; detect_role)
   if [ "$(hostname 2>/dev/null)" = carbon ]; then [ "$out" = aide ] && echo "PASS no tmux on carbon -> role aide" || { echo "FAIL no tmux on carbon -> '$out'"; fail=1; }

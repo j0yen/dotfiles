@@ -82,7 +82,8 @@ case "${1:-}" in
   --drift-test) drift_test; exit $? ;;
   --guard-test) ctl_guard; rc=$?; echo "ctl guard exit $rc"; exit $rc ;;
 esac
-for s in ${@:-rb r7}; do   # seat names as args; default both
+[ $# -gt 0 ] || set -- rb r7   # seat names as args; default both
+for s in "$@"; do
   if [ "${SEAT_DRY_RUN:-}" = 1 ]; then echo "$s: $(launch_cmd "$s")"; continue; fi
   [ -n "${SID[$s]:-}" ] || { echo "$s: unknown seat" >&2; exit 2; }
   model=$(seat_model "$s"); [ -n "$model" ] || { echo "$s: no model row in $TABLE and SEAT_MODEL unset" >&2; exit 5; }
