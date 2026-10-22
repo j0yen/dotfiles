@@ -2,6 +2,7 @@
 # model-role-check.sh: warn loudly when a session's live model differs from its role's required model.
 # Registered on SessionStart + UserPromptSubmit. Never blocks: always exits 0.
 # PREMISE: role from tmux session name or no-TMUX-on-carbon; EXPIRES: 2026-11-21
+# Roles: tmux rb|r7 -> that role; tmux ctl -> controller; non-tmux on carbon -> aide (a label: NO table row, any model allowed, silent).
 # Table: /home/jsy/.claude/state/controller-model-required ("<role> <model-id>" per line).
 # Test hooks (selftest only): MRC_TABLE, MRC_FORCE_ROLE, MRC_SKIP_FALLBACK.
 set -u
@@ -39,10 +40,10 @@ detect_role() {
     local s
     if [ -n "${TMUX_PANE:-}" ]; then s=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
     else s=$(tmux display-message -p '#S' 2>/dev/null); fi
-    case "$s" in rb|r7) printf '%s' "$s" ;; esac
+    case "$s" in rb|r7) printf '%s' "$s" ;; ctl) printf 'controller' ;; esac
     return
   fi
-  [ "$(hostname 2>/dev/null)" = "carbon" ] && printf 'controller'
+  [ "$(hostname 2>/dev/null)" = "carbon" ] && printf 'aide'
 }
 
 model_from_transcript() { # (a) newest assistant line with a real model id
@@ -122,6 +123,18 @@ selftest() {
     *) echo "FAIL mismatching model: got: '$out'"; fail=1 ;; esac
   out=$(check controller "$d/does-not-exist.jsonl")
   if [ -z "$out" ]; then echo "PASS missing transcript: silent"; else echo "FAIL missing transcript: got: $out"; fail=1; fi
+  # role detection + aide silence (shim tmux prints the session name; TMUX=fake)
+  mkdir -p "$d/bin"
+  for sn in ctl rb r7 other; do
+    printf '#!/bin/sh\necho %s\n' "$sn" > "$d/bin/tmux"; chmod +x "$d/bin/tmux"
+    out=$(unset TMUX_PANE MRC_FORCE_ROLE; PATH="$d/bin:$PATH" TMUX=fake detect_role)
+    case "$sn:$out" in ctl:controller|rb:rb|r7:r7|other:) echo "PASS tmux '$sn' -> role '${out:-<none>}'" ;; *) echo "FAIL tmux '$sn' -> '$out'"; fail=1 ;; esac
+  done
+  out=$(unset TMUX TMUX_PANE MRC_FORCE_ROLE; detect_role)
+  if [ "$(hostname 2>/dev/null)" = carbon ]; then [ "$out" = aide ] && echo "PASS no tmux on carbon -> role aide" || { echo "FAIL no tmux on carbon -> '$out'"; fail=1; }
+  else echo "SKIP no-tmux role (host is not carbon)"; fi
+  out=$(check aide "$d/mismatch.jsonl")
+  if [ -z "$out" ]; then echo "PASS role aide: silent on any model (no table row)"; else echo "FAIL role aide warned: $out"; fail=1; fi
   rm -rf "$d"
   return $fail
 }
