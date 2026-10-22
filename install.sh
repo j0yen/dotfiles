@@ -63,4 +63,22 @@ while IFS= read -r -d '' src; do
   link "$src" "$home/$rel"
 done < <(find "$repo_root" -type f -print0)
 
+# Personal skills-dir plugins: Claude Code enables a plugin dir under ~/.claude/skills by default (no
+# settings.json entry), so the walk-guard PreToolUse hook is registered by linking its plugin dir.
+for plugin in walk-guard; do
+  [[ -d "$repo_root/.claude/plugins/$plugin" ]] && link "$repo_root/.claude/plugins/$plugin" "$home/.claude/skills/$plugin"
+done
+
+# Post-apply: prove the walk-guard hook still passes its own case table, record the result for the
+# collector (alarm walk-hook-selftest-failed). Never fails the install.
+wg="$repo_root/.claude/plugins/walk-guard/hooks/walk-guard.sh"
+if [[ $DRY -eq 0 && -x "$wg" ]]; then
+  if ! "$wg" --selftest --write-state >/dev/null 2>&1; then
+    mkdir -p "$home/.local/state/watchers"
+    printf '{"watcher":"walkhook","ts":%s,"ok":false,"alarm":"walk-hook-selftest-failed"}\n' "$(date +%s)" \
+      > "$home/.local/state/watchers/_walkhook.json" || true
+    printf 'walk-guard selftest FAILED (state written)\n' >&2
+  fi
+fi
+
 printf 'done.\n'

@@ -1,0 +1,6 @@
+{
+  "name": "walk-guard",
+  "version": "1.0.0",
+  "description": "PreToolUse(Bash) guard for the build hosts (redbaron, ryzen7): refuses an unbounded grep -r / rg / find / du / ls -R of /mnt/data, /mnt/ssd or ~ unless it carries ionice -c3 + nice -n19 + timeout <= 600, and prints the rewritten command. Contract: contracts/walk-guard.json.",
+  "author": { "name": "j0yen" }
+}
