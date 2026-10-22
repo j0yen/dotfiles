@@ -3,7 +3,7 @@
 # SessionStart after the banner hooks (decisions-banner.sh when present, else
 # the last pre-existing banner, grand-loop-banner-start.sh) and the notices
 # hook once, last, in UserPromptSubmit; every pre-existing command (captured in
-# tests/fixtures/ocard-settings-before.json) is unchanged and in order.
+# tests/fixtures/ocard-settings-before.json, refreshed 10-22 for later hook wrappers) is unchanged and in order.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/ocard_test_helpers.sh"
@@ -26,7 +26,8 @@ assert_eq "$(jq -c "$ss | map(select(test(\"operator-status-card[.]sh\") | not))
 
 assert_eq "$(jq -r "$ups | map(select(test(\"operator-notices[.]sh\"))) | length" "$S")" "1" "notices hook once in UserPromptSubmit"
 assert_eq "$(jq -r '[.hooks[][].hooks[].command | select(test("operator-notices[.]sh"))] | length' "$S")" "1" "notices hook once overall"
-assert_eq "$(jq -r "$ups | last | test(\"operator-notices[.]sh\")" "$S")" "true" "notices hook is last in UserPromptSubmit"
+# model-role-check.sh (a role/model guard) was appended after the notices hook; skip it.
+assert_eq "$(jq -r "$ups | map(select(test(\"model-role-check[.]sh\") | not)) | last | test(\"operator-notices[.]sh\")" "$S")" "true" "notices hook is last in UserPromptSubmit"
 assert_eq "$(jq -c "$ups | map(select(test(\"operator-notices[.]sh\") | not))" "$S")" "$(jq -c .UserPromptSubmit "$B")" "pre-existing UserPromptSubmit commands unchanged, in order"
 for f in .claude/scripts/operator-status-gen.sh .claude/scripts/operator-status-card.sh .claude/hooks/operator-notices.sh; do
   [ -x "$ROOT/$f" ] && echo "ok - $f is executable" || { echo "NOT OK - $f not executable"; fail=1; }

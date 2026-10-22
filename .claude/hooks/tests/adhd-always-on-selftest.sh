@@ -16,17 +16,25 @@ bad() { echo "FAIL - $1"; fail=1; }
 n=$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command | select(test("adhd-always-on[.]sh"))] | length' "$SETTINGS_SRC" 2>/dev/null)
 [ "$n" = 1 ] && ok "adhd-always-on.sh registered once in SessionStart ($SETTINGS_SRC)" \
              || bad "adhd-always-on.sh NOT registered exactly once in SessionStart of $SETTINGS_SRC (found: ${n:-parse error})"
-live=$(readlink -f "$HOME/.claude/settings.json" 2>/dev/null)
-[ "$live" = "$(readlink -f "$SETTINGS_SRC")" ] && ok "~/.claude/settings.json resolves to the dotfiles settings.json" \
-             || bad "~/.claude/settings.json ($live) is not the dotfiles settings.json — registration would not take effect"
-[ -x "$HOOK_LIVE" ] && ok "hook reachable at $HOOK_LIVE" || bad "hook not linked at $HOOK_LIVE (run install.sh)"
+# Installed-tree checks: only meaningful when THIS tree is the one $HOME links to (a clean clone under a verify
+# gate is not installed, and must not fail for that).
+if [ "$(readlink -f "$HOOK_LIVE" 2>/dev/null)" = "$(readlink -f "$HOOK_SRC")" ]; then
+  live=$(readlink -f "$HOME/.claude/settings.json" 2>/dev/null)
+  [ "$live" = "$(readlink -f "$SETTINGS_SRC")" ] && ok "~/.claude/settings.json resolves to the dotfiles settings.json" \
+               || bad "~/.claude/settings.json ($live) is not the dotfiles settings.json — registration would not take effect"
+  [ -x "$HOOK_LIVE" ] && ok "hook reachable at $HOOK_LIVE" || bad "hook not linked at $HOOK_LIVE (run install.sh)"
+else
+  ok "installed-tree checks skipped: $HOOK_SRC is not the tree $HOME/.claude links to (clean clone)"
+fi
 
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 mkdir -p "$d/plugins/cache/i-have-adhd/i-have-adhd/9.9.9/skills/i-have-adhd"
 printf -- '---\nname: x\n---\nRULE-LINE-ONE\n' > "$d/plugins/cache/i-have-adhd/i-have-adhd/9.9.9/skills/i-have-adhd/SKILL.md"
 : > "$d/.adhd-always-on"
 one='ADHD MODE ACTIVE (always-on); ruleset = i-have-adhd skill.'
-run() { env -u CLAUDE_LEAN_START -u SEAT_LEAN CLAUDE_CONFIG_DIR="$d" "$@"; }
+# The hook is silent for headless sessions (WM_SEAT rb|r7|ctl or a `claude -p` ancestor); the selftest runs under
+# seat units and clean clones, so neutralize both seams (ADHD_SKIP_ANCESTORS=1 is the hook's selftest-only seam).
+run() { env -u CLAUDE_LEAN_START -u SEAT_LEAN -u WM_SEAT ADHD_SKIP_ANCESTORS=1 CLAUDE_CONFIG_DIR="$d" "$@"; }
 [ "$(run CLAUDE_LEAN_START=1 "$HOOK_SRC" </dev/null)" = "$one" ] && ok "CLAUDE_LEAN_START=1 -> one-liner" || bad "CLAUDE_LEAN_START=1 did not emit the one-liner"
 [ "$(run SEAT_LEAN=1 "$HOOK_SRC" </dev/null)" = "$one" ] && ok "SEAT_LEAN=1 -> one-liner" || bad "SEAT_LEAN=1 did not emit the one-liner"
 [ "$(echo '{"source":"compact"}' | run "$HOOK_SRC")" = "$one" ] && ok "source=compact -> one-liner" || bad "source=compact did not emit the one-liner"

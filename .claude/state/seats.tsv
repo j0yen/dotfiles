@@ -1,0 +1,8 @@
+# seats.tsv: ONE SEAT TABLE for seat-tick.sh, seat-relaunch.sh, seat-exit.sh (tab-separated; # comments and blank lines allowed)
+# seat	role	sid	tick_min	timeout_sec	goal_pattern	old_pid
+# role = row key in controller-model-required (model lives there, not here); goal_pattern = ERE matched against goal.md lines (the seat /goal line);
+# tick_min = timer cadence (must equal seat-tick@.timer OnUnitActiveSec; checked by seat-tick.sh --selftest); timeout_sec = ceiling for one turn
+# (must be <= seat-tick@.service TimeoutStartSec); old_pid = interactive process that must exit first (guard), - = none.
+ctl	controller	de73e73c-5095-4d39-9703-1fc439e7236d	20	14400	^/goal SWARM-CONTROL	3845
+rb	rb	da58d1b8-41cd-4ae4-bc0a-1147f1349ede	20	14400	^/goal CLEARWATER:	-
+r7	r7	4ce983d3-3acc-4001-86a5-30770b772948	20	14400	^/goal CLEARWATER-R7	-
