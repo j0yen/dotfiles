@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# rb-spawn-hold.test.sh - CSH: rb-spawn-hold.sh decisions (a-e,g-i), rb-run-coder.sh gate (f), units (j), HAND-YIELD flag (AC7).
+# rb-spawn-hold.test.sh - CSH: rb-spawn-hold.sh decisions (a-e,g-i), rb-run-coder.sh gate (f), units (j), HAND-YIELD flag (AC7),
+# watcher-premise binding (w-a..w-f: stub ssh logging argv, stub wm-decide; no real ssh, no real host path).
 # Every fixture, state file and "remote" hand dir lives under a mktemp -d root this test created; no ssh, no real host path.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-hold=$here/../.local/bin/rb-spawn-hold.sh
+hold=${RB_SPAWN_HOLD_UNDER_TEST:-$here/../.local/bin/rb-spawn-hold.sh}   # the mutation proof points this at a throwaway copy
+wplib=$here/../.local/lib/watcher-premise.sh
 runc=$here/../.local/bin/rb-run-coder.sh
 udir=$here/../.config/systemd/user
 fail=0
@@ -131,7 +133,7 @@ grep -q 'rb-cargo-freeze\|RB_CODER_NO_CARGO' "$runc" && bad "(f5) interim freeze
 if command -v systemd-analyze >/dev/null 2>&1; then
   vo=$(systemd-analyze --user verify "$udir/rb-spawn-hold.service" "$udir/rb-spawn-hold.timer" 2>&1); vrc=$?
   # the service's ExecStart binary does not exist in a clean checkout's $HOME; any other message is a failure
-  vo=$(printf '%s\n' "$vo" | grep -v 'Command .*rb-spawn-hold.sh.* is not executable\|Failed to load\|No such file' || true)
+  vo=$(printf '%s\n' "$vo" | grep 'rb-spawn-hold' | grep -v 'Command .*rb-spawn-hold.sh.* is not executable\|Failed to load\|No such file' || true)   # only OUR units' messages count (system units' warnings are not ours)
   [ $vrc = 0 ] || [ -z "$vo" ] && pass "(j) systemd-analyze verify rb-spawn-hold.{service,timer}" || bad "(j) verify: $vo"
 else
   bad "(j) systemd-analyze missing"
@@ -141,7 +143,11 @@ grep -q '^OnUnitActiveSec=2min' "$udir/rb-spawn-hold.timer" && grep -q -- '--pro
 # --- AC7: HAND-YIELD flag, CARGO_SLOT_HAND_DIR at a mktemp dir, local fake ssh (shift host, run the command) ---
 fakessh=$R/fakessh; printf '#!/usr/bin/env bash\nshift\nexec bash -c "$*"\n' > "$fakessh"; chmod +x "$fakessh"
 HD=$R/hand; mkdir -p "$HD"
-flag() { RB_SPAWN_HOLD_SSH=$fakessh CARGO_SLOT_HAND_DIR=$HD "$hold" --journal-file "$1" --state-file "$R/flag.state.json" --now "$NOW" --probe-only 2>/dev/null; }
+# premise reads the slot table through fakessh -> a stub wm-build (under a throwaway HOME's .cargo/bin) with one live hand row (HOLDS); lib state + wm-decide are stubs
+mkdir -p "$R/ac7bin" "$R/ac7home/.cargo/bin"; printf '#!/usr/bin/env bash\nprintf "id\\trun\\tproducer\\tpid\\talive\\ttaken\\tage\\n1\\thand-1\\tcargo-slot\\t1\\tyes\\tx\\t1s\\n"\n' > "$R/ac7home/.cargo/bin/wm-build"; chmod +x "$R/ac7home/.cargo/bin/wm-build"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$R/ac7bin/wm-decide"; chmod +x "$R/ac7bin/wm-decide"
+export WP_LIB=$wplib WP_STATE=$R/wp-ac7 WP_DECIDE_BIN=$R/ac7bin/wm-decide RB_SPAWN_HOLD_EXPIRES=$(date -d '+1 day' -Is) WP_OWNER=rb
+flag() { HOME=$R/ac7home RB_SPAWN_HOLD_SSH=$fakessh CARGO_SLOT_HAND_DIR=$HD "$hold" --journal-file "$1" --state-file "$R/flag.state.json" --now "$NOW" --probe-only 2>/dev/null; }
 now_e=$(date -u -d "$NOW" +%s)
 flag "$R/a.jsonl" >/dev/null
 read -r e1 r1 < "$HD/HAND-YIELD" 2>/dev/null
@@ -159,6 +165,47 @@ rm -f "$HD/HAND-YIELD"; RB_SPAWN_HOLD_SSH=$fakessh CARGO_SLOT_HAND_DIR=$HD "$hol
 echo "9999999999 hand-yield-by-rb keep" > "$HD/HAND-YIELD"
 RB_SPAWN_HOLD_SSH=$fakessh CARGO_SLOT_HAND_DIR=$HD "$hold" --journal-file "$R/missing.jsonl" --state-file "$R/flag3.state.json" --now "$NOW" --probe-only >/dev/null 2>&1
 [ "$(cat "$HD/HAND-YIELD")" = "9999999999 hand-yield-by-rb keep" ] && pass "(AC7e) read failure leaves a foreign flag alone" || bad "(AC7e)"
+
+# --- watcher-premise binding (w-a..w-f): stub ssh logs argv per kind, stub wm-decide logs argv; HOME is a mktemp dir ---
+WT=$R/wp; mkdir -p "$WT"
+printf '#!/usr/bin/env bash\ncmd="$*"\ncase "$cmd" in\n *"cargo-jobs list"*) echo "PREMISE $cmd" >> "$STUB_LOG"; cat "$STUB_LIST"; exit "${STUB_LIST_RC:-0}" ;;\n *hy-probe*) echo "PROBE $cmd" >> "$STUB_LOG"; echo "${STUB_FLAG:-absent}" ;;\n *hy-arm*) echo "WRITE-ARM $cmd" >> "$STUB_LOG"; echo armed ;;\n *hy-clear*) echo "WRITE-CLEAR $cmd" >> "$STUB_LOG"; echo cleared ;;\n *) echo "OTHER $cmd" >> "$STUB_LOG"; exit 3 ;;\nesac\n' > "$WT/ssh.stub"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$STUB_DECIDE_LOG"\n' > "$WT/decide.stub"; chmod +x "$WT/ssh.stub" "$WT/decide.stub"
+printf 'id\trun\tproducer\tpid\talive\ttaken\tage\n11799\thand-2419612\tcargo-slot\t2419612\tyes\t2026-10-23T09:29:00+00:00\t60s\n' > "$WT/list.hand"
+FUT=$(date -d '+1 day' -Is); PAST=$(date -d '-1 day' -Is)
+# wsc <case> <journal> <flag-state> <expires> [lib] [disarm]; sets wout wrc werr
+wsc() {
+  local d=$WT/$1; mkdir -p "$d/home/.cache/rb-seat" "$d/wp"
+  [ "${6:-}" != disarm ] || : > "$d/home/.cache/rb-seat/spawn-hold.disarm"
+  wout=$(env -i PATH="$PATH" HOME="$d/home" TMPDIR="$d" RB_SPAWN_HOLD_SSH="$WT/ssh.stub" WP_LIB="${5:-$wplib}" WP_STATE="$d/wp" WP_DECIDE_BIN="$WT/decide.stub" \
+    RB_SPAWN_HOLD_EXPIRES="$4" WP_OWNER=rb STUB_LOG="$d/ssh.log" STUB_LIST="$WT/list.hand" STUB_FLAG="$3" STUB_DECIDE_LOG="$d/decide.log" CARGO_SLOT_HAND_DIR="$d/hand" \
+    bash "$hold" --journal-file "$2" --state-file "$d/state.json" --now "$NOW" 2>"$d/err"); wrc=$?
+  werr=$(cat "$d/err")
+}
+wc_() { local n; n=$(grep -c "$2" "$WT/$1" 2>/dev/null); echo "${n:-0}"; }   # wc_ <case>/<file> <pattern>
+wsc wa "$R/a.jsonl" absent "$FUT"
+[ "$(wc_ wa/ssh.log '^WRITE-ARM')" = 1 ] && [ "$(wc_ wa/decide.log .)" = 1 ] && [ "$wrc" = 76 ] && [[ $wout == HOLD* ]] \
+  && pass "(w-a) premise holds + future EXPIRES + arm -> stub ssh write x1, decide stub x1, rc=76" || bad "(w-a) write=$(wc_ wa/ssh.log '^WRITE-ARM') decide=$(wc_ wa/decide.log .) rc=$wrc"
+wsc wb "$R/a.jsonl" absent "$PAST"
+[ "$(wc_ wb/ssh.log '^WRITE')" = 0 ] && [[ $werr == *"HAND-YIELD arm SKIPPED (disarmed:"* ]] && [[ $wout == HOLD* ]] && [ "$wrc" = 76 ] \
+  && pass "(w-b) EXPIRES in the past -> no ssh write, stderr SKIPPED, stdout HOLD, rc=76" || bad "(w-b) write=$(wc_ wb/ssh.log '^WRITE') rc=$wrc err=$werr"
+wsc wc "$R/a.jsonl" absent "$FUT" "" disarm
+[ "$(wc_ wc/ssh.log '^WRITE')" = 0 ] && [[ $werr == *"SKIPPED (disarmed: GONE"* ]] \
+  && pass "(w-c) disarm file present (premise GONE) -> no ssh write" || bad "(w-c) write=$(wc_ wc/ssh.log '^WRITE') err=$werr"
+wsc wd "$R/a.jsonl" absent "$FUT" /nonexistent
+[ "$(wc_ wd/ssh.log '^WRITE')" = 0 ] && [[ $wout == HOLD* ]] && [ "$wrc" = 76 ] \
+  && pass "(w-d) WP_LIB=/nonexistent -> no arm ssh write, HOLD/rc=76 unchanged" || bad "(w-d) write=$(wc_ wd/ssh.log '^WRITE') rc=$wrc"
+wsc we "$R/d.jsonl" ours:9999999999 "$PAST"
+[ "$(wc_ we/ssh.log '^WRITE-CLEAR')" = 1 ] && [ "$(wc_ we/decide.log .)" = 1 ] && [[ $wout == OK* ]] && [ "$wrc" = 0 ] \
+  && pass "(w-e) EXPIRES past + flag present + OK -> ssh rm fires, decide stub x1" || bad "(w-e) clear=$(wc_ we/ssh.log '^WRITE-CLEAR') decide=$(wc_ we/decide.log .) rc=$wrc"
+wsc wf "$R/a.jsonl" absent "$FUT"; wsc wf "$R/a.jsonl" ours:9999999999 "$FUT"
+[ "$(wc_ wf/ssh.log '^WRITE')" = 1 ] && [ "$(wc_ wf/decide.log .)" -le 1 ] \
+  && pass "(w-f) HOLD twice, flag present the 2nd time -> one write total, decide <= 1" || bad "(w-f) write=$(wc_ wf/ssh.log '^WRITE') decide=$(wc_ wf/decide.log .)"
+if [ -z "${RB_SPAWN_HOLD_UNDER_TEST:-}" ]; then
+  so=$(bash "$hold" --selftest 2>&1); src=$?
+  [ $src = 0 ] && [ "$so" = "SELFTEST PASS rb-spawn-hold.sh" ] && pass "(w-g) --selftest -> $so" || bad "(w-g) --selftest rc=$src: $so"
+fi
+grep -q '^ExecStartPre=%h/.local/bin/rb-spawn-hold.sh --selftest' "$udir/rb-spawn-hold.service" && grep -q '^Environment=RB_SPAWN_HOLD_EXPIRES=2026-10-26T06:00:00-07:00 WP_OWNER=rb' "$udir/rb-spawn-hold.service" \
+  && pass "(w-h) service: ExecStartPre --selftest + EXPIRES/WP_OWNER env" || bad "(w-h) service lines"
 
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail

@@ -10,8 +10,13 @@
 #   --probe-only      refresh the file, always exit 0 (the systemd timer)
 #   --no-flag         skip the HAND-YIELD write/remove (AC7); rb-run-coder.sh and read-only live probes use it
 #   --exempt NAME     record `exempt` = NAME in the state file (rb-run-coder.sh --no-cargo)
+#   --selftest        stub-only checks (never real ssh, never the real hand dir): the six watcher-premise cases; prints
+#                     `SELFTEST PASS rb-spawn-hold.sh` (exit 0) or `SELFTEST FAIL ...` (exit 1); the service runs it as ExecStartPre
 # env: RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
 #      CARGO_SLOT_HAND_DIR (default /mnt/data/hand on the host; the HAND-YIELD flag lives there)
+#      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
+# HAND-YIELD writes carry a premise (watcher-premise.sh): ARM = wp_gate && wp_emit_write && ssh write, only on a state change
+#   (flag absent, or ours and < 10 min from expiry); CLEAR is never gated (a flag we wrote we can always remove) but still emits.
 # stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0.
 #
 # HOLD iff EITHER
@@ -24,7 +29,7 @@
 #   so the stickiness cannot renew itself); otherwise `OK unknown: <err>` with source=unknown.
 set -uo pipefail
 
-state="$HOME/.cache/rb-seat/spawn-hold.json"; jf=""; now=""; probe=0; noflag=0; exempt=""
+state="$HOME/.cache/rb-seat/spawn-hold.json"; jf=""; now=""; probe=0; noflag=0; exempt=""; selftest=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --journal-file) jf="${2:-}"; shift 2 ;;
@@ -33,10 +38,66 @@ while [ $# -gt 0 ]; do
     --probe-only) probe=1; shift ;;
     --no-flag) noflag=1; shift ;;
     --exempt) exempt="${2:-}"; shift 2 ;;
-    -h|--help) sed -n 2,24p "$0"; exit 0 ;;
+    --selftest) selftest=1; shift ;;
+    -h|--help) sed -n 2,30p "$0"; exit 0 ;;
     *) echo "rb-spawn-hold.sh: unknown arg $1" >&2; exit 2 ;;
   esac
 done
+# ---- --selftest: the six watcher-premise cases (a-f) in a mktemp HOME; ssh = an argv-logging stub, wm-decide = a stub ----
+rsh_selftest() {
+  local self real_lib T fails=0 now=2026-10-23T09:30:00Z fut past
+  self=$(readlink -f "${BASH_SOURCE[0]}"); real_lib=${WP_LIB:-$HOME/.local/lib/watcher-premise.sh}
+  [ -r "$real_lib" ] || { echo "SELFTEST FAIL rb-spawn-hold.sh: watcher-premise lib not readable: $real_lib"; return 1; }
+  T=$(mktemp -d "${TMPDIR:-/tmp}/rb-spawn-hold-selftest.XXXXXX") || return 1
+  fut=$(date -d '+1 day' -Is); past=$(date -d '-1 day' -Is)
+  printf '#!/usr/bin/env bash\ncmd="$*"\ncase "$cmd" in\n *"cargo-jobs list"*) echo "PREMISE $cmd" >> "$STUB_LOG"; cat "$STUB_LIST"; exit "${STUB_LIST_RC:-0}" ;;\n *hy-probe*) echo "PROBE $cmd" >> "$STUB_LOG"; echo "${STUB_FLAG:-absent}" ;;\n *hy-arm*) echo "WRITE-ARM $cmd" >> "$STUB_LOG"; echo armed ;;\n *hy-clear*) echo "WRITE-CLEAR $cmd" >> "$STUB_LOG"; echo cleared ;;\n *) echo "OTHER $cmd" >> "$STUB_LOG"; exit 3 ;;\nesac\n' > "$T/ssh.stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$STUB_DECIDE_LOG"\n' > "$T/decide.stub"
+  chmod +x "$T/ssh.stub" "$T/decide.stub"
+  printf 'id\trun\tproducer\tpid\talive\ttaken\tage\n11799\thand-2419612\tcargo-slot\t2419612\tyes\t2026-10-23T09:29:00+00:00\t60s\n' > "$T/list.hand"
+  ago() { date -u -d "$now - $1 seconds" +%Y-%m-%dT%H:%M:%S.000000000+00:00; }
+  printf '{"op":"release-mem","row":{"class":"land","decision":"refuse","refusal":"budget","run_id":1039,"parts":["hand-1:hand:5"]},"table":"runs","ts":"%s"}\n' "$(ago 300)" > "$T/hold.jsonl"
+  : > "$T/ok.jsonl"
+  # sc <case> <journal> <flag-state> <expires> [WP_LIB] [disarm]; sets sc_out sc_rc sc_err, logs under $T/<case>/
+  sc() {
+    local c=$1 d="$T/$1"; mkdir -p "$d/home/.cache/rb-seat" "$d/wp"
+    [ "${6:-}" != disarm ] || : > "$d/home/.cache/rb-seat/spawn-hold.disarm"
+    sc_out=$(env -i PATH="$PATH" HOME="$d/home" TMPDIR="$d" RB_SPAWN_HOLD_SSH="$T/ssh.stub" WP_LIB="${5:-$real_lib}" WP_STATE="$d/wp" \
+      WP_DECIDE_BIN="$T/decide.stub" RB_SPAWN_HOLD_EXPIRES="$4" WP_OWNER=rb STUB_LOG="$d/ssh.log" STUB_LIST="$T/list.hand" \
+      STUB_FLAG="$3" STUB_DECIDE_LOG="$d/decide.log" CARGO_SLOT_HAND_DIR="$d/hand" \
+      bash "$self" --journal-file "$T/$2" --state-file "$d/state.json" --now "$now" 2>"$d/err"); sc_rc=$?
+    sc_err=$(cat "$d/err" 2>/dev/null)
+  }
+  cnt() { local n; n=$(grep -c "$2" "$T/$1" 2>/dev/null); echo "${n:-0}"; }   # cnt <case>/<file> <pattern>
+  chk() { # chk <label> <condition-result 0|1> <detail>
+    if [ "$2" -ne 0 ]; then fails=$((fails+1)); echo "SELFTEST FAIL rb-spawn-hold.sh: case ($1) $3"; fi
+  }
+  local ok
+  sc a hold.jsonl absent "$fut"
+  ok=1; [ "$(cnt a/ssh.log '^WRITE-ARM')" = 1 ] && [ "$(cnt a/decide.log .)" = 1 ] && [[ $sc_out == HOLD* ]] && [ "$sc_rc" = 76 ] && ok=0
+  chk a "$ok" "arm: write=$(cnt a/ssh.log '^WRITE-ARM') decide=$(cnt a/decide.log .) rc=$sc_rc out=$sc_out"
+  sc b hold.jsonl absent "$past"
+  ok=1; [ "$(cnt b/ssh.log '^WRITE')" = 0 ] && [[ $sc_err == *"HAND-YIELD arm SKIPPED (disarmed:"* ]] && [[ $sc_out == HOLD* ]] && [ "$sc_rc" = 76 ] && ok=0
+  chk b "$ok" "expired: write=$(cnt b/ssh.log '^WRITE') rc=$sc_rc err=$sc_err"
+  sc c hold.jsonl absent "$fut" "" disarm
+  ok=1; [ "$(cnt c/ssh.log '^WRITE')" = 0 ] && [[ $sc_err == *"SKIPPED (disarmed: GONE"* ]] && ok=0
+  chk c "$ok" "disarm file: write=$(cnt c/ssh.log '^WRITE') err=$sc_err"
+  sc d hold.jsonl absent "$fut" /nonexistent
+  ok=1; [ "$(cnt d/ssh.log '^WRITE')" = 0 ] && [[ $sc_out == HOLD* ]] && [ "$sc_rc" = 76 ] && ok=0
+  chk d "$ok" "no lib: write=$(cnt d/ssh.log '^WRITE') rc=$sc_rc"
+  sc e ok.jsonl ours:9999999999 "$past"
+  ok=1; [ "$(cnt e/ssh.log '^WRITE-CLEAR')" = 1 ] && [ "$(cnt e/decide.log .)" = 1 ] && [[ $sc_out == OK* ]] && [ "$sc_rc" = 0 ] && ok=0
+  chk e "$ok" "expired + flag present + OK: clear=$(cnt e/ssh.log '^WRITE-CLEAR') decide=$(cnt e/decide.log .) rc=$sc_rc"
+  sc f hold.jsonl absent "$fut"; sc f hold.jsonl ours:9999999999 "$fut"
+  ok=1; [ "$(cnt f/ssh.log '^WRITE')" = 1 ] && [ "$(cnt f/decide.log .)" -le 1 ] && ok=0
+  chk f "$ok" "HOLD twice: write=$(cnt f/ssh.log '^WRITE') decide=$(cnt f/decide.log .)"
+  case "$T" in */rb-spawn-hold-selftest.*) rm -rf "$T";; esac
+  if [ "$fails" -eq 0 ]; then echo "SELFTEST PASS rb-spawn-hold.sh"; return 0; fi
+  echo "SELFTEST FAIL rb-spawn-hold.sh: $fails case(s)"; return 1
+}
+[ "$selftest" -eq 0 ] || { rsh_selftest; exit $?; }
+
+WP_LIB=${WP_LIB:-$HOME/.local/lib/watcher-premise.sh}
+if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; fi   # no lib = flag writes disarmed
 host="${RB_SPAWN_HOLD_HOST:-redbaron}"
 if [ -n "${RB_SPAWN_HOLD_SSH:-}" ]; then read -r -a ssh_cmd <<< "$RB_SPAWN_HOLD_SSH"; else ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=8); fi
 mkdir -p "$(dirname "$state")" 2>/dev/null || true
@@ -178,17 +239,53 @@ PY
 line=$(printf '%s\n' "$decision" | sed -n 1p); act=$(printf '%s\n' "$decision" | sed -n 2p)
 
 # ---- AC7: running hand units yield too; the flag is only ever written/removed when its reason starts `spawn-hold` ----
+# Premise (watcher-premise.sh): the flag only makes sense while an rb hand cargo job holds a slot on RedBaron. Host truth = the
+# slot table (`wm-build builder cargo-jobs list`: a live producer=cargo-slot hand-* row), not a seat file. rc 0 HOLDS, 1 GONE,
+# 2 UNKNOWN (ssh/list failure); AND-ed with the manual retire file ~/.cache/rb-seat/spawn-hold.disarm.
+rsh_premise_cmd() {
+  local sq tmpl
+  printf -v sq '%q ' "${ssh_cmd[@]}" "$host"
+  tmpl=$(cat <<'EOF'
+test ! -e "$HOME/.cache/rb-seat/spawn-hold.disarm" || exit 1
+out=$(timeout 15 @SSH@'export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH; wm-build builder cargo-jobs list') || exit 2
+printf '%s\n' "$out" | awk -F'\t' 'NR>1 && $2 ~ /^hand-/ && $3=="cargo-slot" && $5=="yes" {n++} END{exit !(n>0)}'
+EOF
+)
+  printf '%s' "${tmpl//@SSH@/$sq}"
+}
 if [ "$noflag" -eq 0 ]; then
   hand_dir="${CARGO_SLOT_HAND_DIR:-/mnt/data/hand}"
   qd=$(printf '%q' "$hand_dir")
+  export WP_OWNER=rb
+  wp_arm rb-spawn-hold "$(rsh_premise_cmd)" "${RB_SPAWN_HOLD_EXPIRES:-2026-10-26T06:00:00-07:00}" \
+    "an rb hand cargo job holds a slot on RedBaron while a product run is memory-refused (CSH); expires when daemon-side hand yielding ships or 10-26 6 AM" || true
+  # presence read first (no write, no emit): prints absent | ours:<expiry epoch> | foreign
+  pcmd=": hy-probe; f=$qd/HAND-YIELD; if [ ! -e \"\$f\" ]; then echo absent; elif awk 'NR==1{exit !(\$2 ~ /^spawn-hold/)}' \"\$f\"; then echo ours:\$(awk 'NR==1{print \$1}' \"\$f\"); else echo foreign; fi"
+  fstate=""
+  case "$act" in arm\ *|clear) fstate=$(timeout 20 "${ssh_cmd[@]}" "$host" "$pcmd" 2>/dev/null | head -c 100 | tr -d '\n') || fstate="" ;; esac
+  rcmd=""; verb=""
   case "$act" in
     arm\ *)
       run=$(printf '%s' "${act#arm }" | tr -c 'A-Za-z0-9_-' '_')
       exp=$((now_epoch + 1800))
-      rcmd="f=$qd/HAND-YIELD; if [ ! -e \"\$f\" ] || awk 'NR==1{exit !(\$2 ~ /^spawn-hold/)}' \"\$f\"; then printf '%s spawn-hold run=%s\\n' $exp $run > \"\$f.tmp.\$\$\" && mv \"\$f.tmp.\$\$\" \"\$f\" && echo armed; else echo foreign-flag-left; fi" ;;
+      case "$fstate" in
+        absent) verb=arm ;;
+        ours:*) fexp=${fstate#ours:}; case "$fexp" in ''|*[!0-9]*) fexp=0 ;; esac
+                [ "$fexp" -ge $((now_epoch + 600)) ] || verb=refresh ;;   # steady HOLD, flag fresh = no write, no emit
+      esac
+      if [ -n "$verb" ]; then
+        if wp_gate && wp_emit_write guard "host=$host file=$hand_dir/HAND-YIELD" "$verb HAND-YIELD run=$run" "$line" "clear HAND-YIELD (rm $hand_dir/HAND-YIELD; or touch ~/.cache/rb-seat/spawn-hold.disarm)"; then
+          rcmd=": hy-arm; f=$qd/HAND-YIELD; if [ ! -e \"\$f\" ] || awk 'NR==1{exit !(\$2 ~ /^spawn-hold/)}' \"\$f\"; then printf '%s spawn-hold run=%s\\n' $exp $run > \"\$f.tmp.\$\$\" && mv \"\$f.tmp.\$\$\" \"\$f\" && echo armed; else echo foreign-flag-left; fi"
+        else
+          echo "rb-spawn-hold: HAND-YIELD arm SKIPPED (disarmed: ${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})" >&2
+        fi
+      fi ;;
     clear)
-      rcmd="f=$qd/HAND-YIELD; if [ -e \"\$f\" ] && awk 'NR==1{exit !(\$2 ~ /^spawn-hold/)}' \"\$f\"; then rm -f \"\$f\" && echo cleared; fi" ;;
-    *) rcmd="" ;;
+      case "$fstate" in
+        ours:*)   # ungated: a flag the watcher wrote it can always remove, even expired; the ledger row is best-effort
+          wp_emit_write guard "host=$host file=$hand_dir/HAND-YIELD" "clear HAND-YIELD" "$line" "arm HAND-YIELD (printf '<epoch> spawn-hold run=<id>' > $hand_dir/HAND-YIELD)" || true
+          rcmd=": hy-clear; f=$qd/HAND-YIELD; if [ -e \"\$f\" ] && awk 'NR==1{exit !(\$2 ~ /^spawn-hold/)}' \"\$f\"; then rm -f \"\$f\" && echo cleared; fi" ;;
+      esac ;;
   esac
   if [ -n "$rcmd" ]; then
     res=$(timeout 20 "${ssh_cmd[@]}" "$host" "$rcmd" 2>&1 | head -c 200 | tr '\n' ' ') || true
