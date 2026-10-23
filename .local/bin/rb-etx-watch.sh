@@ -6,9 +6,12 @@
 #   ``` fence, AND the same file matches `panicked at|test result: FAILED|error\[`. A report that only quotes the pattern never fires.
 # SKIPS (G2) exact: etx*.report.md, etx*.out, $ETX_VERIFIER_DIR/vetx*/ . IN-FLIGHT (G4), skipped and not recorded: run.out whose result.json is absent or < 60 s old
 #   (a fresh result.json is skipped the same way); <name>.out with no <name>.report.md. A <name>.out whose <name>.report.md is itself a hit is skipped (one red = one event).
-# STATE $ETX_STATE: seen (path<TAB>inode<TAB>size<TAB>mtime; seen.tmp + mv -f; a truncated last line is ignored), seeded (timestamp), fired (n).
-#   First pass with no `seeded` records every current hit WITHOUT firing and prints `ETX SEED n=<k>` (G5). FIRE KEY = path (G3): a recorded path fires again only when
-#   its inode changed or its size DEcreased (a new run); growth is silent. The event n = hit paths incl. seeded ones and this one (G10).
+# STATE $ETX_STATE: seen (path<TAB>inode<TAB>size<TAB>mtime<TAB>hits; seen.tmp + mv -f; a truncated last line is ignored), seeded (timestamp), fired (n).
+#   hits = count of REAL ETX lines (same filter as HIT) when the record was written. A legacy 4-field record ADOPTS the current count on first sight (no fire) and is
+#   rewritten to 5 fields in that same pass. First pass with no `seeded` records every current hit WITHOUT firing and prints `ETX SEED n=<k>` (G5).
+#   FIRE KEY = (path, count of real ETX lines) (ctl 6152 cond. 2): a recorded path fires again when its inode changed, its size DEcreased (a new run), or its hits
+#   count ROSE (a NEW real ETX line in a growing file; bell text adds `new ETX line <k>-><m>`). Growth with no new real ETX line is silent. Every pass rewrites the
+#   record of every hit file. ACCEPTED GAP: an in-place rewrite with an equal count and non-decreasing size is silent. The event n = hit paths incl. seeded ones and this one (G10).
 # PREMISE + EXPIRES via watcher-premise.sh (G7/G8): premise = $ETX_PREMISE_DIR exists; gone/expired -> `ETX DISARMED premise|expired|<defect>`, no scan, no state write.
 # Env: ETX_CODERS_DIR ETX_VERIFIER_DIR ETX_STATE ETX_SEAT_EVENT ETX_EXPIRES ETX_PREMISE_DIR WP_STATE ETX_WP_LIB ETX_MUTATE (test only: seen-false = the seen check never matches)
 # Writes: $ETX_STATE, $WP_STATE, and whatever seat-event.sh writes. Exit: 0 ok / disarmed, 1 seat-event failed for some hit, 2 usage.
@@ -44,10 +47,18 @@ if ! wp_gate 2>/dev/null; then
   exit 0
 fi
 
-# real ETX line (not quoted, not fenced) AND a red marker in the same file
+# count of real ETX lines (not quoted, not fenced); memoized per file per pass in HC
+declare -A HC
+etx_count() {
+  [ -n "${HC[$1]+x}" ] && return 0
+  HC[$1]=$(awk -v re="$ETX_RE" '/^[[:space:]]*```/ { fence = !fence; next } fence { next } /^[[:space:]]*[>#-]/ { next } $0 ~ re { c++ } END { print c+0 }' "$1" 2>/dev/null)
+  [[ ${HC[$1]} =~ ^[0-9]+$ ]] || HC[$1]=0
+}
+# at least one real ETX line AND a red marker in the same file
 is_hit() {
   [ -f "$1" ] && [ -r "$1" ] || return 1
-  awk -v re="$ETX_RE" '/^[[:space:]]*```/ { fence = !fence; next } fence { next } /^[[:space:]]*[>#-]/ { next } $0 ~ re { found = 1; exit } END { exit !found }' "$1" || return 1
+  etx_count "$1"
+  [ "${HC[$1]}" -gt 0 ] || return 1
   grep -qE "$RED_RE" "$1"
 }
 age_s() { echo $(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || echo 0) )); }
@@ -76,14 +87,22 @@ shopt -u nullglob
 
 mkdir -p "$STATE" || exit 2
 SEEN=$STATE/seen
-declare -A rec   # path -> "inode<TAB>size<TAB>mtime"
+declare -A rec   # path -> "inode<TAB>size<TAB>mtime<TAB>hits"
+declare -A legacy
 if [ -r "$SEEN" ]; then
   mapfile -t _lines < "$SEEN"
   # a seen file not ending in a newline has a truncated last line: ignore it
   if [ -s "$SEEN" ] && [ "$(tail -c1 "$SEEN" | od -An -c | tr -d ' ')" != '\n' ]; then unset '_lines[${#_lines[@]}-1]'; fi
   for _ln in "${_lines[@]}"; do
-    IFS=$'\t' read -r _p _i _s _m _x <<<"$_ln"
-    [ -n "${_p:-}" ] && [ -n "${_m:-}" ] && [ -z "${_x:-}" ] && [[ $_i =~ ^[0-9]+$ && $_s =~ ^[0-9]+$ && $_m =~ ^[0-9]+$ ]] && rec[$_p]="$_i"$'\t'"$_s"$'\t'"$_m"
+    IFS=$'\t' read -r _p _i _s _m _h _x <<<"$_ln"
+    [ -n "${_p:-}" ] && [ -n "${_m:-}" ] && [ -z "${_x:-}" ] && [[ $_i =~ ^[0-9]+$ && $_s =~ ^[0-9]+$ && $_m =~ ^[0-9]+$ ]] || continue
+    if [ -z "${_h:-}" ]; then legacy[$_p]="$_i"$'\t'"$_s"$'\t'"$_m"   # 4-field legacy record: adopts below
+    elif [[ $_h =~ ^[0-9]+$ ]]; then rec[$_p]="$_i"$'\t'"$_s"$'\t'"$_m"$'\t'"$_h"; fi
+  done
+  # E1/E6: every legacy record adopts the CURRENT count (no fire) and is rewritten to 5 fields this pass; an unreadable path takes hits=1
+  for _p in "${!legacy[@]}"; do
+    if [ -f "$_p" ] && [ -r "$_p" ]; then etx_count "$_p"; _h=${HC[$_p]}; else _h=1; fi
+    rec[$_p]="${legacy[$_p]}"$'\t'"$_h"
   done
 fi
 
@@ -91,7 +110,7 @@ write_seen() {
   local p
   for p in "${!rec[@]}"; do printf '%s\t%s\n' "$p" "${rec[$p]}"; done | sort > "$SEEN.tmp" && mv -f "$SEEN.tmp" "$SEEN"
 }
-cur() { stat -c '%i'$'\t''%s'$'\t''%Y' "$1"; }
+cur() { etx_count "$1"; printf '%s\t%s\n' "$(stat -c '%i'$'\t''%s'$'\t''%Y' "$1")" "${HC[$1]}"; }
 
 if [ ! -e "$STATE/seeded" ]; then
   for f in "${hits[@]}"; do rec[$f]=$(cur "$f"); done
@@ -105,15 +124,18 @@ fi
 n=$(cat "$STATE/fired" 2>/dev/null); [[ ${n:-} =~ ^[0-9]+$ ]] || n=0
 rc=0; fired=0
 for f in "${hits[@]}"; do
-  now=$(cur "$f"); IFS=$'\t' read -r ni ns nm <<<"$now"
+  now=$(cur "$f"); IFS=$'\t' read -r ni ns nm nh <<<"$now"; extra=""
   old=${rec[$f]-}
   [ "$MUTATE" = seen-false ] && old=""
   if [ -n "$old" ]; then
-    IFS=$'\t' read -r oi os om <<<"$old"
-    if [ "$ni" = "$oi" ] && [ "$ns" -ge "$os" ]; then rec[$f]=$now; continue; fi   # same run (growth is silent)
+    IFS=$'\t' read -r oi os om oh <<<"$old"
+    if [ "$ni" = "$oi" ] && [ "$ns" -ge "$os" ]; then
+      [ "$nh" -gt "$oh" ] || { rec[$f]=$now; continue; }   # same run, no new real ETX line (growth is silent)
+      extra=" new ETX line $oh->$nh"
+    fi
   fi
   pa=n; grep -q 'pac_a' "$f" && pa=y
-  if "$BELL" rb "ETX TRIGGER n=$((n+1)) ${f##*/} pac_a=$pa" >/dev/null 2>&1; then
+  if "$BELL" rb "ETX TRIGGER n=$((n+1)) ${f##*/} pac_a=$pa$extra" >/dev/null 2>&1; then
     n=$((n+1)); fired=$((fired+1)); rec[$f]=$now; echo "$n" > "$STATE/fired"
   else
     echo "ETX seat-event failed for ${f##*/}; will retry next pass" >&2; rc=1
