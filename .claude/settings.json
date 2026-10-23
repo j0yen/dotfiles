@@ -448,6 +448,16 @@
         ]
       },
       {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Edit",
         "hooks": [
           {
