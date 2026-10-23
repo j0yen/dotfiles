@@ -37,8 +37,32 @@ printf 'note: judge ONLY the final assistant message, unmeasured, WAIT until <x>
 out="$(bash "$GL" "$T/e.md")"; rc=$?
 { [ $rc = 0 ] && [ -z "$out" ]; } && ok "non-/goal line ignored" || no "non-/goal line: rc=$rc out=$out"
 
+
+# (f) dormant goal + ok goal -> exit 0
+{ printf '%s\n' "${GOOD//ALPHA/AA}"; printf '%s\n' '- Dormant: headless seat'; printf '%s\n' "${GOOD//ALPHA/BB}"; } > "$T/f.md"
+sed -i '1s/.*/\/goal AA: nothing/' "$T/f.md"
+out="$(bash "$GL" "$T/f.md")"; rc=$?
+{ [ $rc = 0 ] && printf '%s\n' "$out" | grep -qx 'goal-lint: AA dormant' && printf '%s\n' "$out" | grep -qx 'goal-lint: BB ok'; } \
+  && ok "dormant + ok exits 0" || no "dormant + ok: rc=$rc out=$out"
+
+# (g) parked goal missing everything + goal missing P1 -> exit 1
+{ printf '%s\n' '/goal AA: nothing' '  - Parked until stage 2'; printf '%s\n' "${GOOD//ALPHA/BB}" | sed 's/judge ONLY the final assistant message/judge things/'; } > "$T/g.md"
+out="$(bash "$GL" "$T/g.md")"; rc=$?
+{ [ $rc = 1 ] && printf '%s\n' "$out" | grep -qx 'goal-lint: AA parked' && printf '%s\n' "$out" | grep -qx 'goal-lint: BB MISSING P1'; } \
+  && ok "parked + MISSING P1 exits 1" || no "parked + missing: rc=$rc out=$out"
+
+# (h) marker after a ## heading is outside the block
+printf '%s\n' '/goal AA: nothing' '## Next section' '- Dormant thing' > "$T/h.md"
+out="$(bash "$GL" "$T/h.md")"; rc=$?
+{ [ $rc = 1 ] && [ "$out" = "goal-lint: AA MISSING P1,P2,P3,P4,P5" ]; } && ok "marker past ## heading ignored" || no "block boundary: rc=$rc out=$out"
+
+# (i) bold form
+printf '%s\n' '/goal AA: nothing' '- **Parked until later**' > "$T/i.md"
+out="$(bash "$GL" "$T/i.md")"; rc=$?
+{ [ $rc = 0 ] && [ "$out" = "goal-lint: AA parked" ]; } && ok "bold Parked marks goal" || no "bold parked: rc=$rc out=$out"
+
 # selftest + help
-bash "$GL" --selftest | grep -qx 'SELFTEST PASS 5/0' && ok "--selftest passes" || no "--selftest"
+bash "$GL" --selftest | grep -qx 'SELFTEST PASS 9/0' && ok "--selftest passes" || no "--selftest"
 bash "$GL" --help | grep -q 'P5' && ok "--help lists properties" || no "--help"
 
 [ $fail = 0 ] && echo "PASS goal-lint" || echo "FAIL goal-lint"
