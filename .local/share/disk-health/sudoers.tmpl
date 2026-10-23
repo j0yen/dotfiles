@@ -1,0 +1,12 @@
+# /etc/sudoers.d/disk-health - read-only SMART reads for .local/bin/disk-health.sh (the per-node disk health collector).
+# Rendered by .local/bin/disk-health-sudoers from .local/share/disk-health/sudoers.tmpl; do not edit the installed file by hand
+# (`disk-health-sudoers --check` compares it byte for byte with the render). The user and the tool paths are filled in by the installer.
+# One Cmnd per rule, in disk-health.sh's exact argv order. No `*`, no ALL command: each -d type is spelled out so a grant never reaches
+# any smartctl option that writes (-s, -t, -X, --set).
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A /dev/sd[a-z]
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A -d sntasmedia /dev/sd[a-z]
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A -d sntrealtek /dev/sd[a-z]
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A -d sat /dev/sd[a-z]
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A -d sntjmicron /dev/sd[a-z]
+@USER@ ALL=(root) NOPASSWD: @SMARTCTL@ -H -A /dev/nvme[0-9]n[0-9]
+@USER@ ALL=(root) NOPASSWD: @NVME@ smart-log /dev/nvme[0-9]n[0-9]

@@ -22,12 +22,8 @@
 # PRIVILEGE: smartctl and nvme smart-log need root. This script never prompts and never fails the file for a missing tool:
 #   root -> direct; else `sudo -n true` or `sudo -n -l <full smartctl/nvme command line>` must succeed once, otherwise every device is
 #   smart_health "unavailable" with source "needs-sudo" (errors gets "needs-sudo"). Kernel log, df and the device list need no sudo.
-#   Sudoers: exactly the forms this script runs, one Cmnd each (read-only flags; a `*` after -d would let sudo run any smartctl option,
-#   so each -d type is spelled out). `command -v smartctl nvme` first; put in /etc/sudoers.d/disk-health (0440), check with `visudo -cf`:
-#     jsy ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -A /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A -d sntasmedia /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntrealtek /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A -d sat /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntjmicron /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A /dev/nvme[0-9]n[0-9], /usr/sbin/nvme smart-log /dev/nvme[0-9]n[0-9]
+#   Sudoers: the rule is code, not prose: .local/share/disk-health/sudoers.tmpl, rendered/checked/installed by .local/bin/disk-health-sudoers
+#   (--render | --check | --install); tests/disk-health-sudoers.test.sh fails when this script's smartctl/nvme argv and that rule drift apart.
 #
 # ENV  DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
