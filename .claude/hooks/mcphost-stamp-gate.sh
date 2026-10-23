@@ -42,7 +42,7 @@
 # Test hooks (honored only with MCPHOST_STAMP_GATE_SELFTEST=1): MCPHOST_STAMP_GATE_NOW=<epoch>.
 set -uo pipefail
 
-DEPLOY_TS="2026-10-23T15:30:31-07:00"
+DEPLOY_TS="2026-10-23T16:58:25-07:00"
 WARN_HOURS=24
 
 JQ=$(command -v jq) || exit 0
