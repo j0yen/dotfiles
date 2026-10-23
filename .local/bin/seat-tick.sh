@@ -17,12 +17,18 @@
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead.
+# LOCK-COVERED (10-22): whoever holds the lock writes `<kind> <pid> <epoch>` to <seat>.lock.holder. A timer tick that times out while that holder is a live
+# EVENT or ASK turn of the SAME seat (pid alive, cmdline `seat-tick.sh <seat> --event|--ask`) is covered: last_skip_reason=lock-covered:<kind>:<pid>,
+# ticks_skipped NOT incremented, <seat>.wake touched (the running turn chains one EVENT turn), exit 0. Any other holder (tick, foreign, stale, dead) = exit 5 + a skip.
+# GUARD (10-22): refuses only an interactive holder: old_pid alive with `claude` in its cmdline and NOT print-mode (-p/--print), or a claude/node process holding
+# the SID that is not a print-mode turn of a seat-tick@/seat-event-/seat-ask- unit (its cgroup). A dead old_pid is a clear (the note says so). The reason names the pid found.
+# STATE (10-22): the reason + guard_since of an earlier refusal are cleared at the PRE-turn save (every kind): the guard passed, so a long turn must not show a stale refusal.
 # The goal loop (/goal stop hook) is disabled in `claude -p`, so a rb/r7 tick carries the seat's /goal line itself.
 # approvals_new / status_age exist for ctl only (log is read-only here; approvals_seen in ctl-tick.json is the high-water mark).
 # LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
 # flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design;
 # its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({env: CLAUDE_CODE_AUTO_COMPACT_WINDOW 360000 + CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 50, autoCompactEnabled: true, autoCompactWindow: auto} = seats compact at 180K; ~/.claude/settings.local.json runs the aide at 1000000×50 % = 500K for $HOME and the --settings layer beats it; rb/r7 get the same pin from claude-seat/settings.json).
-# Env overrides: SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
+# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 DASH="${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}"
@@ -68,24 +74,57 @@ load_seat() {
   [ -n "$SID" ] && [ -n "${OLD_PID:-}" ]
 }
 
-# guard: prints the reason and returns 1 if the interactive seat (old_pid, or any claude/node holding this SID) is alive
+# print-mode claude (`claude -p ...` / --print) is a headless turn, never the interactive seat
+is_print_mode() { case " $1 " in *" -p "*|*" --print "*) return 0 ;; esac; return 1; }
+
+# a cgroup naming a seat unit (seat-tick@<seat>.service, seat-event-<seat>-*, seat-ask-<seat>-*): the legitimate holder of the SID is that unit's own turn
+in_seat_unit() {   # in_seat_unit <pid>
+  local cg
+  if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_GUARD_CGROUP_OVERRIDE:-}" ]; then cg="$SEAT_GUARD_CGROUP_OVERRIDE"; else cg="$(cat "/proc/$1/cgroup" 2>/dev/null)"; fi
+  case "$cg" in *seat-tick@*|*seat-event-*|*seat-ask-*) return 0 ;; esac
+  return 1
+}
+
+# guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise
 guard() {
-  local p cl comm
-  if [ "$OLD_PID" != "-" ] && [ -r "/proc/$OLD_PID/cmdline" ]; then
-    cl="$(tr '\0' ' ' <"/proc/$OLD_PID/cmdline")"
-    case "$cl" in *claude*) echo "pid $OLD_PID alive: ${cl:0:80}"; return 1 ;; esac
+  local p cl comm notes=""
+  if [ "$OLD_PID" != "-" ]; then
+    if [ -r "/proc/$OLD_PID/cmdline" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+      cl="$(tr '\0' ' ' <"/proc/$OLD_PID/cmdline")"
+      case "$cl" in
+        *claude*) if is_print_mode "$cl"; then notes="old_pid $OLD_PID is a print-mode claude (not the interactive seat)"
+                  else echo "pid $OLD_PID alive: ${cl:0:80}"; return 1; fi ;;
+        *) notes="old_pid $OLD_PID alive but not claude" ;;
+      esac
+    else notes="old_pid $OLD_PID not alive"; fi
   fi
   for p in /proc/[0-9]*; do
     [ "${p#/proc/}" = "$$" ] && continue
-    cl="$(tr '\0' ' ' <"$p/cmdline" 2>/dev/null)" || continue
+    cl="$(tr '\0' ' ' 2>/dev/null <"$p/cmdline")" || continue
     case "$cl" in *"$SID"*) ;; *) continue ;; esac
     comm="$(cat "$p/comm" 2>/dev/null)"
     # only a process whose own command is claude (or node running claude): not a shell that merely mentions the SID
     if [ "$comm" = claude ] || [ "$comm" = node ] || [[ "$cl" =~ ^([^\ ]*/)?claude(\ |$) ]] || [[ "$cl" =~ ^([^\ ]*/)?node\ [^\ ]*claude ]]; then
+      # a print-mode turn of a seat unit (this very tick's unit, or an event/ask/chained turn) holds the SID legitimately: not the interactive seat
+      if is_print_mode "$cl" && in_seat_unit "${p#/proc/}"; then notes="${notes:+$notes; }pid ${p#/proc/} is a seat-unit print-mode turn (ignored)"; continue; fi
       echo "pid ${p#/proc/} holds session $SID: ${cl:0:80}"; return 1
     fi
   done
+  echo "${notes:-no holder}"
   return 0
+}
+
+# the lock holder's identity, written under the lock (atomic): kind pid epoch
+note_holder() { printf '%s %s %s\n' "$KIND" "$$" "$(date +%s)" >"$HOLDER.$$" && mv -f "$HOLDER.$$" "$HOLDER"; }
+# holder_covers: 0 (and prints "<kind>:<pid>") if the recorded holder is a LIVE event or ask turn of this seat
+holder_covers() {
+  local hk hp cl
+  read -r hk hp _ 2>/dev/null <"$HOLDER" || return 1
+  case "$hk" in event|ask) ;; *) return 1 ;; esac
+  [[ "$hp" =~ ^[0-9]+$ ]] && kill -0 "$hp" 2>/dev/null || return 1
+  cl="$(tr '\0' ' ' 2>/dev/null <"/proc/$hp/cmdline")" || return 1
+  [[ "$cl" == *"seat-tick.sh $SEAT --$hk"* ]] || return 1
+  echo "$hk:$hp"
 }
 
 # ---- selftest -------------------------------------------------------------------------------------
@@ -123,7 +162,7 @@ GOAL
 echo "START $(date +%s.%N)"
 echo "ARGV: $*"
 echo "token_set=${CLAUDE_CODE_OAUTH_TOKEN:+yes} cwd=$PWD"
-echo "seat_env=WM_SEAT=${WM_SEAT:-} CLAUDE_SESSION_NAME=${CLAUDE_SESSION_NAME:-}"
+echo "seat_env=WM_SEAT=${WM_SEAT:-} CLAUDE_SESSION_NAME=${CLAUDE_SESSION_NAME:-} WM_DECIDE_AGENT=${WM_DECIDE_AGENT:-}"
 echo "lean_env=SEAT_LEAN=${SEAT_LEAN:-} CLAUDE_LEAN_START=${CLAUDE_LEAN_START:-}"
 echo "status_line2=$(sed -n 2p "$FLEET_DASH_DIR/fleet-status.md" 2>/dev/null)"
 printf '%s' "${@: -1}" >"$FLEET_DASH_DIR/prompt.${WM_SEAT:-x}.txt"
@@ -148,7 +187,7 @@ FAKE
   grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 $CA --resume $CS SWEEP $ts_re tick=1 status_age=none approvals_new=3 events_new=0\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
   grep -q "model test-model-1" "$T/o1"; chk "model comes from MRC_TABLE controller row" $?
   grep -q "token_set=yes cwd=$HOME\$" "$T/o1"; chk "oauth env sourced (token present, value not shown), cwd=\$HOME" $?
-  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl$' "$T/o1"; chk "SWEEP: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
+  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o1"; chk "SWEEP: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   grep -q '^status_line2=boundary: open$' "$T/o1"; chk "SWEEP wrote 'boundary: open' before claude ran" $?
   grep -q '^ARGV:' "$T/dash/ctl-tick-last.log"; chk "ctl-tick-last.log holds the run output" $?
   [ "$(j .sends_total)" = 1 ] && [ "$(j .last_exit)" = 0 ] && [ "$(j .last_prompt_kind)" = sweep ] && [ "$(j .ticks_skipped)" = 0 ] && [ "$(j .approvals_seen)" = 3 ] && [ "$(j .last_duration_s)" -ge 2 ] && [ "$(j .last_sent)" -gt 0 ]; chk "state: sends_total=1 last_exit=0 kind=sweep approvals_seen=3 duration=$(j .last_duration_s)s" $?
@@ -167,7 +206,7 @@ FAKE
   "$SELF" ctl --ask "what is rb doing?" >"$T/o3" 2>"$T/e3"; rc=$?
   [ "$rc" = 0 ]; chk "ask: exit 0" $?
   grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 $CA --resume $CS ASK $ts_re seat=ctl approvals_new=0 events_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
-  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl$' "$T/o3"; chk "ASK: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
+  grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o3"; chk "ASK: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   [ ! -e "$T/dash/fleet-status.md" ]; chk "ASK did not write the boundary marker (SWEEP only)" $?
   [ -s "$T/dash/ctl-ask-last.log" ]; chk "ctl-ask-last.log written" $?
   [ "$(j .last_prompt_kind)" = ask ] && [ "$(j .sends_total)" = 2 ] && [ "$(j .last_exit)" = 0 ]; chk "ask: kind=ask, sends_total stays 2" $?
@@ -240,7 +279,7 @@ FAKE
   [ "$(pl rb 2 | head -1)" = "$goal_rb" ] && [ "$goal_rb" != "" ]; chk "rb: prompt line 2 = the /goal CLEARWATER: line verbatim ('$(pl rb 2 | cut -c1-70)...')" $?
   [ "$(pl rb 3)" = 'Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; every EVENT line gets a read and, if real, a mitigation this turn; log a DECISION row for each action; this turn ends when you print the timestamped STATUS block.' ] && [ "$(wc -l <"$T/dash/prompt.rb.txt")" = 2 ]; chk "rb: prompt line 3 = the rules line verbatim, exactly 3 lines" $?
   ! grep -q 'approvals_new\|status_age' "$T/dash/prompt.rb.txt"; chk "rb: no approvals_new / status_age in the prompt" $?
-  grep -q '^seat_env=WM_SEAT=rb CLAUDE_SESSION_NAME=rb$' "$T/orb"; chk "rb: fake claude saw WM_SEAT=rb CLAUDE_SESSION_NAME=rb" $?
+  grep -q '^seat_env=WM_SEAT=rb CLAUDE_SESSION_NAME=rb WM_DECIDE_AGENT=rb$' "$T/orb"; chk "rb: fake claude saw WM_SEAT=rb CLAUDE_SESSION_NAME=rb" $?
   grep -q -- ' --strict-mcp-config ' <(grep -m1 '^ARGV' "$T/orb") && grep -q '^lean_env=SEAT_LEAN=1 CLAUDE_LEAN_START=1$' "$T/orb"; chk "rb LEAN: fake claude got --strict-mcp-config and env SEAT_LEAN=1 CLAUDE_LEAN_START=1" $?
   ! grep -q -- 'strict-mcp-config' <(grep -m1 '^ARGV' "$T/o1") && ! grep -q -- '--mcp-config' <(grep -m1 '^ARGV' "$T/o1") && grep -q '^lean_env=SEAT_LEAN= CLAUDE_LEAN_START=$' "$T/o1"; chk "ctl NOT lean: sweep 1 has no --strict-mcp-config / --mcp-config and no SEAT_LEAN/CLAUDE_LEAN_START env" $?
   grep -m1 '^ARGV' "$T/o1" | grep -q -- " $CA --resume "; chk "ctl argv carries --settings ctl-settings.json (autoCompactEnabled) and nothing else lean" $?
@@ -277,7 +316,7 @@ FAKE
   [ "$rc" = 0 ]; chk "r7 tick: exit 0" $?
   grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 $LA --resume $SS TICK $ts_re seat=r7 tick=1 events_new=0\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
   [ "$(pl r7 2)" = "$goal_r7" ] && [ "$(pl r7 3 | cut -c1-23)" = "Rules of this shape: on" ] && [ "$(wc -l <"$T/dash/prompt.r7.txt")" = 2 ]; chk "r7: line 2 = the /goal CLEARWATER-R7 line verbatim (not the rb line), line 3 = rules, 3 lines" $?
-  grep -q '^seat_env=WM_SEAT=r7 CLAUDE_SESSION_NAME=r7$' "$T/or7" && [ -e "$T/dash/r7.lock" ] && [ -s "$T/dash/r7-tick-last.log" ] && [ ! -e "$T/dash/fleet-status.md" ] && ! grep -q 'approvals_new' "$T/dash/prompt.r7.txt"; chk "r7: WM_SEAT=r7, r7.lock, r7-tick-last.log, no --open, no approvals_new" $?
+  grep -q '^seat_env=WM_SEAT=r7 CLAUDE_SESSION_NAME=r7 WM_DECIDE_AGENT=r7$' "$T/or7" && [ -e "$T/dash/r7.lock" ] && [ -s "$T/dash/r7-tick-last.log" ] && [ ! -e "$T/dash/fleet-status.md" ] && ! grep -q 'approvals_new' "$T/dash/prompt.r7.txt"; chk "r7: WM_SEAT=r7, r7.lock, r7-tick-last.log, no --open, no approvals_new" $?
   [ "$(jseat r7 .sends_total)" = 1 ] && [ "$(jseat r7 .last_prompt_kind)" = tick ]; chk "r7: state r7-tick.json sends_total=1 kind=tick" $?
 
   # 11. guard per seat: a fake 'claude --resume <sid>' blocks only its own seat
@@ -427,6 +466,106 @@ FAKE
   [ "$rc" = 3 ] && [ "$(grep -c '^START' "$T/ofc")" = 1 ]; chk "claude exit 3 with a bell mid-turn: no chain (1 run, exit 3)" $?
   rm -f "$EVD/rb.wake"; FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1
 
+  # 15e. WM_DECIDE_AGENT (10-22, row b7cb): every prompt kind carries the seat identity, and it overrides an inherited value
+  grep -q '^seat_env=.* WM_DECIDE_AGENT=ctl$' "$T/o1" && grep -q '^seat_env=.* WM_DECIDE_AGENT=ctl$' "$T/o3" && grep -q '^seat_env=.* WM_DECIDE_AGENT=rb$' "$T/orb" && grep -q '^seat_env=.* WM_DECIDE_AGENT=r7$' "$T/or7" \
+    && grep -q '^seat_env=.* WM_DECIDE_AGENT=rb$' "$T/oe3" && grep -q '^seat_env=.* WM_DECIDE_AGENT=rb$' "$T/orba" && grep -q '^seat_env=.* WM_DECIDE_AGENT=ctl$' "$T/oe8"; chk "WM_DECIDE_AGENT=<seat> reaches claude on ctl sweep/ask/event, rb tick/ask/event, r7 tick" $?
+  WM_DECIDE_AGENT=aide FAKE_SLEEP=0 "$SELF" rb >"$T/owda" 2>&1
+  grep -q '^seat_env=.* WM_DECIDE_AGENT=rb$' "$T/owda"; chk "an inherited WM_DECIDE_AGENT=aide is overridden by the seat" $?
+
+  # 15f. LOCK-COVERED (10-22): a timer tick that times out on a LIVE same-seat EVENT/ASK turn is covered (exit 0, no skip, .wake), anything else stays exit 5 + a skip
+  local hp sk1 fp
+  : >"$EVD/rb-events.log"; rm -f "$EVD/rb.wake"; FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1   # drain
+  ev rb "covered-by-event"
+  FAKE_SLEEP=5 "$SELF" rb --event >"$T/ocv1" 2>&1 & ST_PIDS="$ST_PIDS $!"; hp=$!
+  for i in $(seq 1 100); do grep -q '^START' "$T/ocv1" && break; sleep 0.1; done
+  rm -f "$EVD/rb.wake"; sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >"$T/ocv2" 2>"$T/ecv2"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat rb .last_skip_reason)" = "lock-covered:event:$hp" ] && [ "$(jseat rb .ticks_skipped)" = "$sk1" ] && [ -e "$EVD/rb.wake" ] && ! grep -q '^ARGV' "$T/ocv2" && ! grep -q ALARM "$T/ecv2" "$T/ocv2"; chk "tick vs a running EVENT turn (pid $hp): exit $rc, reason=$(jseat rb .last_skip_reason), ticks_skipped unchanged ($sk1), rb.wake touched, no ALARM, claude not run" $?
+  wait "$hp"
+  grep -q 'chaining one EVENT turn' "$T/ocv1" && grep -q 'no new events' "$T/ocv1" && [ "$(grep -c '^START' "$T/ocv1")" = 1 ] && [ ! -e "$EVD/rb.wake" ] && [ "$(jseat rb .last_skip_reason)" = null ]; chk "the covered EVENT turn chains from the .wake (no new events: ends quietly), reason cleared at its exit-0 end" $?
+  FAKE_SLEEP=4 "$SELF" rb --ask "long ask" >"$T/ocv3" 2>&1 & ST_PIDS="$ST_PIDS $!"; hp=$!
+  for i in $(seq 1 100); do grep -q '^START' "$T/ocv3" && break; sleep 0.1; done
+  sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >"$T/ocv4" 2>"$T/ecv4"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat rb .last_skip_reason)" = "lock-covered:ask:$hp" ] && [ "$(jseat rb .ticks_skipped)" = "$sk1" ] && [ -e "$EVD/rb.wake" ]; chk "tick vs a running ASK turn (pid $hp): exit 0, reason=$(jseat rb .last_skip_reason), ticks_skipped unchanged" $?
+  wait "$hp"; rm -f "$EVD/rb.wake"
+  FAKE_SLEEP=4 "$SELF" rb >"$T/ocv5" 2>&1 & ST_PIDS="$ST_PIDS $!"; hp=$!
+  for i in $(seq 1 100); do grep -q '^START' "$T/ocv5" && break; sleep 0.1; done
+  sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1; rc=$?
+  [ "$rc" = 5 ] && [ "$(jseat rb .last_skip_reason)" = lock-busy ] && [ "$(jseat rb .ticks_skipped)" = "$(( sk1 + 1 ))" ] && [ ! -e "$EVD/rb.wake" ]; chk "tick vs a running TICK turn: still exit 5, lock-busy, ticks_skipped +1, no .wake" $?
+  wait "$hp"
+  ( exec 8>>"$EVD/rb.lock"; flock 8; sleep 4 ) & ST_PIDS="$ST_PIDS $!"; fp=$!
+  sleep 0.4
+  printf 'event %s %s\n' "$fp" "$(date +%s)" >"$EVD/rb.lock.holder"   # live pid, forged record: its cmdline is not 'seat-tick.sh rb --event'
+  sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1; rc=$?
+  [ "$rc" = 5 ] && [ "$(jseat rb .last_skip_reason)" = lock-busy ] && [ "$(jseat rb .ticks_skipped)" = "$(( sk1 + 1 ))" ]; chk "foreign live holder with a forged 'event <pid>' record: exit 5, lock-busy, ticks_skipped +1" $?
+  printf 'event 999999999 %s\n' "$(date +%s)" >"$EVD/rb.lock.holder"; sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1; rc=$?
+  [ "$rc" = 5 ] && [ "$(jseat rb .ticks_skipped)" = "$(( sk1 + 1 ))" ]; chk "foreign holder with a dead pid in the record: exit 5, ticks_skipped +1" $?
+  rm -f "$EVD/rb.lock.holder"; sk1="$(jseat rb .ticks_skipped)"
+  SEAT_LOCK_WAIT=1 FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1; rc=$?
+  [ "$rc" = 5 ] && [ "$(jseat rb .ticks_skipped)" = "$(( sk1 + 1 ))" ]; chk "foreign holder with no record at all: exit 5, ticks_skipped +1" $?
+  kill "$fp" 2>/dev/null; wait "$fp" 2>/dev/null; sleep 0.3
+  FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1
+  [ "$(jseat rb .ticks_skipped)" = 0 ] && [ "$(awk '{print $1}' "$EVD/rb.lock.holder")" = tick ] && [ "$(awk '{print $2}' "$EVD/rb.lock.holder")" -gt 0 ]; chk "the holder record is '<kind> <pid> <epoch>' (last holder: $(cat "$EVD/rb.lock.holder")); a clean tick resets ticks_skipped" $?
+
+  # 15g. GUARD (10-22): only an INTERACTIVE holder refuses; a print-mode turn of a seat unit, a dead / non-claude / print-mode old_pid do not
+  local UCG='0::/user.slice/user-1000.slice/user@1000.service/app.slice/seat-event-r7-1792709860-4242.service' TCG='0::/user.slice/user-1000.slice/user@1000.service/app.slice/system-seat\x2dtick.slice/seat-tick@r7.service' XCG='0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-1.scope'
+  bash -c "exec -a 'claude -p --resume $SS' python3 -c 'import time; time.sleep(40)'" & ST_PIDS="$ST_PIDS $!"; local pu=$!
+  sleep 0.4
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$UCG" FAKE_SLEEP=0 "$SELF" r7 >"$T/ogu1" 2>"$T/egu1"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/ogu1" && grep -q "pid $pu is a seat-unit print-mode turn (ignored)" "$T/ogu1" && ! grep -q ALARM "$T/egu1"; chk "SID held by 'claude -p' in a seat-event- cgroup (pid $pu): not refused, runs, note names the pid" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$TCG" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ]; chk "...same for a seat-tick@ cgroup" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$UCG" "$SELF" r7 --guard-check >"$T/ogu2" 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ "$(wc -l <"$T/ogu2")" = 1 ] && grep -q "^guard: clear (.*pid $pu" "$T/ogu2"; chk "--guard-check: exit 0, one clean line (no /proc race noise) saying why ('$(head -c 110 "$T/ogu2")')" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$XCG" FAKE_SLEEP=0 "$SELF" r7 >"$T/ogu3" 2>"$T/egu3"; rc=$?
+  [ "$rc" = 4 ] && grep -q "ALARM r7 guard.*pid $pu holds session $SS" "$T/egu3" && ! grep -q '^ARGV' "$T/ogu3"; chk "same 'claude -p' holder in a non-seat cgroup (a hand-run turn): refused, exit 4, reason names pid $pu" $?
+  local want=4; case "$(cat /proc/$$/cgroup 2>/dev/null)" in *seat-tick@*|*seat-event-*|*seat-ask-*) want=0 ;; esac   # a selftest run by a seat unit's own turn lives in a seat cgroup
+  SEAT_GUARD_CGROUP_OVERRIDE="$UCG" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = "$want" ]; chk "the cgroup override is ignored outside selftest mode (no SEAT_TICK_SELFTEST=1): the real /proc/<pid>/cgroup decides (exit $rc, expected $want)" $?
+  kill "$pu"; wait "$pu" 2>/dev/null; sleep 0.3
+  bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; pu=$!
+  sleep 0.4
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$UCG" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>"$T/egu4"; rc=$?
+  [ "$rc" = 4 ] && grep -q "pid $pu holds session" "$T/egu4"; chk "an interactive claude (no -p) is refused even with a seat-unit cgroup, reason names pid $pu" $?
+  kill "$pu"; wait "$pu" 2>/dev/null; sleep 0.3
+  setpid ctl 999999999
+  "$SELF" ctl --guard-check >"$T/ogd1" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q 'old_pid 999999999 not alive' "$T/ogd1"; chk "old_pid dead: not refused, --guard-check says so ('$(head -c 90 "$T/ogd1")')" $?
+  FAKE_SLEEP=0 "$SELF" ctl >"$T/ogd2" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q 'guard clear (old_pid 999999999 not alive)' "$T/ogd2" && grep -q '^ARGV' "$T/ogd2"; chk "old_pid dead: the tick runs and its log line says 'guard clear (old_pid 999999999 not alive)'" $?
+  bash -c "exec -a 'claude -p --resume selftest-other-sid' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local po=$!
+  sleep 0.4
+  setpid ctl "$po"
+  "$SELF" ctl --guard-check >"$T/ogd3" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "old_pid $po is a print-mode claude" "$T/ogd3"; chk "old_pid alive but a print-mode claude: not the interactive seat, not refused" $?
+  kill "$po"; wait "$po" 2>/dev/null; setpid ctl 999999999
+  # guard_since / last_skip_reason clear when the turn STARTS (all kinds), not only at an exit-0 end
+  gs_check() {   # gs_check <label> <args...>: one refusal behind a live interactive holder, release, a slow turn: state is already clean while it still runs
+    local lbl="$1" rc1 gs ph2 pt w; shift
+    bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; ph2=$!
+    sleep 0.4
+    "$SELF" r7 "$@" >/dev/null 2>&1; rc1=$?; gs="$(jseat r7 .guard_since)"
+    kill "$ph2"; wait "$ph2" 2>/dev/null; sleep 0.3
+    FAKE_SLEEP=3 "$SELF" r7 "$@" >"$T/ogs" 2>&1 & ST_PIDS="$ST_PIDS $!"; pt=$!
+    for w in $(seq 1 100); do grep -q '^START' "$T/ogs" && break; sleep 0.1; done
+    [ "$rc1" = 4 ] && [ "$gs" != null ] && [ "$(jseat r7 .guard_since)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ]; chk "guard_since ($gs) and the guard reason clear when a $lbl turn STARTS (turn still running)" $?
+    wait "$pt"
+  }
+  gs_check tick
+  ev r7 "gs-event"; gs_check event --event
+  gs_check ask --ask "gs ask"
+  bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pn=$!
+  sleep 0.4
+  "$SELF" r7 --event >/dev/null 2>&1; rc=$?
+  [ "$rc" = 4 ] && [ "$(jseat r7 .guard_since)" != null ]; chk "EVENT behind a live holder (no new events): guard recorded, exit 4" $?
+  kill "$pn"; wait "$pn" 2>/dev/null; sleep 0.3
+  "$SELF" r7 --event >"$T/ogn" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q 'no new events' "$T/ogn" && [ "$(jseat r7 .guard_since)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ]; chk "EVENT with nothing new, guard now clear: exit 0 and the stale guard reason / guard_since are cleared" $?
+
   # 16. contracts against the REAL table, goal.md and unit files (read-only; no-drift)
   local real="$HOME/.claude/state/seats.tsv" realgoal="$HOME/Notes/wiki/goal.md" bad=""
   local rs rp rn
@@ -494,7 +633,7 @@ status() { cat "$STATE" 2>/dev/null || echo '{}'; }
 count_approvals() { [ -r "$APPROVALS" ] && grep -cvE '^[[:space:]]*(#|$)' "$APPROVALS" || true; }
 case "$MODE" in
   status) status; exit 0 ;;
-  guard) why="$(guard)" && { echo "guard: clear"; exit 0; }; echo "guard: REFUSED $why" >&2; exit 4 ;;
+  guard) why="$(guard)" && { echo "guard: clear ($why)"; exit 0; }; echo "guard: REFUSED $why" >&2; exit 4 ;;
 esac
 KIND="$MODE"   # tick | ask | event
 
@@ -511,7 +650,7 @@ S_reason="$(sget '.last_skip_reason // ""')"; S_seen="$(sget '.approvals_seen //
 S_dur="$(sget '.last_duration_s // null')"; S_kind="$(sget '.last_prompt_kind // ""')"; S_gsince="$(sget '.guard_since // 0')"
 S_evoff="$(sget '.events_offset // 0')"; S_lastprompt="$(sget '.last_prompt // 0')"; S_evnew="$(sget '.events_new // 0')"; S_chained="${SEAT_TICK_CHAINED:-0}"
 PREV_SENT="$S_last_sent"
-EVF="$DASH/$SEAT-events.log"; WAKE="$DASH/$SEAT.wake"
+EVF="$DASH/$SEAT-events.log"; WAKE="$DASH/$SEAT.wake"; HOLDER="$DASH/$SEAT.lock.holder"
 T0="${SEAT_TICK_T0:-$now}"   # first start of this unit run: a chained turn must fit in the same TimeoutStartSec
 save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
@@ -527,20 +666,30 @@ save() {   # reads the S_* variables
 
 # a. the lock serializes ticks and asks: two processes never share the session. A tick gives up fast; an ask must land.
 W="$LOCK_WAIT"; [ "$KIND" = ask ] && W="$ASK_LOCK_WAIT"
-exec 9>"$DASH/$SEAT.lock"
+exec 9>>"$DASH/$SEAT.lock"   # append-open: never truncates (the holder's own file); the holder's identity lives in $HOLDER
 if [ "$KIND" = event ]; then   # an EVENT never waits: a running turn will chain one at its end
   if ! flock -n 9; then touch "$WAKE"; echo "seat-tick: $SEAT turn running, EVENT deferred (.wake touched)"; exit 0; fi
 elif ! flock -w "$W" 9; then
   echo "seat-tick: $SEAT lock busy after ${W}s, kind=$KIND" >&2
   if [ "$KIND" = tick ]; then
+    # covered: the holder is a live EVENT/ASK turn of this seat, which is itself a full turn for the seat; the .wake makes it chain one more EVENT turn at its end
+    if cov="$(holder_covers)"; then
+      touch "$WAKE"
+      if holder_covers >/dev/null; then   # still alive after the touch: a holder that ended in between left the wake for the next turn, the tick is a plain skip
+        S_reason="lock-covered:$cov"; save
+        echo "seat-tick: $SEAT tick covered by the running ${cov%%:*} turn (pid ${cov#*:}), .wake touched, no skip counted"
+        exit 0
+      fi
+    fi
     S_skipped=$((S_skipped + 1)); S_reason="lock-busy"; save
     [ "$S_skipped" -ge "$ALARM_AT" ] && echo "ALARM $SEAT tick skipped $S_skipped ticks (lock busy)" >&2
   fi
   exit 5
 fi
+note_holder
 
 # b. guard: the interactive seat still owns the session; never kill, refuse loudly
-if why="$(guard)"; then :; else
+if why="$(guard)"; then [ "$why" = "no holder" ] || echo "seat-tick: $SEAT guard clear ($why)"; else
   echo "ALARM $SEAT guard: interactive seat still running, refusing to resume the session ($why)" >&2
   case "$S_reason" in guard:*) [ "$S_gsince" -gt 0 ] 2>/dev/null || S_gsince="$now" ;; *) S_gsince="$now" ;; esac   # guard_since = first refusal of this run of refusals (dash alarm: > 60 min)
   S_reason="guard:${why:0:100}"; save; exit 4
@@ -564,7 +713,10 @@ if [ "$ev_size" -gt "$S_evoff" ]; then
   fi
   rm -f "$evchunk"
 fi
-if [ "$KIND" = event ] && [ "$EV_NEW" = 0 ]; then rm -f "$WAKE"; echo "seat-tick: $SEAT EVENT with no new events (already delivered), nothing to do"; exit 0; fi
+if [ "$KIND" = event ] && [ "$EV_NEW" = 0 ]; then
+  rm -f "$WAKE"
+  case "$S_reason" in guard:*|lock-covered:*) S_reason=""; S_gsince=0; save ;; esac   # the guard just passed: an earlier refusal is over
+  echo "seat-tick: $SEAT EVENT with no new events (already delivered), nothing to do"; exit 0; fi
 
 rm -f "$WAKE"   # everything appended before this point is in this prompt; a later bell touches it again
 # c. prompt
@@ -609,7 +761,7 @@ fi
 
 # f. auth (token mode, as seat-relaunch.sh) + run, capped at 95 % of timeout_sec so the script records its own exit before systemd's TimeoutStartSec
 [ -r "$OAUTH_ENV" ] && { set -a; . "$OAUTH_ENV"; set +a; }
-export WM_SEAT="$SEAT" CLAUDE_SESSION_NAME="$SEAT"      # SessionStart hooks (model-role-check.sh, seat-context-start.sh) read the seat from WM_SEAT
+export WM_SEAT="$SEAT" CLAUDE_SESSION_NAME="$SEAT" WM_DECIDE_AGENT="$SEAT"      # SessionStart hooks (model-role-check.sh, seat-context-start.sh) read the seat from WM_SEAT; WM_DECIDE_AGENT = the seat identity for wm-decide and the gh shim in unit turns (row b7cb)
 CAP=$(( TIMEOUT_SEC * 95 / 100 ))
 [ "$S_chained" = 1 ] && { left=$(( TIMEOUT_SEC - ($(date +%s) - T0) - 30 )); [ "$left" -lt "$CAP" ] && CAP="$left"; }   # a chained turn must end before the unit's TimeoutStartSec
 [ "$CAP" -ge 1 ] || CAP=1
@@ -621,6 +773,9 @@ S_kind="$KIND"; [ "$SEAT" = ctl ] && [ "$KIND" = tick ] && S_kind=sweep
 if [ "$KIND" = tick ]; then S_sends=$((S_sends + 1)); S_last_sent="$start"; fi
 now="$start"; iso="$(date -Iseconds)"; S_evnew="$EV_NEW"
 TURN_DONE=0; TURN_RC=""
+# every precondition passed (lock, guard, goal line, model row): an earlier refusal / cover is over NOW, not when the turn ends (a turn runs for hours; 10-22 r7 showed a
+# stale "guard:pid ..." + guard_since for the whole of a turn that had started clean). ticks_skipped still resets only at an exit-0 end.
+case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*) S_reason=""; S_gsince=0 ;; esac
 save || echo "seat-tick: WARN pre-turn state save failed" >&2
 trap on_exit EXIT
 LEAN_ARGV=()
