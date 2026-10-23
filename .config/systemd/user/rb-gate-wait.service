@@ -1,0 +1,6 @@
+[Unit]
+Description=rb 10-22 gate MemGate wait minutes per run (jsy-29 ask 2); RB-BELL GATE-WAIT>30 -> seat DECISION to CTRL
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/python3 /mnt/data/hand/gate-wait-minutes.py --selftest
+ExecStart=/bin/sh -c "date \"+%%-I:%%M %%p\" >> /mnt/data/hand/gate-wait.log; /usr/bin/python3 /mnt/data/hand/gate-wait-minutes.py >> /mnt/data/hand/gate-wait.log 2>&1"
