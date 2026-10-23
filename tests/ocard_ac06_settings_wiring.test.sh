@@ -11,8 +11,9 @@ S="$ROOT/.claude/settings.json"
 B="$ROOT/tests/fixtures/ocard-settings-before.json"
 jq -e . "$S" >/dev/null || { echo "NOT OK - settings.json parses"; exit 1; }
 
-ss='[.hooks.SessionStart[].hooks[].command]'
-ups='[.hooks.UserPromptSubmit[].hooks[].command]'
+# aide-inbox.sh (10-23, the aide inbox) is appended last in both lists; excluded here, checked by tests/aide-inbox.test.sh.
+ss='[.hooks.SessionStart[].hooks[].command | select(test("aide-inbox[.]sh") | not)]'
+ups='[.hooks.UserPromptSubmit[].hooks[].command | select(test("aide-inbox[.]sh") | not)]'
 assert_eq "$(jq -r "$ss | map(select(test(\"operator-status-card[.]sh\"))) | length" "$S")" "1" "card appears once in SessionStart"
 assert_eq "$(jq -r '[.hooks[][].hooks[].command | select(test("operator-status-card[.]sh"))] | length' "$S")" "1" "card appears once overall"
 pos() { jq -r "$ss | map(test(\"$1\")) | index(true) // -1" "$S"; }
