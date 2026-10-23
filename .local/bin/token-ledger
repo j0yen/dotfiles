@@ -32,6 +32,10 @@
 #                        review|re-grade|regrade|verdict|DECISION -> review;
 #                        else scout (all case-insensitive)
 #         seat:<name>    top-level file whose SID is column 3 of $SEATS_TABLE
+#         seat:aide      top-level file whose SID is a line of $AIDE_SIDS_FILE
+#                        (TOKEN_LEDGER_AIDE_SIDS, default ~/.cache/fleet-dash/aide-sids;
+#                        appended by .claude/hooks/aide-inbox.sh at every aide
+#                        prompt; a seats.tsv row for the same SID wins)
 #         coder|verifier|runner|interactive
 #                        other top-level file: same text rules, else interactive
 #
@@ -45,9 +49,20 @@
 #                        days without re-scanning every JSONL on disk
 #   today-summary.txt   the line the SessionStart banner hook cats, plus an
 #                        `ALARM build_share ...` second line when today's
-#                        build_share (coder+inner weighted / total) is < 50 %
-#                        and today's weighted total is > 50M
-#   build-share.json    {date, build_share, build_weighted, total_weighted,
+#                        build_share (BUILD_ROLES_RE weighted / (total -
+#                        EXCLUDE_ROLES_RE weighted)) is < 50 %;
+#                        building = coder, inner, seat:ctl, seat:rb, seat:r7,
+#                        seat:aide (Joe 10-23 12:2x PM "controller, rb and r7
+#                        are part of the wm-build now", "aide is also part of
+#                        wm-build"); their scouts/runners/verifiers/reviews
+#                        and unknown = management; `interactive` (Joe's own
+#                        plain sessions) is excluded from both sides of the
+#                        share (Joe 10-23 1:0x PM "exclude it") and shown as
+#                        `interactive NM excluded` in the summary
+#                        and that denominator is > 50M
+#   build-share.json    {date, build_share, build_weighted, total_weighted
+#                        (full, interactive included), excluded_weighted,
+#                        share_denominator, excluded_roles_re,
 #                        per_role:{role:weighted}} for today (build_share is a
 #                        percent with one decimal, null when per_role is
 #                        unknown); for the fleet dashboard to pick up
@@ -74,6 +89,12 @@ LEDGER_TSV="$STATE_DIR/ledger.tsv"
 INDEX_TSV="$STATE_DIR/message-index.tsv"
 SUMMARY_TXT="$STATE_DIR/today-summary.txt"
 BUILD_SHARE_JSON="$STATE_DIR/build-share.json"
+AIDE_SIDS_FILE="${TOKEN_LEDGER_AIDE_SIDS:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}/aide-sids}"
+# roles whose weighted tokens count as building (ERE, matched whole by the awk below); everything else is management
+BUILD_ROLES_RE='^(coder|inner|seat:(ctl|rb|r7|aide))$'
+BUILD_ROLES_LABEL='coder+inner+seats'
+# roles left out of both sides of build_share (Joe 10-23 "exclude it"); their tokens are shown separately
+EXCLUDE_ROLES_RE='^interactive$'
 SEATS_TABLE="${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}"
 LEDGER_HEADER_V1=$'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated'
 LEDGER_HEADER_V2=$LEDGER_HEADER_V1$'\tsplit\tper_host\tcompactions'
@@ -151,6 +172,15 @@ load_seats() {
     [ -n "$s_sid" ] && SEAT_BY_SID["$s_sid"]="$s_seat"
   done < "$SEATS_TABLE"
 }
+load_aide_sids() {
+  [ -r "$AIDE_SIDS_FILE" ] || return 0
+  local a_sid
+  while IFS= read -r a_sid || [ -n "$a_sid" ]; do
+    a_sid="${a_sid%%[[:space:]]*}"
+    case "$a_sid" in ''|'#'*) continue ;; esac
+    [ -n "${SEAT_BY_SID[$a_sid]:-}" ] || SEAT_BY_SID["$a_sid"]="aide"
+  done < "$AIDE_SIDS_FILE"
+}
 
 # role_from_text TEXT MODE(sub|top) -> role, or "" when no text rule fires
 # on a top-level file (the caller maps that to interactive / scout).
@@ -198,6 +228,7 @@ gather_raw() {
   local since="$1" cutoff_epoch
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
   load_seats
+  load_aide_sids
   local f role
   while IFS= read -r -d '' f; do
     role="$(file_role "$f")"
@@ -461,21 +492,30 @@ fi
 
 summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today so far ${t_weighted} (${hhmm}Z) · forecast ${forecast} · hosts ${hosts_csv} missing ${missing_csv} · split in/cw/cr/out ${t_split_slash} · compactions ${t_compactions}"
 
-# ---- build_share: coder+inner weighted share of today's total. Unknown
+# ---- build_share: BUILD_ROLES_RE weighted share of today's total minus the
+# EXCLUDE_ROLES_RE roles (left out of numerator and denominator). Unknown
 # (older row without per_role) is "n/a" and never alarms. ----------------
 t_perrole="$(get_field "$today_date" 12 "")"
 bs_alarm=""
 bs_json_share="null"
+t_excl=0
+t_denom="${t_weighted:-0}"
 if [ -n "$t_perrole" ] && [ "${t_weighted:-0}" -gt 0 ] 2>/dev/null; then
-  t_build="$(awk -F';' '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="coder"||a[1]=="inner") s+=a[2]}} END{printf "%d", s}' <<<"$t_perrole")"
-  bs_pct=$(( t_build * 100 / t_weighted ))
-  bs_json_share="$(awk -v b="$t_build" -v t="$t_weighted" 'BEGIN{printf "%.1f", b*100/t}')"
-  summary="$summary · build_share ${bs_pct}% (coder+inner $(( (t_build + 500000) / 1000000 ))M of $(( (t_weighted + 500000) / 1000000 ))M)"
-  if [ "$bs_pct" -lt 50 ] && [ "$t_weighted" -gt 50000000 ]; then
-    bs_alarm="ALARM build_share ${bs_pct}% < 50% — building is coder+inner; the rest is management"
+  t_excl="$(awk -F';' -v re="$EXCLUDE_ROLES_RE" '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1] ~ re) s+=a[2]}} END{printf "%d", s}' <<<"$t_perrole")"
+  t_denom=$(( t_weighted - t_excl ))
+fi
+if [ -n "$t_perrole" ] && [ "$t_denom" -gt 0 ] 2>/dev/null; then
+  t_build="$(awk -F';' -v re="$BUILD_ROLES_RE" '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1] ~ re) s+=a[2]}} END{printf "%d", s}' <<<"$t_perrole")"
+  bs_pct=$(( t_build * 100 / t_denom ))
+  bs_json_share="$(awk -v b="$t_build" -v t="$t_denom" 'BEGIN{printf "%.1f", b*100/t}')"
+  summary="$summary · build_share ${bs_pct}% (${BUILD_ROLES_LABEL} $(( (t_build + 500000) / 1000000 ))M of $(( (t_denom + 500000) / 1000000 ))M; interactive $(( (t_excl + 500000) / 1000000 ))M excluded)"
+  if [ "$bs_pct" -lt 50 ] && [ "$t_denom" -gt 50000000 ]; then
+    bs_alarm="ALARM build_share ${bs_pct}% < 50% — building is ${BUILD_ROLES_LABEL} (ctl/rb/r7/aide); the rest is management"
   fi
 else
   t_build=0
+  t_excl=0
+  t_denom="${t_weighted:-0}"
   summary="$summary · build_share n/a"
 fi
 
@@ -485,8 +525,10 @@ mv -- "$tmp_summary" "$SUMMARY_TXT"
 
 tmp_bs="$STATE_DIR/.build-share.json.tmp.$$"
 jq -n --arg date "$today_date" --argjson share "$bs_json_share" \
-      --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" '
-  {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total,
+      --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" --arg roles "$BUILD_ROLES_RE" \
+      --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" '
+  {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total, build_roles_re: $roles,
+   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles,
    per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
   > "$tmp_bs" && mv -- "$tmp_bs" "$BUILD_SHARE_JSON"
 
