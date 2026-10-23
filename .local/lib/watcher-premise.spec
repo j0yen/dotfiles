@@ -48,11 +48,12 @@ watcher-outbox-pull.sh	2	unusable configuration
 # (advances only past a line wm-decide accepted: a rejected line stays buffered, E5).
 
 [decide]
-# wm-decide record --agent <owner seat r7|rb> --via <watcher> --model none --kind <decide_kind> --what <what> --why <why>
+# wm-decide record --agent <owner seat r7|rb|aide> --via <watcher> --model none --kind <decide_kind> --what <what> --why <why>
 #   --evidence <evidence> --reverse-text <reverse> --target <target> --tag by=<by> --tag wp-id=<id> --tag wp-kind=<kind> --tag host=<host>
 # --agent is pattern-restricted by wm-decide (^(rb|r7|controller|joe|fable-regrader|coder:...)$), so the watcher is in --via and the by= tag.
 decide_kind	guard
 owner_default	r7
+# WP_OWNER may be r7|rb|aide (the lib passes it through; the aide seat's fleet-token-429-watch runs with WP_OWNER=aide)
 
 [write_verbs]
 # THE WRITE-VERB LIST (E8). One verb per line: id<TAB>argv signature (space-separated tokens; the command word may be a path).
