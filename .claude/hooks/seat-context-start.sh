@@ -44,5 +44,11 @@ if [ -r "$goal" ]; then
 else
   echo "goal.md missing at $goal"
 fi
+# goal-lint (dotfiles#13): every /goal line must carry the five stop-hook judging properties; a MISSING goal is the
+# owning seat's defect, so the seat sees its line every tick. Never fails the hook; silent when the linter is absent.
+if [ -x "$HOME/.local/bin/goal-lint.sh" ] && [ -r "$goal" ]; then
+  echo "=== goal-lint (P1 final-message-only · P2 STATUS block · P3 unmeasured passes · P4 WAIT form · P5 never require/forbid) ==="
+  "$HOME/.local/bin/goal-lint.sh" "$goal" 2>&1 | sed 's/^\(goal-lint: \)\{0,1\}/goal-lint: /' || true   # one prefix whether or not the linter adds its own
+fi
 echo "=== wiki/playbooks/fleet-operations.md ==="
 if [ -r "$play" ]; then cat "$play"; else echo "playbook missing at $play"; fi
