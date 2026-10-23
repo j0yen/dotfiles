@@ -1,7 +1,0 @@
-# Example config for .local/bin/live-clone-guard.sh (documentation only; this repo does NOT install it).
-# The real file lives per host at ~/.config/live-clone-guard/repos : one absolute repo path per line, '#' comments allowed.
-# `live-clone-guard.sh ensure` (run by install.sh) writes the refusing pre-commit hook into each listed repo.
-# Override for a deliberate action: LIVE_CLONE_COMMIT=1 git commit ...
-/home/jsy/wintermute/fleet-dash
-/home/jsy/dotfiles
-/home/jsy/wintermute/wm-build

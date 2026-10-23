@@ -83,7 +83,7 @@ if [[ -x "$postapply" ]]; then
 fi
 
 # live-clone guard: install the refusing pre-commit hook into each repo listed in ~/.config/live-clone-guard/repos
-# (see docs/live-clone-guard.repos.example). No config = silent no-op; a failure here never fails the install.
+# (see README.md § Live-clone guard). No config = silent no-op; a failure here never fails the install.
 lcg="$home/.local/bin/live-clone-guard.sh"
 if [[ $DRY -eq 0 && -x "$lcg" ]]; then
   "$lcg" ensure || true
