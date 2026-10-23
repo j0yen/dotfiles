@@ -13,7 +13,13 @@
 # EVENTS (10-22): every prompt (TICK/SWEEP/EVENT/ASK) ends its first line with events_new=<k> and, when k>0, carries `EVENTS since <last prompt time>:` + the new
 # <seat>-events.log lines (oldest first, max 40, then `... +N more`). events_offset (bytes) in <seat>-tick.json advances only on exit 0. At turn end (exit 0) a
 # <seat>.wake file or unread events chain ONE more EVENT turn in the same process (exec; env SEAT_TICK_CHAINED=1 forbids a second chain, chained=1 in the state).
-# State keys: seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained.
+# QUOTA-WAIT (10-22): a turn that exits non-zero AND whose output tail matches `hit your (session|usage|weekly) limit` or `resets H[:MM]am|pm` is the plan's usage limit, not a
+# failure nobody can act on (10-22 5:58-7:00 PM: six SEAT-TICK FAILED bells, one per 20-min tick). The tick parses the reset time (the tz in the parens, else America/Los_Angeles; today, or
+# tomorrow when already past) into quota_wait_until (epoch; null when it does not parse), sets last_skip_reason=quota-wait:<iso|unknown>, does NOT count a skip, prints
+# `seat-tick: <seat> quota-wait until <time> (session limit)` and exits 0 (the unit does not fail, no bell). While now < quota_wait_until every tick/event/ask exits 0 right after the
+# lock ("quota-wait in effect until <time>"), claude not launched, events_offset and the unread events untouched (the first turn after the wait delivers them; an ASK's text is NOT queued:
+# the caller sees the stderr line). The first exit-0 turn clears quota_wait_until and the reason. A real exit 1 with no limit line stays a failure.
+# State keys: seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead.
@@ -28,7 +34,7 @@
 # LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
 # flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design;
 # its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({env: CLAUDE_CODE_AUTO_COMPACT_WINDOW 360000 + CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 50, autoCompactEnabled: true, autoCompactWindow: auto} = seats compact at 180K; ~/.claude/settings.local.json runs the aide at 1000000×50 % = 500K for $HOME and the --settings layer beats it; rb/r7 get the same pin from claude-seat/settings.json).
-# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
+# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_SELFTEST+SEAT_NOW_EPOCH (selftest only: fake clock for the quota-wait) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 DASH="${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}"
@@ -127,6 +133,29 @@ holder_covers() {
   echo "$hk:$hp"
 }
 
+# quota-wait helpers (see the QUOTA-WAIT header). The clock is overridable in selftest mode only.
+qw_now() { if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [[ "${SEAT_NOW_EPOCH:-}" =~ ^[0-9]+$ ]]; then echo "$SEAT_NOW_EPOCH"; else date +%s; fi; }
+# quota_hit <log>: 0 if the tail of a failed turn's output is a usage-limit line (claude -p prints only its final message, so 2 KB is the whole line)
+quota_hit() { tail -c 2048 "$1" 2>/dev/null | grep -Eiq 'hit your (session|usage|weekly) limit|resets[[:space:]]+[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m'; }
+# quota_kind <log>: session | usage | weekly (the word in "hit your <kind> limit"; session when only a reset time was found)
+quota_kind() { local k; k="$(tail -c 2048 "$1" 2>/dev/null | grep -Eio 'hit your (session|usage|weekly) limit' | tail -n1 | awk '{print tolower($3)}')"; echo "${k:-session}"; }
+# quota_reset <log> <now_epoch>: prints the reset epoch (next occurrence of "resets H[:MM]am|pm" after now, in the tz named in the parens else America/Los_Angeles); returns 1 if absent or unparseable
+quota_reset() {
+  local txt h m ap tz="America/Los_Angeles" day cand
+  txt="$(tail -c 2048 "$1" 2>/dev/null | grep -Eio 'resets[[:space:]]+[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m([[:space:]]*\([A-Za-z_]+/[A-Za-z_+-]+\))?' | tail -n1)"
+  [[ "$txt" =~ [Rr][Ee][Ss][Ee][Tt][Ss][[:space:]]+([0-9]{1,2})(:([0-9]{2}))?[[:space:]]*([AaPp])[Mm] ]] || return 1
+  h=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[3]:-00})); ap="${BASH_REMATCH[4]}"
+  [ "$h" -ge 1 ] && [ "$h" -le 12 ] && [ "$m" -le 59 ] || return 1
+  [[ "$txt" =~ \(([A-Za-z_]+/[A-Za-z_+-]+)\) ]] && [ -e "/usr/share/zoneinfo/${BASH_REMATCH[1]}" ] && tz="${BASH_REMATCH[1]}"
+  day="$(TZ="$tz" date -d "@$2" +%F 2>/dev/null)" || return 1
+  cand="$(TZ="$tz" date -d "$day $h:$m ${ap}m" +%s 2>/dev/null)" || return 1
+  if [ "$cand" -le "$2" ]; then
+    day="$(TZ="$tz" date -d "$day + 1 day" +%F 2>/dev/null)" || return 1
+    cand="$(TZ="$tz" date -d "$day $h:$m ${ap}m" +%s 2>/dev/null)" || return 1
+  fi
+  [[ "$cand" =~ ^[0-9]+$ ]] && echo "$cand"
+}
+
 # ---- selftest -------------------------------------------------------------------------------------
 ST_T=""; ST_PIDS=""
 st_cleanup() { local p; for p in $ST_PIDS; do kill "$p" 2>/dev/null; done; [ -n "$ST_T" ] && [ -z "${SELFTEST_KEEP:-}" ] && rm -rf "$ST_T"; [ -n "${SELFTEST_KEEP:-}" ] && echo "kept $ST_T"; }
@@ -137,7 +166,8 @@ selftest() {
   local CA="--settings $HOME/.config/claude-seat/ctl-settings.json"
   local LA="--settings $HOME/.config/claude-seat/settings.json --mcp-config $HOME/.config/claude-seat/mcp.json --strict-mcp-config"
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
-  local CS=selftest-ctl-sid-0001 RS=selftest-rb-sid-0002 SS=selftest-r7-sid-0003 TS=selftest-tmo-sid-0004
+  # the fake SIDs carry this run's pid: the guard scans every /proc cmdline for the SID, so two selftests running at once (or a seat's own session) must never share one
+  local CS=selftest-ctl-sid-$$-0001 RS=selftest-rb-sid-$$-0002 SS=selftest-r7-sid-$$-0003 TS=selftest-tmo-sid-$$-0004
   export FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
          SEAT_CLAUDE_BIN="$T/claude" SEAT_OAUTH_ENV="$T/oauth.conf" SEAT_LOCK_WAIT=1 SEAT_ASK_LOCK_WAIT=1
   mkdir -p "$T/dash"
@@ -171,6 +201,7 @@ if [ -n "${FAKE_CLOBBER:-}" ]; then   # rewrite the running script IN PLACE (sam
 fi
 sleep "${FAKE_SLEEP:-2}"
 echo "END $(date +%s.%N)"
+[ -n "${FAKE_LIMIT:-}" ] && echo "$FAKE_LIMIT"
 exit "${FAKE_EXIT:-0}"
 FAKE
   chmod +x "$SEAT_CLAUDE_BIN"
@@ -267,7 +298,7 @@ FAKE
   [ "$real_row" = "de73e73c-5095-4d39-9703-1fc439e7236d|3845" ]; chk "defaults: real seats.tsv ctl row = SID de73e73c-..., old pid 3845" $?
   out="$(CTL_ASK_DRY=1 "$HERE/ctl-ask.sh" "hello there" 2>&1)"
   [[ "$out" == *"systemd-run --user --collect --unit seat-ask-ctl-"*"seat-tick.sh ctl --ask hello there"* ]]; chk "ctl-ask.sh wrapper (dry): '${out:0:170}'" $?
-  "$SELF" ctl --status | jq -e 'has("last_tick") and has("last_sent") and has("ticks_skipped") and has("last_skip_reason") and has("sends_total") and has("last_exit") and has("last_duration_s") and has("last_prompt_kind") and has("status_file") and has("approvals_seen")' >/dev/null; chk "--status prints state JSON with all keys" $?
+  "$SELF" ctl --status | jq -e 'has("last_tick") and has("last_sent") and has("ticks_skipped") and has("last_skip_reason") and has("sends_total") and has("last_exit") and has("last_duration_s") and has("last_prompt_kind") and has("status_file") and has("approvals_seen") and has("quota_wait_until")' >/dev/null; chk "--status prints state JSON with all keys (quota_wait_until included)" $?
   [ "$("$HERE/ctl-sweep.sh" --status | jq -c .)" = "$("$SELF" ctl --status | jq -c .)" ]; chk "ctl-sweep.sh wrapper --status == seat-tick.sh ctl --status" $?
 
   # ---- the generalization: rb and r7 (33 ctl assertions above) ---------------------------------------
@@ -537,7 +568,7 @@ FAKE
   [ "$rc" = 0 ] && grep -q 'old_pid 999999999 not alive' "$T/ogd1"; chk "old_pid dead: not refused, --guard-check says so ('$(head -c 90 "$T/ogd1")')" $?
   FAKE_SLEEP=0 "$SELF" ctl >"$T/ogd2" 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q 'guard clear (old_pid 999999999 not alive)' "$T/ogd2" && grep -q '^ARGV' "$T/ogd2"; chk "old_pid dead: the tick runs and its log line says 'guard clear (old_pid 999999999 not alive)'" $?
-  bash -c "exec -a 'claude -p --resume selftest-other-sid' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local po=$!
+  bash -c "exec -a 'claude -p --resume selftest-other-sid-$$' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local po=$!
   sleep 0.4
   setpid ctl "$po"
   "$SELF" ctl --guard-check >"$T/ogd3" 2>&1; rc=$?
@@ -565,6 +596,56 @@ FAKE
   kill "$pn"; wait "$pn" 2>/dev/null; sleep 0.3
   "$SELF" r7 --event >"$T/ogn" 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q 'no new events' "$T/ogn" && [ "$(jseat r7 .guard_since)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ]; chk "EVENT with nothing new, guard now clear: exit 0 and the stale guard reason / guard_since are cleared" $?
+
+  # 17. (10-22 7:00 PM) quota-wait: the plan's usage limit is a wait, not a failure
+  local QN1 QR1 QSK QEV QOUT
+  QN1="$(TZ=America/Los_Angeles date -d '2026-10-22 18:00' +%s)"; QR1="$(TZ=America/Los_Angeles date -d '2026-10-22 19:10' +%s)"
+  QSK="$(jseat r7 .ticks_skipped)"
+  rm -f "$T/dash/r7-events.log"; FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # normalize: no events, offset 0
+  printf 'EV one\nEV two\n' >"$T/dash/r7-events.log"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >"$T/oq1" 2>"$T/eq1"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .last_skip_reason)" = "quota-wait:$(date -d "@$QR1" -Iseconds)" ] && [ "$(jseat r7 .quota_wait_until)" = "$QR1" ] && [ "$(jseat r7 .ticks_skipped)" = "$QSK" ] \
+    && grep -qF "seat-tick: r7 quota-wait until $(date -d "@$QR1" '+%-I:%M %p %Z') (session limit)" "$T/eq1"; chk "quota-wait (a): limit line + exit 1 -> exit 0, reason quota-wait:<iso>, quota_wait_until=$QR1, ticks_skipped unchanged ($QSK), stderr line: '$(grep -m1 quota-wait "$T/eq1")'" $?
+  [ "$(jseat r7 .last_exit)" = 1 ] && [ "$(jseat r7 .events_offset)" = 0 ]; chk "quota-wait (a): last_exit=1 recorded truthfully, events_offset not advanced (events stay unread)" $?
+  QEV="$(jseat r7 .events_new)"
+  for qk in tick event ask; do
+    rm -f "$T/dash/prompt.r7.txt"
+    case "$qk" in tick) qa="" ;; event) qa="--event" ;; ask) qa="--ask hold-this" ;; esac
+    # shellcheck disable=SC2086
+    SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 $qa >"$T/oq2$qk" 2>"$T/eq2$qk"; rc=$?
+    [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oq2$qk" && [ ! -e "$T/dash/prompt.r7.txt" ] && grep -qF "seat-tick: r7 quota-wait in effect until $(date -d "@$QR1" '+%-I:%M %p %Z')" "$T/eq2$qk" \
+      && [ "$(jseat r7 .last_skip_reason)" = "quota-wait:$(date -d "@$QR1" -Iseconds)" ] && [ "$(jseat r7 .quota_wait_until)" = "$QR1" ] && [ "$(jseat r7 .events_offset)" = 0 ] && [ "$(jseat r7 .events_new)" = "$QEV" ] && [ "$(jseat r7 .ticks_skipped)" = "$QSK" ]; chk "quota-wait (b): $qk inside the wait -> exit 0, claude not launched, reason/quota_wait_until unchanged, events_offset 0 and events_new $QEV unchanged" $?
+  done
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QR1 + 5))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oq3" 2>"$T/eq3"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oq3" && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ] && [ "$(jseat r7 .last_exit)" = 0 ] && grep -q 'EV one' "$T/dash/prompt.r7.txt"; chk "quota-wait (c): first tick after the wait -> claude runs, quota_wait_until and the reason cleared, the unread events (EV one) delivered" $?
+  FAKE_SLEEP=0 FAKE_EXIT=1 "$SELF" r7 >"$T/oq4" 2>"$T/eq4"; rc=$?
+  [ "$rc" = 1 ] && [ "$(jseat r7 .last_exit)" = 1 ] && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ] && ! grep -q 'quota-wait' "$T/eq4"; chk "quota-wait (d): exit 1 WITHOUT a limit line -> still exit 1, last_exit=1, no quota-wait" $?
+  FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="all your base: resets are fine, nothing at 5 is limited" "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = 1 ]; chk "quota-wait (d2): exit 1 with a non-matching 'resets' prose line -> still exit 1" $?
+  local QN5 QR5
+  QN5="$(TZ=America/Los_Angeles date -d '2026-10-22 23:30' +%s)"; QR5="$(TZ=America/Los_Angeles date -d '2026-10-23 00:05' +%s)"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN5" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 12:05am (America/Los_Angeles)" "$SELF" r7 >"$T/oq5" 2>"$T/eq5"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .quota_wait_until)" = "$QR5" ]; chk "quota-wait (e): 'resets 12:05am' at 11:30 PM -> tomorrow 12:05 AM ($QR5), got $(jseat r7 .quota_wait_until)" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QR5" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # clear the wait (now == reset: the wait is over)
+  local QN6 QR6
+  QN6="$(TZ=America/Los_Angeles date -d '2026-10-22 23:30' +%s)"; QR6="$(TZ=America/Los_Angeles date -d '2026-10-22 23:50' +%s)"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN6" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your usage limit · resets 11:50 PM" "$SELF" r7 >"$T/oq6" 2>"$T/eq6"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .quota_wait_until)" = "$QR6" ] && grep -q '(usage limit)' "$T/eq6"; chk "quota-wait (e2): 'resets 11:50 PM' with no tz and not yet past -> today ($QR6), kind 'usage' named" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QR6" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · try again later" "$SELF" r7 >"$T/oq7" 2>"$T/eq7"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .last_skip_reason)" = "quota-wait:unknown" ] && grep -qF 'seat-tick: r7 quota-wait until unknown (session limit)' "$T/eq7"; chk "quota-wait (f): no reset time -> exit 0, quota_wait_until null, reason quota-wait:unknown" $?
+  FAKE_SLEEP=0 "$SELF" r7 >"$T/oq8" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oq8" && [ "$(jseat r7 .last_skip_reason)" = null ]; chk "quota-wait (f2): the next scheduled tick after an unknown reset simply tries again (claude runs)" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 25:99pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>"$T/eq9"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .last_skip_reason)" = "quota-wait:unknown" ]; chk "quota-wait (f3): out-of-range reset time (25:99pm) -> quota_wait_until null, quota-wait:unknown" $?
+  FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>&1
+  QOUT="$("$SELF" r7 --status)"
+  [ "$(jq -r .quota_wait_until <<<"$QOUT")" = "$QR1" ] && jq -e 'has("quota_wait_until")' <<<"$QOUT" >/dev/null; chk "quota-wait (g): --status shows quota_wait_until=$QR1" $?
+  [ "$("$SELF" ctl --status | jq 'has("quota_wait_until")')" = true ]; chk "quota-wait (g2): ctl --status also carries the key" $?
+  SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 "$SELF" r7 >"$T/oq10" 2>"$T/eq10"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oq10"; chk "quota-wait (h): SEAT_NOW_EPOCH is ignored outside selftest mode (the real clock is past the wait, claude runs)" $?
+  rm -f "$T/dash/r7-events.log"
 
   # 16. contracts against the REAL table, goal.md and unit files (read-only; no-drift)
   local real="$HOME/.claude/state/seats.tsv" realgoal="$HOME/Notes/wiki/goal.md" bad=""
@@ -648,6 +729,7 @@ sget() { jq -r "$1" <<<"$st" 2>/dev/null; }
 S_last_sent="$(sget '.last_sent // 0')"; S_skipped="$(sget '.ticks_skipped // 0')"; S_sends="$(sget '.sends_total // 0')"
 S_reason="$(sget '.last_skip_reason // ""')"; S_seen="$(sget '.approvals_seen // 0')"; S_exit="$(sget '.last_exit // null')"
 S_dur="$(sget '.last_duration_s // null')"; S_kind="$(sget '.last_prompt_kind // ""')"; S_gsince="$(sget '.guard_since // 0')"
+S_qw="$(sget '.quota_wait_until // empty')"; [[ "$S_qw" =~ ^[0-9]+$ ]] || S_qw=""
 S_evoff="$(sget '.events_offset // 0')"; S_lastprompt="$(sget '.last_prompt // 0')"; S_evnew="$(sget '.events_new // 0')"; S_chained="${SEAT_TICK_CHAINED:-0}"
 PREV_SENT="$S_last_sent"
 EVF="$DASH/$SEAT-events.log"; WAKE="$DASH/$SEAT.wake"; HOLDER="$DASH/$SEAT.lock.holder"
@@ -656,12 +738,12 @@ save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
   jq -n --arg seat "$SEAT" --arg iso "$iso" --argjson ep "$now" --argjson ls "$S_last_sent" --argjson sk "$S_skipped" --arg why "$S_reason" \
         --argjson sn "$S_sends" --argjson as "$S_seen" --argjson ex "$S_exit" --argjson du "$S_dur" --arg kind "$S_kind" --arg sf "$SFILE" --argjson gs "$S_gsince" \
-        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" \
+        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" \
     '{seat:$seat, last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
       sends_total:$sn, last_exit:$ex, last_duration_s:$du, last_prompt_kind:(if $kind=="" then null else $kind end),
       status_file:(if $sf=="" then null else $sf end), approvals_seen:$as,
       guard_since:(if ($why|startswith("guard:")) and $gs>0 then $gs else null end),
-      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch, quota_wait_until:$qw}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
 }
 
 # a. the lock serializes ticks and asks: two processes never share the session. A tick gives up fast; an ask must land.
@@ -687,6 +769,14 @@ elif ! flock -w "$W" 9; then
   exit 5
 fi
 note_holder
+
+# a2. quota-wait in effect: the plan's usage limit has not reset yet, so claude cannot answer. Exit 0 (no unit failure, no bell) BEFORE the guard scan, the events read, the
+# prompt and the claude launch: events_offset, the unread events and the .wake file stay exactly as they are for the first turn after the wait.
+if [ -n "$S_qw" ] && [ "$(qw_now)" -lt "$S_qw" ]; then
+  save   # last_tick moves, every other field (reason quota-wait:..., quota_wait_until, ticks_skipped, events_offset) is unchanged
+  echo "seat-tick: $SEAT quota-wait in effect until $(date -d "@$S_qw" '+%-I:%M %p %Z')" >&2
+  exit 0
+fi
 
 # b. guard: the interactive seat still owns the session; never kill, refuse loudly
 if why="$(guard)"; then [ "$why" = "no holder" ] || echo "seat-tick: $SEAT guard clear ($why)"; else
@@ -775,7 +865,7 @@ now="$start"; iso="$(date -Iseconds)"; S_evnew="$EV_NEW"
 TURN_DONE=0; TURN_RC=""
 # every precondition passed (lock, guard, goal line, model row): an earlier refusal / cover is over NOW, not when the turn ends (a turn runs for hours; 10-22 r7 showed a
 # stale "guard:pid ..." + guard_since for the whole of a turn that had started clean). ticks_skipped still resets only at an exit-0 end.
-case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*) S_reason=""; S_gsince=0 ;; esac
+case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*|quota-wait:*) S_reason=""; S_gsince=0 ;; esac   # quota-wait: the wait is over (a2 let this turn through); quota_wait_until itself clears at an exit-0 end
 save || echo "seat-tick: WARN pre-turn state save failed" >&2
 trap on_exit EXIT
 LEAN_ARGV=()
@@ -792,7 +882,17 @@ echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"
 now="$end"; iso="$(date -Iseconds)"
 st="$(status)"; S_skipped="$(sget '.ticks_skipped // 0')"   # re-read: nothing else writes under the lock, but be exact (sends_total / last_sent were written before the turn)
 S_exit="$rc"; S_dur=$((end - start))
-if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; fi
+if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; fi
+# quota-wait: a failed turn whose output is the usage-limit line is not a failure anyone can act on. Not a skip (ticks_skipped untouched), events/approvals/lastprompt
+# not advanced, exit 0 so the unit does not fail (no OnFailure bell); a2 then holds the next ticks until the reset. An unparseable reset leaves quota_wait_until null.
+if [ "$rc" != 0 ] && quota_hit "$LOG"; then
+  S_qw=""; qw_iso="unknown"; qw_txt="unknown"
+  if qw_ep="$(quota_reset "$LOG" "$(qw_now)")"; then S_qw="$qw_ep"; qw_iso="$(date -d "@$qw_ep" -Iseconds)"; qw_txt="$(date -d "@$qw_ep" '+%-I:%M %p %Z')"; fi
+  S_reason="quota-wait:$qw_iso"
+  save && TURN_DONE=1
+  echo "seat-tick: $SEAT quota-wait until $qw_txt ($(quota_kind "$LOG") limit)" >&2
+  exit 0
+fi
 save && TURN_DONE=1
 
 # g. chain: a bell that arrived while this turn ran (a .wake file, or log bytes past the delivered offset) is handled now, not at the next 20-min tick.
