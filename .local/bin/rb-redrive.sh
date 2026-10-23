@@ -37,8 +37,18 @@ classify() { # OPS -> admit | refuse | dropped | none
 }
 alarm() { local m="RB-BELL redrive-alarm run=$RUN: $1"; echo "$m"; [ -n "${FIX_SSH_DIR:-}" ] && return 0; declare -F rb_bell >/dev/null && rb_bell "$m" || timeout 30 "$HOME/.local/bin/seat-event.sh" rb "$m" || true; }
 
+selftest_preflight() { # rrdh: under RB_REDRIVE_SELFTEST=1 both seams must be hermetic BEFORE any side effect; rc 71 (rc 4 already means "refused by the daemon"), reason on stderr
+  [ "${RB_REDRIVE_SELFTEST:-}" = 1 ] || return 0
+  local d=${RB_REDRIVE_DECIDE:-}
+  [ -n "$d" ] || { echo "REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE-unset" >&2; return 71; }
+  case $d in /*) ;; *) echo "REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE-not-absolute" >&2; return 71;; esac
+  [ "${d##*/}" != wm-decide ] || { echo "REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE-is-wm-decide" >&2; return 71; }
+  [ -n "${FIX_SSH_DIR:-}" ] || { echo "REFUSED selftest-unhermetic: FIX_SSH_DIR" >&2; return 71; }
+  [ -d "$FIX_SSH_DIR" ] || { echo "REFUSED selftest-unhermetic: FIX_SSH_DIR-not-a-dir" >&2; return 71; }
+}
+
 main() {
-  [ "${RB_REDRIVE_SELFTEST:-}" = 1 ] && [ -z "${RB_REDRIVE_DECIDE:-}" ] && { echo "REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE unset (no real wm-decide)" >&2; exit 71; }
+  selftest_preflight || return 71   # rrdh: the FIRST statement, before argument parsing, sigma, decide or rssh (rssh's exit 71 inside $(...) only ends the subshell)
   RUN=""; FROM=""; WHY=""; FORCE=""; STOP=""; EXPECT=""
   while [ $# -gt 0 ]; do case "$1" in
     --from) FROM=${2:-}; shift 2;; --why) WHY=${2:-}; shift 2;; --force) FORCE=--force; shift;; --stop) STOP=--stop; shift;; --expect) EXPECT=${2:-}; shift 2;;
@@ -47,7 +57,8 @@ main() {
   [ -n "$RUN" ] && [ -n "$FROM" ] && [ -n "$WHY" ] || { echo "usage: rb-redrive.sh <run> --from <stage> --why <text> [--force]"; return 2; }
   local sig row t0 rep ops c exp DECIDE=${RB_REDRIVE_DECIDE:-wm-decide}
   case $FROM in land) exp=released;; gate) exp=land;; inner) exp=gate;; *) exp=inner;; esac; exp=${EXPECT:-$exp}
-  sig=$(sigma); echo "SIGMA run=$RUN $sig"
+  sig=$(sigma) || { echo "REFUSED sigma rc=$?" >&2; return 71; }   # rrdh: a refusal inside the substitution stops main before decide
+  echo "SIGMA run=$RUN $sig"
   row=$($DECIDE record --agent rb --model claude-opus-5-5 --kind run-state --run "rb:$RUN" --expect "$exp" --what "REDRIVE $RUN --from $FROM $FORCE $STOP via rb-redrive.sh: $WHY" --why "$WHY" --evidence "Σ at redrive: $sig" --reverse-text "pause the run / redrive from the prior stage" 2>&1 | tail -1)
   [[ "$row" =~ ^d-[0-9]{8}-[0-9]{6}-rb-[0-9a-f]{4}$ ]] || { echo "ROW REFUSED, no redrive: $row"; return 3; }
   echo "ROW $row"
@@ -105,6 +116,17 @@ if [ "${1:-}" = --selftest ]; then
   # 1046 11:48 AM 10-23: daemon 'redrive-refused reason=run-open … pass --stop' -> --stop passes through to wm-build run redrive (the daemon's operator-stop path; never systemctl stop)
   mk "MemAvailable_G=25.0" "QUEUED run=1046" "release-mem admit"; out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1046 --from land --why t --stop 2>&1); g "$out"
   grep -qE 'run redrive 1046 --from land +--stop --operator rb' "$T/s/argv" && ok "--stop passed to the daemon" || no "--stop not passed: $(grep 'run redrive' "$T/s/argv")"
+  # rrdh (e): FIX_SSH_DIR empty + a RECORDING decide + a recording ssh on PATH: the hoist refuses rc 71 before ANY call (main in a subshell, so a stray exit cannot kill this block)
+  mkdir "$T/bin"; printf '#!/bin/bash\nprintf "%%s\\n" "$0 $*" >> "%s/ssh.calls"\nexit 99\n' "$T" > "$T/bin/ssh"; printf '#!/bin/bash\nprintf "%%s\\n" "$0 $*" >> "%s/dec.calls"\necho d-20261023-060000-rb-abcd\n' "$T" > "$T/rec"; cp "$T/rec" "$T/bin/wm-decide"; chmod +x "$T/bin/ssh" "$T/rec" "$T/bin/wm-decide"
+  : > "$T/dec.calls"; : > "$T/ssh.calls"; "$T/rec" probe >/dev/null; PATH="$T/bin:$PATH" ssh probe >/dev/null 2>&1
+  [ "$(wc -l < "$T/dec.calls")" = 1 ] && [ "$(wc -l < "$T/ssh.calls")" = 1 ] && ok "preflight (e) positive control: recording decide + ssh fakes each logged exactly one call" || no "preflight (e) positive control: fakes do not record"
+  : > "$T/dec.calls"; : > "$T/ssh.calls"
+  out=$( (export FIX_SSH_DIR=""; export RB_REDRIVE_DECIDE="$T/rec"; PATH="$T/bin:$PATH"; main 1039 --from land --why t) 2>&1 ); rc=$?
+  [ $rc = 71 ] && grep -qx 'REFUSED selftest-unhermetic: FIX_SSH_DIR' <<<"$out" && [ ! -s "$T/dec.calls" ] && [ ! -s "$T/ssh.calls" ] && ok "preflight (e): FIX_SSH_DIR empty -> rc 71 + hoist stderr, decide and ssh never called" || no "preflight (e) rc=$rc calls=$(cat "$T/dec.calls" "$T/ssh.calls" | wc -l): $out"
+  # rrdh (f): FIX_SSH_DIR populated but RB_REDRIVE_DECIDE=wm-decide (a real wm-decide would run): refused rc 71, nothing called
+  mk "MemAvailable_G=25.0"; : > "$T/dec.calls"; : > "$T/ssh.calls"
+  out=$( (export FIX_SSH_DIR="$T/s"; export RB_REDRIVE_DECIDE=wm-decide; PATH="$T/bin:$PATH"; main 1039 --from land --why t) 2>&1 ); rc=$?
+  [ $rc = 71 ] && grep -qx 'REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE-not-absolute' <<<"$out" && [ ! -s "$T/dec.calls" ] && [ ! -s "$T/ssh.calls" ] && [ ! -e "$T/s/argv" ] && ok "preflight (f): populated FIX_SSH_DIR + RB_REDRIVE_DECIDE=wm-decide -> rc 71, nothing called" || no "preflight (f) rc=$rc: $out"
   case "$T" in */tmp.*) rm -rf -- "${T:?}";; esac
   [ $f = 0 ] && echo "SELFTEST PASS rb-redrive.sh" || echo "SELFTEST FAIL rb-redrive.sh"; exit $f
 fi

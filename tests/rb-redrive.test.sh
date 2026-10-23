@@ -47,7 +47,7 @@ done
 # --- R1: positive control. Empty logs must mean interception, not inactivity ---
 n_read=$(grep -cE '^\++ cat .*/s/[0-9]+\.out$' "$R/xtrace")
 [ "$n_read" -ge 10 ] && pass "R1 fixture reads traced: $n_read 'cat <FIX_SSH_DIR>/N.out' lines (>= 10)" || bad "R1 only $n_read fixture reads traced"
-for c in 'admit path: row first' 'dropped once -> re-issued once' 'dropped twice -> alarm' 'refused -> alarm rc 5' 'row refused -> no redrive call' "daemon 'error:' reply" '--stop passed to the daemon'; do
+for c in 'admit path: row first' 'dropped once -> re-issued once' 'dropped twice -> alarm' 'refused -> alarm rc 5' 'row refused -> no redrive call' "daemon 'error:' reply" '--stop passed to the daemon' 'preflight (e) positive control' 'preflight (e): FIX_SSH_DIR empty' 'preflight (f): populated FIX_SSH_DIR'; do
   grep -qF "ok   $c" "$R/selftest.out" && pass "R1 fixture-driven case ran: $c" || bad "R1 case missing: $c"
 done
 
@@ -88,20 +88,19 @@ for b in ssh wm-decide wm-build; do
 done
 
 # --- rrdfc2: the two rssh guards, each reached with the DECIDE guard satisfied (a stub decide under $R), so rssh is the guard that fires ---
-# sigma's rssh runs in a pipeline subshell, so main can continue past it: the stub decide IS invoked (logged), and the call-57 rssh lands the exit-71 -> "REFUSED by the daemon" rc 4.
+# rrdh: main's hoisted preflight now refuses an empty FIX_SSH_DIR before sigma/decide/rssh run, so the :18 rssh guard is reached by calling rssh directly (sourced), not through main.
 printf '#!/bin/bash\nprintf "%%s\\n" "$0 $*" >> "%s/logs/stubdecide.log"\necho d-20261023-060000-rb-abcd\n' "$R" > "$R/stubdecide"; chmod +x "$R/stubdecide"
 mkdir -p "$R/emptyfix"
 
-# (c) FIX_SSH_DIR empty -> the :18 guard
+# (c) FIX_SSH_DIR empty -> the rssh :18 guard (rssh called directly)
 for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
-cout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR= RB_REDRIVE_DECIDE="$R/stubdecide" bash "$script" 1039 --from land --why t 2>&1); crc=$?
+cout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR= S="$script" bash -c '. "$S"; rssh "echo hi"' 2>&1); crc=$?
 printf '%s\n' "$cout" > "$R/c.out"
-[ "$crc" = 4 ] && pass "(c) FIX_SSH_DIR-empty run rc 4 (the subshell's 71 -> REFUSED by the daemon)" || bad "(c) rc=$crc (expected 4): $cout"
+[ "$crc" = 71 ] && pass "(c) rssh with FIX_SSH_DIR empty: rc 71" || bad "(c) rc=$crc (expected 71): $cout"
 grep -q 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset' <<<"$cout" && pass "(c) output: $(grep -m1 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset' <<<"$cout")" || bad "(c) no 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset': $cout"
 for b in ssh wm-decide wm-build; do
   if [ -s "$R/logs/$b.log" ]; then bad "(c) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(c) fake $b log empty"; fi
 done
-echo "INFO (c) stub decide invoked $(wc -l < "$R/logs/stubdecide.log") time(s) before the ssh refusal (main runs past sigma's subshell exit)"
 
 # (d) FIX_SSH_DIR an EMPTY dir -> the :20 guard; the .n counter lives in the sigma/rssh subshells, so a repeating "fixture 1 missing" is expected
 for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
@@ -113,6 +112,49 @@ for b in ssh wm-decide wm-build; do
   if [ -s "$R/logs/$b.log" ]; then bad "(d) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(d) fake $b log empty"; fi
 done
 echo "INFO (d) stub decide invoked $(wc -l < "$R/logs/stubdecide.log") time(s)"
+
+# --- rrdh (e): the hoisted preflight. FIX_SSH_DIR empty + a RECORDING stub decide + the recording fake ssh: main must refuse rc 71 BEFORE any call ---
+# e_eval SCRIPT -> e_fails[] holds the quoted text of every failed assertion. The positive control (R4) runs first: each recorder must gain exactly one line when called directly,
+# so an empty log after main means "never called", not "recorder broken". Reused on the mutated copies so m1/m2 are judged by the SAME assertions.
+e_eval() {
+  local s=$1 n m; e_fails=()
+  for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
+  "$R/stubdecide" probe >/dev/null; ssh probe >/dev/null 2>&1
+  n=$(wc -l < "$R/logs/stubdecide.log"); m=$(wc -l < "$R/logs/ssh.log")
+  [ "$n" = 1 ] && [ "$m" = 1 ] || e_fails+=("positive control: recorders gained stubdecide=$n ssh=$m lines, expected 1 and 1")
+  for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
+  eout=$( (RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR= RB_REDRIVE_DECIDE="$R/stubdecide" bash "$s" 1039 --from land --why t) 2>&1 ); erc=$?
+  printf '%s\n' "$eout" > "$R/e.out"
+  [ "$erc" = 71 ] || e_fails+=("rc == 71 (got rc=$erc)")
+  grep -qx 'REFUSED selftest-unhermetic: FIX_SSH_DIR' <<<"$eout" || e_fails+=("stderr has the hoist's own line 'REFUSED selftest-unhermetic: FIX_SSH_DIR' (got: $(grep -m1 REFUSED <<<"$eout"))")
+  for b in stubdecide ssh wm-decide wm-build; do [ ! -s "$R/logs/$b.log" ] || e_fails+=("$b calls file empty (got $(wc -l < "$R/logs/$b.log") line(s): $(head -c 120 "$R/logs/$b.log"))"); done
+}
+e_eval "$script"
+[ "${#e_fails[@]}" = 0 ] && pass "(e) positive control ok (recorders gained exactly one line each), then FIX_SSH_DIR empty: rc 71, hoist stderr, stubdecide/ssh/wm-decide/wm-build logs empty" || bad "(e) failed: $(printf '%s | ' "${e_fails[@]}")"
+
+# --- rrdh mutations, scratch copies by pattern, each guarded by cmp -s ---
+# m1: delete the hoist call. The sigma guard still stops main before decide, so rc 71 and the empty logs HOLD (masked); only the hoist's own stderr line goes missing (R1).
+m1="$R/rb-redrive.m1.sh"; sed -e '/^  selftest_preflight || return 71/d' "$script" > "$m1"
+if cmp -s "$script" "$m1"; then bad "m1 changed nothing (pattern drift)"; else
+  e_eval "$m1"
+  if [ "${#e_fails[@]}" = 1 ] && [[ "${e_fails[0]}" == "stderr has the hoist's own line"* ]]; then pass "m1 (hoist deleted): (e) FAILS on exactly: ${e_fails[0]}"; else bad "m1 expected exactly the hoist-stderr assertion to fail, got ${#e_fails[@]}: $(printf '%s | ' "${e_fails[@]}")"; fi
+fi
+# m2: hoist deleted AND the sigma guard dropped -> decide runs (one logged call) and the later rssh refusal ends as rc 4.
+m2="$R/rb-redrive.m2.sh"; sed -e '/^  selftest_preflight || return 71/d' -e 's/^  sig=\$(sigma) || {.*$/  sig=$(sigma)/' "$script" > "$m2"
+if cmp -s "$m1" "$m2"; then bad "m2 changed nothing beyond m1 (pattern drift)"; else
+  e_eval "$m2"; mf=$(printf '%s | ' "${e_fails[@]}")
+  if [[ "$mf" == *"rc == 71"* && "$mf" == *"stubdecide calls file empty"* ]]; then pass "m2 (hoist deleted + sigma guard dropped): (e) FAILS on: $mf"; else bad "m2 expected the rc and stubdecide-calls assertions to fail, got: $mf"; fi
+fi
+
+# --- rrdh (f): FIX_SSH_DIR populated, RB_REDRIVE_DECIDE = wm-decide (bare name resolved on PATH, then an absolute path with that basename): R3 refuses before any call ---
+mkdir -p "$R/popfix"; echo "MemAvailable_G=25.0" > "$R/popfix/1.out"
+for want in "wm-decide:RB_REDRIVE_DECIDE-not-absolute" "$R/fakes/wm-decide:RB_REDRIVE_DECIDE-is-wm-decide"; do
+  dv=${want%%:RB*}; line="REFUSED selftest-unhermetic: RB${want#*:RB}"
+  for b in ssh wm-decide wm-build; do : > "$R/logs/$b.log"; done; rm -f -- "$R/popfix/argv" "$R/popfix/.n"
+  fout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR="$R/popfix" RB_REDRIVE_DECIDE="$dv" bash "$script" 1039 --from land --why t 2>&1); frc=$?
+  [ "$frc" = 71 ] && grep -qx "$line" <<<"$fout" && pass "(f) DECIDE=$dv with a populated FIX_SSH_DIR: rc 71, $line" || bad "(f) DECIDE=$dv rc=$frc: $fout"
+  if [ -s "$R/logs/ssh.log" ] || [ -s "$R/logs/wm-decide.log" ] || [ -s "$R/logs/wm-build.log" ] || [ -e "$R/popfix/argv" ] || [ -e "$R/popfix/.n" ]; then bad "(f) DECIDE=$dv: something was called (ssh/wm-decide/wm-build logs or the fixture argv)"; else pass "(f) DECIDE=$dv: fake ssh/wm-decide/wm-build logs empty and no fixture consumed"; fi
+done
 
 if [ "$fail" = 0 ]; then echo "rb-redrive.test: PASS"; else echo "rb-redrive.test: FAIL"; fi
 exit "$fail"
