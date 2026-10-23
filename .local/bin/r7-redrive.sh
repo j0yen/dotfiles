@@ -47,7 +47,8 @@ selftest() {
   printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "recorded"\nexit 0\n' "$S" > "$S/dec-noid"
   printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\n' "$S" > "$S/dec-ok"
   printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "refused: conflicts with earlier row d-20261023-021500-r7-ab12"\nexit 2\n' "$S" > "$S/dec-quote"
-  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\nexit 3\n' "$S" > "$S/dec-idrc"; chmod +x "$S"/dec-*
+  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\nexit 3\n' "$S" > "$S/dec-idrc"
+  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "warning: see d-20261023-021500-r7-ab12"\nexit 0\n' "$S" > "$S/dec-embed"; chmod +x "$S"/dec-*
   local A=(--expect land --why w --evidence e)
   out=$(WM_DECIDE_BIN=$S/dec-refuse R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "REFUSED" && echo "$out" | grep -q "needs --expect"' "refused row -> rc 2, wm-decide reason shown, ssh never called"
@@ -57,7 +58,9 @@ selftest() {
   chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "conflicts with earlier row"' "refusal QUOTING an id -> rc 2, ssh never called"
   out=$(WM_DECIDE_BIN=$S/dec-idrc R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "rc=3"' "id line under a nonzero exit -> rc 2, ssh never called"
-  : > "$S/dec.log"
+  out=$(WM_DECIDE_BIN=$S/dec-embed R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
+  chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ]' "rc 0 but the id only INSIDE a sentence -> rc 2, ssh never called"
+  rm -f "$S/ssh.log"; : > "$S/dec.log"
   out=$(WM_DECIDE_BIN=$S/dec-ok R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 0 ] && [ "$(wc -l < "$S/ssh.log")" = 1 ] && grep -q "wm-build run redrive 490 --from land --operator r7" "$S/ssh.log" && echo "$out" | grep -q "row=d-20261023-021500-r7-ab12"' "id -> exactly one ssh redrive with the exact argv, row quoted"
   chk 'grep -q -- "--kind run-state --run ryzen7:490 --expect land" "$S/dec.log"' "row is a run-state row on ryzen7:490 with --expect"
