@@ -9,7 +9,10 @@
 #             AND the earliest of those resets is more than 20 min away.
 #   CANDIDATE the next account in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/ring (ordered names, # comments) after the current one that has a store
 #             entry, skipping an account rotated away from < 6 h ago (floor) or whose rotations.log previous_reset_at is still in the future,
+#             one BLOCKED (state file blocked-until-<account> = one epoch, set by ft_block / `fleet-token-store.sh block`; a limit whose reset is known),
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
+#   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the latest limited seat's quota_wait_until) BEFORE it tries any
+#             rotation, and keeps that block if the rotation fails. No candidate (all blocked / failed / floored) = no rotation, stay, one ALARM.
 #   ACTION    wp_gate && wp_emit_write rotate ... && fleet-token-rotate.sh <candidate> --by fleet-token-429-watch --trigger 429 --why "<the evidence>" (it bells and starts the seat ticks).
 #             ONE wm-decide row per watcher rotation: the lib's (pre-write, premise-stamped, outbox first); rotate's own row is switched off for this call
 #             (FLEET_TOKEN_RECORD_CMD=true). A hand or schedule rotation still gets rotate's row.
@@ -81,6 +84,8 @@ probe_limit() {
 skip_reason() {
   local c="$1" now="$2" line ts rs f last
   [ -f "$FT_STORE/$c" ] || { echo "no store entry"; return; }
+  last="$(ft_block_reason "$c" "$now")"
+  if [ -n "$last" ]; then echo "$last"; return; fi
   f="$FT_STATE/fail-$c.stamp"; last="$(cat "$f" 2>/dev/null || true)"
   if [[ "$last" =~ ^[0-9]+$ ]] && [ $(( now - last )) -lt "$FAIL_BACKOFF" ]; then echo "rotation to it failed < 30 min ago"; return; fi
   line="$(grep -F " previous=$c " "$FT_ROTLOG" 2>/dev/null | tail -n1 || true)"
@@ -129,6 +134,17 @@ watch() {
     evidence="seat ${limited[0]} is quota-waiting on account $cur until $(ft_iso "$minreset") and a haiku probe on the current token failed with a limit message"
   else
     wlog "one seat (${limited[0]}) quota-waiting on $cur, the haiku probe did not confirm a limit: no rotation"; exit 0
+  fi
+
+  # block the account that hit the limit BEFORE any rotation attempt; the block stays even if the rotation fails
+  local maxreset="" q
+  for s in "${limited[@]}"; do
+    q="$(jq -r '.quota_wait_until // empty' "$FT_DASH/$s-tick.json" 2>/dev/null || true)"
+    [[ "$q" =~ ^[0-9]+$ ]] || continue
+    if [ -z "$maxreset" ] || [ "$q" -gt "$maxreset" ]; then maxreset="$q"; fi
+  done
+  if [ -n "$maxreset" ] && ft_block "$cur" "$maxreset" "429 on ${limited[*]} (seat-tick quota_wait_until)" keep-later; then
+    wlog "blocked $cur until $(ft_la_iso "$(ft_blocked_until "$cur")")"
   fi
 
   local ring=() line name i start=0 order=() cand="" why="" skipped=""
@@ -197,7 +213,7 @@ EOF2
         else printf '{"quota_wait_until":%s,"quota_account":"%s"}\n' "$((NOW + v))" "$acct" >"$FT_DASH/$s-tick.json"; fi
       done
     }
-    reset() { rm -rf "$WP_STATE"; rm -f "$FAKE_LOG_DIR"/*.log "$FT_ROTLOG" "$FT_STATE"/*.stamp "$FT_DASH/ctl-events.log"; "$(dirname "$SELF")/fleet-token-store.sh" current acctA >/dev/null; printf '{"account":"acctA","placed_at":null,"by":"hand","trigger":"seed"}\n' >"$FT_TOKJSON"; ft_st_store acctB "$c-2"; ft_st_store acctC "$c-3"; ft_st_store acctD "$c-4"; unset FAKE_PROBE; }
+    reset() { rm -rf "$WP_STATE"; rm -f "$FAKE_LOG_DIR"/*.log "$FT_ROTLOG" "$FT_STATE"/*.stamp "$FT_STATE"/blocked-until-* "$FT_BLOCKLOG" "$FT_DASH/ctl-events.log"; "$(dirname "$SELF")/fleet-token-store.sh" current acctA >/dev/null; printf '{"account":"acctA","placed_at":null,"by":"hand","trigger":"seed"}\n' >"$FT_TOKJSON"; ft_st_store acctB "$c-2"; ft_st_store acctC "$c-3"; ft_st_store acctD "$c-4"; unset FAKE_PROBE; }
     runw() { "$SELF" >"$o" 2>"$e"; }
 
     # 1. nothing limited / the wait is already over / limited under ANOTHER account
@@ -270,6 +286,36 @@ EOF2
     [ "$rc" = 0 ] && [ -z "$(fl place)" ] && [ -z "$(fl record)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'disarmed (premise: .* verdict=GONE' "$o" && [ "$(cut -f4,6 "$WP_STATE/fleet-token-429-watch.tsv")" = "$(printf 'GONE\t0')" ]; ft_st_chk "premise command GONE (ctl-tick.json missing): disarmed, no rotation, no row" $?
     reset; seats 7200 7200 -; mkdir -p "$WP_STATE"; mkdir "$WP_STATE/outbox-$(date +%Y%m%d).jsonl"; runw; rc=$?
     [ "$rc" = 0 ] && [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'rotate to acctB NOT done: the watcher lib refused the write' "$FT_STATE/429-watch.log"; ft_st_chk "decision row cannot be appended: the write is BLOCKED (no rotation)" $?
+
+    # 9. blocked-until: the ONE LA-zone parser, the skip_reason block check, block-before-rotation, no rotation onto a blocked account
+    ( export FLEET_TOKEN_NOW_EPOCH=$NOW   # Mon 2026-09-21 07:13 PDT
+      [ "$(ft_parse_la_date 'Oct 26, 9pm')" = 1793073600 ] && [ "$(ft_parse_la_date "resets Oct 26, 9:00pm (America/Los_Angeles)")" = 1793073600 ] && [ "$(ft_parse_la_date '2026-10-26 21:00')" = 1793073600 ]; exit $? ); ft_st_chk "parser-weekly: 'Oct 26, 9pm' (with/without 'resets' + tz suffix) and '2026-10-26 21:00' -> 1793073600 (LA, PDT)" $?
+    ( export FLEET_TOKEN_NOW_EPOCH=$NOW
+      [ "$(ft_parse_la_date '3:30pm')" = 1790029800 ] && [ "$(ft_parse_la_date '12:05am')" = 1790060700 ] && [ "$(ft_parse_la_date '7:14am')" = 1790000040 ] && [ "$(ft_parse_la_date '7:13am')" = 1790086380 ]; exit $? ); ft_st_chk "parser-session: '3:30pm' today 3:30 PM LA; '12:05am' already past -> tomorrow; 7:14am (after now) stays today, 7:13am (just past) rolls to tomorrow" $?
+    ( export FLEET_TOKEN_NOW_EPOCH=1798000000   # Tue 2026-12-22 20:26 PST
+      [ "$(ft_parse_la_date 'Jan 3, 9am')" = 1798995600 ] && [ "$(ft_parse_la_date 'Dec 22, 9am')" = 1797958800 ] && [ "$(ft_parse_la_date '12:05am')" = 1798013100 ]; exit $? ); ft_st_chk "parser-year-roll: 'Jan 3, 9am' in December -> next year (PST, -08:00); 'Dec 22, 9am' (11 h ago) stays this year" $?
+    ( [ -z "$(ft_parse_la_date 'garbage')" ] && ! ft_parse_la_date 'garbage' >/dev/null && ! ft_parse_la_date '25:99pm' >/dev/null && ! ft_parse_la_date 'Feb 30, 9pm' >/dev/null && ! ft_parse_la_date '' >/dev/null; exit $? ); ft_st_chk "parser-unparseable: garbage, 25:99pm, Feb 30, empty -> return 1, nothing printed" $?
+    [ "$(ft_la_iso 1793073600)" = 2026-10-26T21:00-07:00 ]; ft_st_chk "printed ISO carries the LA offset (2026-10-26T21:00-07:00)" $?
+    reset; ft_block acctB 1793073600 "weekly limit"
+    [ "$(skip_reason acctB "$NOW")" = "blocked until 2026-10-26T21:00-07:00 (weekly limit)" ]; ft_st_chk "skip_reason-blocked: skip_reason names the block 'blocked until <iso> (<why>)'" $?
+    reset; seats 7200 7200 -; ft_block acctB "$((NOW + 36000))" "weekly limit"; runw
+    [ "$(tokj .account)" = acctC ]; ft_st_chk "skip_reason-blocked-rotation: acctB (next in ring) blocked for 10 h -> rotates to acctC" $?
+    reset; seats 7200 7200 -; ft_block acctB "$((NOW - 10))" "old"; runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "block-expired: a block whose epoch is past is ignored -> acctB" $?
+    reset; seats 7200 7200 -; printf 'not-a-number\n' >"$FT_STATE/blocked-until-acctB"; runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "block-garbled: an unparseable blocked-until file is ignored (old behaviour) -> acctB" $?
+    reset; seats 7200 9000 -; runw
+    [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 9000))" ] && grep -q " account=acctA until=$((NOW + 9000)) .* why=429 on ctl rb (seat-tick quota_wait_until)\$" "$FT_BLOCKLOG"; ft_st_chk "block-on-429: the account that hit the limit (acctA) is blocked until the latest limited seat's reset, then rotated away from" $?
+    reset; seats 7200 7200 -; ft_st_store acctB "$c-bad"; runw
+    [ "$(tokj .account)" = acctA ] && [ -z "$(fl place)" ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 7200))" ]; ft_st_chk "block-kept-on-rotate-fail: pre-verify of the candidate fails, no rotation, acctA's block STAYS" $?
+    ft_st_store acctB "$c-2"
+    reset; seats 7200 7200 -; ft_block acctA "$((NOW + 50000))" "weekly limit"; runw
+    [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 50000))" ] && [ "$(wc -l <"$FT_BLOCKLOG")" = 1 ]; ft_st_chk "block-keep-later: a later existing block is not shortened by the watcher" $?
+    reset; seats 7200 7200 -; ft_block acctB "$((NOW + 36000))" w; ft_block acctC "$((NOW + 36000))" w; ft_block acctD "$((NOW + 36000))" w; runw; runw
+    [ "$(tokj .account)" = acctA ] && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ] && [ "$(grep -c 'NO rotation candidate' "$FT_DASH/ctl-events.log")" = 1 ] \
+      && grep -q 'acctB(blocked until 2026-09-21T17:13-07:00 (w));' "$FT_DASH/ctl-events.log"; ft_st_chk "all-blocked-no-rotation: every other account blocked -> no verify, no place, stays acctA, ONE alarm naming the blocks" $?
+    reset; seats - - -; ft_block acctB "$((NOW + 36000))" w; runw
+    [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && [ ! -e "$FT_STATE/blocked-until-acctA" ]; ft_st_chk "no limit, no block: a quiet run writes no block" $?
 
     # 8. store age: one ALARM per day per entry
     reset; seats - - -
