@@ -5,8 +5,13 @@
 #   3. wake: seat lock FREE (flock -n test, released at once) -> `systemd-run --user --collect --unit seat-event-<seat>-<epoch ns>-<pid>
 #      seat-tick.sh <seat> --event` (an EVENT turn now); lock HELD (a turn is running) -> touch $EVENTS_DIR/<seat>.wake, and that turn
 #      chains one more EVENT turn when it ends (seat-tick.sh step g). Either way the seat's next prompt carries the new lines (events_new=<k>).
-#   Counters: $EVENTS_DIR/<seat>-events.json {appended, dropped_dup, woke_tick, woke_deferred, last_event, last_wake}.
+#   Counters: $EVENTS_DIR/<seat>-events.json {appended, dropped_dup, woke_tick, woke_deferred, inbox_only, last_event, last_wake}.
 #   Exit: 0 ok / dropped, 2 empty line, 64 unknown seat or usage, 1 systemd-run failed (the .wake file is touched as the fallback).
+#   INBOX-ONLY seats (10-23): a seats.tsv row whose role column is `inbox` (sid `-`, tick_min 0, timeout 0, goal_pattern `-`, old_pid `-`) is a known seat
+#   for append + debounce + counters, but is NEVER woken: no systemd-run, no .wake file, counter inbox_only++ instead of woke_*. The aide (Joe's interactive
+#   session on carbon, not a unit) is one: a wake would run `claude -p --resume` against the live session, which the guard refuses. The aide reads its
+#   log through the UserPromptSubmit/SessionStart hook .claude/hooks/aide-inbox.sh. The row to add by hand (seats.tsv is a hand file; tab-separated):
+#       aide<TAB>inbox<TAB>-<TAB>0<TAB>0<TAB>-<TAB>-          printed by `seat-event.sh --inbox-row aide`, so: seat-event.sh --inbox-row aide >> ~/.claude/state/seats.tsv
 #   SEAT_EVENT_NOWAKE=1: append (and debounce) only, never wake (seat-tick-failed.sh for ctl: a failing ctl tick must not spawn another ctl tick).
 # Env: EVENTS_DIR (default FLEET_DASH_DIR or ~/.cache/fleet-dash) EVENT_SOURCE EVENT_DEBOUNCE_S SEATS_TABLE SEAT_EVENT_TICK_BIN SEAT_EVENT_DRY=1 (print the spawn command, run nothing)
 # This script never runs claude and never touches a unit it did not create; the only thing it starts is the transient seat-event-* unit.
@@ -17,11 +22,12 @@ DEBOUNCE="${EVENT_DEBOUNCE_S:-600}"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 
 known_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{exit !f}' "$SEATS" 2>/dev/null; }
+inbox_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s && $2=="inbox" {f=1} END{exit !f}' "$SEATS" 2>/dev/null; }
 
 # bump <key> [<set key> <value>]: counters in <seat>-events.json, tmp+mv, caller holds the events lock
 bump() {
   local key="$1" tmp prog; tmp="$(mktemp "$DIR/.$SEAT-events.XXXXXX")" || return 1
-  prog='({appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,last_event:null,last_wake:null} + (. // {}))
+  prog='({appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,inbox_only:0,last_event:null,last_wake:null} + (. // {}))
       | .[$k] += 1 | (if $k=="appended" then .last_event=$iso elif ($k=="woke_tick" or $k=="woke_deferred") then .last_wake=$iso else . end)'
   jq --arg k "$key" --arg iso "$(date -Iseconds)" "$prog" "$JSON" >"$tmp" 2>/dev/null \
     || echo '{}' | jq --arg k "$key" --arg iso "$(date -Iseconds)" "$prog" >"$tmp"   # no/garbled json yet: same program on {} (the first append sets last_event)
@@ -91,12 +97,40 @@ selftest() {
   # 6. newline in the line is flattened to one log line; source falls back to the caller's comm
   SEAT_EVENT_DRY=1 EVENT_SOURCE= "$SELF" tst $'two\nlines' >/dev/null 2>&1
   tail -n1 "$L" | grep -Eq '\| [^|]+ \| two lines$'; chk "newline flattened, empty EVENT_SOURCE -> caller comm ($(tail -n1 "$L" | cut -c1-70))" $?
+
+  # 7. INBOX-ONLY seat (role=inbox): known, appended, debounced, counted, never woken (a fake systemd-run records any spawn attempt)
+  printf 'ibx\tinbox\t-\t0\t0\t-\t-\n' >>"$SEATS_TABLE"
+  local IL="$EVENTS_DIR/ibx-events.log" IJ="$EVENTS_DIR/ibx-events.json"
+  mkdir -p "$T/fakebin2"
+  printf '#!/bin/bash\necho "$*" >> "%s/sr-called"\n' "$T" >"$T/fakebin2/systemd-run"; chmod +x "$T/fakebin2/systemd-run"
+  out="$(PATH="$T/fakebin2:$PATH" SEAT_EVENT_DRY=1 "$SELF" ibx "seat asks: please look at X" 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && [ -z "$out" ] && grep -Eq '^[0-9T:+-]+ \| selftest \| seat asks: please look at X$' "$IL"; chk "inbox seat: exit 0, line appended, DRY prints NO spawn command ('${out:0:80}')" $?
+  PATH="$T/fakebin2:$PATH" "$SELF" ibx "second inbox line" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$T/sr-called" ] && [ ! -e "$EVENTS_DIR/ibx.wake" ] && [ "$(wc -l <"$IL")" = 2 ]; chk "inbox seat, real (non-dry) run: no systemd-run called, no .wake, 2 lines" $?
+  PATH="$T/fakebin2:$PATH" "$SELF" ibx "second inbox line" >/dev/null 2>&1
+  [ "$(wc -l <"$IL")" = 2 ] && [ "$(jq -r '.dropped_dup' "$IJ")" = 1 ]; chk "inbox seat debounces an identical line (dropped_dup=1, still 2 lines)" $?
+  [ "$(jq -r '.appended' "$IJ")" = 2 ] && [ "$(jq -r '.inbox_only' "$IJ")" = 2 ] && [ "$(jq -r '.woke_tick' "$IJ")" = 0 ] && [ "$(jq -r '.woke_deferred' "$IJ")" = 0 ] && [ "$(jq -r '.last_wake' "$IJ")" = null ] && [ "$(jq -r '.last_event' "$IJ")" != null ]; chk "inbox counters: appended=2 inbox_only=2 woke_tick=0 woke_deferred=0 last_wake=null: $(jq -c '[.appended,.inbox_only,.woke_tick,.woke_deferred,.last_wake]' "$IJ")" $?
+  ( exec 8>>"$EVENTS_DIR/ibx.lock"; flock 8; sleep 2 ) & ph=$!; sleep 0.4
+  PATH="$T/fakebin2:$PATH" "$SELF" ibx "while a lock is held" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$EVENTS_DIR/ibx.wake" ] && [ ! -e "$T/sr-called" ]; chk "inbox seat with its lock held: still no .wake and no spawn" $?
+  kill "$ph" 2>/dev/null; wait "$ph" 2>/dev/null
+  # a normal row still wakes (same fake systemd-run on PATH)
+  PATH="$T/fakebin2:$PATH" "$SELF" tst "normal row still wakes" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q -- '--unit seat-event-tst-' "$T/sr-called" 2>/dev/null; chk "normal (role rb) row still wakes: systemd-run called for seat-event-tst-" $?
+  rm -rf "$T/fakebin2"
+  # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
+  [ "$("$SELF" --inbox-row aide)" = "$(printf 'aide\tinbox\t-\t0\t0\t-\t-')" ]; chk "--inbox-row aide prints the tab-separated row" $?
+  "$SELF" --inbox-row 'bad name' >/dev/null 2>&1; [ $? = 64 ]; chk "--inbox-row refuses a bad seat name (64)" $?
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
 }
 
 [ "${1:-}" = "--selftest" ] && { selftest; exit $?; }
-[ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --selftest' >&2; exit 64; }
+if [ "${1:-}" = "--inbox-row" ]; then   # the seats.tsv row for an inbox-only seat; the operator appends it (we never edit the hand file)
+  [[ "${2:-}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'usage: seat-event.sh --inbox-row <seat>' >&2; exit 64; }
+  printf '%s\tinbox\t-\t0\t0\t-\t-\n' "$2"; exit 0
+fi
+[ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --inbox-row <seat>  |  seat-event.sh --selftest' >&2; exit 64; }
 SEAT="$1"; shift
 known_seat "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
@@ -123,6 +157,8 @@ dup=0
   fi
 } 7>>"$DIR/$SEAT-events.lock"
 [ "$dup" = 1 ] && exit 0
+# inbox-only seat (role=inbox): never woken, whatever the lock state; counted instead
+if inbox_seat "$SEAT"; then { flock 7; bump inbox_only; } 7>>"$DIR/$SEAT-events.lock"; exit 0; fi
 [ "${SEAT_EVENT_NOWAKE:-}" = 1 ] && exit 0
 
 # wake: is a turn running? (flock -n, released at once; the lock file is the one seat-tick.sh holds for a whole turn)

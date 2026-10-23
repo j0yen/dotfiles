@@ -77,6 +77,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/scripts/resource-guard-start.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-inbox.sh SessionStart",
+            "timeout": 5
           }
         ]
       },
@@ -287,6 +292,16 @@
           {
             "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec \"$HOME/.claude/hooks/model-role-check.sh\"; exit 0'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-inbox.sh UserPromptSubmit",
             "timeout": 5
           }
         ]
