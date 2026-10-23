@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # seat-ask.sh <seat> "<text>": fast path to an operator seat. Starts one ASK turn as a transient user unit;
-# seat-tick.sh's flock serializes it behind a running tick and waits up to 1800 s (an ask must land). Prints the unit name.
+# seat-tick.sh's flock serializes it behind a running tick and waits up to 1800 s; an ask that still cannot lock (or arrives during quota-wait) is QUEUED in
+# <seat>-asks.pending and exits 0, so the unit's exit 0 means accepted-or-queued, never dropped. Prints the unit name (stdout).
 # SEAT_ASK_DRY=1 (or CTL_ASK_DRY=1) prints the command only. A guard refusal (unit exit 4) or missing goal line (6) within 5 s prints `ASK REFUSED <seat>: <last line>` on stderr and exits that code.
 # SEAT_ASK_TICK_BIN overrides the seat-tick.sh path (selftest fake only). Seats come from ~/.claude/state/seats.tsv (SEATS_TABLE overrides).
 set -u
@@ -27,4 +28,7 @@ case "$rc" in
     last="$(printf '%s\n' "$jl" | grep -v -e "^$unit\.service: " -e '^Started ' -e '^Consumed ' | tail -n1)"
     echo "ASK REFUSED $seat: ${last:-exit $rc, no output}" >&2; exit "$rc" ;;
 esac
+# exit 0 from seat-tick = accepted OR queued. A queued ask (quota-wait answers at once; a lock wait ends after SEAT_ASK_LOCK_WAIT, usually past this 5 s) says so in the unit's output: tell the two apart on stderr.
+qline="$(printf '%s\n' "$jl" | grep "^seat-tick: $seat ask queued (" | tail -n1)"
+[ -z "$qline" ] || echo "seat-ask: $seat ask QUEUED, not lost; the seat's next prompt carries it ($qline)" >&2
 echo "$unit"
