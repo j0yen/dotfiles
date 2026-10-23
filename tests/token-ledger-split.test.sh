@@ -41,7 +41,7 @@ assert_eq "$(ledger_field 2026-09-11 11)" "2" "compactions = flag + prefix marke
 assert_eq "$(ledger_field 2026-09-12 11)" "0" "day with no markers has compactions 0"
 assert_eq "$(ledger_field 2026-09-11 3)" "284" "existing weighted column unchanged"
 assert_eq "$(cat "$state/today-summary.txt")" \
-  "TOKENS yesterday 2026-09-11: 284 budget off · today so far 7 (10:15Z) · forecast 16 · hosts carbon missing  · split in/cw/cr/out 7/0/0/0 · compactions 0" \
+  "TOKENS yesterday 2026-09-11: 284 budget off · today so far 7 (10:15Z) · forecast 16 · hosts carbon missing  · split in/cw/cr/out 7/0/0/0 · compactions 0 · build_share 0% (coder+inner 0M of 0M)" \
   "summary keeps the old text and appends split + compactions (today)"
 
 # --- old 8-column ledger is upgraded in place, not moved aside ---
@@ -50,7 +50,7 @@ printf 'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated\n
 "$TL" --day 2026-09-11 2>"$work/err"
 assert_not_contains "$(cat "$work/err")" "migrated legacy" "v1 header is not treated as legacy"
 assert_eq "$(ledger_field 2026-09-01 3)" "5" "old row preserved"
-assert_eq "$(awk -F'\t' '$1=="2026-09-01"{print NF}' "$state/ledger.tsv")" "11" "old row padded to 11 columns"
+assert_eq "$(awk -F'\t' '$1=="2026-09-01"{print NF}' "$state/ledger.tsv")" "12" "old row padded to 12 columns"
 assert_eq "$(ledger_field 2026-09-11 11)" "2" "--day recomputes one day with new columns"
 
 # --- two hosts via fake ssh: per_host splits by origin ---

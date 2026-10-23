@@ -23,7 +23,7 @@ summary="$(cat "$state/today-summary.txt")"
 # msg_y1 (yesterday, 2026-09-11): in=10 -> weighted 10
 # msg_t1 (today, 2026-09-12, 09:00Z): in=20 -> weighted 20
 # forecast = 20 * 24 / 10.25h elapsed = 46.83 -> rounds to 47
-expected="TOKENS yesterday 2026-09-11: 10 budget off · today so far 20 (10:15Z) · forecast 47 · hosts carbon missing  · split in/cw/cr/out 20/0/0/0 · compactions 0"
+expected="TOKENS yesterday 2026-09-11: 10 budget off · today so far 20 (10:15Z) · forecast 47 · hosts carbon missing  · split in/cw/cr/out 20/0/0/0 · compactions 0 · build_share 0% (coder+inner 0M of 0M)"
 assert_eq "$summary" "$expected" "today-summary.txt matches the exact contract format"
 
 assert_eq "$(ledger_field 2026-09-11 5)" "yes" "yesterday's row is complete=yes"
