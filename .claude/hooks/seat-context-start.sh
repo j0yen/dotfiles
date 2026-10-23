@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # SessionStart hook: in an rb/r7/ctl seat (tmux session named rb, r7 or ctl),
 # print goal.md § Stage and the fleet-operations playbook so the seat starts on
-# the current stage without anyone remembering to paste it. In a NON-tmux session
-# on carbon (the aide, Joe's channel) print the short AIDE CARD instead. Silent elsewhere.
-# PREMISE: seats are identified by WM_SEAT (systemd units) or tmux session names; the seats live in tmux sessions named rb/r7/ctl on carbon (CLAUDE.md § Hosts); the aide is the non-tmux carbon session.
+# the current stage without anyone remembering to paste it. In the aide
+# (WM_SEAT=aide, set only by aide-launch.sh) print the short AIDE CARD instead.
+# Silent elsewhere, including a plain `claude` on carbon (Joe's own session, 10-23).
+# PREMISE: seats are identified by WM_SEAT (systemd units) or tmux session names; the seats live in tmux sessions named rb/r7/ctl on carbon (CLAUDE.md § Hosts); the aide is WM_SEAT=aide.
 set -u
 aide_card() {  # <= 8 lines; every source optional; never fails
   local fd="$HOME/.cache/fleet-dash" tmr=disabled lt=none last fs fsl age tick ts tt
@@ -27,12 +28,9 @@ aide_card() {  # <= 8 lines; every source optional; never fails
   else echo "ctl tick: no tick state"; fi
 }
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; *) sess="" ;; esac
+case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; exit 0 ;; *) sess="" ;; esac
 if [ -z "$sess" ]; then
-  if [ -z "${TMUX:-}" ]; then
-    [ "$(hostname 2>/dev/null)" = carbon ] && aide_card
-    exit 0
-  fi
+  [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
 fi
 case "$sess" in rb|r7|ctl) ;; *) exit 0 ;; esac

@@ -85,13 +85,12 @@ if ! printf '%s' "$MODEL_LC" | grep -qE '(^|-)(opus|fable)($|-)'; then
 fi
 
 # --- 1b. Aide exemption (Joe 2026-10-22 4:3x PM "yes, exempt the aide") ---
-# The aide is Joe's interactive channel on carbon: no WM_SEAT, no TMUX,
-# hostname carbon — the same predicate seat-context-start.sh uses to print
-# the AIDE CARD. It does carbon-local reads itself; every seat (tmux or
-# seat-tick unit, which exports WM_SEAT) stays gated. PROBE_GATE_HOSTNAME
-# exists for the test only.
-if [ -z "${WM_SEAT:-}" ] && [ -z "${TMUX:-}" ] \
-    && [ "${PROBE_GATE_HOSTNAME:-$(hostname 2>/dev/null)}" = carbon ]; then
+# The aide is Joe's interactive channel on carbon, started ONLY by
+# aide-launch.sh, which exports WM_SEAT=aide (Joe 2026-10-23 12:3x PM: a plain
+# `claude` on carbon is Joe's own non-fleet session, never the aide). The same
+# marker drives the AIDE CARD (seat-context-start.sh), the aide inbox and the
+# ledger tag. Every seat (rb/r7/ctl) and every plain session stays gated.
+if [ "${WM_SEAT:-}" = aide ]; then
     exit 0
 fi
 

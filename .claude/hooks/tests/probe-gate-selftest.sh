@@ -6,14 +6,14 @@
 
 set -uo pipefail
 
-HOOK="${HOME}/.claude/hooks/probe-gate.sh"
+HOOK="${PROBE_GATE_HOOK:-$(cd "$(dirname "$0")/.." && pwd)/probe-gate.sh}"
 JQ=$(command -v jq) || { echo "probe-gate-selftest: jq not found"; exit 1; }
 
-# Hermetic environment: probe-gate.sh § 1b exempts the aide (no WM_SEAT, no
-# TMUX, hostname carbon), so a headless unit on carbon would pass every call
-# through and the BLOCK cases below would not test the gate. Pin the
-# environment: no seat, no tmux, and a non-carbon hostname for every case;
-# the § 1b cases at the end override these per case via CASE_ENV.
+# Hermetic environment: probe-gate.sh § 1b exempts the aide (WM_SEAT=aide),
+# so a run inside the aide would pass every call through and the BLOCK cases
+# below would not test the gate. Pin the environment: no seat, no tmux
+# (PROBE_GATE_HOSTNAME kept for older cases); the § 1b cases at the end
+# override these per case via CASE_ENV.
 unset WM_SEAT TMUX
 export PROBE_GATE_HOSTNAME=selftest-not-carbon
 
@@ -118,12 +118,14 @@ run_case "tool_use_id_not_found" "ssh orch df" "toolu_missing" 0
 add_line "$WORKDIR/flag_escape.jsonl" "claude-fable-5-1" "toolu_10" false
 run_case "touch_allow_flag_always_allowed" "touch ~/.claude/.allow-fable-bash" "toolu_missing" 0
 
-# 11-14. § 1b aide exemption, proven explicitly (all fable + a probe that is
-#     denied elsewhere). carbon + no seat + no tmux -> pass-through; the same
-#     with WM_SEAT, with TMUX, or on another hostname -> gated.
+# 11-15. § 1b aide exemption, proven explicitly (all fable + a probe that is
+#     denied elsewhere). WM_SEAT=aide (aide-launch.sh) -> pass-through; a plain
+#     carbon session (no marker), a seat, a tmux session, another host -> gated.
 add_line "$WORKDIR/aide_exempt.jsonl" "claude-fable-5-1" "toolu_11" false
+CASE_ENV=(-u TMUX PROBE_GATE_HOSTNAME=carbon WM_SEAT=aide)
+run_case "aide_marker_exempt" 'ssh orch "df -h"' "toolu_11" 0 "aide_exempt"
 CASE_ENV=(-u WM_SEAT -u TMUX PROBE_GATE_HOSTNAME=carbon)
-run_case "aide_carbon_no_seat_no_tmux_exempt" 'ssh orch "df -h"' "toolu_11" 0 "aide_exempt"
+run_case "plain_carbon_no_marker_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
 CASE_ENV=(-u TMUX PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl)
 run_case "aide_carbon_with_seat_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
 CASE_ENV=(-u WM_SEAT PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0)
