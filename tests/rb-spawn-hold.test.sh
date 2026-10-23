@@ -73,12 +73,14 @@ run e1 $R/missing.jsonl ""; expect "(e1) read failure, no prior state" 0 "OK unk
 prev='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null}'
 run e2 $R/missing.jsonl "$prev"; expect "(e2) read failure, prior HOLD 5 min old" 76 "HOLD run=1039 refusal=max-units age_s=600 hand_slots=2 source=stale-ssh"
 [ "$(field source)" = stale-ssh ] && [ "$(field read_at)" = 2026-10-23T09:25:00Z ] && pass "(e2) source=stale-ssh, read_at kept" || bad "(e2) state $(cat "$st")"
-[ "$(field unknown_since)" = 2026-10-23T09:30:00Z ] && pass "(e2) unknown_since set on the first failed read" || bad "(e2) unknown_since $(field unknown_since)"
-prevu='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","unknown_since":"2026-10-23T09:26:00Z","hand_slots":2,"parts":[],"exempt":null}'
-run e2b $R/missing.jsonl "$prevu"; [ "$(field unknown_since)" = 2026-10-23T09:26:00Z ] && pass "(e2b) unknown_since carried across failed reads" || bad "(e2b) unknown_since $(field unknown_since)"
+[ "$(field unknown_since)" = 2026-10-23T09:25:00Z ] && pass "(e2) unknown_since = the last good read (shu2), not the first failing call" || bad "(e2) unknown_since $(field unknown_since)"
+prevu='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","unknown_since":"2026-10-23T09:25:00Z","hand_slots":2,"parts":[],"exempt":null}'
+run e2b $R/missing.jsonl "$prevu"; [ "$(field unknown_since)" = 2026-10-23T09:25:00Z ] && pass "(e2b) unknown_since carried across failed reads" || bad "(e2b) unknown_since $(field unknown_since)"
 # (e3) read failure, prior HOLD read 31 min ago -> stickiness expired
 prev3='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T08:50:00Z","read_at":"2026-10-23T08:59:00Z","source":"ssh","hand_slots":2,"parts":[],"exempt":null}'
-run e3 $R/missing.jsonl "$prev3"; expect "(e3) read failure, prior HOLD 31 min old" 0 "OK unknown: "
+run e3 $R/missing.jsonl "$prev3" --probe-only; expect "(e3) read failure, prior HOLD 31 min old (timer)" 0 "OK unknown: "
+# shu2: the same 31 min old good read, a spawn gate: blind since that read (08:59), 1860 s >= BLIND_S
+run e3b $R/missing.jsonl "$prev3"; expect "(e3b) read failure, prior HOLD 31 min old, spawn gate" 76 "HOLD unknown-blind unknown_since=2026-10-23T08:59:00Z age_s=1860 "
 
 # (g) queued product run, no refusal, a hand part held -> HOLD (leading)
 { taken 900 501; queued 120 1042; } > $R/g.jsonl
@@ -312,13 +314,17 @@ run u5b $MISSING "$(useed 660)" --exempt X; expect "(u5b) aged unknown, --exempt
 prev6='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null,"unknown_since":null}'
 prev6u='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:00:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"2026-10-23T09:00:00Z"}'
 same6=1
+# shu2 changed ONE thing here: the carried unknown_since of a prior GOOD read is that read's read_at (09:25), not now; everything else is byte-identical
+strip_us() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("unknown_since",None); print(json.dumps(d,sort_keys=True))' "$1"; }
 for pv in "$prev6" "$prev6u"; do for ex in "" "--probe-only"; do
   printf '%s\n' "$pv" > "$R/u6.new.json"; printf '%s\n' "$pv" > "$R/u6.old.json"
   on=$("$hold" --journal-file $MISSING --state-file "$R/u6.new.json" --now "$NOW" --no-flag $ex 2>&1); orc=$?
   oo=$("$prescript" --journal-file $MISSING --state-file "$R/u6.old.json" --now "$NOW" --no-flag $ex 2>&1); orrc=$?
-  [ "$on" = "$oo" ] && [ "$orc" = "$orrc" ] && cmp -s "$R/u6.new.json" "$R/u6.old.json" || { same6=0; echo "u6 diff ex='$ex': new=[$on] rc=$orc old=[$oo] rc=$orrc"; }
+  [ "$on" = "$oo" ] && [ "$orc" = "$orrc" ] && [ "$(strip_us "$R/u6.new.json")" = "$(strip_us "$R/u6.old.json")" ] || { same6=0; echo "u6 diff ex='$ex': new=[$on] rc=$orc old=[$oo] rc=$orrc"; }
 done; done
-[ $same6 = 1 ] && pass "(u6) stale-ssh branch output, rc and state identical to the pre-change script (4 fixtures: fresh/aged unknown_since x probe/non-probe): $on" || bad "(u6) stale-ssh differs from the pre-change script"
+[ $same6 = 1 ] && pass "(u6) stale-ssh branch output, rc and state (but unknown_since) identical to the pre-change script (4 fixtures: fresh/aged unknown_since x probe/non-probe): $on" || bad "(u6) stale-ssh differs from the pre-change script"
+printf '%s\n' "$prev6" > "$R/u6.new.json"; "$hold" --journal-file $MISSING --state-file "$R/u6.new.json" --now "$NOW" --no-flag >/dev/null 2>&1
+[ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["unknown_since"])' "$R/u6.new.json")" = "$(isoago 300)" ] && pass "(u6) prior good read at 09:25 -> unknown_since = that read_at (shu2)" || bad "(u6) unknown_since after a good prev"
 # (u7) first failure, no prior state -> unknown_since = now, OK unknown, rc 0
 run u7 $MISSING ""; expect "(u7) first failure, no state" 0 "OK unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(u7) unknown_since = now" || bad "(u7) unknown_since $(field unknown_since)"
@@ -327,9 +333,9 @@ run u8 $R/d.jsonl "$(useed 660)"; expect "(u8) good read heals" 0 "OK "
 u8st=$(cat "$st"); [ "$(field source)" = file ] && [ "$(field unknown_since)" = null ] && pass "(u8) healed state: non-unknown source, unknown_since null" || bad "(u8) state $u8st"
 run u8b $MISSING "$u8st"; expect "(u8) failure after heal" 0 "OK unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(u8) unknown_since = now after the heal" || bad "(u8) unknown_since $(field unknown_since)"
-# (u9) stale-ssh whose good-read time is past the window -> the first unknown-branch run dates from the first failure
+# (u9) stale-ssh whose good-read time is past the window -> the blind clock dates from that last good read (shu2; was the carried unknown_since)
 prev9=$(printf '{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"%s","read_at":"%s","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"%s"}' "$(isoago 2400)" "$(isoago 2000)" "$(isoago 900)")
-run u9 $MISSING "$prev9"; expect "(u9) stale-ssh expired, unknown_since 900 s old" 76 "HOLD unknown-blind unknown_since=$(isoago 900) age_s=900 "
+run u9 $MISSING "$prev9"; expect "(u9) stale-ssh expired, read_at 2000 s old, unknown_since 900 s old" 76 "HOLD unknown-blind unknown_since=$(isoago 2000) age_s=2000 "
 # (G2) an unparseable unknown_since restarts the clock, never a traceback
 run g2a $MISSING '{"source":"unknown","unknown_since":"not-a-time","read_at":"x","active":false}'; expect "(G2) unparseable unknown_since" 0 "OK unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(G2) unknown_since reset to now" || bad "(G2) unknown_since $(field unknown_since)"
@@ -377,6 +383,41 @@ if [ "$(id -u)" = 0 ]; then echo "SKIP: (u16/u17) running as root (chmod 500 doe
   [ $u17brc = 0 ] && [[ $u17b == "OK unknown: decision engine failed"* ]] && pass "(u17b) H4: engine crash with --exempt alone stays OK unknown, rc=0 (exempt = the caller accepts blindness)" || bad "(u17b) rc=$u17brc out=[$u17b]"
   chmod 700 "$RO"
 fi
+
+# --- shu2: the blind clock starts at the LAST GOOD journal read (Fable 10-23 AGREE-WITH-EDITS folded, spec v0.2) ---
+# gprev <source> <read_at age> <unknown_since age|null> <active true|false> [nosource]: a prior state whose last good read is <age> s ago
+gprev() {
+  local us=null; [ "$3" = null ] || us="\"$(isoago "$3")\""
+  if [ "${5:-}" = nosource ]; then
+    printf '{"active":%s,"run_id":null,"refusal":null,"refused_at":null,"read_at":"%s","hand_slots":0,"parts":[],"exempt":null}' "$4" "$(isoago "$2")"
+  else
+    printf '{"active":%s,"run_id":1039,"refusal":"max-units","refused_at":"%s","read_at":"%s","source":"%s","hand_slots":2,"parts":[],"exempt":null,"unknown_since":%s}' "$4" "$(isoago "$2")" "$(isoago "$2")" "$1" "$us"
+  fi
+}
+# (s2a) good OK read 601 s ago, no calls since, a failing spawn call -> HOLD unknown-blind rc 76; unknown_since == the FIXTURE read_at (not out.read_at = now)
+run s2a $MISSING "$(gprev ssh 601 null false)"; expect "(s2a) last good read 601 s ago + failing call" 76 "HOLD unknown-blind unknown_since=$(isoago 601) age_s=601 "
+[ "$(field unknown_since)" = "$(isoago 601)" ] && [ "$(field read_at)" = "$NOW" ] && pass "(s2a) written unknown_since == the fixture read_at ($(isoago 601)), read_at is now" || bad "(s2a) state $(cat "$st")"
+# (s2b) 599 s -> OK unknown, rc 0
+run s2b $MISSING "$(gprev ssh 599 null false)"; expect "(s2b) last good read 599 s ago + failing call" 0 "OK unknown: "
+[ "$(field unknown_since)" = "$(isoago 599)" ] && pass "(s2b) unknown_since == the fixture read_at" || bad "(s2b) unknown_since $(field unknown_since)"
+# (s2c) the same 601 s state never refuses --probe-only (the timer) or --exempt X --probe-only (--no-cargo) or --exempt alone
+run s2c1 $MISSING "$(gprev ssh 601 null false)" --probe-only; expect "(s2c) 601 s, --probe-only" 0 "OK unknown: "
+run s2c2 $MISSING "$(gprev ssh 601 null false)" --exempt X; expect "(s2c) 601 s, --exempt X" 0 "OK unknown: "
+run s2c3 $MISSING "$(gprev ssh 601 null false)" --probe-only --exempt X; expect "(s2c) 601 s, --probe-only --exempt X" 0 "OK unknown: "
+# (s2d) a good read after the 601 s-old OK -> OK, unknown_since null (a good read resets the clock)
+run s2d $R/d.jsonl "$(gprev ssh 601 null false)"; expect "(s2d) good read after a 601 s-old OK" 0 "OK "
+[ "$(field unknown_since)" = null ] && pass "(s2d) unknown_since null after the good read" || bad "(s2d) unknown_since $(field unknown_since)"
+# (s2e) stale-ssh HOLD prev, unknown_since recent (now-10), read_at now-1801 (past CEIL) -> only the read_at anchor can trip it
+run s2e $MISSING "$(gprev stale-ssh 1801 10 true)"; expect "(s2e) stale-ssh prev, read_at 1801 s, unknown_since 10 s" 76 "HOLD unknown-blind unknown_since=$(isoago 1801) age_s=1801 "
+[ "$(field unknown_since)" = "$(isoago 1801)" ] && pass "(s2e) written unknown_since == now-1801 (the read_at anchor, not the recent carried value)" || bad "(s2e) unknown_since $(field unknown_since)"
+# (s2f) engine code (comments stripped) has exactly one `BLIND_S = 600` and no other 600 token
+codeonly=$(sed -n "/<<'PY'\$/,/^PY\$/p" "$hold" | sed -E 's/^[[:space:]]*#.*$//; s/[[:space:]]+#.*$//')   # the python decision engine only (the bash flag-expiry 600 is unrelated)
+[ "$(printf '%s\n' "$codeonly" | grep -c '^BLIND_S = 600$')" = 1 ] && [ "$(printf '%s\n' "$codeonly" | grep -cw 600)" = 1 ] && printf '%s\n' "$codeonly" | grep -q 'age_s >= BLIND_S' \
+  && pass "(s2f) exactly one BLIND_S = 600 and no other 600 token in the code; the blind threshold reads BLIND_S" || bad "(s2f) 600 tokens: $(printf '%s\n' "$codeonly" | grep -nw 600 | head -5)"
+# (s2g) a pre-shu state file with NO source key and read_at 601 s ago -> HOLD rc 76
+run s2g $MISSING "$(gprev x 601 null false nosource)"; expect "(s2g) no-source prev, read_at 601 s" 76 "HOLD unknown-blind unknown_since=$(isoago 601) age_s=601 "
+# the unknown branch keeps the earlier of the two: a prev unknown whose read_at is later than unknown_since still dates from unknown_since
+run s2h $MISSING "$(printf '{"active":false,"read_at":"%s","source":"unknown","unknown_since":"%s"}' "$(isoago 50)" "$(isoago 700)")"; expect "(s2h) unknown prev: the earlier unknown_since wins" 76 "HOLD unknown-blind unknown_since=$(isoago 700) age_s=700 "
 
 [ $fail -eq 0 ] && echo "ALL PASS ($npass checks)" || echo "FAILED"
 exit $fail

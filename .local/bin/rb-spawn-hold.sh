@@ -29,7 +29,9 @@
 # Journal window: the last 60 min (the spec says 30; hand slots taken before the 30 min mark must still count as held).
 # Read failure: previous file HOLD and its read_at < 30 min old -> stay HOLD with source=stale-ssh (read_at is NOT advanced,
 #   so the stickiness cannot renew itself); otherwise `OK unknown: <err>` with source=unknown.
-# Blind (shu, ctl a43d: the gate failed OPEN): a non-probe, non-exempt call whose source=unknown has lasted >= 600 s since unknown_since
+# Blind (shu, ctl a43d: the gate failed OPEN): a non-probe, non-exempt call whose source=unknown has lasted >= BLIND_S (600 s) since unknown_since
+#   (shu2: unknown_since = the earliest of the carried unknown_since and the previous state's read_at, i.e. the clock starts at the LAST
+#   GOOD journal read, not at the first failing call)
 #   prints `HOLD unknown-blind unknown_since=<iso> age_s=<n> source=unknown fix: ...` (exit 76). Also `HOLD unknown-blind state-unreadable`
 #   (state file exists but does not parse, unknown branch) and `HOLD unknown-blind engine-failed` (decision engine crash, incl. a failed
 #   state write). --probe-only (the timer) and --exempt (rb-run-coder --no-cargo) never refuse; the next good read resets unknown_since.
@@ -149,6 +151,7 @@ decision=$(RSH_JFILE="$jfile" RSH_RERR="$rerr" RSH_STATE="$state" RSH_NOW="$now"
 import json, os, re, datetime as dt
 
 CEIL = 1800
+BLIND_S = 600   # the one blind-window constant: a non-exempt spawn is refused once the journal has been unseen this long
 TABLES = ("runs", "land", "daemon", "builder")
 now =dt.datetime.strptime(os.environ["RSH_NOW"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
 state_path = os.environ["RSH_STATE"]; rerr = os.environ["RSH_RERR"]; src = os.environ["RSH_SRC"]
@@ -212,6 +215,16 @@ if unk0 is not None:   # an unparseable unknown_since restarts the clock at now 
     try: pts(unk0)
     except Exception: unk0 = None
 BLIND_FIX = "fix: ssh redbaron journal read or --no-cargo"
+def blind_origin():
+    # shu2: the blind clock starts at the last good journal read. earliest parseable tz-aware time of {carried unknown_since, prev read_at}
+    # (a stale-ssh / unknown prev keeps its last good read_at; a good prev's read_at IS the last good read); nothing parseable -> now
+    c = [now]
+    for v in (unk0, (prev or {}).get("read_at")):
+        try:
+            d = pts(v)
+            if d.tzinfo is not None: c.append(d)
+        except Exception: pass
+    return iso(min(c))
 skip_write = False
 
 if rerr:
@@ -220,11 +233,11 @@ if rerr:
         try: ok_prev = (now - pts(prev["read_at"])).total_seconds() < CEIL
         except Exception: ok_prev = False
     if ok_prev:
-        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = unk0 or iso(now)
+        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = blind_origin()
         age = int((now - pts(prev["refused_at"] or prev["read_at"])).total_seconds())
         line = "HOLD run=%s refusal=%s age_s=%d hand_slots=%s source=stale-ssh" % (out.get("run_id"), out.get("refusal"), age, out.get("hand_slots"))
     else:
-        out["source"] = "unknown"; out["unknown_since"] = unk0 or iso(now)
+        out["source"] = "unknown"; out["unknown_since"] = blind_origin()
         line = "OK unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
         age_s = int((now - pts(out["unknown_since"])).total_seconds())
         # fail-closed (shu): only a spawn gate refuses; --probe-only (timer) and --exempt (--no-cargo) accept blindness.
@@ -232,7 +245,7 @@ if rerr:
         if state_corrupt and not probe_only and not exempt:
             line = "HOLD unknown-blind state-unreadable " + BLIND_FIX
             skip_write = True   # keep the corrupt file: rewriting it would restart the clock and let the next spawn through
-        elif not probe_only and not exempt and age_s >= 600:
+        elif not probe_only and not exempt and age_s >= BLIND_S:
             line = "HOLD unknown-blind unknown_since=%s age_s=%d source=unknown %s" % (out["unknown_since"], age_s, BLIND_FIX)
 else:
     def fresh(age):  # the 30 min ceiling
