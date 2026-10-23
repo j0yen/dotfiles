@@ -22,16 +22,19 @@ redrive() {
   case $expect in claimed|gate|inner|land|released) ;; *) echo "r7-redrive.sh: --expect must be claimed|gate|inner|land|released" >&2; usage ;; esac
   [ -n "$why" ] && [ -n "$ev" ] || { echo "r7-redrive.sh: --why and --evidence are required" >&2; usage; }
   [ -n "$rev" ] || rev="no undo for a redrive; the run re-enters $from. Stopping its driver unit needs its own row (never unpause or pause a land)"
-  local out id WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}" SSH="${R7_REDRIVE_SSH:-ssh}"   # read per call (selftest stubs)
+  local out err drc id WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}" SSH="${R7_REDRIVE_SSH:-ssh}"   # read per call (selftest stubs)
+  err=$(mktemp)
   out=$("$WM_DECIDE" record --agent r7 --model "$model" --kind run-state --run "$HOST:$run" --expect "$expect" \
-        --what "redrive $run --from $from --operator r7" --why "$why" --evidence "$ev" --reverse-text "$rev" 2>&1)
-  id=$(printf '%s\n' "$out" | grep -oE "$ID_RE" | head -1)
+        --what "redrive $run --from $from --operator r7" --why "$why" --evidence "$ev" --reverse-text "$rev" 2>"$err"); drc=$?
+  # success = rc 0 AND a stdout line that IS the id (wm_decide/cli.py record: print(id_); return 0); an id quoted
+  # inside a refusal or printed under a nonzero exit is not a row (verifier 2:2x 10-23)
+  id=""; [ $drc = 0 ] && id=$(printf '%s\n' "$out" | grep -xE "$ID_RE" | head -1)
   if [ -z "$id" ]; then
-    echo "r7-redrive.sh: REFUSED, no decision id; NOT redriving $run. wm-decide said:" >&2
-    printf '%s\n' "$out" | tail -3 | cut -c1-400 >&2
-    return 2
+    echo "r7-redrive.sh: REFUSED (wm-decide rc=$drc, no id line); NOT redriving $run. wm-decide said:" >&2
+    { printf '%s\n' "$out"; cat "$err"; } | sed '/^$/d' | tail -3 | cut -c1-400 >&2
+    rm -f "$err"; return 2
   fi
-  echo "row=$id"
+  rm -f "$err"; echo "row=$id"
   "$SSH" "$HOST" "export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH; wm-build run redrive $run --from $from --operator r7" 2>&1 | tail -3
   local rc=${PIPESTATUS[0]}; echo "redrive $run --from $from rc=$rc row=$id"; return $rc
 }
@@ -42,12 +45,18 @@ selftest() {
   printf '#!/bin/sh\necho "$@" >> %s/ssh.log\necho "redrive queued"\n' "$S" > "$S/ssh"; chmod +x "$S/ssh"
   printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "refused: record --kind run-state needs --expect STATE"\nexit 2\n' "$S" > "$S/dec-refuse"
   printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "recorded"\nexit 0\n' "$S" > "$S/dec-noid"
-  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\n' "$S" > "$S/dec-ok"; chmod +x "$S"/dec-*
+  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\n' "$S" > "$S/dec-ok"
+  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "refused: conflicts with earlier row d-20261023-021500-r7-ab12"\nexit 2\n' "$S" > "$S/dec-quote"
+  printf '#!/bin/sh\necho "$@" >> %s/dec.log\necho "d-20261023-021500-r7-ab12"\nexit 3\n' "$S" > "$S/dec-idrc"; chmod +x "$S"/dec-*
   local A=(--expect land --why w --evidence e)
   out=$(WM_DECIDE_BIN=$S/dec-refuse R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "REFUSED" && echo "$out" | grep -q "needs --expect"' "refused row -> rc 2, wm-decide reason shown, ssh never called"
   out=$(WM_DECIDE_BIN=$S/dec-noid R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ]' "record rc 0 but no id printed -> rc 2, ssh never called"
+  out=$(WM_DECIDE_BIN=$S/dec-quote R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
+  chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "conflicts with earlier row"' "refusal QUOTING an id -> rc 2, ssh never called"
+  out=$(WM_DECIDE_BIN=$S/dec-idrc R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
+  chk '[ $rc = 2 ] && [ ! -e "$S/ssh.log" ] && echo "$out" | grep -q "rc=3"' "id line under a nonzero exit -> rc 2, ssh never called"
   : > "$S/dec.log"
   out=$(WM_DECIDE_BIN=$S/dec-ok R7_REDRIVE_SSH=$S/ssh redrive 490 land "${A[@]}" 2>&1); rc=$?
   chk '[ $rc = 0 ] && [ "$(wc -l < "$S/ssh.log")" = 1 ] && grep -q "wm-build run redrive 490 --from land --operator r7" "$S/ssh.log" && echo "$out" | grep -q "row=d-20261023-021500-r7-ab12"' "id -> exactly one ssh redrive with the exact argv, row quoted"

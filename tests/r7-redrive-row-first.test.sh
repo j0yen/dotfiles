@@ -6,5 +6,5 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 out=$(bash "$here/../.local/bin/r7-redrive.sh" --selftest 2>&1); rc=$?
 printf '%s\n' "$out"
-[ $rc = 0 ] && printf '%s\n' "$out" | grep -qx 'selftest ok' && printf '%s\n' "$out" | grep -q '^ok   refused row -> rc 2' || { echo "NOT OK r7-redrive row-first"; exit 1; }
+[ $rc = 0 ] && printf '%s\n' "$out" | grep -qx 'selftest ok' && printf '%s\n' "$out" | grep -q '^ok   refused row -> rc 2' && printf '%s\n' "$out" | grep -q '^ok   refusal QUOTING an id' && printf '%s\n' "$out" | grep -q '^ok   id line under a nonzero exit' || { echo "NOT OK r7-redrive row-first"; exit 1; }
 echo "OK r7-redrive row-first"
