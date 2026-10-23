@@ -11,8 +11,10 @@ set -uo pipefail
 
 # All agorabus calls share one deadline measured from hook start (not from the
 # first call), so jq/fork cost under load eats the same 100 ms budget and the
-# whole hook stays inside its 200 ms ceiling.
-deadline_ms=$(( ${EPOCHREALTIME/./} / 1000 + 100 ))
+# whole hook stays inside its 200 ms ceiling. AGORABUS_INTENT_BUDGET_MS lets
+# tests that assert recorded calls (not latency) widen it so CPU load on the
+# test host cannot spend the budget before the fake agorabus has run.
+deadline_ms=$(( ${EPOCHREALTIME/./} / 1000 + ${AGORABUS_INTENT_BUDGET_MS:-100} ))
 AB=$(command -v agorabus) || exit 0
 JQ=$(command -v jq) || exit 0
 INPUT=$(cat) || exit 0
