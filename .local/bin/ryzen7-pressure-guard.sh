@@ -65,7 +65,7 @@ print(json.dumps({"ts":time.strftime("%Y-%m-%dT%H:%M:%S%z"),"agent":"r7","via":a
   return 0
 }
 if [ "${1:-}" = "--selftest" ]; then
-  for b in wm-build wm-build-limits-guard; do command -v "$b" >/dev/null && [ -x "$(command -v "$b")" ] || { echo "selftest FAILED: $b not executable on PATH=$PATH"; exit 1; }; done
+  for b in wm-build wm-build-limits-guard; do command -v "$b" >/dev/null && [ -x "$(command -v "$b")" ] || { [ "$(hostname -s)" = ryzen7 ] && { echo "selftest FAILED: $b not executable on PATH=$PATH"; exit 1; }; echo "selftest SKIP: $b absent on $(hostname -s) (ryzen7-only script; FAILS on ryzen7)"; exit 0; }; done
   real_wb=$(command -v wm-build)
   self=$(readlink -f "$0"); real_guard=$(command -v wm-build-limits-guard || echo "$HOME/.local/bin/wm-build-limits-guard")
   pass=0; fail=0; pn=0
