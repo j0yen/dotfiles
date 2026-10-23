@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # aide-verifier.sh: the aide's merge-gate VERIFIER unit as a mechanism (controller DECISION 0e71; was hand-written prompt.md + launch.sh per PR).
+#   AGENT: AIDE_VERIFIER_AGENT (default aide; aide|rb|r7, anything else -> exit 2) is the wm-decide --agent of every row (verdict template, GATE-PASS, RETRACT),
+#   the template's agent=verifier:/recorded_by=unit: fields, the bell text prefix ("<agent> EVENT ...", EVENT_SOURCE) and the unit prefix <agent>-verifier-<name>.
+#   The rb/r7 seats run their own claude on carbon too, so ROOM and systemd-run are unchanged; the verdict row still comes from the headless unit's own session (G7).
+#   Below, "aide" in unit/field names means <agent>; the one-at-a-time check looks at every (aide|rb|r7)-verifier-* unit.
 #   launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<G3 token line>' --suite '<ONE command for wm-verify-run>'
 #          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue]
 #       LINT (exit 2): name not [a-z0-9-]; head not 40 hex; --gated not d-YYYYMMDD-HHMMSS-<agent>-<4hex>; empty token (or one with " ` $ newline);
-#       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:aide-verifier-<name>; another aide-verifier-* unit active
+#       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>; another *-verifier-* unit active
 #       (one at a time) unless --queue (wait, poll AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
-#       Then ROOM (carbon-room.sh 2048 --json, .ok true else exit 3), then systemd-run --user --unit aide-verifier-<name> -p MemoryMax=2G.
+#       Then ROOM (carbon-room.sh 2048 --json, .ok true else exit 3), then systemd-run --user --unit <agent>-verifier-<name> -p MemoryMax=2G.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
 #       `wm-decide merge-gate <verdict> --pr N --repo O/R`: PASS line -> gate.txt + GATE-PASS row + bell to ctl; anything else -> RETRACT correction row + bell, exit 5.
 #       A second finish is a no-op (prints the first outcome) unless --again, so a bell is never doubled. Row-record failure on PASS: bell still sent, exit 7.
 #   --selftest   fakes for systemd-run/systemctl/wm-decide/bell/room in a throwaway dir; touches no real unit, row or seat.
-# Env: AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
+# Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
 #      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit)
 # Exit: 0 ok / 1 systemd-run failed / 2 lint or usage / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout / 7 gate passed, row not recorded.
@@ -21,6 +25,7 @@ set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 shopt -u patsub_replacement 2>/dev/null
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+AGENT="${AIDE_VERIFIER_AGENT:-aide}"
 ROOT="${AIDE_VERIFIER_DIR:-$HOME/.local/state/aide-verifier}"
 ROOM_CMD="${AIDE_VERIFIER_ROOM_CMD:-carbon-room.sh}"
 SD_RUN="${AIDE_VERIFIER_SYSTEMD_RUN:-systemd-run}"
@@ -33,15 +38,16 @@ UNIT_PATH="${AIDE_VERIFIER_UNIT_PATH:-$HOME/.npm-global/bin:$HOME/.local/bin:$HO
 die() { local rc="$1"; shift; echo "aide-verifier: $*" >&2; exit "$rc"; }
 redact() { sed -E 's/(sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9_-]*oat[0-9]+-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|(TOKEN|KEY|SECRET)=[^[:space:]]+)/[redacted]/g'; }
 iso() { date -Iseconds; }
+case "$AGENT" in aide|rb|r7) ;; *) die 2 "AIDE_VERIFIER_AGENT must be aide, rb or r7 (got '$AGENT')" ;; esac
 active_units() {
-  "$SYSTEMCTL" --user list-units 'aide-verifier-*' --state=active,activating,deactivating,reloading --no-legend --plain 2>/dev/null \
-    | awk '{print $1}' | grep -E '^aide-verifier-.*\.service$'
+  "$SYSTEMCTL" --user list-units '*-verifier-*' --state=active,activating,deactivating,reloading --no-legend --plain 2>/dev/null \
+    | awk '{print $1}' | grep -E '^(aide|rb|r7)-verifier-.*\.service$'
 }
 meta_get() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n1; }
 
 default_template() {
   cat <<'TPL'
-You are a merge-gate VERIFIER running as your own headless claude session (systemd unit aide-verifier-{{NAME}} on carbon). Target: {{REPO}} PR {{PR}}, head {{HEAD}}{{NOTES}}. Scratch dir: {{DIR}}/ — everything you create goes there. GATED row to gate: {{GATED}}.
+You are a merge-gate VERIFIER running as your own headless claude session (systemd unit {{AGENT}}-verifier-{{NAME}} on carbon). Target: {{REPO}} PR {{PR}}, head {{HEAD}}{{NOTES}}. Scratch dir: {{DIR}}/ — everything you create goes there. GATED row to gate: {{GATED}}.
 
 STEPS
 1. Refuse if `gh pr view {{PR}} --repo {{REPO}} --json headRefOid -q .headRefOid` != {{HEAD}} (report the real head, record no row).
@@ -51,7 +57,7 @@ STEPS
    cd $d/repo && ~/.local/bin/wm-verify-run {{SUITE_Q}}
    The G3 token is `{{TOKEN}}`: that literal line must appear in the log, the wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}} If anything fails: STOP, report the failing names, record NO verdict.
 5. ONE verdict row:
-   wm-decide record --agent aide --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach <log path> --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:aide-verifier-{{NAME}} recorded_by=unit:aide-verifier-{{NAME}} session=own-headless-claude-p: fresh clone == head; <N passed / 0 FAIL, from the log> via wm-verify-run ({{TOKEN}}); attribution 0/0" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
+   wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach <log path> --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: fresh clone == head; <N passed / 0 FAIL, from the log> via wm-verify-run ({{TOKEN}}); attribution 0/0" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
    The 'ungradable:' line is informational; report any refusal verbatim.
 
 HARD CONSTRAINTS: never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
@@ -63,7 +69,7 @@ TPL
 # render <template-text>: substitute {{X}} with the launch variables (literal replacement, no shell evaluation of values)
 render() {
   local t="$1"
-  t="${t//'{{NAME}}'/$NAME}"; t="${t//'{{REPO}}'/$REPO}"; t="${t//'{{PR}}'/$PR}"; t="${t//'{{HEAD}}'/$HEAD}"
+  t="${t//'{{AGENT}}'/$AGENT}"; t="${t//'{{NAME}}'/$NAME}"; t="${t//'{{REPO}}'/$REPO}"; t="${t//'{{PR}}'/$PR}"; t="${t//'{{HEAD}}'/$HEAD}"
   t="${t//'{{GATED}}'/$GATED}"; t="${t//'{{TOKEN}}'/$TOKEN}"; t="${t//'{{DIR}}'/$DIR}"
   t="${t//'{{CLONE_URL}}'/$CLONE_URL}"; t="${t//'{{SUITE_Q}}'/$SUITE_Q}"
   t="${t//'{{NOTES}}'/$NOTES_TXT}"; t="${t//'{{EXPECT}}'/$EXPECT_TXT}"
@@ -109,7 +115,7 @@ cmd_launch() {
   what="$(printf '%s\n' "$rendered" | grep -m1 -o -- '--what "[^"]*"')"
   [ -n "$what" ] || die 2 "lint: the rendered prompt has no verdict --what \"...\""
   [[ "$what" == *"COMMIT=$HEAD"* ]] || die 2 "lint: the verdict --what lacks COMMIT=$HEAD"
-  [[ "$what" == *"agent=verifier:aide-verifier-$NAME"* ]] || die 2 "lint: the verdict --what lacks agent=verifier:aide-verifier-$NAME"
+  [[ "$what" == *"agent=verifier:$AGENT-verifier-$NAME"* ]] || die 2 "lint: the verdict --what lacks agent=verifier:$AGENT-verifier-$NAME"
   # ---- one at a time ----
   mkdir -p "$ROOT" || die 2 "cannot create $ROOT"
   exec 9>"$ROOT/.launch.lock"
@@ -129,7 +135,7 @@ cmd_launch() {
   room="$($ROOM_CMD 2048 --json 2>/dev/null)"
   [ "$(printf '%s' "$room" | jq -r '.ok' 2>/dev/null)" = true ] || die 3 "no room for a 2048 MB verifier: $(printf '%s' "$room" | tr -d '\n' | cut -c1-200)"
   # ---- write ----
-  local unit="aide-verifier-$NAME" claude="${AIDE_VERIFIER_CLAUDE:-$HOME/.npm-global/bin/claude}" oauth="${AIDE_VERIFIER_OAUTH_CONF:-$HOME/.config/environment.d/90-claude-oauth.conf}"
+  local unit="$AGENT-verifier-$NAME" claude="${AIDE_VERIFIER_CLAUDE:-$HOME/.npm-global/bin/claude}" oauth="${AIDE_VERIFIER_OAUTH_CONF:-$HOME/.config/environment.d/90-claude-oauth.conf}"
   mkdir -p "$DIR" || die 2 "cannot create $DIR"
   printf '%s\n' "$rendered" >"$DIR/prompt.md"
   {
@@ -143,7 +149,7 @@ cmd_launch() {
     printf 'exec timeout 2400 %q -p --dangerously-skip-permissions --model claude-sonnet-5-5 --output-format json "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$claude"
   } >"$DIR/launch.sh"
   chmod 755 "$DIR/launch.sh"
-  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" >"$DIR/meta"
+  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" >"$DIR/meta"
   # ---- start ----
   if ! "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
@@ -164,8 +170,10 @@ cmd_finish() {
     esac
   done
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die 2 "bad name '$name'"
-  local d="$ROOT/$name" unit="aide-verifier-$name"
+  local d="$ROOT/$name" agent unit
   [ -d "$d" ] || die 2 "no such verifier dir: $d"
+  agent="$(meta_get "$d" agent)"; [ -n "$agent" ] || agent="$AGENT"   # the agent the unit was launched under
+  unit="$agent-verifier-$name"
   [ -n "$pr" ] || pr="$(meta_get "$d" pr)"; [ -n "$repo" ] || repo="$(meta_get "$d" repo)"
   local head gated; head="$(meta_get "$d" head)"; gated="$(meta_get "$d" gated)"
   [[ "$pr" =~ ^[0-9]+$ ]] && [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die 2 "need --pr N --repo O/R (not in meta)"
@@ -177,7 +185,7 @@ cmd_finish() {
   local iserr text verdict log
   iserr="$(jq -r '.is_error // false' "$d/result.json" 2>/dev/null)" || die 4 "result.json is not JSON"
   text="$(jq -r '.result // ""' "$d/result.json" 2>/dev/null)"
-  verdict="$(printf '%s\n' "$text" | grep -oE 'd-[0-9]{8}-[0-9]{6}-aide-[0-9a-f]{4}' | grep -vxF "$gated" | tail -n1)"
+  verdict="$(printf '%s\n' "$text" | grep -oE "d-[0-9]{8}-[0-9]{6}-$agent-[0-9a-f]{4}" | grep -vxF "$gated" | tail -n1)"
   if [ "$iserr" = true ] || [ -z "$verdict" ]; then
     echo "aide-verifier: NO verdict row id in the verifier's result (is_error=$iserr); NOT belling. Final text:" >&2
     printf '%s\n' "$text" | head -n 40 | redact >&2
@@ -189,16 +197,16 @@ cmd_finish() {
   local out rc pass reason
   out="$("$WMD" merge-gate "$verdict" --pr "$pr" --repo "$repo" 2>&1)"; rc=$?
   pass="$(printf '%s\n' "$out" | grep -m1 -E '^PASS ')"
-  export EVENT_SOURCE=aide
+  export EVENT_SOURCE="$agent"
   if [ "$rc" = 0 ] && [ -n "$pass" ]; then
     pass="$(printf '%s' "$pass" | redact)"
     printf '%s\n' "$pass" >>"$d/gate.txt"
     local recrc=0
-    "$WMD" record --agent aide --kind other --target carbon \
+    "$WMD" record --agent "$agent" --kind other --target carbon \
       --what "GATE-PASS $repo#$pr $verdict: $pass" \
       --why "aide-verifier.sh finish: merge-gate PASS for verifier unit $unit" \
       --evidence "$pass; $log" --reverse-text "none (gate record)" >/dev/null 2>"$d/record.err" || recrc=$?
-    "$BELL" ctl "aide EVENT MERGE-OK $repo#$pr head $head row $verdict gates $gated (own-session unit $unit): $pass; log $log" >/dev/null 2>&1
+    "$BELL" ctl "$agent EVENT MERGE-OK $repo#$pr head $head row $verdict gates $gated (own-session unit $unit): $pass; log $log" >/dev/null 2>&1
     if [ "$recrc" != 0 ]; then
       echo "$(iso) PASS rc=7 $verdict" >"$d/finished"
       echo "aide-verifier: gate PASSED and ctl belled, but the GATE-PASS row failed to record (rc=$recrc): $(head -c 200 "$d/record.err" | redact)" >&2
@@ -211,11 +219,11 @@ cmd_finish() {
   [ -n "$reason" ] || reason="$(printf '%s\n' "$out" | grep -m1 -v '^[[:space:]]*$')"
   [ -n "$reason" ] || reason="merge-gate rc=$rc with no output"
   reason="$(printf '%s' "$reason" | redact | cut -c1-300)"
-  "$WMD" record --agent aide --kind correction --target carbon \
+  "$WMD" record --agent "$agent" --kind correction --target carbon \
     --what "RETRACT $verdict: merge-gate $reason" \
     --why "aide-verifier.sh finish: merge-gate refused the verifier's MERGE-OK for $repo#$pr" \
     --evidence "$reason; $log" --reverse-text "none (retraction)" >/dev/null 2>"$d/record.err" || echo "aide-verifier: RETRACT row failed to record: $(head -c 200 "$d/record.err" | redact)" >&2
-  "$BELL" ctl "aide EVENT MERGE-GATE FAIL $repo#$pr head $head row $verdict gates $gated (unit $unit): $reason; MERGE-OK RETRACTED; log $log" >/dev/null 2>&1
+  "$BELL" ctl "$agent EVENT MERGE-GATE FAIL $repo#$pr head $head row $verdict gates $gated (unit $unit): $reason; MERGE-OK RETRACTED; log $log" >/dev/null 2>&1
   echo "$(iso) FAIL rc=5 $verdict" >"$d/finished"
   echo "FAIL $reason" >&2
   exit 5
@@ -224,7 +232,8 @@ cmd_finish() {
 cmd_watch() {
   [ $# -ge 1 ] || die 2 "usage: watch <name> [--pr N --repo O/R]"
   local name="$1"; shift
-  local unit="aide-verifier-$name" waited=0 maxw="${AIDE_VERIFIER_WATCH_MAX_S:-3000}" st
+  local agent unit waited=0 maxw="${AIDE_VERIFIER_WATCH_MAX_S:-3000}" st
+  agent="$(meta_get "$ROOT/$name" agent)"; [ -n "$agent" ] || agent="$AGENT"; unit="$agent-verifier-$name"
   while :; do
     st="$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null)"
     case "$st" in active|activating|deactivating|reloading) ;; *) break ;; esac
@@ -268,7 +277,7 @@ F
   chmod +x "$T"/bin/*
   export HOME="$T/home" FAKE_DIR="$T" AIDE_VERIFIER_DIR="$T/av" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$T/bin/fake-sdrun" \
     AIDE_VERIFIER_SYSTEMCTL="$T/bin/fake-systemctl" AIDE_VERIFIER_WM_DECIDE="$T/bin/fake-wmd" AIDE_VERIFIER_BELL="$T/bin/fake-bell" AIDE_VERIFIER_POLL_S=1
-  unset AIDE_VERIFIER_TEMPLATE
+  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT
   local A=(--repo j0yen/dotfiles --pr 7 --gated "$G" --token 'tests/*.test.sh EXIT=0' --suite 'bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"')
   L() { local nm="$1"; shift; "$SELF" launch "$nm" "$@" 2>&1; }
 
@@ -354,6 +363,43 @@ F
   echo "aide-verifier-ok4.service" >"$T/active"; ( sleep 2; : >"$T/active" ) & t0=$SECONDS
   out="$("$SELF" watch ok4 2>&1)"; rc=$?; wait
   [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$(wc -l <"$T/bell.log")" = 1 ]; chk "watch waits for the unit to go inactive, then finishes (one bell)" $?
+  # ---- AIDE_VERIFIER_AGENT ----
+  local V7=d-20261023-063000-r7-1b2c
+  out="$(AIDE_VERIFIER_AGENT=bogus L ag0 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"must be aide, rb or r7"* ]] && [ ! -e "$T/av/ag0" ]; chk "AIDE_VERIFIER_AGENT=bogus -> exit 2, nothing written" $?
+  echo "aide-verifier-other.service" >"$T/active"
+  out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an aide-verifier-* unit blocks an r7 launch" $?
+  echo "rb-verifier-other.service" >"$T/active"
+  out="$(L ag1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an rb-verifier-* unit blocks an aide launch" $?
+  : >"$T/active"; rm -f "$T/bell.log" "$T/wmd.log" "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?; D="$T/av/ag1"
+  [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
+  grep -q -- "wm-decide record --agent r7 --via verifier --model sonnet --kind verdict --gates $G" "$D/prompt.md" \
+    && grep -q -- "agent=verifier:r7-verifier-ag1 recorded_by=unit:r7-verifier-ag1 session=own-headless-claude-p" "$D/prompt.md" \
+    && ! grep -qE -- '--agent aide|aide-verifier-' "$D/prompt.md"; chk "r7: template carries --agent r7, agent=verifier:r7-verifier-<name>, recorded_by=unit:r7-verifier-<name>, no aide unit/agent" $?
+  grep -q '^agent=r7$' "$D/meta" && grep -q ' launched unit=r7-verifier-ag1 ' "$D/state"; chk "r7: meta records the agent, state names the r7 unit" $?
+  printf '{"is_error":false,"result":"LOG: /x/verify/r.log\\nVERDICT: %s"}' "$V7" >"$D/result.json"
+  out="$(FAKE_GATE=pass "$SELF" finish ag1 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && grep -q -- "record --agent r7 --kind other .*--what GATE-PASS j0yen/dotfiles#7 $V7" "$T/wmd.log" && ! grep -q -- '--agent aide' "$T/wmd.log"; chk "r7: finish PASS records the GATE-PASS row with --agent r7 (agent read from meta, env unset)" $?
+  [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q "^r7|ctl r7 EVENT MERGE-OK j0yen/dotfiles#7 head $H row $V7 gates $G (own-session unit r7-verifier-ag1): " "$T/bell.log"; chk "r7: bell text starts with 'r7 EVENT MERGE-OK' (source r7)" $?
+  rm -f "$T/bell.log" "$T/wmd.log"
+  AIDE_VERIFIER_AGENT=r7 L ag2 "${A[@]}" --head "$H" >/dev/null; D="$T/av/ag2"
+  printf '{"is_error":false,"result":"VERDICT: %s"}' "$V7" >"$D/result.json"
+  out="$(FAKE_GATE=fail "$SELF" finish ag2 2>&1)"; rc=$?
+  [ "$rc" = 5 ] && grep -q -- "record --agent r7 --kind correction .*--what RETRACT $V7" "$T/wmd.log" && grep -q "^r7|ctl r7 EVENT MERGE-GATE FAIL " "$T/bell.log"; chk "r7: finish FAIL records the RETRACT row with --agent r7 and belles 'r7 EVENT'" $?
+  printf '{"is_error":false,"result":"VERDICT: %s"}' "$V" >"$D/result.json"; rm -f "$T/bell.log"
+  out="$(FAKE_GATE=pass "$SELF" finish ag2 --again 2>&1)"; rc=$?
+  [ "$rc" = 4 ] && [ ! -e "$T/bell.log" ]; chk "r7: a verdict row id of another agent (-aide-) is not accepted -> exit 4, no bell" $?
+  AIDE_VERIFIER_AGENT=rb L ag3 "${A[@]}" --head "$H" >/dev/null; D="$T/av/ag3"; rm -f "$T/bell.log"
+  printf '{"is_error":false,"result":"VERDICT: d-20261023-064000-rb-0a0a"}' >"$D/result.json"
+  echo "rb-verifier-ag3.service" >"$T/active"; ( sleep 2; : >"$T/active" ) & t0=$SECONDS
+  out="$("$SELF" watch ag3 2>&1)"; rc=$?; wait
+  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && grep -q "^rb|ctl rb EVENT MERGE-OK " "$T/bell.log"; chk "rb: watch polls rb-verifier-<name>, then belles 'rb EVENT'" $?
+  AIDE_VERIFIER_AGENT=bogus "$SELF" finish ok1 >/dev/null 2>&1; rc=$?; [ "$rc" = 2 ]; chk "AIDE_VERIFIER_AGENT=bogus is refused by finish too (exit 2)" $?
+  # default unchanged
+  grep -q -- '--agent aide --via verifier' "$T/av/ok1/prompt.md" && grep -q '^agent=aide$' "$T/av/ok1/meta"; chk "default agent unchanged: the ok1 prompt carries --agent aide, meta agent=aide" $?
   ! grep -E '"\$SD_RUN"' "$SELF" | grep -qE '(bash|sh) -c'; chk "the systemd-run call in the script has no bash -c / sh -c" $?
   echo "selftest: $((n - fail))/$n passed"
   [ "$fail" = 0 ]
