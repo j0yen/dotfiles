@@ -6,10 +6,12 @@ set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 hold=${RB_SPAWN_HOLD_UNDER_TEST:-$here/../.local/bin/rb-spawn-hold.sh}   # the mutation proof points this at a throwaway copy
 wplib=$here/../.local/lib/watcher-premise.sh
-runc=$here/../.local/bin/rb-run-coder.sh
+runc=${RB_RUN_CODER_UNDER_TEST:-$here/../.local/bin/rb-run-coder.sh}   # the G10 mutation proof points this at a throwaway copy
+prescript=$here/fixtures/rb-spawn-hold.pre-shu.sh   # rb-spawn-hold.sh as of PR #52 (340d299): the byte-for-byte baseline for (u6)
 udir=$here/../.config/systemd/user
 fail=0
-pass() { echo "PASS: $1"; }
+npass=0
+pass() { npass=$((npass+1)); echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 
 R=$(mktemp -d "${TMPDIR:-/tmp}/rb-spawn-hold-test.XXXXXX") || exit 2
@@ -282,5 +284,99 @@ fi
 grep -q '^ExecStartPre=%h/.local/bin/rb-spawn-hold.sh --selftest' "$udir/rb-spawn-hold.service" && grep -q '^Environment=RB_SPAWN_HOLD_EXPIRES=2026-10-26T06:00:00-07:00 WP_OWNER=rb' "$udir/rb-spawn-hold.service" \
   && pass "(w-h) service: ExecStartPre --selftest + EXPIRES/WP_OWNER env" || bad "(w-h) service lines"
 
-[ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILED"
+# --- shu (ctl a43d): the gate fails CLOSED. u1-u11 rb-spawn-hold.sh unknown-blind, u12-u15 rb-run-coder.sh rc handling, u16-u17 engine crash ---
+# every case: hermetic mktemp state, --journal-file at a missing file (a read failure), --now = NOW, no ssh
+MISSING=$R/missing.jsonl
+isoago() { date -u -d "$NOW - $1 seconds" +%Y-%m-%dT%H:%M:%SZ; }   # isoago <secs>
+useed() { printf '{"active":false,"run_id":null,"refusal":null,"refused_at":null,"read_at":"%s","source":"unknown","hand_slots":0,"parts":[],"exempt":null,"unknown_since":"%s"}' "$(isoago "$1")" "$(isoago "$1")"; }   # useed <unknown_since age>
+oneline() { [[ $out != *$'\n'* ]]; }
+BLINDFIX="source=unknown fix: ssh redbaron journal read or --no-cargo"
+# (u1) fresh unknown (300 s) non-exempt -> OK unknown, rc 0
+run u1 $MISSING "$(useed 300)"; expect "(u1) unknown 300 s, non-exempt" 0 "OK unknown: "
+# (u2) aged unknown (660 s) non-exempt -> HOLD unknown-blind, rc 76; the state keeps source=unknown + the seeded unknown_since; no flag, no ssh
+run u2 $MISSING "$(useed 660)"; expect "(u2) unknown 660 s, non-exempt" 76 "HOLD unknown-blind unknown_since=$(isoago 660) age_s=660 $BLINDFIX"
+oneline && [ "$out" = "HOLD unknown-blind unknown_since=$(isoago 660) age_s=660 $BLINDFIX" ] && pass "(u2) the HOLD line is exact (G8) and the only stdout line" || bad "(u2) line: $out"
+[ "$(field source)" = unknown ] && [ "$(field unknown_since)" = "$(isoago 660)" ] && pass "(u2) state after HOLD: source=unknown, unknown_since == the seeded value" || bad "(u2) state $(cat "$st")"
+U2H=$R/u2hand; mkdir -p "$U2H"; : > "$R/u2.sshlog"; printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 3\n' "$R/u2.sshlog" > "$R/u2.ssh"; chmod +x "$R/u2.ssh"
+printf '%s\n' "$(useed 660)" > "$R/u2b.state.json"
+u2o=$(RB_SPAWN_HOLD_SSH=$R/u2.ssh CARGO_SLOT_HAND_DIR=$U2H "$hold" --journal-file $MISSING --state-file "$R/u2b.state.json" --now "$NOW" 2>/dev/null); u2rc=$?   # NO --no-flag: the flag path is live
+[ $u2rc = 76 ] && [[ $u2o == "HOLD unknown-blind "* ]] && [ ! -e "$U2H/HAND-YIELD" ] && [ ! -s "$R/u2.sshlog" ] && pass "(u2) flag logic live (no --no-flag): rc=76, HAND-YIELD absent, no ssh call (act=none: source stays unknown)" || bad "(u2) rc=$u2rc flag=$(ls $U2H) ssh=$(cat $R/u2.sshlog)"
+# (u3) boundary exactly 600 s -> HOLD, rc 76; 599 s -> OK
+run u3 $MISSING "$(useed 600)"; expect "(u3) boundary 600 s" 76 "HOLD unknown-blind unknown_since=$(isoago 600) age_s=600 "
+run u3b $MISSING "$(useed 599)"; expect "(u3b) 599 s" 0 "OK unknown: "
+# (u4) aged unknown + --probe-only (the timer) -> rc 0; (u5) --probe-only --exempt X (the --no-cargo path) -> rc 0; (u5b) --exempt alone never refuses (G1)
+run u4 $MISSING "$(useed 660)" --probe-only; expect "(u4) aged unknown, --probe-only" 0 "OK unknown: "
+run u5 $MISSING "$(useed 660)" --probe-only --exempt X; expect "(u5) aged unknown, --probe-only --exempt X" 0 "OK unknown: "
+run u5b $MISSING "$(useed 660)" --exempt X; expect "(u5b) aged unknown, --exempt X alone" 0 "OK unknown: "
+# (u6) stale-ssh branch (a prior good read) is byte-for-byte what PR #52 did: stdout, rc and the state file, probe and not
+prev6='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null,"unknown_since":null}'
+prev6u='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:00:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"2026-10-23T09:00:00Z"}'
+same6=1
+for pv in "$prev6" "$prev6u"; do for ex in "" "--probe-only"; do
+  printf '%s\n' "$pv" > "$R/u6.new.json"; printf '%s\n' "$pv" > "$R/u6.old.json"
+  on=$("$hold" --journal-file $MISSING --state-file "$R/u6.new.json" --now "$NOW" --no-flag $ex 2>&1); orc=$?
+  oo=$("$prescript" --journal-file $MISSING --state-file "$R/u6.old.json" --now "$NOW" --no-flag $ex 2>&1); orrc=$?
+  [ "$on" = "$oo" ] && [ "$orc" = "$orrc" ] && cmp -s "$R/u6.new.json" "$R/u6.old.json" || { same6=0; echo "u6 diff ex='$ex': new=[$on] rc=$orc old=[$oo] rc=$orrc"; }
+done; done
+[ $same6 = 1 ] && pass "(u6) stale-ssh branch output, rc and state identical to the pre-change script (4 fixtures: fresh/aged unknown_since x probe/non-probe): $on" || bad "(u6) stale-ssh differs from the pre-change script"
+# (u7) first failure, no prior state -> unknown_since = now, OK unknown, rc 0
+run u7 $MISSING ""; expect "(u7) first failure, no state" 0 "OK unknown: "
+[ "$(field unknown_since)" = "$NOW" ] && pass "(u7) unknown_since = now" || bad "(u7) unknown_since $(field unknown_since)"
+# (u8) heal: aged unknown + a good read -> no carried unknown_since; the next failure restarts the clock at now
+run u8 $R/d.jsonl "$(useed 660)"; expect "(u8) good read heals" 0 "OK "
+u8st=$(cat "$st"); [ "$(field source)" = file ] && [ "$(field unknown_since)" = null ] && pass "(u8) healed state: non-unknown source, unknown_since null" || bad "(u8) state $u8st"
+run u8b $MISSING "$u8st"; expect "(u8) failure after heal" 0 "OK unknown: "
+[ "$(field unknown_since)" = "$NOW" ] && pass "(u8) unknown_since = now after the heal" || bad "(u8) unknown_since $(field unknown_since)"
+# (u9) stale-ssh whose good-read time is past the window -> the first unknown-branch run dates from the first failure
+prev9=$(printf '{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"%s","read_at":"%s","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"%s"}' "$(isoago 2400)" "$(isoago 2000)" "$(isoago 900)")
+run u9 $MISSING "$prev9"; expect "(u9) stale-ssh expired, unknown_since 900 s old" 76 "HOLD unknown-blind unknown_since=$(isoago 900) age_s=900 "
+# (G2) an unparseable unknown_since restarts the clock, never a traceback
+run g2a $MISSING '{"source":"unknown","unknown_since":"not-a-time","read_at":"x","active":false}'; expect "(G2) unparseable unknown_since" 0 "OK unknown: "
+[ "$(field unknown_since)" = "$NOW" ] && pass "(G2) unknown_since reset to now" || bad "(G2) unknown_since $(field unknown_since)"
+# (u10) corrupt state, non-exempt non-probe -> HOLD state-unreadable, rc 76, the corrupt file is left alone; (u11) --probe-only -> rc 0 and the file parses afterwards
+run u10 $MISSING '{not json'; expect "(u10) corrupt state, non-exempt" 76 "HOLD unknown-blind state-unreadable fix: ssh redbaron journal read or --no-cargo"
+oneline && [ "$(cat "$st")" = '{not json' ] && pass "(u10) one stdout line; the corrupt file is not rewritten (that would restart the clock)" || bad "(u10) st=$(cat "$st") out=$out"
+run u11 $MISSING '{not json' --probe-only; expect "(u11) corrupt state, --probe-only" 0 "OK unknown: "
+python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["source"]=="unknown" and d["unknown_since"]' "$st" && pass "(u11) the state file parses afterwards (source=unknown, unknown_since set)" || bad "(u11) state: $(cat "$st")"
+run u10b $MISSING '{not json' --exempt X; expect "(u10b) corrupt state, --exempt alone" 0 "OK unknown: "
+run u10c $MISSING '[1,2]'; expect "(u10c) state is a JSON array (not an object)" 76 "HOLD unknown-blind state-unreadable"
+
+# --- (u12-u15) rb-run-coder.sh: any rc but 0/76 refuses (G10); first line matching ^(HOLD|OK|REFUSED), else the first non-empty line (H3) ---
+runc_case() { # runc_case <name> <hold_bin> [--no-cargo]; sets crc rep
+  rm -f "$R/claude.ran" "$H/.cache/rb-seat/coders/$1.report.md"
+  HOME=$H RB_SPAWN_HOLD_BIN=$2 RB_SPAWN_HOLD_EXTRA="" bash "$runc" "$1" "$R/prompt.md" ${3:-} >/dev/null 2>&1; crc=$?
+  rep=$(cat "$H/.cache/rb-seat/coders/$1.report.md" 2>/dev/null)
+}
+runc_case u12 "$R/nohold/missing"
+[ $crc = 76 ] && [[ $rep == "REFUSED spawn-hold rc=127: "* ]] && [ ! -e "$R/claude.ran" ] && grep -q 'RB-CODER u12 REFUSED spawn-hold rc=127' "$R/events.log" && pass "(u12) missing hold_bin -> rc=76, report '$rep', seat-event rc=127, claude not run" || bad "(u12) rc=$crc rep='$rep'"
+mkdir -p "$R/nohold"; printf '#!/bin/sh\necho "OK x"\nexit 0\n' > "$R/nohold/noexec"; chmod 644 "$R/nohold/noexec"
+runc_case u13 "$R/nohold/noexec"
+[ $crc = 76 ] && [[ $rep == "REFUSED spawn-hold rc=126: "* ]] && [ ! -e "$R/claude.ran" ] && grep -q 'RB-CODER u13 REFUSED spawn-hold rc=126' "$R/events.log" && pass "(u13) non-executable hold_bin -> rc=76, report '$rep', seat-event rc=126" || bad "(u13) rc=$crc rep='$rep'"
+printf '#!/bin/sh\necho "weird crash line"\nexit 3\n' > "$R/nohold/exit3"; chmod +x "$R/nohold/exit3"
+runc_case u14 "$R/nohold/exit3"
+[ $crc = 76 ] && [ "$rep" = "REFUSED spawn-hold rc=3: weird crash line" ] && [ ! -e "$R/claude.ran" ] && grep -q 'RB-CODER u14 REFUSED spawn-hold rc=3' "$R/events.log" && pass "(u14) hold_bin exits 3 -> rc=76, report '$rep' (first non-empty line)" || bad "(u14) rc=$crc rep='$rep'"
+printf '#!/bin/sh\necho "noise first"\necho "OK x source=y"\nexit 3\n' > "$R/nohold/exit3b"; chmod +x "$R/nohold/exit3b"
+runc_case u14b "$R/nohold/exit3b"
+[ $crc = 76 ] && [ "$rep" = "REFUSED spawn-hold rc=3: OK x source=y" ] && pass "(u14b) H3: the first ^(HOLD|OK|REFUSED) line is quoted, not the first line: '$rep'" || bad "(u14b) rc=$crc rep='$rep'"
+rm -f "$R/claude.ran"; HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra_ok" bash "$runc" u14c "$R/prompt.md" >/dev/null 2>&1; crc=$?
+[ $crc = 0 ] && [ -e "$R/claude.ran" ] && pass "(u14c) rc 0 still proceeds" || bad "(u14c) rc=$crc"
+# (u15) --no-cargo with a missing hold_bin: unchanged (never refuses): rc 0, no REFUSED anywhere, the exemption event, and the next gate/spawn marker (claude) reached
+runc_case u15 "$R/nohold/missing" --no-cargo
+if [ $crc = 0 ] && [ -e "$R/claude.ran" ] && [[ $rep != *REFUSED* ]] && ! grep -q 'RB-CODER u15 REFUSED' "$R/events.log" && grep -q 'RB-CODER u15 EXEMPT spawn-hold --no-cargo' "$R/events.log"; then
+  pass "(u15) --no-cargo + missing hold_bin -> no REFUSED, rc=0, exemption logged, claude reached"; else bad "(u15) rc=$crc rep='$rep' ran=$(ls $R/claude.ran 2>&1)"; fi
+
+# --- (u16/u17) engine crash: --state-file in a chmod 500 dir -> os.replace/open fails inside the engine (G11, H2, H6, H4) ---
+if [ "$(id -u)" = 0 ]; then echo "SKIP: (u16/u17) running as root (chmod 500 does not stop a write)"; else
+  RO=$R/ro; mkdir -p "$RO"; chmod 500 "$RO"
+  u16o=$("$hold" --journal-file $MISSING --state-file "$RO/state.json" --now "$NOW" --no-flag 2>"$R/u16.err"); u16rc=$?
+  [ $u16rc = 76 ] && [ "$u16o" = "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo" ] && [[ $u16o != *$'\n'* ]] && [ ! -s "$R/u16.err" ] \
+    && pass "(u16) engine crash, non-exempt -> rc=76, the HOLD line is the ONLY output (stderr empty): $u16o" || bad "(u16) rc=$u16rc out=[$u16o] err=[$(head -c 200 "$R/u16.err")]"
+  u17o=$("$hold" --journal-file $MISSING --state-file "$RO/state.json" --now "$NOW" --no-flag --probe-only 2>/dev/null); u17rc=$?
+  [ $u17rc = 0 ] && [ "$u17o" = "OK unknown: decision engine failed source=unknown" ] && pass "(u17) engine crash under --probe-only -> rc=0: $u17o" || bad "(u17) rc=$u17rc out=[$u17o]"
+  u17b=$("$hold" --journal-file $MISSING --state-file "$RO/state.json" --now "$NOW" --no-flag --exempt X 2>/dev/null); u17brc=$?
+  [ $u17brc = 0 ] && [[ $u17b == "OK unknown: decision engine failed"* ]] && pass "(u17b) H4: engine crash with --exempt alone stays OK unknown, rc=0 (exempt = the caller accepts blindness)" || bad "(u17b) rc=$u17brc out=[$u17b]"
+  chmod 700 "$RO"
+fi
+
+[ $fail -eq 0 ] && echo "ALL PASS ($npass checks)" || echo "FAILED"
 exit $fail

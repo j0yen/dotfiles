@@ -29,6 +29,10 @@
 # Journal window: the last 60 min (the spec says 30; hand slots taken before the 30 min mark must still count as held).
 # Read failure: previous file HOLD and its read_at < 30 min old -> stay HOLD with source=stale-ssh (read_at is NOT advanced,
 #   so the stickiness cannot renew itself); otherwise `OK unknown: <err>` with source=unknown.
+# Blind (shu, ctl a43d: the gate failed OPEN): a non-probe, non-exempt call whose source=unknown has lasted >= 600 s since unknown_since
+#   prints `HOLD unknown-blind unknown_since=<iso> age_s=<n> source=unknown fix: ...` (exit 76). Also `HOLD unknown-blind state-unreadable`
+#   (state file exists but does not parse, unknown branch) and `HOLD unknown-blind engine-failed` (decision engine crash, incl. a failed
+#   state write). --probe-only (the timer) and --exempt (rb-run-coder --no-cargo) never refuse; the next good read resets unknown_since.
 set -uo pipefail
 
 state="$HOME/.cache/rb-seat/spawn-hold.json"; jf=""; now=""; probe=0; noflag=0; exempt=""; selftest=0
@@ -141,7 +145,7 @@ exit $bad'
 fi
 
 # ---- decide + write the state file; prints: line 1 = output line, line 2 = flag action (arm <run>|clear|none) ----
-decision=$(RSH_JFILE="$jfile" RSH_RERR="$rerr" RSH_STATE="$state" RSH_NOW="$now" RSH_SRC="$source_kind" RSH_EXEMPT="$exempt" python3 -I - <<'PY'
+decision=$(RSH_JFILE="$jfile" RSH_RERR="$rerr" RSH_STATE="$state" RSH_NOW="$now" RSH_SRC="$source_kind" RSH_EXEMPT="$exempt" RSH_PROBE="$probe" python3 -I - 2>"$tmpd/engine.err" <<'PY'
 import json, os, re, datetime as dt
 
 CEIL = 1800
@@ -149,6 +153,7 @@ TABLES = ("runs", "land", "daemon", "builder")
 now =dt.datetime.strptime(os.environ["RSH_NOW"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
 state_path = os.environ["RSH_STATE"]; rerr = os.environ["RSH_RERR"]; src = os.environ["RSH_SRC"]
 exempt = os.environ["RSH_EXEMPT"] or None
+probe_only = os.environ["RSH_PROBE"] == "1"
 
 def pts(s):
     s = re.sub(r"(\.\d{6})\d+", r"\1", s.replace("Z", "+00:00"))
@@ -159,11 +164,14 @@ def iso(d): return d.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def rid(v):
     return None if v is None else str(v)
 
-prev = None
-try:
-    with open(state_path) as f: prev = json.load(f)
-except Exception:
-    prev = None
+# a MISSING state file is a first run; one that exists but does not parse (or is not an object) is state_corrupt
+prev = None; state_corrupt = False
+if os.path.lexists(state_path):
+    try:
+        with open(state_path) as f: prev = json.load(f)
+        if not isinstance(prev, dict): raise ValueError("state is not an object")
+    except Exception:
+        prev = None; state_corrupt = True
 
 rows = []
 walls = ""
@@ -200,6 +208,11 @@ out = {"active": False, "run_id": None, "refusal": None, "refused_at": None, "re
 line = None
 # unknown_since: when the journal first became unreadable (fleet-dash warns after 10 min); carried while reads keep failing
 unk0 = (prev or {}).get("unknown_since") if (prev or {}).get("source") in ("unknown", "stale-ssh") else None
+if unk0 is not None:   # an unparseable unknown_since restarts the clock at now (never a traceback: the launcher handles only rc 0/76)
+    try: pts(unk0)
+    except Exception: unk0 = None
+BLIND_FIX = "fix: ssh redbaron journal read or --no-cargo"
+skip_write = False
 
 if rerr:
     ok_prev = False
@@ -213,6 +226,14 @@ if rerr:
     else:
         out["source"] = "unknown"; out["unknown_since"] = unk0 or iso(now)
         line = "OK unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
+        age_s = int((now - pts(out["unknown_since"])).total_seconds())
+        # fail-closed (shu): only a spawn gate refuses; --probe-only (timer) and --exempt (--no-cargo) accept blindness.
+        # source stays "unknown" below, so act=none and an unknown-blind HOLD never touches the HAND-YIELD flag.
+        if state_corrupt and not probe_only and not exempt:
+            line = "HOLD unknown-blind state-unreadable " + BLIND_FIX
+            skip_write = True   # keep the corrupt file: rewriting it would restart the clock and let the next spawn through
+        elif not probe_only and not exempt and age_s >= 600:
+            line = "HOLD unknown-blind unknown_since=%s age_s=%d source=unknown %s" % (out["unknown_since"], age_s, BLIND_FIX)
 else:
     def fresh(age):  # the 30 min ceiling
         return age < CEIL
@@ -262,15 +283,23 @@ else:
         line = "OK %s source=%s" % (why, src)
         if walls: line += " walls=" + walls
 
-tmp = state_path + ".tmp.%d" % os.getpid()
-with open(tmp, "w") as f: json.dump(out, f, sort_keys=True); f.write("\n")
-os.replace(tmp, state_path)
+if not skip_write:
+    tmp = state_path + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as f: json.dump(out, f, sort_keys=True); f.write("\n")
+    os.replace(tmp, state_path)
 act = "none"
 if out["source"] != "unknown":
     act = ("arm %s" % out["run_id"]) if out["active"] else "clear"
 print(line); print(act)
 PY
-) || { echo "OK unknown: decision engine failed source=unknown"; exit 0; }
+) || {
+  # the engine's stderr went to $tmpd/engine.err (never the gate's output): keep a copy beside the state file, best effort
+  cp -f -- "$tmpd/engine.err" "$(dirname "$state")/engine.err" 2>/dev/null || true
+  # a crash (incl. a failed state write) is blind: a spawn gate refuses. --exempt without --probe-only (the caller accepts blindness)
+  # and --probe-only keep the old OK unknown / exit 0 ON PURPOSE.
+  if [ "$probe" -eq 0 ] && [ -z "$exempt" ]; then echo "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo"; exit 76; fi
+  echo "OK unknown: decision engine failed source=unknown"; exit 0
+}
 line=$(printf '%s\n' "$decision" | sed -n 1p); act=$(printf '%s\n' "$decision" | sed -n 2p)
 
 # ---- AC7: running hand units yield too; the flag is only ever written/removed when its reason starts `spawn-hold` ----
