@@ -90,9 +90,12 @@ grep -q "sk-ant" "$tmp/wm-decide.calls" && bad "a token-shaped argument reached 
 
 # -- C2: the shim dir is on a seat PATH only. A wm-build.service-style PATH resolves gh to the real one.
 UNIT_PATH="$tmp/home/.cargo/bin:$tmp/home/.local/bin:$tmp/real:/usr/bin:/bin"
-got="$(env -i PATH="$UNIT_PATH" bash -c 'command -v gh')"
+# stdin must not be a socket: bash sources ~/.bashrc when stdin is a network/unix socket (isnetconn), and ~/.bashrc line 1
+# prepends /usr/bin to PATH, so under a harness that hands the suite a socket stdin `command -v gh` flipped to /usr/bin/gh
+# (3 coder runs + verifier df36, 10-23). Resolve in a fresh non-interactive bash with stdin from /dev/null.
+got="$(env -i PATH="$UNIT_PATH" bash -c 'command -v gh' </dev/null)"
 check "$got" "$tmp/real/gh" "a systemd-unit PATH (no seat-bin) resolves gh to the real binary"
-got="$(env -i PATH="$SEATPATH" bash -c 'command -v gh')"
+got="$(env -i PATH="$SEATPATH" bash -c 'command -v gh' </dev/null)"
 check "$got" "$tmp/seat-bin/gh" "a seat PATH (seat-bin first) resolves gh to the shim"
 # the repo must not put gh anywhere a unit PATH or a login shell reads
 if find "$here/.local/bin" "$here/.config/environment.d" -maxdepth 1 -name gh 2>/dev/null | grep -q .; then bad "a gh exists under .local/bin or environment.d"; else ok "no gh under .local/bin (wm-build.service PATH) or environment.d"; fi

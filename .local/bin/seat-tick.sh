@@ -20,7 +20,10 @@
 # lock ("quota-wait in effect until <time>"), claude not launched, events_offset and the unread events untouched (the first turn after the wait delivers them; an ASK is QUEUED, see ASK-QUEUE).
 # COVERED STAMP (10-22): a lock-covered tick (below) leaves last_exit/last_duration_s at the last real turn's values (the running turn is not over), so it also stamps last_covered_at (ISO local, like last_tick.iso) and last_covered_by (`<kind>:<pid>`); null until the first covered tick.
 # The first exit-0 turn clears quota_wait_until and the reason. A real exit 1 with no limit line stays a failure.
-# State keys: last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until.
+# QUOTA-ACCOUNT (10-23, fleet-token rotation): when it records quota_wait_until it also records quota_account = the `account` in $FLEET_DASH_DIR/token.json (null when that file is absent).
+# A wait recorded under another account is not the current account's wait: whenever token.json exists with an account != quota_account (null counts as different), the wait is IGNORED
+# (treated as expired; the turn runs and the keys clear). A missing or unreadable token.json ignores nothing. fleet-token-429-watch.sh reads the same two keys.
+# State keys: last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead, then is QUEUED (exit 0), never dropped.
@@ -845,6 +848,32 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
   [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oq10"; chk "quota-wait (h): SEAT_NOW_EPOCH is ignored outside selftest mode (the real clock is past the wait, claude runs)" $?
   rm -f "$T/dash/r7-events.log"
 
+  # 17a. (10-23) fleet-token: the wait is recorded WITH the account in use and is ignored once token.json names another account
+  rm -f "$T/dash/token.json" "$T/dash/r7-events.log"; FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # normalize: clears any wait, no token.json
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>&1
+  [ "$(jseat r7 .quota_wait_until)" = "$QR1" ] && [ "$(jseat r7 .quota_account)" = null ] && "$SELF" r7 --status | jq -e 'has("quota_account")' >/dev/null; chk "quota_account (a): no token.json -> quota_account null (key present), quota_wait_until recorded" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oqa1" 2>"$T/eqa1"; rc=$?
+  [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oqa1" && [ "$(jseat r7 .quota_wait_until)" = "$QR1" ]; chk "quota_account (b): wait recorded with no token.json stays in effect while no token.json exists" $?
+  printf '{"account":"acctA","placed_at":null,"by":"hand","trigger":"seed"}\n' >"$T/dash/token.json"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oqa2" 2>"$T/eqa2"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oqa2" && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .quota_account)" = null ]; chk "quota_account (c): token.json now names acctA but the wait has no account (null != acctA) -> ignored, claude runs, keys clear" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>&1
+  [ "$(jseat r7 .quota_wait_until)" = "$QR1" ] && [ "$(jseat r7 .quota_account)" = acctA ]; chk "quota_account (d): limit hit with token.json acctA -> quota_wait_until=$QR1, quota_account=acctA" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oqa3" 2>"$T/eqa3"; rc=$?
+  [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oqa3" && grep -qF "seat-tick: r7 quota-wait in effect until" "$T/eqa3" && [ "$(jseat r7 .quota_account)" = acctA ]; chk "quota_account (e): same account still named -> the wait holds, claude not launched" $?
+  printf '{"account":"acctB","placed_at":null,"by":"aide","trigger":"429"}\n' >"$T/dash/token.json"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oqa4" 2>"$T/eqa4"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oqa4" && [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .quota_account)" = null ] && ! grep -q 'quota-wait in effect' "$T/eqa4"; chk "quota_account (f): token.json rotated to acctB -> the acctA wait is IGNORED, claude runs, quota_wait_until and quota_account clear" $?
+  printf '{"account":"acctA"}\n' >"$T/dash/token.json"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QN1" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>&1
+  printf 'not json {' >"$T/dash/token.json"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QN1 + 600))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oqa5" 2>"$T/eqa5"; rc=$?
+  [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oqa5" && [ "$(jseat r7 .quota_account)" = acctA ]; chk "quota_account (g): an unreadable token.json ignores nothing (unknown account = the wait holds)" $?
+  rm -f "$T/dash/token.json"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QR1 + 5))" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # past the wait: clears it for the blocks below
+  [ "$(jseat r7 .quota_wait_until)" = null ] && [ "$(jseat r7 .quota_account)" = null ]; chk "quota_account (h): after the wait both keys are null again" $?
+  rm -f "$T/dash/r7-events.log"
+
   # 17b. (10-22 8:40 PM) ASK QUEUE: an ask that cannot take the lock (or arrives during quota-wait) is queued, never dropped; every prompt drains the queue
   local AKQ="$T/dash/rb-asks.pending" aks0 akp akq_t1 akq_t2 akq_ev akq_n akq_c
   askq_busy() {   # askq_busy <ask text> [env...]: a fake same-seat tick holds the rb lock for 3 s while the ask (SEAT_ASK_LOCK_WAIT=1) runs
@@ -1028,6 +1057,10 @@ S_last_sent="$(sget '.last_sent // 0')"; S_skipped="$(sget '.ticks_skipped // 0'
 S_reason="$(sget '.last_skip_reason // ""')"; S_seen="$(sget '.approvals_seen // 0')"; S_exit="$(sget '.last_exit // null')"
 S_dur="$(sget '.last_duration_s // null')"; S_kind="$(sget '.last_prompt_kind // ""')"; S_gsince="$(sget '.guard_since // 0')"
 S_qw="$(sget '.quota_wait_until // empty')"; [[ "$S_qw" =~ ^[0-9]+$ ]] || S_qw=""
+S_qa="$(sget '.quota_account // empty')"
+# fleet-token (10-23): token.json names the account in use; a quota wait recorded under another account is stale (the rotation changed who is limited)
+tok_account() { [ -r "$DASH/token.json" ] && jq -r '.account // empty' "$DASH/token.json" 2>/dev/null || true; }
+if [ -n "$S_qw" ]; then _cur_acct="$(tok_account)"; if [ -n "$_cur_acct" ] && [ "$_cur_acct" != "$S_qa" ]; then S_qw=""; S_qa=""; fi; fi
 S_bounces="$(sget '.stop_hook_bounces // null')"; [[ "$S_bounces" =~ ^[0-9]+$ ]] || S_bounces=null; S_shbefore="$(sget '.stop_hook_lines_before // null')"; [[ "$S_shbefore" =~ ^[0-9]+$ ]] || S_shbefore=null
 S_covat="$(sget '.last_covered_at // empty')"; S_covby="$(sget '.last_covered_by // empty')"
 S_evoff="$(sget '.events_offset // 0')"; S_lastprompt="$(sget '.last_prompt // 0')"; S_evnew="$(sget '.events_new // 0')"; S_chained="${SEAT_TICK_CHAINED:-0}"
@@ -1038,12 +1071,12 @@ save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
   jq -n --arg seat "$SEAT" --arg iso "$iso" --argjson ep "$now" --argjson ls "$S_last_sent" --argjson sk "$S_skipped" --arg why "$S_reason" \
         --argjson sn "$S_sends" --argjson as "$S_seen" --argjson ex "$S_exit" --argjson du "$S_dur" --arg kind "$S_kind" --arg sf "$SFILE" --argjson gs "$S_gsince" \
-        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" \
+        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --arg qa "$S_qa" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" \
     '{seat:$seat, asks_pending:$ap, stop_hook_bounces:$shb, stop_hook_lines_before:$shl, last_covered_at:(if $cva=="" then null else $cva end), last_covered_by:(if $cvb=="" then null else $cvb end), last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
       sends_total:$sn, last_exit:$ex, last_duration_s:$du, last_prompt_kind:(if $kind=="" then null else $kind end),
       status_file:(if $sf=="" then null else $sf end), approvals_seen:$as,
       guard_since:(if ($why|startswith("guard:")) and $gs>0 then $gs else null end),
-      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch, quota_wait_until:$qw}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch, quota_wait_until:$qw, quota_account:(if $qa=="" then null else $qa end)}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
 }
 
 # a. the lock serializes ticks and asks: two processes never share the session. A tick gives up fast; an ask must land.
@@ -1214,12 +1247,12 @@ S_exit="$rc"; S_dur=$((end - start))
 sh_after="$(stop_hook_lines "$SID")"
 if [[ "$S_shbefore" =~ ^[0-9]+$ ]]; then S_bounces=$(( sh_after - S_shbefore )); [ "$S_bounces" -ge 0 ] || S_bounces=0; else S_bounces=0; fi   # a rewritten/compacted file can shrink the count: never negative
 [ "$S_bounces" -gt 0 ] && stop_hook_alarm "$S_bounces"
-if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; fi
+if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; S_qa=""; fi
 # quota-wait: a failed turn whose output is the usage-limit line is not a failure anyone can act on. Not a skip (ticks_skipped untouched), events/approvals/lastprompt
 # not advanced, exit 0 so the unit does not fail (no OnFailure bell); a2 then holds the next ticks until the reset. An unparseable reset leaves quota_wait_until null.
 if [ "$rc" != 0 ] && quota_hit "$LOG"; then
-  S_qw=""; qw_iso="unknown"; qw_txt="unknown"
-  if qw_ep="$(quota_reset "$LOG" "$(qw_now)")"; then S_qw="$qw_ep"; qw_iso="$(date -d "@$qw_ep" -Iseconds)"; qw_txt="$(date -d "@$qw_ep" '+%-I:%M %p %Z')"; fi
+  S_qw=""; S_qa=""; qw_iso="unknown"; qw_txt="unknown"
+  if qw_ep="$(quota_reset "$LOG" "$(qw_now)")"; then S_qw="$qw_ep"; S_qa="$(tok_account)"; qw_iso="$(date -d "@$qw_ep" -Iseconds)"; qw_txt="$(date -d "@$qw_ep" '+%-I:%M %p %Z')"; fi
   S_reason="quota-wait:$qw_iso"
   save && TURN_DONE=1
   echo "seat-tick: $SEAT quota-wait until $qw_txt ($(quota_kind "$LOG") limit)" >&2
