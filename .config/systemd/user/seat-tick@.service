@@ -5,6 +5,8 @@ OnFailure=seat-tick-failed@%i.service
 
 [Service]
 Type=oneshot
+# exit 5 = lock busy (an event turn holds the seat): a counted skip with its own ALARM line in seat-tick.sh, not a unit failure
+SuccessExitStatus=5
 WorkingDirectory=%h
 Environment=WM_SEAT=%i
 Environment=PATH=%h/.local/seat-bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin

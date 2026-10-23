@@ -23,7 +23,9 @@
 #
 # State lives under $TOKEN_LEDGER_STATE_DIR (default ~/.cache/token-ledger):
 #   ledger.tsv          one row per UTC day: date, per_model, weighted,
-#                        status, complete, hosts, missing, generated
+#                        status, complete, hosts, missing, generated, then
+#                        (appended; older readers ignore them) split,
+#                        per_host, compactions
 #   message-index.tsv   id -> day; an internal companion file that lets
 #                        --check catch a message double-counted across two
 #                        days without re-scanning every JSONL on disk
@@ -49,7 +51,9 @@ NOW="${TOKEN_LEDGER_NOW:-$(date -u +%FT%TZ)}"
 LEDGER_TSV="$STATE_DIR/ledger.tsv"
 INDEX_TSV="$STATE_DIR/message-index.tsv"
 SUMMARY_TXT="$STATE_DIR/today-summary.txt"
-LEDGER_HEADER=$'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated'
+LEDGER_HEADER_V1=$'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated'
+LEDGER_HEADER=$LEDGER_HEADER_V1$'\tsplit\tper_host\tcompactions'
+LEDGER_NCOLS=11
 
 # jq filter: one assistant/usage record -> {id, ts, model, in, cw, cr, out}.
 JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id != null and .timestamp != null)
@@ -58,6 +62,21 @@ JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id
      cw: (.message.usage.cache_creation_input_tokens // 0),
      cr: (.message.usage.cache_read_input_tokens // 0),
      out: (.message.usage.output_tokens // 0)}'
+
+# jq filter: one compaction-summary line -> {kind:"compact", id:uuid, ts}.
+# Marker (confirmed on real transcripts): a type=="user" line carrying
+# isCompactSummary:true AND message.content (string) starting "This session
+# is being continued from a previous conversation". Either one counts; a
+# resumed session can copy a line into a second JSONL, so the central
+# aggregation dedups on uuid.
+JQ_COMPACT='select(.type=="user" and .uuid != null and .timestamp != null
+    and (.isCompactSummary == true
+         or (((.message.content // "")
+              | if type=="string" then .
+                elif type=="array" then ([.[] | select(type=="object" and .type=="text") | .text] | .[0] // "")
+                else "" end)
+             | startswith("This session is being continued from a previous conversation"))))
+  | {kind: "compact", id: .uuid, ts: .timestamp}'
 
 die() { printf 'token-ledger: %s\n' "$*" >&2; exit 1; }
 
@@ -92,7 +111,7 @@ gather_raw() {
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
   find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null \
     | xargs -0 -r cat -- 2>/dev/null \
-    | jq -c --arg host "$LOCAL_HOST" "$JQ_EXTRACT | . + {host:\$host}" 2>/dev/null
+    | jq -c --arg host "$LOCAL_HOST" "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host}" 2>/dev/null
 }
 
 # --emit-local-records is handled first and standalone: it never touches
@@ -137,7 +156,7 @@ migrate_legacy_ledger() {
   [ -f "$LEDGER_TSV" ] || return 0
   local first_line
   first_line="$(head -n1 -- "$LEDGER_TSV" 2>/dev/null || true)"
-  [ "$first_line" = "$LEDGER_HEADER" ] && return 0
+  { [ "$first_line" = "$LEDGER_HEADER" ] || [ "$first_line" = "$LEDGER_HEADER_V1" ]; } && return 0
   local bak="$STATE_DIR/ledger.tsv.pre-buckets"
   [ -e "$bak" ] && bak="$STATE_DIR/ledger.tsv.pre-buckets.$(date -u +%Y%m%dT%H%M%SZ)"
   mv -- "$LEDGER_TSV" "$bak"
@@ -236,13 +255,24 @@ missing_csv=""
 # ---- dedup by message.id (keep the latest ts), THEN window-filter, THEN
 # bucket by the winning record's own day. -----------------------------
 agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
-  [inputs]
+  [inputs] as $all
+  | ($all | map(select(.kind != "compact"))) as $usage
+  | ($all | map(select(.kind == "compact")) | group_by(.id) | map(sort_by(.ts) | first)
+     | map(select(.ts >= $since and .ts < $until))) as $comp
+  | $usage
   | group_by(.id)
   | map(sort_by(.ts) | last)
   | map(select(.ts >= $since and .ts < $until))
   | group_by(.ts[0:10])
   | map({
       date: .[0].ts[0:10],
+      split: {in: ([.[].in] | add // 0), cw: ([.[].cw] | add // 0),
+              cr: ([.[].cr] | add // 0), out: ([.[].out] | add // 0)},
+      per_host: (
+        group_by(.host // "unknown")
+        | map({host: (.[0].host // "unknown"), w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
+        | sort_by(.host)
+      ),
       per_model: (
         group_by(.model)
         | map({model: .[0].model, w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
@@ -251,6 +281,7 @@ agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
       ids: [.[].id]
     })
   | map(. + {weighted: ([.per_model[].w] | add // 0)})
+  | map(. as $d | . + {compactions: ($comp | map(select(.ts[0:10] == $d.date)) | length)})
 ' "$records_file")"
 
 declare -A old_rows
@@ -274,7 +305,10 @@ while IFS= read -r day_obj; do
   day_end_epoch="$(date -u -d "$d_date +1 day" +%s)"
   if [ "$day_end_epoch" -le "$until_epoch" ]; then d_complete="yes"; else d_complete="no"; fi
   d_status="$(status_for "$d_weighted")"
-  old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"
+  d_split="$(jq -r '.split | "in=\(.in) cw=\(.cw) cr=\(.cr) out=\(.out)"' <<<"$day_obj")"
+  d_perhost="$(jq -r '[.per_host[] | "\(.host)=\(.w)"] | join(" ")' <<<"$day_obj")"
+  d_compactions="$(jq -r '.compactions' <<<"$day_obj")"
+  old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"$'\t'"$d_split"$'\t'"$d_perhost"$'\t'"$d_compactions"
   jq -r --arg d "$d_date" '.ids[] | "\(.)\t\($d)"' <<<"$day_obj" >> "$new_index_entries"
 done < <(jq -c '.[]' <<<"$agg_json")
 
@@ -282,7 +316,10 @@ tmp_ledger="$STATE_DIR/.ledger.tsv.tmp.$$"
 {
   printf '%s\n' "$LEDGER_HEADER"
   if [ "${#old_rows[@]}" -gt 0 ]; then
-    for d in "${!old_rows[@]}"; do printf '%s\n' "${old_rows[$d]}"; done | sort
+    # rows written before the split/per_host/compactions columns existed are
+    # padded with empty cells so every row has LEDGER_NCOLS fields
+    for d in "${!old_rows[@]}"; do printf '%s\n' "${old_rows[$d]}"; done \
+      | awk -F'\t' -v OFS='\t' -v n="$LEDGER_NCOLS" '{for (i=NF+1;i<=n;i++) $i=""; print}' | sort
   fi
 } > "$tmp_ledger"
 mv -- "$tmp_ledger" "$LEDGER_TSV"
@@ -305,6 +342,11 @@ yesterday_date="$(date -u -d "$today_date -1 day" +%F)"
 y_weighted="$(get_field "$yesterday_date" 3 0)"
 y_status="$(get_field "$yesterday_date" 4 "budget off")"
 t_weighted="$(get_field "$today_date" 3 0)"
+t_split="$(get_field "$today_date" 9 "")"
+t_compactions="$(get_field "$today_date" 11 0)"
+[ -n "$t_compactions" ] || t_compactions=0
+# split cell "in=N cw=N cr=N out=N" -> "N/N/N/N" (0/0/0/0 when absent)
+t_split_slash="$(sed -E 's/(in|cw|cr|out)=//g; s/ /\//g' <<<"${t_split:-in=0 cw=0 cr=0 out=0}")"
 
 hhmm="$(date -u -d "$until_" +%H:%M)"
 hh="$((10#$(date -u -d "$until_" +%H)))"
@@ -317,7 +359,7 @@ else
   forecast="$(awk -v w="$t_weighted" -v h="$hours_elapsed_x100" 'BEGIN{printf "%.0f", (w*24*100)/h}')"
 fi
 
-summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today so far ${t_weighted} (${hhmm}Z) · forecast ${forecast} · hosts ${hosts_csv} missing ${missing_csv}"
+summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today so far ${t_weighted} (${hhmm}Z) · forecast ${forecast} · hosts ${hosts_csv} missing ${missing_csv} · split in/cw/cr/out ${t_split_slash} · compactions ${t_compactions}"
 
 tmp_summary="$STATE_DIR/.today-summary.txt.tmp.$$"
 printf '%s\n' "$summary" > "$tmp_summary"

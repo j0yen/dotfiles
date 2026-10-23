@@ -1,0 +1,18 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=r7 bell: r7-mon-journal (alert-only, tails ryzen7 read-only, rings the r7 seat via seat-event.sh)
+After=network-online.target
+
+[Service]
+Type=simple
+# runtime state (logs, dedup/level/wake state, heartbeats) stays in ~/.cache/r7-seat/bells/, never in this repo
+ExecStartPre=/bin/bash %h/.local/bin/r7-mon-journal.sh --selftest
+ExecStart=/bin/bash %h/.local/bin/r7-mon-journal.sh
+Restart=always
+RestartSec=1min
+TimeoutStartSec=600
+StandardOutput=append:%h/.cache/r7-seat/bells/journal.log
+StandardError=append:%h/.cache/r7-seat/bells/journal.log
+
+[Install]
+WantedBy=default.target
