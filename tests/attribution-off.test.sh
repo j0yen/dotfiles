@@ -18,8 +18,15 @@ RBM="$here/.local/bin/rb-merge.sh"
 # (a) the gh pr merge invocation carries --subject and --body on the SAME line, and the strip regex is present
 if grep -E 'pr merge' "$RBM" | grep -v '^[[:space:]]*#' | grep -q -- '--subject .*--body'; then echo "ok - rb-merge.sh passes --subject and --body on the gh pr merge call"
 else echo "NOT OK - rb-merge.sh gh pr merge lacks --subject/--body on one invocation"; fail=1; fi
-if grep -qE "^ATTR_RE='co-authored-by\|generated with'" "$RBM" && grep -q 'grep -viE "\$ATTR_RE"' "$RBM"; then echo "ok - rb-merge.sh strips co-authored-by/generated-with lines from the body"
-else echo "NOT OK - rb-merge.sh strip regex missing"; fail=1; fi
+# the regex is LINE-ANCHORED (a trailer line, not prose that mentions the phrase) in all three checks: body strip + post-merge (ATTR_RE) and the pre-merge jq filter
+ATTR_ANCHORED='^[[:space:]]*(co-authored-by:|generated with)'
+if grep -qF "ATTR_RE='$ATTR_ANCHORED'" "$RBM" && grep -q 'grep -viE "\$ATTR_RE"' "$RBM" && grep -q 'grep -ciE "\$ATTR_RE"' "$RBM"; then echo "ok - rb-merge.sh strips/detects LINE-ANCHORED co-authored-by:/generated-with lines (body strip + post-merge)"
+else echo "NOT OK - rb-merge.sh anchored ATTR_RE (strip + post-merge) missing"; fail=1; fi
+if grep -qF 'test("(?im)^[ \\t]*(co-authored-by:|generated with)")' "$RBM"; then echo "ok - rb-merge.sh pre-merge jq filter is line-anchored"
+else echo "NOT OK - rb-merge.sh pre-merge jq filter is not the anchored (?im) form"; fail=1; fi
+# (a2) the PRE-merge branch-commit check: pulls/N/commits is read and ATTRIBUTION-BRANCH is the refusal
+if grep -v '^[[:space:]]*#' "$RBM" | grep -q 'pulls/' && grep -v '^[[:space:]]*#' "$RBM" | grep -q '/commits' && grep -v '^[[:space:]]*#' "$RBM" | grep -q 'ATTRIBUTION-BRANCH'; then echo "ok - rb-merge.sh pre-checks the branch commits (pulls/ + /commits + ATTRIBUTION-BRANCH)"
+else echo "NOT OK - rb-merge.sh lacks the pre-merge branch-commit check (pulls/, /commits, ATTRIBUTION-BRANCH)"; fail=1; fi
 # (b) the latest commit on j0yen/dotfiles main: a trailer is a FAILURE only when the commit is newer than tests/attribution-off.since (the mechanism's timestamp)
 since_f="$here/tests/attribution-off.since"
 if ! command -v gh >/dev/null 2>&1 || ! timeout 20 gh auth status >/dev/null 2>&1; then echo "skip - gh missing or unauthenticated; landed-commit check not run"
@@ -28,7 +35,7 @@ else
   if [ -z "$c" ]; then echo "skip - network/gh api unavailable; landed-commit check not run"
   else
     sha="${c%%$'\t'*}"; rest="${c#*$'\t'}"; cdate="${rest%%$'\t'*}"; msg="${rest#*$'\t'}"; msg="${msg//$'\001'/$'\n'}"
-    hits="$(printf '%s\n' "$msg" | grep -ciE 'co-authored-by|generated with' || true)"
+    hits="$(printf '%s\n' "$msg" | grep -ciE '^[[:space:]]*(co-authored-by:|generated with)' || true)"
     since="$(cat "$since_f" 2>/dev/null || true)"
     if [ "$hits" = 0 ]; then echo "ok - latest main commit ${sha:0:7} carries no attribution trailer"
     elif [ -n "$since" ] && [[ "$cdate" > "$since" ]]; then echo "NOT OK - ATTRIBUTION-LANDED $sha ($cdate is after the mechanism marker $since)"; fail=1

@@ -49,6 +49,7 @@ is_uint() { [[ ${1:-} =~ ^[0-9]+$ ]]; }
 # ---------------------------------------------------------------- selftest
 selftest() {
   local d fails=0 n=0 out rc
+  echo "carbon-room selftest: DEFAULT_RESERVE=${DEFAULT_RESERVE} MB"   # greppable; tests/carbon-room-reserve-drift.test.sh compares it to fleet-dash CARBON_ROOM_RESERVE_MB
   d=$(mktemp -d "${TMPDIR:-/tmp}/carbon-room-selftest.XXXXXX") || { echo "selftest: mktemp failed" >&2; exit 1; }
   # shellcheck disable=SC2064
   trap "rm -rf '$d'" EXIT

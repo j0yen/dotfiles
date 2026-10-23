@@ -31,8 +31,18 @@ printf 'gh [GATE_OK=%s] %s\n' "${WM_DECIDE_GATE_OK:-}" "$*" >> "$STUB_LOG/calls"
 case "$1 $2" in
   "pr view") case "$*" in
       *mergeCommit*) echo "${STUB_MC:-b1b2c3d4e5f60123456789abcdef0123456789ab}" ;;
-      *) printf '{"title":"Fix the thing","body":"line one\\nCo-authored-by: Claude <x@y>\\nGenerated with Claude Code\\nline two"}\n' ;;
+      *) printf '{"title":"Fix the thing","body":"line one\\nCo-authored-by: Claude <x@y>\\nGenerated with Claude Code\\n  co-authored-by: indented <z@y>\\nline two mentions a Co-authored-by: trailer line in prose"}\n' ;;
     esac; exit 0 ;;
+  "pr merge")
+    # keep the --body argument verbatim (it spans lines, so the calls log cannot hold it)
+    prev=""; for a in "$@"; do [ "$prev" = "--body" ] && printf '%s' "$a" > "$STUB_LOG/body"; prev="$a"; done
+    exit "${STUB_GH_RC:-0}" ;;
+  "api repos/"*"/pulls/"*"/commits")
+    [ "${STUB_API_RC:-0}" = 0 ] || exit "$STUB_API_RC"
+    # RAW commit JSON through the wrapper's own -q filter with the real jq (the old stub emitted pre-filtered lines, which hid the prose false-positive)
+    q=""; prev=""; for a in "$@"; do { [ "$prev" = "-q" ] || [ "$prev" = "--jq" ]; } && q="$a"; prev="$a"; done
+    dflt='[{"sha":"aaaaaaaaaaaa0000","commit":{"message":"Fix the thing"}}]'
+    printf '%s' "${STUB_COMMITS_JSON-$dflt}" | jq -r "$q"; exit $? ;;
   "api repos/"*) printf '%s\n' "${STUB_MSG:-Fix the thing}"; exit 0 ;;
 esac
 exit "${STUB_GH_RC:-0}"
@@ -47,7 +57,8 @@ grep -qF "gh [GATE_OK=$V] pr merge 7 --repo j0yen/swarm-decide --squash --match-
 check "$(grep -c '^wmd merge-done' "$tmp/calls"):$(grep -n '^wmd merge-done' "$tmp/calls" | cut -d: -f1)>$(grep -n 'pr merge' "$tmp/calls" | cut -d: -f1)" "1:$(grep -n '^wmd merge-done' "$tmp/calls" | cut -d: -f1)>$(grep -n 'pr merge' "$tmp/calls" | cut -d: -f1)" "merge-done runs once"
 [ "$(grep -n '^wmd merge-done' "$tmp/calls" | cut -d: -f1)" -gt "$(grep -n 'pr merge' "$tmp/calls" | cut -d: -f1)" ] && ok "merge-done runs after gh pr merge" || bad "merge-done not after gh pr merge"
 grep -q -- "--subject Fix the thing --body line one" "$tmp/calls" && ok "gh pr merge got the PR title as --subject and the body as --body" || bad "subject/body missing: $(cat "$tmp/calls")"
-if grep -qiE 'co-authored-by|generated with' <(grep 'pr merge' "$tmp/calls"); then bad "attribution lines reached gh pr merge"; else ok "attribution lines stripped from the merge body"; fi
+if grep -qiE '^[[:space:]]*(co-authored-by:|generated with)' "$tmp/body"; then bad "attribution trailer lines reached gh pr merge: $(cat "$tmp/body")"; else ok "trailer lines (incl. an indented one) stripped from the merge body"; fi
+grep -qF 'line two mentions a Co-authored-by: trailer line in prose' "$tmp/body" && grep -qx 'line one' "$tmp/body" && ok "the body strip keeps a prose sentence that contains the phrase" || bad "prose line lost from the body: $(cat "$tmp/body")"
 
 : > "$tmp/calls"; STUB_GATE=fail bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc" "2" "a refused gate exits 2 (the gate's own rc)"
@@ -64,6 +75,30 @@ MC=b1b2c3d4e5f60123456789abcdef0123456789ab
 : > "$tmp/calls"; STUB_MSG=$'Fix\n\nCo-authored-by: Claude <x@y>' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc:$(grep -c "^ATTRIBUTION-LANDED $MC\$" "$tmp/err")" "3:1" "a landed co-author trailer: ATTRIBUTION-LANDED <oid> on stderr, rc 3"
 : > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; check "$?" "0" "a clean merge commit message passes the post-merge check"
+: > "$tmp/calls"; STUB_MSG=$'Fix\n\nThe wrapper now matches a Co-authored-by: trailer line only at line start; generated with care.' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; check "$?" "0" "landed squash message that MENTIONS the phrases in prose passes"
+: > "$tmp/calls"; STUB_MSG=$'Fix\n\nGenerated with Claude Code' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c "^ATTRIBUTION-LANDED $MC\$" "$tmp/err")" "3:1" "a landed generated-with trailer line: ATTRIBUTION-LANDED, rc 3"
+
+# PRE-merge branch-commit attribution check (controller row 1475: synthorg#398 b44486e9)
+: > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "0:1" "a clean branch (no trailer commit) merges"
+grep -q 'api repos/j0yen/swarm-decide/pulls/7/commits --paginate' "$tmp/calls" && ok "the branch commits are read via pulls/N/commits --paginate" || bad "pulls/N/commits call missing: $(cat "$tmp/calls")"
+mkcommits() { jq -n -c --arg p1 "$1" --arg p2 "$2" --arg p3 "$3" --arg p4 "$4" '[{sha:"aaaaaaaaaaaa1111",commit:{message:$p1}},{sha:"b44486e9c0de2222",commit:{message:$p2}},{sha:"cccccccccccc3333",commit:{message:$p3}},{sha:"dddddddddddd4444",commit:{message:$p4}}]'; }
+PROSE=$'Fix the wrapper\n\nPR 19 was refused because the check matched a trailer line phrase such as co-authored-by or generated with anywhere in prose.'
+: > "$tmp/calls"; STUB_COMMITS_JSON="$(mkcommits "$PROSE" "Add Co-authored-by: in a sentence" "Say generated with care" "Mention the Co-authored-by: header mid-line")" bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "0:1" "commit messages that MENTION a trailer phrase in prose mid-sentence pass"
+: > "$tmp/calls"; STUB_COMMITS_JSON="$(mkcommits "clean" $'Subject\n\nCo-authored-by: Claude <x@y>' "clean" "clean")" bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls"):$(grep -c 'merge-done' "$tmp/calls"):$(grep -c '^ATTRIBUTION-BRANCH b44486e9c0de$' "$tmp/err")" "3:0:0:1" "a real trailer line fails with its sha: exit 3, no gh pr merge, no merge-done"
+: > "$tmp/calls"; STUB_COMMITS_JSON="$(mkcommits "$PROSE" $'Subject\n\nCo-authored-by: Claude <x@y>' "clean" $'Subject\n   Generated with Claude Code')" bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls"):$(grep -c '^ATTRIBUTION-BRANCH b44486e9c0de dddddddddddd$' "$tmp/err")" "3:0:1" "a mixed PR (prose + trailer + indented trailer): only the trailer commits are named, no merge"
+: > "$tmp/calls"; RB_MERGE_ALLOW_BRANCH_TRAILERS=1 STUB_COMMITS_JSON='[{"sha":"b44486e9c0de2222","commit":{"message":"S\n\nCo-authored-by: C <x@y>"}}]' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "0:1" "RB_MERGE_ALLOW_BRANCH_TRAILERS=1 lets a trailer branch merge"
+grep -q 'RB_MERGE_ALLOW_BRANCH_TRAILERS=1' "$tmp/err" && ok "the bypass prints a stderr note" || bad "bypass note missing"
+check "$(grep -c 'pulls/7/commits' "$tmp/calls")" "0" "the bypass skips the branch-commit read"
+: > "$tmp/calls"; STUB_API_RC=1 bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls"):$(grep -c 'ATTRIBUTION-UNCHECKED' "$tmp/err")" "3:0:1" "branch-commit API failure fails closed: exit 3 ATTRIBUTION-UNCHECKED, no merge"
+: > "$tmp/calls"; STUB_COMMITS_JSON='[]' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "3:0" "an empty branch-commit list fails closed"
 
 bash "$wrap" $V seven j0yen/swarm-decide >/dev/null 2>&1; check "$?" "64" "a non-numeric pr is a usage error"
 bash "$wrap" $V 7 swarm-decide >/dev/null 2>&1;          check "$?" "64" "repo must be owner/name"
