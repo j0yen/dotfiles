@@ -13,6 +13,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ledgerday_setup   # NOW=2026-09-12T10:15:00Z, single host carbon (today = 2026-09-12)
 export SEATS_TABLE="$work/seats.tsv"
 printf '# seat\trole\tsid\ttick_min\n\nother\tr\tsid-other\t5\nrb\tr\tsid-rb\t5\n' > "$SEATS_TABLE"
+export TOKEN_LEDGER_AIDE_SIDS="$work/aide-sids"
+printf '# aide session ids\nsid-aide\n\nsid-rb\n' > "$TOKEN_LEDGER_AIDE_SIDS"   # sid-rb also listed: the seats.tsv row wins
 
 # mk FILE USER_LINE_JSON IN — one transcript: optional user line, one assistant record
 asst() { # id in
@@ -23,12 +25,14 @@ mk() { # file text in
   mkdir -p "$(dirname "$jsonl/$1")"
   { user_str "$2"; asst "m-$(echo "$1" | tr -c 'a-z0-9\n' '-')" "$3"; } > "$jsonl/$1"
 }
-# fixtures(scale-of-inner-in, divisor) builds the whole tree
-fixtures() { # inner_in div
+# fixtures(scale-of-inner-in, divisor, [interactive_in]) builds the whole tree
+fixtures() { # inner_in div [int_in]
   rm -rf "$jsonl"; mkdir -p "$jsonl"
-  local d="$2"
+  local d="$2" int_in="${3:-$((1000000/$2))}"
   mk "-home-jsy-wm-build-wt-foo/inner1.jsonl"          "hello"                                  "$1"
   mk "-home-jsy/sid-rb.jsonl"                          "implement the thing"                    "$((40000000/d))"
+  mk "-home-jsy/sid-other.jsonl"                       "hello"                                  "$((3000000/d))"
+  mk "-home-jsy/sid-aide.jsonl"                        "hello there"                            "$((6000000/d))"
   mk "-home-jsy/sid-rb/subagents/agent-c.jsonl"        "Implement the binding spec"             "$((5000000/d))"
   mk "-home-jsy/sid-rb/subagents/agent-v.jsonl"        "VERIFY the build landed"                "$((3000000/d))"
   mk "-home-jsy/sid-rb/subagents/agent-s.jsonl"        "Find where foo is defined"              "$((2000000/d))"
@@ -41,52 +45,54 @@ fixtures() { # inner_in div
     printf '{"type":"user","uuid":"hc1","timestamp":"2026-09-12T08:59:00Z","message":{"content":[{"type":"text","text":"<system-reminder>ctx</system-reminder>"},{"type":"text","text":"Read your full spec at /x"}]}}\n'
     asst m-hc "$((4000000/d))"
   } > "$jsonl/-home-jsy/hc.jsonl"
-  mk "-home-jsy/int.jsonl"                             "hello there"                            "$((1000000/d))"
+  mk "-home-jsy/int.jsonl"                             "hello there"                            "$int_in"
 }
 
-PR_ALARM="coder=9000000;inner=10000000;interactive=1000000;review=1000000;runner=1000000;scout=2000000;seat:rb=40000000;verifier=3000000"
+# building = coder + inner + seat:ctl/rb/r7/aide (Joe 10-23 "controller, rb and r7 are part of the wm-build now", "aide is also part of wm-build"); seat:other and interactive are management
+PR_ALARM="coder=9000000;inner=10000000;interactive=100000000;review=1000000;runner=1000000;scout=2000000;seat:aide=6000000;seat:other=3000000;seat:rb=40000000;verifier=3000000"
 
-# --- 1. emit mode: per-file role on every record ---
-fixtures 10000000 1
+# --- 1. emit mode: per-file role on every record (interactive 100M so case 2 alarms) ---
+fixtures 10000000 1 100000000
 roles="$("$TL" --emit-local-records --since 2026-09-12T00:00:00Z | jq -r '[.role] | .[0]' | sort | uniq -c | awk '{print $2"="$1}' | paste -sd' ')"
-assert_eq "$roles" "coder=2 inner=1 interactive=1 review=1 runner=1 scout=1 seat:rb=1 verifier=1" "emit-local-records tags each record with its file's role"
+assert_eq "$roles" "coder=2 inner=1 interactive=1 review=1 runner=1 scout=1 seat:aide=1 seat:other=1 seat:rb=1 verifier=1" "emit-local-records tags each record with its file's role"
 
-# --- 2. total 67M, build 19M = 28 % -> per_role column, banner, ALARM, json ---
+# --- 2. total 175M, build 65M (coder 9 + inner 10 + seat:rb 40 + seat:aide 6) = 37 % -> per_role column, banner, ALARM, json ---
 "$TL"; rc=$?
 assert_eq "$rc" "0" "run exits 0"
 assert_eq "$(head -n1 "$state/ledger.tsv" | cut -f12)" "per_role" "header appends per_role"
 assert_eq "$(awk -F'\t' '$1=="2026-09-12"{print NF}' "$state/ledger.tsv")" "12" "row has 12 columns"
 assert_eq "$(ledger_field 2026-09-12 12)" "$PR_ALARM" "per_role = weighted per role, sorted"
-assert_eq "$(ledger_field 2026-09-12 3)" "67000000" "weighted total = 67M"
+assert_eq "$(ledger_field 2026-09-12 3)" "175000000" "weighted total = 175M"
 sum=$(ledger_field 2026-09-12 12 | tr ';' '\n' | awk -F= '{s+=$2} END{print s}')
-assert_eq "$sum" "67000000" "per_role sums to the weighted total"
+assert_eq "$sum" "175000000" "per_role sums to the weighted total"
 summary="$(cat "$state/today-summary.txt")"
-assert_contains "$(head -n1 "$state/today-summary.txt")" " · build_share 28% (coder+inner 19M of 67M)" "line 1 carries build_share"
-assert_contains "$summary" "ALARM build_share 28% < 50% — building is coder+inner; the rest is management" "ALARM line under 50 % and > 50M"
+assert_contains "$(head -n1 "$state/today-summary.txt")" " · build_share 37% (coder+inner+seats 65M of 175M)" "line 1 carries build_share: seat:rb + seat:aide count, seat:other and interactive do not"
+assert_contains "$summary" "ALARM build_share 37% < 50% — building is coder+inner+seats (ctl/rb/r7/aide); the rest is management" "ALARM line under 50 % and > 50M"
 assert_eq "$(wc -l < "$state/today-summary.txt")" "2" "summary file is two lines under alarm"
 bs="$state/build-share.json"
 assert_eq "$(jq -r '.date' "$bs")" "2026-09-12" "build-share.json date"
-assert_eq "$(jq -r '.build_share' "$bs")" "28.4" "build-share.json build_share percent"
-assert_eq "$(jq -r '.build_weighted' "$bs")" "19000000" "build-share.json build_weighted = coder+inner"
-assert_eq "$(jq -r '.total_weighted' "$bs")" "67000000" "build-share.json total_weighted"
-assert_eq "$(jq -c '.per_role' "$bs")" '{"coder":9000000,"inner":10000000,"interactive":1000000,"review":1000000,"runner":1000000,"scout":2000000,"seat:rb":40000000,"verifier":3000000}' "build-share.json per_role"
+assert_eq "$(jq -r '.build_share' "$bs")" "37.1" "build-share.json build_share percent"
+assert_eq "$(jq -r '.build_roles_re' "$bs")" '^(coder|inner|seat:(ctl|rb|r7|aide))$' "build-share.json names the build role set"
+assert_eq "$(jq -r '.build_weighted' "$bs")" "65000000" "build-share.json build_weighted = coder+inner+seat:rb+seat:aide"
+assert_eq "$(jq -r '.total_weighted' "$bs")" "175000000" "build-share.json total_weighted"
+assert_eq "$(jq -c '.per_role' "$bs")" '{"coder":9000000,"inner":10000000,"interactive":100000000,"review":1000000,"runner":1000000,"scout":2000000,"seat:aide":6000000,"seat:other":3000000,"seat:rb":40000000,"verifier":3000000}' "build-share.json per_role"
 "$TL" --check; assert_eq "$?" "0" "--check passes on the new 12-column file"
 
-# --- 3. build-heavy day: 60M inner -> 69M of 117M = 58 %, no ALARM ---
+# --- 3. build-heavy day: 60M inner -> 115M of 126M = 91 %, no ALARM ---
 rm -f "$state"/*
 fixtures 60000000 1
 "$TL"
-assert_contains "$(head -n1 "$state/today-summary.txt")" " · build_share 58% (coder+inner 69M of 117M)" "build-heavy day banner"
+assert_contains "$(head -n1 "$state/today-summary.txt")" " · build_share 91% (coder+inner+seats 115M of 126M)" "build-heavy day banner"
 assert_not_contains "$(cat "$state/today-summary.txt")" "ALARM" "no ALARM at or above 50 %"
 assert_eq "$(wc -l < "$state/today-summary.txt")" "1" "summary file stays one line without alarm"
 
-# --- 4. small day (28 % but total 67K < 50M): no ALARM, json still written ---
+# --- 4. small day (total 76K < 50M): no ALARM, json still written ---
 rm -f "$state"/*
 fixtures 10000 1000
 "$TL"
-assert_contains "$(head -n1 "$state/today-summary.txt")" "build_share 28% (coder+inner 0M of 0M)" "small day still reports build_share"
+assert_contains "$(head -n1 "$state/today-summary.txt")" "build_share 85% (coder+inner+seats 0M of 0M)" "small day still reports build_share"
 assert_not_contains "$(cat "$state/today-summary.txt")" "ALARM" "no ALARM when total <= 50M"
-assert_eq "$(jq -r '.total_weighted' "$state/build-share.json")" "67000" "small day json written"
+assert_eq "$(jq -r '.total_weighted' "$state/build-share.json")" "76000" "small day json written"
 
 # --- 5. existing 11-column ledger (v2 header): not moved aside, --check ok, padded to 12 ---
 rm -f "$state"/*
