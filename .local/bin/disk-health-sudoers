@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# disk-health-sudoers - the sudoers rule that lets disk-health.sh read SMART data, as code (render / check / install).
+#
+# WHY: disk-health.sh runs `smartctl` and `nvme smart-log`, which need root. Without a sudoers grant it writes smart_health "unavailable" /
+#   source "needs-sudo" for every device (ryzen7 10-23 1:31 AM: sda usb + nvme0n1). The grant used to live only in a comment; this installs it
+#   and tests/disk-health-sudoers.test.sh proves it is exactly what disk-health.sh runs (no dead grant, no missing grant).
+#
+# USAGE  disk-health-sudoers [--user NAME] MODE
+#   --render     print the filled file to stdout (unprivileged, no sudo): .local/share/disk-health/sudoers.tmpl with
+#                @USER@ = `id -un` (or --user), @SMARTCTL@ / @NVME@ = `command -v` of the tool. A tool that is not installed has its rules
+#                left out and gets a `# <tool>: not installed on <host>` line. A `command -v` result that is not root-owned, is group/other
+#                writable (the file or any parent dir) or is outside /usr/sbin /usr/bin /sbin /bin is REFUSED (exit 3): a ~/.local/bin shim in
+#                a NOPASSWD rule would be a root shell.
+#   --check      exit 0 iff /etc/sudoers.d/disk-health equals the render byte for byte; 1 otherwise (missing or differs; names the diff);
+#                2 when the file cannot be read (it is root 0440): read directly, else `sudo -n cat`, else exit 2.
+#   --install    render (unprivileged) -> unchanged? done : `sudo install -m 0440 -o root -g root` to /etc/sudoers.d/.disk-health.tmp (sudoers
+#                ignores dot-files) -> `sudo visudo -cf` that path -> `sudo mv -f` onto /etc/sudoers.d/disk-health; any failure `sudo rm -f`s the
+#                dot-file, so /etc never holds a partial or unchecked live file. sudo asks for its own password; this script never does.
+#   --selftest   fake sudo/visudo/install/smartctl/nvme on a sandbox PATH under a mktemp root; nothing real is touched.
+#   Refuses (64) to render as root unless --user NAME is given: the render is the unprivileged half, sudo is used for the copy steps only.
+#
+# EXIT  0 ok | 1 --check differs | 2 --check cannot read | 3 unsafe tool path | 4 no tool installed (nothing to grant) | 5 install failed |
+#       6 visudo rejected the file | 7 mv failed | 64 usage
+# ENV   DISK_HEALTH_SUDOERS_TESTROOT (selftest only): moves the target to <root>/etc/sudoers.d, the trusted tool dir to <root>/bin and the
+#       owner check to the current uid, so a test can never reach the real /etc.
+set -u
+
+self=$(readlink -f "${BASH_SOURCE[0]}")
+here=${self%/*}
+tmpl=$here/../share/disk-health/sudoers.tmpl
+
+troot=${DISK_HEALTH_SUDOERS_TESTROOT:-}
+if [ -n "$troot" ]; then
+  sdir=$troot/etc/sudoers.d
+  trusted=("$troot/bin")
+  owner_uid=$(id -u)
+  tool_path=$PATH
+  euid=${DISK_HEALTH_SUDOERS_FAKE_EUID:-$EUID}
+else
+  sdir=/etc/sudoers.d
+  trusted=(/usr/sbin /usr/bin /sbin /bin)
+  owner_uid=0
+  tool_path="$PATH:/usr/sbin:/sbin:/usr/local/sbin"   # what disk-health.sh appends (DISK_HEALTH_EXTRA_PATH default)
+  euid=$EUID
+fi
+live=$sdir/disk-health
+dot=$sdir/.disk-health.tmp
+
+die() { local rc=$1; shift; echo "disk-health-sudoers: $*" >&2; exit "$rc"; }
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/disk-health-sudoers.XXXXXX") || die 1 "mktemp failed"
+dot_made=0
+cleanup() {
+  [ "$dot_made" = 1 ] && sudo rm -f -- "$dot"
+  rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# resolve_tool <name> -> RESOLVED; rc 0 found+safe, 1 absent, 3 unsafe (reason on stderr)
+resolve_tool() {
+  local name=$1 p real x d perm uid dir ok chain
+  RESOLVED=
+  p=$(PATH=$tool_path command -v "$name" 2>/dev/null) || return 1
+  [ -n "$p" ] || return 1
+  case $p in /*) ;; *) echo "disk-health-sudoers: $name resolves to '$p', not an absolute path; refusing" >&2; return 3 ;; esac
+  real=$(readlink -f -- "$p") || { echo "disk-health-sudoers: cannot resolve $p; refusing" >&2; return 3; }
+  for x in "$p" "$real"; do
+    d=${x%/*}; ok=0
+    for dir in "${trusted[@]}"; do [ "$d" = "$dir" ] && ok=1; done
+    [ $ok = 1 ] || { echo "disk-health-sudoers: $name is $x (-> $real): directory not one of ${trusted[*]}; refusing (a shim there would be a root shell)" >&2; return 3; }
+  done
+  [ -f "$real" ] && [ -x "$real" ] || { echo "disk-health-sudoers: $real is not an executable file; refusing" >&2; return 3; }
+  chain=("$real")   # the file, then its dir (selftest) or every parent dir up to / (real hosts)
+  if [ -n "$troot" ]; then chain+=("${real%/*}"); else x=${real%/*}; while [ -n "$x" ]; do chain+=("$x"); x=${x%/*}; done; chain+=(/); fi
+  for x in "${chain[@]}"; do
+    read -r uid perm < <(stat -c '%u %A' -- "$x") || return 3
+    if [ "$uid" != "$owner_uid" ] || [ "${perm:5:1}" = w ] || [ "${perm:8:1}" = w ]; then
+      echo "disk-health-sudoers: $x is not root-owned or is group/other-writable ($perm uid $uid); refusing $name" >&2
+      return 3
+    fi
+  done
+  RESOLVED=$p
+}
+
+# render <user> -> the filled file on stdout; rc 3 when a tool path is unsafe (nothing printed)
+render() {
+  local user=$1 smartctl nvme rc line host=${HOSTNAME%%.*} s_done=0 n_done=0
+  resolve_tool smartctl; rc=$?
+  case $rc in 0) smartctl=$RESOLVED ;; 1) smartctl= ;; *) return 3 ;; esac
+  resolve_tool nvme; rc=$?
+  case $rc in 0) nvme=$RESOLVED ;; 1) nvme= ;; *) return 3 ;; esac
+  [ -r "$tmpl" ] || { echo "disk-health-sudoers: template $tmpl unreadable" >&2; return 3; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      *@SMARTCTL@*)
+        if [ -z "$smartctl" ]; then
+          [ $s_done = 1 ] || echo "# smartctl: not installed on $host"
+          s_done=1; continue
+        fi
+        line=${line//@SMARTCTL@/$smartctl} ;;
+      *@NVME@*)
+        if [ -z "$nvme" ]; then
+          [ $n_done = 1 ] || echo "# nvme: not installed on $host"
+          n_done=1; continue
+        fi
+        line=${line//@NVME@/$nvme} ;;
+    esac
+    printf '%s\n' "${line//@USER@/$user}"
+  done <"$tmpl"
+}
+
+# compare_live <render file> <quiet 0|1> -> 0 equal, 1 differs/missing, 2 cannot read
+compare_live() {
+  local rf=$1 quiet=$2 cur=$tmpdir/current
+  if cat -- "$live" >"$cur" 2>/dev/null; then :
+  elif [ -d "$sdir" ] && [ -r "$sdir" ] && [ ! -e "$live" ]; then
+    [ "$quiet" = 1 ] || echo "differs: $live is not installed"
+    return 1
+  elif sudo -n cat -- "$live" >"$cur" 2>/dev/null; then :
+  else
+    [ "$quiet" = 1 ] || echo "cannot read $live (root 0440 and no passwordless sudo): run  sudo $self --user $user --check" >&2
+    return 2
+  fi
+  if cmp -s -- "$cur" "$rf"; then
+    [ "$quiet" = 1 ] || echo "ok: $live matches the render"
+    return 0
+  fi
+  if [ "$quiet" != 1 ]; then
+    echo "differs: $live is not the render (< installed, > render):"
+    diff -u -- "$cur" "$rf" | head -n 40
+  fi
+  return 1
+}
+
+cmd_install() {
+  local rf=$1 rc
+  grep -q NOPASSWD -- "$rf" || die 4 "no smartctl or nvme installed: nothing to grant"
+  compare_live "$rf" 1; rc=$?
+  if [ $rc = 0 ]; then echo "unchanged: $live already matches the render"; return 0; fi
+  [ $rc = 2 ] && echo "cannot read $live to compare; installing the render"
+  if command -v visudo >/dev/null 2>&1 || PATH=$tool_path command -v visudo >/dev/null 2>&1; then
+    PATH=$tool_path visudo -cf "$rf" >/dev/null 2>&1 || die 6 "visudo rejects the render; nothing written (see: visudo -cf $rf)"
+  fi
+  dot_made=1
+  sudo install -m 0440 -o root -g root -- "$rf" "$dot" || die 5 "sudo install to $dot failed; nothing live was touched"
+  sudo visudo -cf "$dot" || die 6 "visudo rejected $dot; removed it, $live untouched"
+  sudo mv -f -- "$dot" "$live" || die 7 "mv onto $live failed; removed $dot"
+  dot_made=0
+  echo "installed: $live ($(grep -c NOPASSWD -- "$rf") rules)"
+}
+
+# ---------------------------------------------------------------- selftest
+selftest() {
+  local d bin n=0 fails=0 t rc out host=${HOSTNAME%%.*} me
+  d=$(mktemp -d "${TMPDIR:-/tmp}/disk-health-sudoers-selftest.XXXXXX") || { echo "selftest: mktemp failed" >&2; return 1; }
+  bin=$d/bin; mkdir -p "$bin" "$d/etc/sudoers.d" "$d/tmp" "$d/shim"
+  chmod 755 "$d" "$bin"
+  for t in stat readlink mktemp cat cmp diff head grep rm mv; do ln -s "$(type -P "$t")" "$bin/$t"; done
+  mkdir "$d/real"   # multi-call coreutils insist on their own name, so the wrapped tools keep it in a dir of their own
+  ln -s "$(type -P install)" "$d/real/install"; ln -s "$(type -P id)" "$d/real/id"
+  : >"$d/sudo.log"
+  printf '#!/bin/bash\nexit 0\n' >"$bin/smartctl"; cp "$bin/smartctl" "$bin/nvme"
+  cat >"$bin/id" <<'F'
+#!/bin/bash
+[ "$1" = -un ] && { echo tester; exit 0; }
+exec "${0%/*}/../real/id" "$@"
+F
+  cat >"$bin/sudo" <<'F'
+#!/bin/bash
+# logs every call; FAKE_SUDO_FAIL=<word> fails that subcommand; `-n cat` serves FAKE_SUDO_CAT (a file) or fails like a password-required sudo
+echo "$*" >>"$FAKE_DIR/sudo.log"
+[ "$1" = -n ] && { shift; if [ "$1" = cat ]; then [ -n "${FAKE_SUDO_CAT:-}" ] && exec /bin/cat "$FAKE_SUDO_CAT"; echo "sudo: a password is required" >&2; exit 1; fi; }
+[ "${FAKE_SUDO_FAIL:-}" = "$1" ] && exit 1
+exec "$@"
+F
+  cat >"$bin/install" <<'F'
+#!/bin/bash
+# drops -o/-g (the selftest user is not root), keeps -m
+args=(); while [ $# -gt 0 ]; do case $1 in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac; done
+exec "${0%/*}/../real/install" "${args[@]}"
+F
+  cat >"$bin/visudo" <<'F'
+#!/bin/bash
+echo "visudo $*" >>"$FAKE_DIR/visudo.log"
+case "${FAKE_VISUDO_FAIL:-}" in all) echo "visudo: syntax error" >&2; exit 1 ;; dot) case "$2" in *.disk-health.tmp) echo "visudo: syntax error" >&2; exit 1 ;; esac ;; esac
+echo "$2: parsed OK"
+F
+  chmod 755 "$bin"/smartctl "$bin"/nvme "$bin"/id "$bin"/sudo "$bin"/install "$bin"/visudo
+  me=$(id -un)
+
+  r() { # r <outfile> [VAR=val ...] -- args   (sandbox PATH; rc in <outfile>.rc)
+    local o=$1; shift
+    local envs=(); while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+    env -i HOME="$d" PATH="${R_PATH:-$bin}" TMPDIR="$d/tmp" FAKE_DIR="$d" DISK_HEALTH_SUDOERS_TESTROOT="$d" "${envs[@]}" "$BASH" "$self" "$@" >"$o" 2>&1
+    echo $? >"$o.rc"
+  }
+  ok() { # ok <name> <condition rc>
+    n=$((n + 1))
+    if [ "$2" = 0 ]; then echo "  ok   $1"; else echo "  FAIL $1"; fails=$((fails + 1)); fi
+  }
+  rcof() { cat "$1.rc"; }
+
+  # ---- render: both tools present
+  r "$d/r1" -- --render
+  ok "render: exit 0" "$([ "$(rcof "$d/r1")" = 0 ]; echo $?)"
+  ok "render: user from id -un, 7 NOPASSWD rules" "$([ "$(grep -c '^tester ALL=(root) NOPASSWD: ' "$d/r1")" = 7 ]; echo $?)"
+  ok "render: tool paths are the resolved ones, no placeholder left" "$(grep -q "NOPASSWD: $bin/smartctl -H -A /dev/sd\[a-z\]$" "$d/r1" && grep -q "NOPASSWD: $bin/nvme smart-log /dev/nvme\[0-9\]n\[0-9\]$" "$d/r1" && ! grep -q '@' "$d/r1"; echo $?)"
+  ok "render: no '*' and no ALL command" "$(! grep -v '^#' "$d/r1" | grep -q '\*\|NOPASSWD: ALL'; echo $?)"
+  ok "render: --user overrides" "$(r "$d/r1u" -- --user alice --render; grep -q '^alice ALL=' "$d/r1u"; echo $?)"
+  ok "render: bad --user refused (64)" "$(r "$d/r1b" -- --user 'a b' --render; [ "$(rcof "$d/r1b")" = 64 ]; echo $?)"
+  r "$d/r1r" DISK_HEALTH_SUDOERS_FAKE_EUID=0 -- --render
+  ok "render: root without --user refused (64)" "$([ "$(rcof "$d/r1r")" = 64 ]; echo $?)"
+  r "$d/r1ru" DISK_HEALTH_SUDOERS_FAKE_EUID=0 -- --user alice --render
+  ok "render: root with explicit --user allowed" "$([ "$(rcof "$d/r1ru")" = 0 ]; echo $?)"
+
+  # ---- absent tool: its rules are left out and the render says so
+  mv "$bin/nvme" "$d/nvme.away"
+  r "$d/r2" -- --render
+  ok "absent nvme: rules omitted, '# nvme: not installed on <host>' printed, smartctl rules kept" "$(grep -qx "# nvme: not installed on $host" "$d/r2" && ! grep -q 'nvme smart-log' "$d/r2" && [ "$(grep -c 'smartctl -H -A' "$d/r2")" = 6 ]; echo $?)"
+  mv "$d/nvme.away" "$bin/nvme"
+
+  # ---- unsafe tool paths are refused
+  chmod g+w "$bin/smartctl"
+  r "$d/r3" -- --render
+  ok "group-writable smartctl: refused (3), nothing rendered" "$([ "$(rcof "$d/r3")" = 3 ] && ! grep -q NOPASSWD "$d/r3"; echo $?)"
+  chmod g-w "$bin/smartctl"
+  ln -s "$bin/smartctl" "$d/shim/smartctl"
+  R_PATH="$d/shim:$bin" r "$d/r4" -- --render
+  ok "shim dir ahead on PATH (not a trusted dir): refused (3)" "$([ "$(rcof "$d/r4")" = 3 ] && grep -q 'refusing' "$d/r4"; echo $?)"
+  ok "refusal output carries nothing from sudo's environment" "$(! grep -q 'SUDO_' "$d"/r[0-9]*; echo $?)"
+
+  # ---- --check exit codes 0 / 1 / 2 (recorded)
+  r "$d/c1" -- --check
+  ok "check, file not installed (dir readable): 1" "$([ "$(rcof "$d/c1")" = 1 ]; echo $?)"
+  r "$d/i1" -- --install
+  ok "install: exit 0, 'installed'" "$([ "$(rcof "$d/i1")" = 0 ] && grep -q '^installed:' "$d/i1"; echo $?)"
+  ok "install: live file == render, mode 0440, no dot-file left" "$(r "$d/rr" -- --render; cmp -s "$d/rr" "$d/etc/sudoers.d/disk-health" && [ "$(stat -c %a "$d/etc/sudoers.d/disk-health")" = 440 ] && [ ! -e "$d/etc/sudoers.d/.disk-health.tmp" ]; echo $?)"
+  mapfile -t L <"$d/sudo.log"
+  ok "install order: sudo install -> dot-file, sudo visudo -cf dot-file, sudo mv -f onto live" "$([ ${#L[@]} = 3 ] && [[ ${L[0]} == "install -m 0440 -o root -g root -- "*" $d/etc/sudoers.d/.disk-health.tmp" ]] && [ "${L[1]}" = "visudo -cf $d/etc/sudoers.d/.disk-health.tmp" ] && [ "${L[2]}" = "mv -f -- $d/etc/sudoers.d/.disk-health.tmp $d/etc/sudoers.d/disk-health" ]; echo $?)"
+  r "$d/c2" -- --check
+  ok "check after install: 0" "$([ "$(rcof "$d/c2")" = 0 ]; echo $?)"
+  : >"$d/sudo.log"
+  r "$d/i2" -- --install
+  ok "install again: 'unchanged', exit 0, sudo never called" "$([ "$(rcof "$d/i2")" = 0 ] && grep -q '^unchanged:' "$d/i2" && [ ! -s "$d/sudo.log" ]; echo $?)"
+  cp "$d/etc/sudoers.d/disk-health" "$d/live.good"
+  chmod 600 "$d/etc/sudoers.d/disk-health"; echo '# drift' >>"$d/etc/sudoers.d/disk-health"
+  r "$d/c3" -- --check
+  ok "check on a drifted file: 1, diff names the extra line" "$([ "$(rcof "$d/c3")" = 1 ] && grep -q '^+# drift\|^-# drift' "$d/c3"; echo $?)"
+  chmod 000 "$d/etc/sudoers.d/disk-health"
+  r "$d/c4" -- --check
+  ok "check on an unreadable file, sudo -n cat refused: 2" "$([ "$(rcof "$d/c4")" = 2 ] && grep -q 'cannot read' "$d/c4"; echo $?)"
+  r "$d/c5" FAKE_SUDO_CAT="$d/live.good" -- --check
+  ok "check on an unreadable file, read via sudo -n cat: 0" "$([ "$(rcof "$d/c5")" = 0 ]; echo $?)"
+  chmod 600 "$d/etc/sudoers.d/disk-health"; rm -f "$d/etc/sudoers.d/disk-health"
+
+  # ---- install failure paths leave no partial or live file
+  : >"$d/sudo.log"; : >"$d/visudo.log"
+  r "$d/f1" FAKE_VISUDO_FAIL=all -- --install
+  ok "visudo rejects the render before sudo: 6, sudo never called, nothing written" "$([ "$(rcof "$d/f1")" = 6 ] && [ ! -s "$d/sudo.log" ] && [ -z "$(ls -A "$d/etc/sudoers.d")" ]; echo $?)"
+  r "$d/f2" FAKE_VISUDO_FAIL=dot -- --install
+  ok "visudo rejects the dot-file: 6, dot-file removed with sudo rm -f, live not created" "$([ "$(rcof "$d/f2")" = 6 ] && grep -q '^rm -f -- .*\.disk-health\.tmp$' "$d/sudo.log" && [ -z "$(ls -A "$d/etc/sudoers.d")" ]; echo $?)"
+  r "$d/f3" FAKE_SUDO_FAIL=mv -- --install
+  ok "mv fails: 7, dot-file removed, live not created" "$([ "$(rcof "$d/f3")" = 7 ] && [ -z "$(ls -A "$d/etc/sudoers.d")" ]; echo $?)"
+  r "$d/f4" FAKE_SUDO_FAIL=install -- --install
+  ok "sudo install fails: 5, nothing written" "$([ "$(rcof "$d/f4")" = 5 ] && [ -z "$(ls -A "$d/etc/sudoers.d")" ]; echo $?)"
+  rm -f "$bin/smartctl" "$bin/nvme"
+  r "$d/f5" -- --install
+  ok "no tool installed: install refuses (4)" "$([ "$(rcof "$d/f5")" = 4 ]; echo $?)"
+
+  rm -rf -- "$d"
+  echo "selftest: $((n - fails))/$n passed"
+  [ $fails -eq 0 ]
+}
+
+# ---------------------------------------------------------------- main
+mode=
+opt_user=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --render|--check|--install|--selftest) mode=$1 ;;
+    --user) shift; [ $# -gt 0 ] || die 64 "--user needs a name"; opt_user=$1 ;;
+    *) die 64 "usage: disk-health-sudoers [--user NAME] --render|--check|--install|--selftest" ;;
+  esac
+  shift
+done
+[ -n "$mode" ] || die 64 "usage: disk-health-sudoers [--user NAME] --render|--check|--install|--selftest"
+if [ "$mode" = --selftest ]; then selftest; exit $?; fi
+
+if [ -n "$opt_user" ]; then
+  user=$opt_user
+else
+  [ "$euid" != 0 ] || die 64 "running as root: pass --user NAME (the account that runs disk-health.sh); the render stays unprivileged"
+  user=$(id -un) || die 1 "id -un failed"
+fi
+case $user in
+  ""|[!a-z_]*|*[!a-z0-9_-]*) die 64 "user '$user' is not a plain account name" ;;
+esac
+
+rf=$tmpdir/render
+render "$user" >"$rf" || exit 3
+case $mode in
+  --render)  cat -- "$rf" ;;
+  --check)   compare_live "$rf" 0; exit $? ;;
+  --install) cmd_install "$rf"; exit $? ;;
+esac
