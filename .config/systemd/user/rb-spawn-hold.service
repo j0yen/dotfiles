@@ -1,0 +1,8 @@
+[Unit]
+Description=CSH: refresh ~/.cache/rb-seat/spawn-hold.json from redbaron's journal (rb coder spawns hold while a daemon redrive is memory-refused; arms/clears the spawn-hold HAND-YIELD flag). Carbon only; premise: one ssh journal read per run, no daemon state touched.
+
+[Service]
+Type=oneshot
+TimeoutStartSec=90
+Nice=10
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/rb-spawn-hold.sh --probe-only"
