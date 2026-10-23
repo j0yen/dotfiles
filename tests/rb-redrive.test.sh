@@ -64,5 +64,28 @@ hits=$(grep -E '/usr/bin/ssh|/usr/bin/wm|\.cargo/bin/wm-build|command -v ssh|/us
 echo "INFO R2 other absolute-ish paths outside the selftest block (not a fail; real-mode only):"
 grep -nE '\.cargo/bin|\.local/bin|/usr/|/opt/' <<<"$nonself" | cut -c1-140 | sed 's/^/INFO   /' || true
 
+# --- rrdfc: the selftest fails CLOSED (ctl 12:06 PM 10-23). wm-build is reachable ONLY through rssh, so the rssh guard covers ssh and wm-build; main's guard covers wm-decide ---
+# (a) a scratch copy mutated BY PATTERN loses the hermetic export and the first main case's inline FIX_SSH_DIR/RB_REDRIVE_DECIDE
+for b in ssh wm-decide wm-build; do : > "$R/logs/$b.log"; done
+mut="$R/rb-redrive.mut.sh"
+sed -e '/^  export FIX_SSH_DIR=/d' -e '0,/FIX_SSH_DIR="\$T\/s" RB_REDRIVE_DECIDE="\$T\/dec" /s///' "$script" > "$mut"
+if cmp -s "$script" "$mut"; then bad "(a) the mutation changed nothing (pattern drift)"; else pass "(a) mutated copy differs from the original (cmp -s)"; fi
+mout=$(XT="$R/xtrace-mut" S="$mut" bash -c 'exec 9>"$XT"; BASH_XTRACEFD=9; set -- --selftest; . "$S"' 2>&1); mrc=$?
+printf '%s\n' "$mout" > "$R/mut.out"
+[ "$mrc" != 0 ] && pass "(a) mutated selftest rc != 0 (rc=$mrc)" || bad "(a) mutated selftest rc 0: it failed OPEN"
+grep -q 'REFUSED selftest-unhermetic' "$R/mut.out" && pass "(a) mutated selftest output: $(grep -m1 'REFUSED selftest-unhermetic' "$R/mut.out")" || bad "(a) no REFUSED selftest-unhermetic in the mutated output: $(tail -n 3 "$R/mut.out")"
+for b in ssh wm-decide wm-build; do
+  if [ -s "$R/logs/$b.log" ]; then bad "(a) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(a) fake $b log empty"; fi
+done
+
+# (b) direct run with both seams empty: refuse before any call
+for b in ssh wm-decide wm-build; do : > "$R/logs/$b.log"; done
+dout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR= RB_REDRIVE_DECIDE= bash "$script" 1039 --from land --why t 2>&1); drc=$?
+[ "$drc" = 71 ] && pass "(b) direct run rc 71" || bad "(b) direct run rc=$drc: $dout"
+grep -q 'REFUSED selftest-unhermetic' <<<"$dout" && pass "(b) direct run output: $(grep -m1 'REFUSED selftest-unhermetic' <<<"$dout")" || bad "(b) no REFUSED selftest-unhermetic: $dout"
+for b in ssh wm-decide wm-build; do
+  if [ -s "$R/logs/$b.log" ]; then bad "(b) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(b) fake $b log empty"; fi
+done
+
 if [ "$fail" = 0 ]; then echo "rb-redrive.test: PASS"; else echo "rb-redrive.test: FAIL"; fi
 exit "$fail"

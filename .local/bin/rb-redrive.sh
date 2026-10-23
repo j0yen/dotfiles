@@ -15,7 +15,10 @@ set -uo pipefail
 RB=${RB_HOST:-redbaron}; WAIT_S=${RB_REDRIVE_WAIT:-15}
 
 rssh() { # CMD -> RB stdout (FIX_SSH_DIR/<n>.out fixtures in the selftest, consumed in order)
-  if [ -n "${FIX_SSH_DIR:-}" ]; then local n; n=$(( $(cat "$FIX_SSH_DIR/.n" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX_SSH_DIR/.n"
+  [ "${RB_REDRIVE_SELFTEST:-}" = 1 ] && [ -z "${FIX_SSH_DIR:-}" ] && { echo "REFUSED selftest-unhermetic: FIX_SSH_DIR unset (no real ssh)" >&2; exit 71; }   # rrdfc: the selftest fails CLOSED
+  if [ -n "${FIX_SSH_DIR:-}" ]; then local n; n=$(( $(cat "$FIX_SSH_DIR/.n" 2>/dev/null || echo 0) + 1 ))
+    [ "${RB_REDRIVE_SELFTEST:-}" = 1 ] && [ ! -e "$FIX_SSH_DIR/$n.out" ] && { echo "REFUSED selftest-unhermetic: fixture $n missing" >&2; exit 71; }
+    echo $n > "$FIX_SSH_DIR/.n"
     echo "$1" >> "$FIX_SSH_DIR/argv"; cat "$FIX_SSH_DIR/$n.out" 2>/dev/null; return "$(cat "$FIX_SSH_DIR/$n.rc" 2>/dev/null || echo 0)"; fi
   timeout 60 ssh -o BatchMode=yes "$RB" "export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH; $1"
 }
@@ -35,6 +38,7 @@ classify() { # OPS -> admit | refuse | dropped | none
 alarm() { local m="RB-BELL redrive-alarm run=$RUN: $1"; echo "$m"; [ -n "${FIX_SSH_DIR:-}" ] && return 0; declare -F rb_bell >/dev/null && rb_bell "$m" || timeout 30 "$HOME/.local/bin/seat-event.sh" rb "$m" || true; }
 
 main() {
+  [ "${RB_REDRIVE_SELFTEST:-}" = 1 ] && [ -z "${RB_REDRIVE_DECIDE:-}" ] && { echo "REFUSED selftest-unhermetic: RB_REDRIVE_DECIDE unset (no real wm-decide)" >&2; exit 71; }
   RUN=""; FROM=""; WHY=""; FORCE=""; STOP=""; EXPECT=""
   while [ $# -gt 0 ]; do case "$1" in
     --from) FROM=${2:-}; shift 2;; --why) WHY=${2:-}; shift 2;; --force) FORCE=--force; shift;; --stop) STOP=--stop; shift;; --expect) EXPECT=${2:-}; shift 2;;
@@ -66,9 +70,11 @@ main() {
 }
 
 if [ "${1:-}" = --selftest ]; then
+  export RB_REDRIVE_SELFTEST=1
   T=$(mktemp -d) || exit 70; f=0; ok() { echo "ok   $1"; }; no() { echo "FAIL $1"; f=1; }
+  g() { grep -q 'REFUSED selftest-unhermetic' <<<"$1" && no "hermetic guard fired in a case: $(grep -m1 'REFUSED selftest-unhermetic' <<<"$1")"; return 0; }   # rrdfc F3: every case's captured output is checked
   export FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec"   # 10-23 11:48 AM leak (a case without fixtures redrove the real 1046, row 0cd9): hermetic default, no case reaches real ssh or wm-decide
-  echo "HERMETIC FIX_SSH_DIR=$FIX_SSH_DIR RB_REDRIVE_DECIDE=$RB_REDRIVE_DECIDE"   # tests/rb-redrive.test.sh asserts both sit under the selftest mktemp
+  echo "HERMETIC FIX_SSH_DIR=${FIX_SSH_DIR:-} RB_REDRIVE_DECIDE=${RB_REDRIVE_DECIDE:-}"   # tests/rb-redrive.test.sh asserts both sit under the selftest mktemp
   printf '#!/bin/bash\necho d-20261023-060000-rb-abcd\n' > "$T/dec"; chmod +x "$T/dec"; printf '#!/bin/bash\necho refused: bad\n' > "$T/decbad"; chmod +x "$T/decbad"
   mk() { rm -rf -- "${T:?}/s"; mkdir "$T/s"; local i=1; for o in "$@"; do printf '%s\n' "$o" > "$T/s/$i.out"; i=$((i+1)); done; }
   [ "$(classify 'release-mem refuse')" = refuse ] && ok "classify refuse" || no "classify refuse"
@@ -78,26 +84,26 @@ if [ "${1:-}" = --selftest ]; then
   [ "$(classify $'release-mem refuse\nrelease-mem-queued -\nrelease-mem admit\nredrive-reclaim -\nrelease-mem-granted -')" = admit ] && ok "classify refuse then admit+granted -> admit" || no "classify refuse+granted"
   [ "$(classify $'release-mem admit\nrelease-mem refuse')" = refuse ] && ok "classify admit then refuse -> refuse" || no "classify admit+refuse"
   mk "MemAvailable_G=25.0 parts=1047:land:12.5" "redrive ok attempt 5" "release-mem admit"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?; g "$out"
   [ $rc = 0 ] && grep -q '^ROW d-20261023-060000-rb-abcd' <<<"$out" && grep -qE 'redrive 1039 --from land +--operator rb --note' "$T/s/argv" && ok "admit path: row first, redrive carries the row id in --note, rc 0" || no "admit path rc=$rc: $out"
   mk "MemAvailable_G=25.0" "x" "release-mem-dropped run-ended" "x" "release-mem admit"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?; g "$out"
   [ $rc = 0 ] && [ "$(grep -c 'run redrive 1039' "$T/s/argv")" = 2 ] && ok "dropped once -> re-issued once -> admit" || no "re-issue rc=$rc: $out"
   mk "MemAvailable_G=25.0" "x" "release-mem-dropped a" "x" "release-mem-dropped b"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?; g "$out"
   [ $rc = 5 ] && grep -q 'dropped twice' <<<"$out" && ok "dropped twice -> alarm rc 5" || no "dropped twice rc=$rc"
   mk "MemAvailable_G=25.0" "x" "release-mem refuse"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1039 --from land --why test 2>&1); rc=$?; g "$out"
   [ $rc = 5 ] && [ "$(grep -c 'run redrive' "$T/s/argv")" = 1 ] && ok "refused -> alarm rc 5, no re-issue" || no "refuse rc=$rc"
   mk "MemAvailable_G=25.0"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/decbad" main 1039 --from land --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/decbad" main 1039 --from land --why test 2>&1); rc=$?; g "$out"
   [ $rc = 3 ] && ! grep -q 'run redrive' "$T/s/argv" && ok "row refused -> no redrive call, rc 3" || no "row-first rc=$rc"
   mk "MemAvailable_G=25.0" "wm-build: error: prefix-cap:mcphost-:1/1: redrive of run 1042 would exceed the cap"
-  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1042 --from gate --why test 2>&1); rc=$?
+  out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1042 --from gate --why test 2>&1); rc=$?; g "$out"
   [ $rc = 4 ] && grep -q 'REFUSED by the daemon' <<<"$out" && [ "$(cat "$T/s/.n")" = 2 ] && ok "daemon 'error:' reply with rc 0 -> refused rc 4, no journal read" || no "error reply rc=$rc: $out"
-  out=$(main 1039 --from land --why t --ungated 2>&1); [ $? = 2 ] && ok "--ungated refused" || no "--ungated accepted"
+  out=$(main 1039 --from land --why t --ungated 2>&1); rc=$?; g "$out"; [ $rc = 2 ] && ok "--ungated refused" || no "--ungated accepted"
   # 1046 11:48 AM 10-23: daemon 'redrive-refused reason=run-open … pass --stop' -> --stop passes through to wm-build run redrive (the daemon's operator-stop path; never systemctl stop)
-  mk "MemAvailable_G=25.0" "QUEUED run=1046" "release-mem admit"; FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1046 --from land --why t --stop >/dev/null 2>&1
+  mk "MemAvailable_G=25.0" "QUEUED run=1046" "release-mem admit"; out=$(FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec" main 1046 --from land --why t --stop 2>&1); g "$out"
   grep -qE 'run redrive 1046 --from land +--stop --operator rb' "$T/s/argv" && ok "--stop passed to the daemon" || no "--stop not passed: $(grep 'run redrive' "$T/s/argv")"
   case "$T" in */tmp.*) rm -rf -- "${T:?}";; esac
   [ $f = 0 ] && echo "SELFTEST PASS rb-redrive.sh" || echo "SELFTEST FAIL rb-redrive.sh"; exit $f
