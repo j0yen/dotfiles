@@ -8,7 +8,7 @@
 #   seat's SID, print "<seat>: exited, SID free". Never kills anything and never launches anything: exit 1 if the SID is still held.
 # ctl is refused (its old process is a desktop terminal outside tmux): the boundary protocol is printed instead.
 # --dry-run prints the tmux commands and touches neither tmux nor any process. Seats/SIDs from ~/.claude/state/seats.tsv (SEATS_TABLE).
-# Env overrides: SEATS_TABLE SEAT_TMUX_BIN SEAT_EXIT_WAIT SEAT_EXIT_POLL SEAT_EXIT_KEYGAP SEAT_EXIT_MIDTURN SEAT_EXIT_DANCE_MAX
+# Env overrides: SEATS_TABLE SEATS_TABLE_REAL (selftest invariant: the real table, read-only) SEAT_TMUX_BIN SEAT_EXIT_WAIT SEAT_EXIT_POLL SEAT_EXIT_KEYGAP SEAT_EXIT_MIDTURN SEAT_EXIT_DANCE_MAX
 set -u
 SEATS="${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}"
 TMUXB="${SEAT_TMUX_BIN:-tmux}"
@@ -72,9 +72,28 @@ dance() {
 selftest() {
   local fail=0 out rc alive; T="$(mktemp -d)"; export FT="$T"; trap 'kill ${FP:-} 2>/dev/null; rm -rf "${T:-/nonexistent}"' EXIT
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
-  local SID_T=selftest-exit-sid-0001
-  printf 'ctl\tcontroller\tctl-sid\t20\t14400\t^/goal X\t3845\nrb\trb\t%s\t20\t14400\t^/goal Y\t-\n' "$SID_T" >"$T/seats.tsv"
+  local SID_T=00000000-0000-4000-8000-0000000000e1   # throwaway fake: can never be mistaken for a real seat SID
+  printf 'ctl\tcontroller\tselftest-ctl-sid-0000\t20\t14400\t^/goal X\t3845\nrb\trb\t%s\t20\t14400\t^/goal Y\t-\n' "$SID_T" >"$T/seats.tsv"
   export SEATS_TABLE="$T/seats.tsv"
+  # INVARIANT (10-22 night): no fixture SID, decoy argv string or fake seats row carries a SID of the REAL table (read-only); a decoy with the live rb SID
+  # made a live unit's first tick guard-fail. Every fixture SID is selftest- or 00000000- prefixed. UUID-shaped literals in this selftest must not equal a real SID.
+  local realt="${SEATS_TABLE_REAL:-$HOME/.claude/state/seats.tsv}" rsid nreal=0 leak="" fx selsec uu
+  selsec="$(sed -n '/^selftest() {$/,/^}$/p' "$SELF")"
+  for fx in "$SID_T" $(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $3}' "$SEATS_TABLE"); do
+    [[ "$fx" == selftest-* || "$fx" == 00000000-* ]] || leak="$leak bad-prefix:$fx"
+  done
+  if [ -r "$realt" ]; then
+    while IFS= read -r rsid; do
+      nreal=$(( nreal + 1 ))
+      case "$SID_T" in *"$rsid"*) leak="$leak fixture:${rsid:0:8}" ;; esac
+      grep -qF -- "$rsid" "$SEATS_TABLE" && leak="$leak seats-row:${rsid:0:8}"
+      grep -qF -- "$rsid" <<<"$selsec" && leak="$leak selftest-source:${rsid:0:8}"
+      while IFS= read -r uu; do [ "$uu" = "$rsid" ] && leak="$leak uuid-literal:${rsid:0:8}"; done < <(grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' <<<"$selsec")
+    done < <(awk -F'\t' '!/^[[:space:]]*(#|$)/ && length($3) >= 8 {print $3}' "$realt")
+    [ -z "$leak" ]; chk "fixtures carry no real seat SID (checked $nreal real SIDs)${leak:+ LEAK:$leak}" $?
+  else
+    [ -z "$leak" ]; chk "fixtures carry no real seat SID (no real table)${leak:+ LEAK:$leak}" $?
+  fi
   out="$("$SELF" ctl 2>&1)"; rc=$?
   [ "$rc" = 4 ] && [[ "$out" == *"BOUNDARY"* ]] && [[ "$out" == *"/exit"* ]] && _r=0 || _r=1; chk "ctl refused with exit 4 and the boundary protocol ('${out:0:60}...')" "$_r"
   out="$("$SELF" nosuch 2>&1)"; rc=$?; [ "$rc" = 64 ] && _r=0 || _r=1; chk "unknown seat: exit 64" "$_r"
