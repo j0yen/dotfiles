@@ -7,6 +7,10 @@
 #   wm-build daemon is alive, so another node never shows a stale clone's numbers.
 # PRDs/hour added 2026-10-09 (Joe: "add PRDs/hour over last 6 hours"): 🚀 <shipped6/6>/h (<shipped6>/6h), shipped =
 #   `wm-build ledger --since 6h` shipped (runs tagged in the window, at/after archived; fixed in 0.73.4 #195).
+# build_share segment added 2026-10-23 (Joe: "add it to the status bar"): ` · build NN%`, or ` · 🔴 build NN% <50%` while the alarm fires.
+#   Sources (token-ledger owns the numbers and the threshold; never recomputed here), under ${TOKEN_LEDGER_STATE_DIR:-$HOME/.cache/token-ledger}:
+#   build-share.json (.date UTC, .build_share) — no segment when missing, null, or not today's UTC date;
+#   today-summary.txt line 2 starting `ALARM build_share` = alarm firing.
 set -uo pipefail
 in=$(cat)
 model=$(printf '%s' "$in" | jq -r '.model.display_name // .model.id // "?"')
@@ -23,6 +27,17 @@ fi
 # PRD segment (🔨 building · 📋 ready/queued · 🚀 /h) REMOVED 2026-10-22 3:4x PM (Joe: "we can remove this from the status bar … I can see it on Fleet Dash");
 # the counts live on the fleet dashboard http://carbon:8787/ and the statusline-prd-counts.sh refresher no longer spawns.
 
+bs=""
+bsdir="${TOKEN_LEDGER_STATE_DIR:-$HOME/.cache/token-ledger}"
+if bsn=$(jq -r --arg d "$(date -u +%F)" 'select(.date == $d and (.build_share | type) == "number") | .build_share | round' "$bsdir/build-share.json" 2>/dev/null) && [ -n "$bsn" ]; then
+  bsl=""; { IFS= read -r _; IFS= read -r bsl; } 2>/dev/null < "$bsdir/today-summary.txt" || true
+  case "$bsl" in
+    "ALARM build_share"*) bs="🔴 build ${bsn}% <50%" ;;
+    *) bs="build ${bsn}%" ;;
+  esac
+fi
+
 out="$model"
 [ -n "$ctx" ] && out="$out · $ctx"
+[ -n "$bs" ] && out="$out · $bs"
 printf '%s' "$out"
