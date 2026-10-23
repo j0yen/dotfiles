@@ -13,7 +13,7 @@
 #
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
 #        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot, kernel_io_last,
-#        max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct}, errors:[...]}
+#        usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct}, errors:[...]}
 #   source: smartctl | nvme-cli | nvme-cli+smartctl | needs-sudo | no-smartctl | error
 #
 # PRIVILEGE: smartctl and nvme smart-log need root. This script never prompts and never fails the file for a missing tool:
@@ -30,7 +30,13 @@ export PATH="$PATH:${DISK_HEALTH_EXTRA_PATH-/usr/sbin:/sbin:/usr/local/sbin}"
 read -r -d '' PY <<'PY_EOF'
 import json, os, re, shutil, socket, subprocess, sys, time
 
-KERNEL_RE = re.compile(r"I/O error|blk_update_request|reset (high|full)-speed USB|EXT4-fs error|remounting filesystem read-only")
+# block-device trouble only. A USB device resetting (carbon: usb 1-9 flapping) is counted apart in usb_resets_since_boot and never alarms;
+# "ata1: hard resetting link" is normal at every boot, so only a failed command / failed reset counts.
+BLKDEV = r"(?:sd[a-z]+\d*|nvme\d+(?:n\d+)?(?:p\d+)?|dm-\d+|md\d+|vd[a-z]+\d*|xvd[a-z]+\d*|mmcblk\d+(?:p\d+)?)"
+KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I/O error|blk_update_request|EXT4-fs error"
+                       r"|XFS \([^)]*\):.*(?:error|corruption)|remounting filesystem read-only"
+                       r"|\bata\d+(?:\.\d+)?: (?:failed command|exception Emask|COMRESET failed|reset failed)", re.I)
+USB_RESET_RE = re.compile(r"\busb [\d.-]+: reset (?:low|full|high|super)-?speed\+? USB", re.I)
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "zfs", "jfs", "reiserfs"}
 SKIP_DEV = re.compile(r"^(loop|zram|ram|sr|fd|md|dm-)")
 NEEDS_SUDO = re.compile(r"password is required|not allowed|may not run|a terminal is required|no tty")
@@ -195,15 +201,15 @@ def smart_device(d, prefix, have_sudo, errors):
 
 
 def kernel_io(errors):
-    """-> (count or None, last 3 matching lines). journalctl -k -b first, dmesg when the journal is unreadable/empty."""
+    """-> (block-device error count or None, last 3 matching lines, usb reset count or None). journalctl -k -b first, dmesg when the journal is unreadable/empty."""
     for cmd in (["journalctl", "-k", "-b", "--no-pager", "-q"], ["dmesg"]):
         rc, out, err = run(cmd)
         lines = [l for l in out.splitlines() if l.strip()]
         if rc == 0 and lines:
             hits = [l for l in lines if KERNEL_RE.search(l)]
-            return len(hits), [h.strip()[:200] for h in hits[-3:]]
+            return len(hits), [h.strip()[:200] for h in hits[-3:]], sum(1 for l in lines if USB_RESET_RE.search(l))
     errors.append("kernel-log-unreadable")
-    return None, []
+    return None, [], None
 
 
 def pct(s):
@@ -245,12 +251,12 @@ def collect():
         if not ok:
             errors.append("needs-sudo")
     rows = [smart_device(d, prefix, ok, errors) for d in devs]
-    kcount, klast = kernel_io(errors)
+    kcount, klast, usb_resets = kernel_io(errors)
     inode, byts = df_max(errors)
     errors = list(dict.fromkeys(errors))
     return {"host": os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0],
             "ts": now, "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-            "devices": rows, "kernel_io_errors_since_boot": kcount, "kernel_io_last": klast,
+            "devices": rows, "kernel_io_errors_since_boot": kcount, "kernel_io_last": klast, "usb_resets_since_boot": usb_resets,
             "max_inode_pct": inode, "max_bytes_pct": byts, "errors": errors}
 
 
@@ -271,9 +277,10 @@ def summary(doc):
     us = sum(d.get("unsafe_shutdowns") or 0 for d in devs)
     age = int(time.time()) - int(doc.get("ts") or 0)
     inode, byts = doc.get("max_inode_pct"), doc.get("max_bytes_pct")
-    return "disk-health %s age %dm: smart %s x%d | media_errors %d | unsafe_shutdowns %d | kernel_io %s | inode max %s | bytes max %s | errors %s" % (
+    return "disk-health %s age %dm: smart %s x%d | media_errors %d | unsafe_shutdowns %d | kernel_io %s | usb_resets %s | inode max %s | bytes max %s | errors %s" % (
         doc.get("host"), age // 60, worst, len(devs), me, us,
         "n/a" if doc.get("kernel_io_errors_since_boot") is None else doc["kernel_io_errors_since_boot"],
+        "n/a" if doc.get("usb_resets_since_boot") is None else doc["usb_resets_since_boot"],
         "%s%% %s" % (inode["pct"], inode["mount"]) if inode else "n/a",
         "%s%% %s" % (byts["pct"], byts["mount"]) if byts else "n/a",
         ",".join(doc.get("errors") or []) or "none")
@@ -398,7 +405,7 @@ F
   check "healthy: nvme media 0 unsafe 295 used 3" "$d/c1.json" "d['devices'][0]['media_errors']==0 and d['devices'][0]['unsafe_shutdowns']==295 and d['devices'][0]['percentage_used']==3 and d['devices'][0]['source']=='nvme-cli+smartctl'"
   check "healthy: sata reallocated/pending 0" "$d/c1.json" "d['devices'][1]['reallocated']==0 and d['devices'][1]['pending']==0 and d['devices'][1]['source']=='smartctl'"
   check "healthy: usb needed -d sat retry" "$d/c1.json" "d['devices'][2]['smart_health']=='PASSED'"
-  check "healthy: kernel io 0" "$d/c1.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[]"
+  check "healthy: kernel io 0" "$d/c1.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[] and d['usb_resets_since_boot']==0"
   check "healthy: max inode /tmp 42 (overlay + vfat dash ignored)" "$d/c1.json" "d['max_inode_pct']=={'mount':'/tmp','pct':42}"
   check "healthy: max bytes /mnt/data 87 (overlay ignored)" "$d/c1.json" "d['max_bytes_pct']=={'mount':'/mnt/data','pct':87}"
   check "healthy: no errors" "$d/c1.json" "d['errors']==[] and d['host']=='fx' and isinstance(d['ts'],int)"
@@ -407,28 +414,38 @@ F
   sata_log 'FAILED!' 12 3 >"$fx/smartctl.sda"; echo 4 >"$fx/smartctl.sda.rc"
   nvme_log 5 296 0 >"$fx/nvme.nvme0n1"
   df_i 100 >"$fx/df.i"
-  printf 'Oct 22 kernel: blk_update_request: I/O error, dev sda, sector 123\nOct 22 kernel: usb 2-1: reset high-speed USB device number 3\nOct 22 kernel: normal line\n' >"$fx/journal"
+  printf '%s\n' 'Oct 22 kernel: blk_update_request: I/O error, dev sda, sector 123' 'Oct 22 kernel: Buffer I/O error on dev sda1, logical block 1' \
+    'Oct 22 kernel: EXT4-fs error (device sda1): ext4_find_entry' 'Oct 22 kernel: ata1.00: failed command: READ DMA' 'Oct 22 kernel: ata1: hard resetting link' \
+    'Oct 22 kernel: usb 2-1: reset high-speed USB device number 3 using xhci_hcd' 'Oct 22 kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' \
+    'Oct 22 kernel: usb 2-2: device descriptor read/64, error -71' 'Oct 22 kernel: normal line' >"$fx/journal"
   go "$d/c2.json"
   check "failed: sda FAILED" "$d/c2.json" "d['devices'][1]['smart_health']=='FAILED' and d['devices'][1]['reallocated']==12 and d['devices'][1]['pending']==3"
   check "failed: nvme media_errors 5 unsafe 296" "$d/c2.json" "d['devices'][0]['media_errors']==5 and d['devices'][0]['unsafe_shutdowns']==296"
-  check "failed: kernel io 2 lines (I/O error + reset high-speed USB)" "$d/c2.json" "d['kernel_io_errors_since_boot']==2 and len(d['kernel_io_last'])==2"
+  check "failed: kernel io 4 block lines (blk_update, Buffer I/O, EXT4-fs, ata failed command); ata hard reset + usb lines excluded" "$d/c2.json" "d['kernel_io_errors_since_boot']==4 and len(d['kernel_io_last'])==3"
+  check "failed: usb resets counted apart (2), not in the io count" "$d/c2.json" "d['usb_resets_since_boot']==2"
   check "failed: /tmp inodes 100" "$d/c2.json" "d['max_inode_pct']=={'mount':'/tmp','pct':100}"
   env -i HOME="$d" PATH="$bin" DISK_HEALTH_OUT="$d/c2.json" "$BASH" "$self" --summary >"$d/c2.sum" 2>&1
-  n=$((n + 1)); if grep -q 'smart FAILED x3' "$d/c2.sum" && grep -q 'media_errors 5' "$d/c2.sum" && grep -q 'kernel_io 2' "$d/c2.sum" && grep -q 'inode max 100% /tmp' "$d/c2.sum"; then echo "  ok   summary one-liner"; else echo "  FAIL summary one-liner: $(cat "$d/c2.sum")"; fails=$((fails + 1)); fi
+  n=$((n + 1)); if grep -q 'smart FAILED x3' "$d/c2.sum" && grep -q 'media_errors 5' "$d/c2.sum" && grep -q 'kernel_io 4 | usb_resets 2' "$d/c2.sum" && grep -q 'inode max 100% /tmp' "$d/c2.sum"; then echo "  ok   summary one-liner"; else echo "  FAIL summary one-liner: $(cat "$d/c2.sum")"; fails=$((fails + 1)); fi
+
+  # ---- case 2b: carbon shape -- only a USB device flapping: no disk I/O error, so nothing for the alarm; resets still counted
+  printf '%s\n' 'Oct 22 23:48 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' 'Oct 22 23:54 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' \
+    'Oct 23 00:00 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' 'Oct 23 kernel: usb 3-1: reset SuperSpeed USB device number 2 using xhci_hcd' >"$fx/journal"
+  go "$d/c2b.json"
+  check "usb-only flapping: kernel_io 0, usb_resets 4" "$d/c2b.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[] and d['usb_resets_since_boot']==4"
 
   # ---- case 3: needs-sudo (sudo -n fails) + journal empty -> dmesg fallback; the file is still written whole
   df_i 42 >"$fx/df.i"; : >"$fx/journal"; printf 'kernel: EXT4-fs error (device sda1): ext4_find_entry\n' >"$fx/dmesg"
   go "$d/c3.json" FAKE_SUDO=deny
   check "needs-sudo: every device unavailable + source needs-sudo" "$d/c3.json" "len(d['devices'])==3 and all(x['smart_health']=='unavailable' and x['source']=='needs-sudo' and x['media_errors'] is None for x in d['devices'])"
   check "needs-sudo: errors names it, file still has kernel + df" "$d/c3.json" "'needs-sudo' in d['errors'] and d['max_inode_pct']['pct']==42 and d['max_bytes_pct']['pct']==87"
-  check "needs-sudo: dmesg fallback counted EXT4-fs error" "$d/c3.json" "d['kernel_io_errors_since_boot']==1"
+  check "needs-sudo: dmesg fallback counted EXT4-fs error" "$d/c3.json" "d['kernel_io_errors_since_boot']==1 and d['usb_resets_since_boot']==0"
   [ "$(cat "$d/c3.json.rc")" = 0 ] || { echo "  FAIL needs-sudo exit rc=$(cat "$d/c3.json.rc")"; fails=$((fails + 1)); }
 
   # ---- case 4: smartctl + nvme missing, journal + dmesg unreadable -> degraded file, never a failure
   rm -f "$bin/smartctl" "$bin/nvme" "$bin/dmesg" "$fx/journal"
   go "$d/c4.json"
   check "no tools: devices listed, source no-smartctl" "$d/c4.json" "len(d['devices'])==3 and all(x['smart_health']=='unavailable' and x['source']=='no-smartctl' for x in d['devices'])"
-  check "no tools: errors smartctl-missing + kernel-log-unreadable, kernel null" "$d/c4.json" "'smartctl-missing' in d['errors'] and 'kernel-log-unreadable' in d['errors'] and d['kernel_io_errors_since_boot'] is None"
+  check "no tools: errors smartctl-missing + kernel-log-unreadable, kernel null" "$d/c4.json" "'smartctl-missing' in d['errors'] and 'kernel-log-unreadable' in d['errors'] and d['kernel_io_errors_since_boot'] is None and d['usb_resets_since_boot'] is None"
   [ "$(cat "$d/c4.json.rc")" = 0 ] || { echo "  FAIL no-tools exit rc=$(cat "$d/c4.json.rc")"; fails=$((fails + 1)); }
 
   # ---- case 5: --summary on a missing file, --json prints the doc
