@@ -433,6 +433,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/kill-list-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/cargo-slot-gate.sh\" ] && exec \"$HOME/.claude/hooks/cargo-slot-gate.sh\"; exit 0'"
           }
         ]
