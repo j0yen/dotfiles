@@ -19,11 +19,11 @@ assert_contains "$(tail -1 "$prd_dir/vibeloop/exploration-ledger.md")" "stage=ex
 assert_contains "$(cat "$log_file")" "FAIL stage=explore" "journal line names the failing stage"
 
 # instance process gone: the fake mcphost's `serve` pid should not survive
-sleep 0.3
+wait_no_process "$bin/mcphost serve" 10
 assert_eq "$(pgrep -f "$bin/mcphost serve" | wc -l)" "0" "no leaked fake-mcphost serve process after an explore-stage failure"
 
 # ephemeral data dir gone: nothing under TMPDIR matching this run's pattern remains
-leftover="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'mcphost-explore-data.*' -newer "$log_file" 2>/dev/null | wc -l)"
+leftover="$(find "$TMPDIR" -maxdepth 1 -name 'mcphost-explore-data.*' 2>/dev/null | wc -l)"
 assert_eq "$leftover" "0" "ephemeral data directory removed on the explore-stage failure path"
 
 # no pack was written for this attempt
