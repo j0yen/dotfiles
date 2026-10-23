@@ -59,7 +59,7 @@
 #      memory (mem_bad) AND io full avg60 <= IO_FULL_AVG60_MAX were clear for 2 consecutive ledger passes (G5); no early release of this run in the last EARLY_GRACE=1800 s (G5, $EARLY_REC). It goes through release_run unchanged
 #      (W1 circuit gate, row re-read, local Σ, dirty wt -> wip-redrive.sh); a refusal does NOT extend, does NOT count toward EXT_MAX, logs `EARLY-RELEASE-REFUSED run=<id> why=..` at most once per 10 passes and backs off 2 passes;
 #      a success rings `RB-BELL PAUSE-RELEASED run=<id> early premise-recovered`. PREMISE (W4): an adopted/foreign memory pause whose premise (MemAvailable < 12G, PSI) no longer holds waits the full 90 min for no reason. EXPIRES stays 2026-11-21.
-# Output: /mnt/data/hand/reprice-watch.log ; lines with RB-BELL wake the seat. --selftest exercises the trigger arithmetic, the T4 cases and T4R R1-R18 (hermetic, under mktemp -d).
+# Output: /mnt/data/hand/reprice-watch.log ; lines with RB-BELL wake the seat. --selftest exercises the trigger arithmetic, the T4 cases and T4R R1-R18 (hermetic: DB/EV/CONF/LOG are fixtures under mktemp -d, no env var needed; RW_DB overrides the live state.db path only).
 export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH
 case "${1:-}" in --selftest) ;; *)  # E4 host guard: this watcher drives RedBaron's wm-build only; anywhere else it does nothing (and --circuit-gate is NOT an ok)
   [ "$(hostname -s 2>/dev/null)" = redbaron ] || { echo "WRONG-HOST rb-reprice-watch runs on redbaron only (this host: $(hostname -s 2>/dev/null))"; [ "${1:-}" = "--circuit-gate" ] && exit 2; exit 0; };; esac
@@ -945,9 +945,14 @@ FAKEWB
 if [ "${1:-}" = "--circuit-gate" ]; then  # read-only W1 gate for wip-redrive.sh and the seat: prints "<ok|defer|unparsable> last_op=.. resets=.. why=..", exit 0 ok / 1 defer / 2 unparsable
   circuit_gate; rc=$?; echo "$CG_V last_op=$CG_OP resets=$CG_RESETS why=\"$CG_WHY\""; exit "$rc"; fi
 if [ "${1:-}" = "--selftest" ]; then
-  load_conf
+  # RWH4: hermetic - no host path, env var or state.db is needed; the lib falls back to the one next to this script when $HOME has none
+  if [ ! -r "$WP_LIB" ]; then WP_LIB=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/watcher-premise.sh; [ -r "$WP_LIB" ] && . "$WP_LIB"; fi
   [ -r "$WP_LIB" ] || { echo "SELFTEST FAIL RWH3 shared lib not readable: $WP_LIB"; exit 1; }
   RWT=$(mktemp -d) && [ -d "$RWT" ] || { echo "SELFTEST FAIL RWH3 mktemp"; exit 1; }   # RWH3: the lib's state, log and the fake wm-decide all live under this root; sim_arm / sim_expire re-arm the gate against a fixed premise file
+  # RWH4: DB / EV / CONF / LOG point at synthetic fixtures under $RWT (real schema: steps(kind, priced_peak_kb)); the 7.29 GiB inner row makes target() = 10.5 (7.29+3 -> 10.5)
+  DB=$RWT/state.db; EV=$RWT/memory.events; CONF=$RWT/rb-reprice-watch.conf; LOG=$RWT/reprice-watch.log
+  sqlite3 "$DB" "create table steps(id integer primary key, run_id integer, kind text, priced_peak_kb integer); insert into steps(run_id,kind,priced_peak_kb) values(1,'inner',7644528),(2,'gate',9999999)" || { echo "SELFTEST FAIL RWH4 fixture db"; exit 1; }
+  printf 'low 0\nhigh 0\nmax 0\noom 0\n' > "$EV"; : > "$CONF"; load_conf
   export WP_STATE=$RWT/wp WP_LOG=$RWT/wp.log WP_GATE_TTL=30 WP_DECIDE_BIN=$RWT/decide.sh FAKE_DECIDE_REC=$RWT/decide.rec; : > "$FAKE_DECIDE_REC"; trap 'rm -rf -- "${RWT:?}"' EXIT
   printf '#!/bin/bash\necho "$*" >> "$FAKE_DECIDE_REC"\n' > "$WP_DECIDE_BIN"; chmod +x "$WP_DECIDE_BIN"
   printf '[daemon]\nhost = "redbaron"\nmax_runs = 2\n\n[cargo_jobs.mem_caps_gb]\ninner = 10.5\n' > "$RWT/premise.toml"
@@ -955,7 +960,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # 12:22 PM case: swap 2.4 G, MemAvailable 19 G, PSI full avg60 1.6 -> NO pause (swap is not an input any more)
   [ -z "$(mem_bad 19230476 1.63)" ] && [ -z "$(mem_bad 12582912 10)" ] && [ -n "$(mem_bad 12000000 0)" ] && [ -n "$(mem_bad 20000000 10.5)" ] \
     && [ -n "$(ev max)" ] && [ "$(echo 7.29 | awk '{v=$1+3; printf "%.1f", (int(v*2)+(v*2>int(v*2)))/2}')" = "10.5" ] \
-    && [ "$(echo 8.0 | awk '{v=$1+3; printf "%.1f", (int(v*2)+(v*2>int(v*2)))/2}')" = "11.0" ] && [ -n "$(target)" ] \
+    && [ "$(echo 8.0 | awk '{v=$1+3; printf "%.1f", (int(v*2)+(v*2>int(v*2)))/2}')" = "11.0" ] && [ "$(target)" = "10.5" ] \
     || { echo "SELFTEST FAIL (trigger arithmetic)"; exit 1; }
   # CTRL 9:2x: 1 land + 2 gates (all units named wm-build-inner<id>-a, all active) = ZERO inners; + 1 inner = that inner only
   t=$(mktemp -d); sqlite3 "$t/s.db" "create table runs(id integer, stage text, outcome text, driver_unit text); insert into runs values (1012,'land',null,'wm-build-inner1012-a'),(1014,'gate',null,'wm-build-inner1014-a'),(1015,'gate',null,'wm-build-inner1015-a')"
@@ -968,8 +973,8 @@ if [ "${1:-}" = "--selftest" ]; then
   t4r=$(t4_selftest) || { echo "$t4r"; exit 1; }
   t4rr=$(t4r_selftest) || { echo "$t4rr"; exit 1; }
   ww=$(w_selftest) || { echo "$ww"; exit 1; }
-  rm -rf -- "${RWT:?}"
-  [ "$z" = 0 ] && [ "$one" = "1020 " ] && echo "SELFTEST PASS target_now=$(target) land+2gates->inners=0 +inner->[$one] $t4r $t4rr $ww" || { echo "SELFTEST FAIL inners: land+2gates=$z +inner=[$one]"; exit 1; }; exit 0; fi
+  tn=$(target); rm -rf -- "${RWT:?}"   # RWH4: target_now is read before the fixture root goes
+  [ "$z" = 0 ] && [ "$one" = "1020 " ] && echo "SELFTEST PASS target_now=$tn land+2gates->inners=0 +inner->[$one] $t4r $t4rr $ww" || { echo "SELFTEST FAIL inners: land+2gates=$z +inner=[$one]"; exit 1; }; exit 0; fi
 STEP0=$(sqlite3 "$DB" "select max(id) from steps"); MAX0=$(ev max); OOM0=$(ev oom_kill)
 DISARM_SEEN=; rw_arm "$CONFIG"   # RWH3: the premise is read from the real config.toml (local file only)
 load_conf; log "ARMED avail_min_kb=$MEM_AVAIL_MIN_KB psi_full60_max=$PSI_FULL_AVG60_MAX io_full60_max=$IO_FULL_AVG60_MAX t4_passes=$(t4_need) step0=$STEP0 max0=$MAX0 oom_kill0=$OOM0"

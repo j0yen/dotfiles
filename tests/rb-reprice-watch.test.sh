@@ -18,6 +18,12 @@ out=$(RW_DB=$R/fx.db HOME=$R/home WP_LIB=$here/../.local/lib/watcher-premise.sh 
 last=$(printf '%s\n' "$out" | tail -n 1)
 if [ "$rc" = 0 ] && [[ $last == "SELFTEST PASS"* ]]; then pass "selftest rc=0: ${last:0:60}..."; else bad "selftest rc=$rc last='$last' err=$(tail -n 3 "$R/selftest.err" | tr '\n' '|')"; fi
 
+# 1b. AC4 (RWH4): --selftest needs no env var, no state.db and no lib under HOME, and writes nothing under HOME
+H=$(mktemp -d "$R/h.XXXXXX"); touch "$H/marker"; sleep 1
+out=$(env -i PATH="$PATH" HOME=$H bash "$bin/rb-reprice-watch.sh" --selftest 2>"$R/bare.err"); rc=$?
+last=$(printf '%s\n' "$out" | tail -n 1); left=$(find "$H" -newer "$H/marker" ! -path "$H/marker" | head -n 3 | tr '\n' ' ')
+if [ "$rc" = 0 ] && [[ $last == "SELFTEST PASS"* ]] && [ -z "$left" ]; then pass "bare-HOME selftest rc=0, nothing created under HOME"; else bad "bare-HOME selftest rc=$rc last='${last:0:80}' left='$left' err=$(tail -n 3 "$R/bare.err" | tr '\n' '|')"; fi
+
 # 2. E4 host guard: off RedBaron the watcher prints WRONG-HOST and exits 0 before it touches anything; --circuit-gate exits 2
 printf '#!/bin/bash\necho carbon\n' > "$R/bin/hostname"; chmod +x "$R/bin/hostname"
 out=$(PATH=$R/bin:$PATH HOME=$R/home bash "$bin/rb-reprice-watch.sh" 2>&1); rc=$?
