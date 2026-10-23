@@ -3,12 +3,13 @@
 #   AGENT: AIDE_VERIFIER_AGENT (default aide; aide|rb|r7, anything else -> exit 2) is the wm-decide --agent of every row (verdict template, GATE-PASS, RETRACT),
 #   the template's agent=verifier:/recorded_by=unit: fields, the bell text prefix ("<agent> EVENT ...", EVENT_SOURCE) and the unit prefix <agent>-verifier-<name>.
 #   The rb/r7 seats run their own claude on carbon too, so ROOM and systemd-run are unchanged; the verdict row still comes from the headless unit's own session (G7).
-#   Below, "aide" in unit/field names means <agent>; the one-at-a-time check looks at every (aide|rb|r7)-verifier-* unit.
+#   Below, "aide" in unit/field names means <agent>; the active-count check looks at every (aide|rb|r7)-verifier-* unit.
 #   launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<G3 token line>' --suite '<ONE command for wm-verify-run>'
 #          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue]
 #       LINT (exit 2): name not [a-z0-9-]; head not 40 hex; --gated not d-YYYYMMDD-HHMMSS-<agent>-<4hex>; empty token (or one with " ` $ newline);
 #       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>; another *-verifier-* unit active
-#       (one at a time) unless --queue (wait, poll AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
+#       (AIDE_VERIFIER_MAX_ACTIVE=1 at a time, integer 1..8, else exit 2 "lint: AIDE_VERIFIER_MAX_ACTIVE=<value>") unless --queue
+#       (wait, re-count every AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
 #       Then ROOM (carbon-room.sh 2048 --json, .ok true else exit 3), then systemd-run --user --unit <agent>-verifier-<name> -p MemoryMax=2G.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
@@ -18,7 +19,7 @@
 #   --selftest   fakes for systemd-run/systemctl/wm-decide/bell/room in a throwaway dir; touches no real unit, row or seat.
 # Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
-#      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit)
+#      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit) AIDE_VERIFIER_MAX_ACTIVE (concurrent verifier units, default 1)
 # Exit: 0 ok / 1 systemd-run failed / 2 lint or usage / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout / 7 gate passed, row not recorded.
 # Never runs the real claude itself (only the generated launch.sh does, under the unit), never merges, never prints a token (output is redacted).
 set -u
@@ -94,6 +95,8 @@ cmd_launch() {
     shift 2
   done
   # ---- LINT ----
+  [[ "${AIDE_VERIFIER_MAX_ACTIVE-1}" =~ ^[1-8]$ ]] || die 2 "lint: AIDE_VERIFIER_MAX_ACTIVE=${AIDE_VERIFIER_MAX_ACTIVE-} (want an integer 1..8)"
+  local MAXACT="${AIDE_VERIFIER_MAX_ACTIVE-1}"
   [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die 2 "lint: name must match [a-z0-9][a-z0-9-]{0,30}: '$NAME'"
   [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die 2 "lint: --repo must be OWNER/NAME"
   [[ "$PR" =~ ^[0-9]+$ ]] || die 2 "lint: --pr must be a number"
@@ -116,17 +119,18 @@ cmd_launch() {
   [ -n "$what" ] || die 2 "lint: the rendered prompt has no verdict --what \"...\""
   [[ "$what" == *"COMMIT=$HEAD"* ]] || die 2 "lint: the verdict --what lacks COMMIT=$HEAD"
   [[ "$what" == *"agent=verifier:$AGENT-verifier-$NAME"* ]] || die 2 "lint: the verdict --what lacks agent=verifier:$AGENT-verifier-$NAME"
-  # ---- one at a time ----
+  # ---- at most MAX_ACTIVE at a time ----
   mkdir -p "$ROOT" || die 2 "cannot create $ROOT"
   exec 9>"$ROOT/.launch.lock"
-  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act
+  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act cnt
   while :; do
     flock -x 9
     act="$(active_units | tr '\n' ' ')"
-    [ -z "${act// /}" ] && break
-    if [ "$QUEUE" != 1 ]; then die 2 "another verifier unit is active (${act% }); one at a time (use --queue to wait)"; fi
+    cnt="$(printf '%s' "$act" | wc -w)"
+    [ "$cnt" -lt "$MAXACT" ] && break
+    if [ "$QUEUE" != 1 ]; then die 2 "$cnt verifier units active (max $MAXACT): ${act% }; $([ "$MAXACT" = 1 ] && echo 'one at a time, ')use --queue to wait"; fi
     flock -u 9
-    [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s (active: ${act% })"
+    [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s: $cnt verifier units active (max $MAXACT): ${act% }"
     sleep "$POLL"; waited=$((waited + POLL))
   done
   # ---- room ----
@@ -253,13 +257,16 @@ selftest() {
 #!/bin/bash
 printf '%s\n' "$*" >>"$FAKE_DIR/sdrun.log"
 [ -z "${FAKE_SDRUN_FAIL:-}" ] || { echo "Failed to connect to bus" >&2; exit 1; }
+if [ -n "${FAKE_SDRUN_ACTIVATING:-}" ]; then prev=; for a in "$@"; do [ "$prev" = --unit ] && echo "$a.service" >>"$FAKE_DIR/activating"; prev=$a; done; fi
 d="$(dirname "${@: -1}")"
 printf '%s' "${FAKE_RESULT_JSON:-{\"is_error\":false,\"result\":\"ok\"\}}" >"$d/result.json"
 F
   cat >"$T/bin/fake-systemctl" <<'F'
 #!/bin/bash
 case "$2" in
-  list-units) cat "$FAKE_DIR/active" 2>/dev/null ;;
+  list-units) cat "$FAKE_DIR/active" 2>/dev/null
+    case "$*" in *,activating,*) cat "$FAKE_DIR/activating" 2>/dev/null ;; esac
+    case "$*" in *failed*) cat "$FAKE_DIR/failed" 2>/dev/null ;; esac ;;
   is-active) if grep -qx "$3.service" "$FAKE_DIR/active" 2>/dev/null; then echo active; else echo inactive; exit 3; fi ;;
 esac
 exit 0
@@ -277,7 +284,7 @@ F
   chmod +x "$T"/bin/*
   export HOME="$T/home" FAKE_DIR="$T" AIDE_VERIFIER_DIR="$T/av" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$T/bin/fake-sdrun" \
     AIDE_VERIFIER_SYSTEMCTL="$T/bin/fake-systemctl" AIDE_VERIFIER_WM_DECIDE="$T/bin/fake-wmd" AIDE_VERIFIER_BELL="$T/bin/fake-bell" AIDE_VERIFIER_POLL_S=1
-  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT
+  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT AIDE_VERIFIER_MAX_ACTIVE
   local A=(--repo j0yen/dotfiles --pr 7 --gated "$G" --token 'tests/*.test.sh EXIT=0' --suite 'bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"')
   L() { local nm="$1"; shift; "$SELF" launch "$nm" "$@" 2>&1; }
 
@@ -306,6 +313,53 @@ F
   out="$(AIDE_VERIFIER_QUEUE_MAX_S=2 L act3 "${A[@]}" --head "$H" --queue)"; rc=$?
   [ "$rc" = 6 ]; chk "--queue gives up after AIDE_VERIFIER_QUEUE_MAX_S -> exit 6" $?
   : >"$T/active"
+
+  # ---- AIDE_VERIFIER_MAX_ACTIVE (own state files; the stub emits "activating"/"failed" lines only when --state asks for them) ----
+  local MA="AIDE_VERIFIER_MAX_ACTIVE" v
+  rm -f "$T/sdrun.log"
+  for v in 0 9 x -1 1.5 ''; do
+    out="$(env "$MA=$v" "$SELF" launch mxl "${A[@]}" --head "$H" 2>&1)"; rc=$?
+    [ "$rc" = 2 ] && [[ "$out" == "aide-verifier: lint: $MA=$v "* ]] && [ ! -e "$T/sdrun.log" ]; chk "lint: $MA='$v' -> exit 2 'lint: $MA=$v', nothing started" $?
+  done
+  echo "aide-verifier-o1.service" >"$T/active"
+  out="$(L mxd "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"1 verifier units active (max 1)"* ]] && [ ! -e "$T/sdrun.log" ]; chk "MAX unset (default 1) with 1 active -> exit 2, message '1 verifier units active (max 1)'" $?
+  out="$(env "$MA=2" "$SELF" launch mx1 "${A[@]}" --head "$H" 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-mx1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "MAX=2 with 1 active -> launches at once" $?
+  rm -f "$T/sdrun.log"
+  printf 'aide-verifier-o1.service\nr7-verifier-o2.service\n' >"$T/active"
+  out="$(env "$MA=2" "$SELF" launch mx2 "${A[@]}" --head "$H" 2>&1)"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"2 verifier units active (max 2)"* ]] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/av/mx2/state" ]; chk "MAX=2 with 2 active, no --queue -> exit 2 '2 verifier units active (max 2)', nothing started" $?
+  ( sleep 2; echo "aide-verifier-o1.service" >"$T/active" ) & t0=$SECONDS
+  out="$(env "$MA=2" "$SELF" launch mx3 "${A[@]}" --head "$H" --queue 2>&1)"; rc=$?; wait
+  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$out" = aide-verifier-mx3 ]; chk "MAX=2 with 2 active, --queue -> waits until one frees, then launches ($((SECONDS - t0)) s)" $?
+  : >"$T/active"; rm -f "$T/sdrun.log" "$T/activating" "$T/failed"
+  # the just-launched unit shows up as activating -> it counts
+  out="$(FAKE_SDRUN_ACTIVATING=1 L mxa "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && grep -qx 'aide-verifier-mxa.service' "$T/activating"; chk "MAX=1: first launch ok, stub now reports it as activating" $?
+  out="$(L mxb "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"1 verifier units active (max 1)"* ]] && [[ "$out" == *aide-verifier-mxa.service* ]]; chk "an activating unit counts toward MAX (a second launch is refused)" $?
+  out="$(FAKE_SDRUN_ACTIVATING=1 env "$MA=2" "$SELF" launch mxc "${A[@]}" --head "$H" 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && [ "$(wc -l <"$T/activating")" = 2 ]; chk "MAX=2: second launch ok while the first is activating" $?
+  out="$(env "$MA=2" "$SELF" launch mxd2 "${A[@]}" --head "$H" 2>&1)"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"2 verifier units active (max 2)"* ]]; chk "MAX=2 with 2 activating -> exit 2" $?
+  : >"$T/active"; rm -f "$T/sdrun.log" "$T/activating"
+  # failed units do not count
+  echo "aide-verifier-o1.service" >"$T/active"
+  printf 'aide-verifier-f1.service\nr7-verifier-f2.service\nrb-verifier-f3.service\n' >"$T/failed"
+  out="$(env "$MA=2" "$SELF" launch mxf "${A[@]}" --head "$H" 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-mxf ]; chk "MAX=2 with 1 active + 3 failed -> launches (failed excluded)" $?
+  rm -f "$T/failed"; : >"$T/active"; rm -f "$T/sdrun.log"
+  # two queued callers, one slot frees -> exactly one launches (count + systemd-run are under one flock)
+  printf 'aide-verifier-o1.service\nr7-verifier-o2.service\n' >"$T/active"; : >"$T/activating"
+  ( sleep 2; echo "aide-verifier-o1.service" >"$T/active" ) &
+  for v in q1 q2; do
+    ( FAKE_SDRUN_ACTIVATING=1 AIDE_VERIFIER_QUEUE_MAX_S=5 env "$MA=2" "$SELF" launch "mx$v" "${A[@]}" --head "$H" --queue >"$T/q.$v.out" 2>&1; echo $? >"$T/q.$v.rc" ) &
+  done
+  wait
+  local rcs; rcs="$(sort "$T/q.q1.rc" "$T/q.q2.rc" | tr '\n' ' ')"
+  [ "$rcs" = "0 6 " ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "MAX=2, 2 active, 2 queued callers, one slot frees -> exactly one launches (rcs: $rcs)" $?
+  : >"$T/active"; rm -f "$T/sdrun.log" "$T/activating" "$T"/q.*
 
   rm -f "$T/sdrun.log"
   out="$(FAKE_ROOM=no L room1 "${A[@]}" --head "$H")"; rc=$?
