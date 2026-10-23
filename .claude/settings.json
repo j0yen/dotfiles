@@ -452,7 +452,7 @@
           },
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/mcphost-stamp-gate.sh"
+            "command": "sh -c '[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\"; exit 0'"
           },
           {
             "type": "command",

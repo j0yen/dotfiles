@@ -59,7 +59,63 @@ run warn-ssh-wrapped        0 "WARN" "$early" "ssh orch \"curl -s -X POST https:
 # --- block fixtures (after 24 h: rc 2) ----------------------------------------------------------------------------
 run block-inline-body       2 "BLOCKED.*x-mcphost-synthetic: <label>" "$late" "curl -s -X POST https://mcphost.dev/mcp -H 'Content-Type: application/json' -d '$RPC'"
 run block-data-at-file      2 "BLOCKED" "$late" "curl -s https://mcphost.dev/mcp --data @$tmp/body.json"
-run block-www-host          2 "BLOCKED" "$late" "curl -s --json '{}' https://www.mcphost.dev/mcp"
+run block-www-host          2 "BLOCKED" "$late" "curl -s --json '$RPC' https://www.mcphost.dev/mcp"
+
+# --- segment scoping (PR #72 replay: 94 of 129 flags were incidental) ---------------------------------------------------
+# incidental text in OTHER segments / quoted text must not warn (these WARNed before the per-segment rewrite)
+run seg-awk-F-pipe          0 - "$late" "curl -s https://mcphost.dev/ | awk -F'|' '{print \$1}'"
+run seg-paste-sd            0 - "$late" "curl https://mcphost.dev/changelog | paste -sd' '"
+run seg-git-log-F           0 - "$late" "curl -s https://mcphost.dev/healthz; git log -F --oneline"
+run seg-git-commit-text     0 - "$late" "git commit -m \"fix curl https://mcphost.dev signup\""
+run seg-git-commit-text-x   0 - "$late" "git commit -m \"docs: curl -X POST https://mcphost.dev/mcp -d tools/call signup\""
+run seg-echo-text           0 - "$late" "echo 'curl -X POST https://mcphost.dev/mcp tools/call'"
+run seg-heredoc-text        0 - "$late" $'cat <<EOF\ncurl -X POST https://mcphost.dev/mcp -d \'{"method":"tools/call"}\'\nEOF'
+run seg-comment-text        0 - "$late" "ls # curl -X POST https://mcphost.dev/mcp -d signup"
+run seg-get-with-other-d    0 - "$late" "curl -s https://mcphost.dev/mcp && cut -d: -f1 /etc/passwd"
+run seg-header-value-d      0 - "$late" "curl -s -H 'X-Note: -d' https://mcphost.dev/mcp"
+run seg-write-flag-elsewhere 0 - "$late" "curl -s https://mcphost.dev/mcp; curl -s -d x https://example.com/y"
+run seg-wget-get            0 - "$late" "wget -qO- https://mcphost.dev/mcp; sort -F x"
+# body policy: keyless initialize / tools/list / ping create no tenant, so they do not warn; signup / tools/call / unreadable do
+run policy-initialize-ok    0 - "$late" "curl -s -X POST https://mcphost.dev/mcp -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}'"
+run policy-tools-list-ok    0 - "$late" "curl -s https://mcphost.dev/mcp --json '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}'"
+run policy-ping-ok          0 - "$late" "curl -s https://mcphost.dev/mcp -sd '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}'"
+run policy-post-no-body-ok  0 - "$late" "curl -s -X POST https://mcphost.dev/mcp"
+run policy-signup-url       2 "BLOCKED" "$late" "curl -s -X POST https://mcphost.dev/signup"
+run policy-var-body-probe-ok 0 - "$late" "for m in initialize ping; do curl -s https://mcphost.dev/mcp -d \"{\\\"method\\\":\\\"\$m\\\"}\"; done"
+run policy-var-body-tools-call 2 "BLOCKED" "$late" "B='$RPC'; curl -s https://mcphost.dev/mcp -d \"\$B\""
+run policy-var-body-with-key-ok 0 - "$late" "B=\$(jq -cn --arg k \"\$K\" '{params:{arguments:{tenant_key:\$k}},method:\"tools/call\"}'); curl -s https://mcphost.dev/mcp -d \"\$B\""
+run policy-file-body-with-key-ok 0 - "$late" "echo '{\"tenant_key\":\"K\"}' > b.json; curl -s https://mcphost.dev/mcp -d @b.json"
+run policy-stdin-body       2 "BLOCKED" "$late" "cat x.json | curl -s https://mcphost.dev/mcp -d @-"
+run policy-upload-file      2 "BLOCKED" "$late" "curl -s -T x.json https://mcphost.dev/mcp"
+# true positives: write-flag spellings on the curl segment itself
+run tp-keyless-post-tools-call 2 "BLOCKED" "$late" "curl -X POST https://mcphost.dev/mcp -d '$RPC'"
+run tp-cluster-sd           2 "BLOCKED" "$late" "curl -sd '$RPC' https://mcphost.dev/mcp"
+run tp-cluster-sSXPOST      2 "BLOCKED" "$late" "curl -sSXPOST https://mcphost.dev/mcp --data-raw '$RPC'"
+run tp-attached-d-file      2 "BLOCKED" "$late" "curl -s https://mcphost.dev/mcp -d@$tmp/body.json"
+run tp-form                 2 "BLOCKED" "$late" "curl -s -F 'x=signup' https://mcphost.dev/mcp"
+run tp-after-pipe           2 "BLOCKED" "$late" "echo go | curl -s -X POST https://mcphost.dev/mcp -d '$RPC'"
+run tp-after-and            2 "BLOCKED" "$late" "cd /tmp && curl -s -X PUT https://mcphost.dev/mcp -d '$RPC' | jq ."
+run tp-env-prefix-sudo      2 "BLOCKED" "$late" "FOO=1 sudo timeout 5 curl -s https://mcphost.dev/mcp -d '$RPC'"
+run tp-var-assigned-hub     2 "BLOCKED" "$late" "U=https://mcphost.dev/mcp; curl -s \"\$U\" -d '$RPC'"
+run tp-env-MCPHOST_HUB      2 "BLOCKED" "$late" "curl -s \"\$MCPHOST_HUB/mcp\" -d '$RPC'"
+run tp-ssh-single-quoted    2 "BLOCKED" "$late" "ssh orch 'curl -s -X POST https://mcphost.dev/mcp -d @$tmp/body.json'"
+run tp-ssh-var-assigned     2 "BLOCKED" "$late" "U=https://mcphost.dev/mcp; ssh orch 'curl \"\$U\" -d \"{\\\"name\\\":\\\"signup\\\"}\"'"
+run tp-ssh-env-url-remote   2 "BLOCKED" "$late" "ssh -o ConnectTimeout=5 orch 'curl \"\$MCPHOST_URL\" -d @/tmp/b.json'"
+run tp-ssh-nested           2 "BLOCKED" "$late" "ssh orch 'ssh mcphost-1 \"curl -s https://mcphost.dev/mcp --json @b.json\"'"
+run tp-bash-c               2 "BLOCKED" "$late" "bash -c \"curl -s https://mcphost.dev/mcp -d '$RPC'\""
+run tp-cmd-subst            2 "BLOCKED" "$late" "out=\$(curl -s https://mcphost.dev/mcp -d '$RPC'); echo \$out"
+run tp-wget-post-data       2 "BLOCKED" "$late" "wget -qO- --post-data='$RPC' https://mcphost.dev/mcp"
+run tp-wget-method          2 "BLOCKED" "$late" "wget -qO- --method=POST --body-file=b.json https://mcphost.dev/mcp"
+run tp-httpie-item          2 "BLOCKED" "$late" "http POST https://mcphost.dev/mcp method=tools/call"
+run tp-xh-json-item         2 "BLOCKED" "$late" "xh https://mcphost.dev/mcp name:=\"signup\""
+# auth / stamp exemptions are per segment
+run auth-this-segment       0 - "$late" "curl -s -H 'Authorization: Bearer abc' https://mcphost.dev/mcp -d '$RPC'"
+run auth-user-flag          0 - "$late" "curl -s -u a:b https://mcphost.dev/mcp -d '$RPC'"
+run auth-other-segment-no   2 "BLOCKED" "$late" "curl -s -H 'Authorization: Bearer abc' https://example.com/x; curl -s https://mcphost.dev/mcp -d '$RPC'"
+run synthetic-in-ssh        0 - "$late" "ssh orch 'curl -s https://mcphost.dev/mcp -H \"x-mcphost-synthetic: harness:t\" -d @b.json'"
+run readonly-G-with-d       0 - "$late" "curl -sG https://mcphost.dev/mcp -d 'q=signup'"
+# parser-hostile input (unterminated quote / parens) fails open
+run failopen-unterminated   0 - "$late" "echo \"curl https://mcphost.dev -d '\$(("
 
 # --- expiry boundary: 1 s before = warn, exactly at = block --------------------------------------------------------
 c="curl -s -X POST https://mcphost.dev/mcp -d '$RPC'"
@@ -79,8 +135,9 @@ jq -cn '{tool_name:"Write",tool_input:{command:"curl -d x https://mcphost.dev/mc
 # --- warn.log: one row per hit, redacted, <= 80 chars of command ------------------------------------------------
 log="$tmp/.local/state/mcphost-stamp-gate/warn.log"
 secret='key_abcdefghijklmnop1234567890XYZ'
-run log-redaction 0 "WARN" "$early" "curl -s -X POST https://mcphost.dev/mcp -H 'X-Token: Bearer $secret' -d x # $secret"
+run log-redaction 0 "WARN" "$early" "curl -s -X POST https://mcphost.dev/mcp -H 'X-Token: Bearer $secret' -d '$RPC'"
 [ -s "$log" ] && ok "warn.log written" || bad "warn.log missing"
+grep -q '<redacted>' "$log" && ok "warn.log shows <redacted> in place of the token" || bad "warn.log has no <redacted> marker"
 grep -q "$secret" "$log" && bad "warn.log leaks a key-shaped token" || ok "warn.log redacts key-shaped tokens"
 awk -F'\t' 'NF!=4 || length($4)>80 {bad=1} END{exit bad}' "$log" && ok "warn.log rows: 4 fields, command <= 80 chars" || bad "warn.log row shape"
 grep -q "$tmp/work" "$log" && ok "warn.log records cwd" || bad "warn.log cwd"
@@ -91,8 +148,14 @@ rc=0; jq -cn --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}' | env HOM
 # --- registration ----------------------------------------------------------------------------------------------
 S="$here/.claude/settings.json"
 [ -x "$hook" ] && ok "hook executable" || bad "hook not executable"
-jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command=="/home/jsy/.claude/hooks/mcphost-stamp-gate.sh")] | length == 1' "$S" >/dev/null \
+jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command | contains("mcphost-stamp-gate.sh"))] | length == 1' "$S" >/dev/null \
   && ok "registered once under PreToolUse Bash" || bad "settings registration"
+# fail-open guard: the entry is the same `[ -x ... ] && exec ...; exit 0` idiom as cargo-slot-gate, so a not-yet-linked hook is a no-op
+jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command | contains("mcphost-stamp-gate.sh")) | .command] | .[0] | startswith("sh -c '"'"'[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec ") and endswith("; exit 0'"'"'")' "$S" >/dev/null \
+  && ok "registration is fail-open when the hook file is not linked" || bad "registration lacks the [ -x ] guard"
+guard=$(jq -r '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command | contains("mcphost-stamp-gate.sh")) | .command] | .[0]' "$S")
+ghome=$(mktemp -d "$tmp/ghome.XXXX"); rc=0; printf '%s' "$(jq -cn --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')" | env HOME="$ghome" sh -c "$guard" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "missing hook file: guard exits 0" || bad "missing hook file: guard rc=$rc"
 
 # --- part A: premise-sandbox.sh ----------------------------------------------------------------------------------
 sb="$here/.local/bin/premise-sandbox.sh"
