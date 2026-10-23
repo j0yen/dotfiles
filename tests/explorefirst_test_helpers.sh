@@ -57,6 +57,11 @@ explorefirst_setup() {
   unset FAKE_SYNTHORG_EXPLORE_MODE FAKE_SYNTHORG_OBS_MODE FAKE_SYNTHORG_USECASES_MODE FAKE_SYNTHORG_EXPORT_MODE
   unset FAKE_USECASES_JSON FAKE_SYSTEMCTL_ACTIVE_UNIT
 
+  # The runner's `git commit` needs an identity; don't rely on the ambient
+  # global git config (absent under a throwaway HOME).
+  export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test.local
+  export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test.local
+
   prd_dir="$work/PRDs"
   mkdir -p "$prd_dir/notes" "$prd_dir/vibeloop"
   ( cd "$prd_dir" && git init -q && git -c user.email=test@test.local -c user.name=test commit -q --allow-empty -m init )
