@@ -7,9 +7,14 @@
 #   launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<G3 token line>' --suite '<ONE command for wm-verify-run>'
 #          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue]
 #       LINT (exit 2): name not [a-z0-9-]; head not 40 hex; --gated not d-YYYYMMDD-HHMMSS-<agent>-<4hex>; empty token (or one with " ` $ newline);
-#       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>; another *-verifier-* unit active
-#       (one at a time) unless --queue (wait, poll AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
-#       Then ROOM (carbon-room.sh 2048 --json, .ok true else exit 3), then systemd-run --user --unit <agent>-verifier-<name> -p MemoryMax=2G.
+#       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>; MAX_ACTIVE (2) *-verifier-* units already
+#       active unless --queue (wait, poll AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
+#       Then ROOM (carbon-room.sh <2048 x (active+1)> --json, .ok true else exit 3), then systemd-run --user --unit <agent>-verifier-<name> -p MemoryMax=2G.
+#   FLEET CONTRACT (vcap, ctl ruling 81ed): ONE lock at the FIXED path $HOME/.local/state/verifier-cap/launch.lock and ONE cap, MAX_ACTIVE=2 hard-coded,
+#       for every launcher of rb, r7 and aide. Neither moves with AIDE_VERIFIER_DIR or any seat env; only the selftest (AIDE_VERIFIER_SELFTEST=1) may override
+#       AIDE_VERIFIER_LOCK / AIDE_VERIFIER_MAX_ACTIVE (integer >= 1, else exit 9) / AIDE_VERIFIER_LOCK_WAIT_S / AIDE_VERIFIER_TIMEOUT_S. The lock is held from the
+#       active-unit count through room + systemd-run and closed right after (the unit never inherits it). Any other gate in front of a verifier launch must
+#       `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than MAX_ACTIVE units are active (a bypassing launcher).
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
@@ -19,7 +24,7 @@
 # Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
 #      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit)
-# Exit: 0 ok / 1 systemd-run failed / 2 lint or usage / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout / 7 gate passed, row not recorded.
+# Exit: 0 ok / 1 systemd-run failed / 2 lint or usage or busy / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout (queue or lock) / 7 gate passed, row not recorded / 9 bad MAX_ACTIVE (selftest only).
 # Never runs the real claude itself (only the generated launch.sh does, under the unit), never merges, never prints a token (output is redacted).
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
@@ -27,6 +32,15 @@ shopt -u patsub_replacement 2>/dev/null
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 AGENT="${AIDE_VERIFIER_AGENT:-aide}"
 ROOT="${AIDE_VERIFIER_DIR:-$HOME/.local/state/aide-verifier}"
+# the fleet-wide cap: fixed lock path + fixed MAX_ACTIVE, independent of ROOT and of every seat env (vcap); the selftest alone may override
+LOCK="$HOME/.local/state/verifier-cap/launch.lock"
+MAX_ACTIVE=2
+LOCK_WAIT_S=600
+CMD_TIMEOUT_S=120
+if [ "${AIDE_VERIFIER_SELFTEST:-}" = 1 ]; then
+  LOCK="${AIDE_VERIFIER_LOCK:-$LOCK}"; LOCK_WAIT_S="${AIDE_VERIFIER_LOCK_WAIT_S:-$LOCK_WAIT_S}"; CMD_TIMEOUT_S="${AIDE_VERIFIER_TIMEOUT_S:-$CMD_TIMEOUT_S}"
+  if [ -n "${AIDE_VERIFIER_MAX_ACTIVE+x}" ]; then MAX_ACTIVE="$AIDE_VERIFIER_MAX_ACTIVE"; fi
+fi
 ROOM_CMD="${AIDE_VERIFIER_ROOM_CMD:-carbon-room.sh}"
 SD_RUN="${AIDE_VERIFIER_SYSTEMD_RUN:-systemd-run}"
 SYSTEMCTL="${AIDE_VERIFIER_SYSTEMCTL:-systemctl}"
@@ -42,6 +56,16 @@ case "$AGENT" in aide|rb|r7) ;; *) die 2 "AIDE_VERIFIER_AGENT must be aide, rb o
 active_units() {
   "$SYSTEMCTL" --user list-units '*-verifier-*' --state=active,activating,deactivating,reloading --no-legend --plain 2>/dev/null \
     | awk '{print $1}' | grep -E '^(aide|rb|r7)-verifier-.*\.service$'
+}
+# lock_holder: best effort "pid=N cmd=..." of whoever holds $LOCK (fuser, then /proc), for the exit-6 message
+lock_holder() {
+  local p out="" cmd
+  for p in $(fuser "$LOCK" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    cmd="$(cat "/proc/$p/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-120)"
+    out="$out pid=$p cmd=${cmd:-?}"
+  done
+  printf '%s' "${out:- holder unknown}"
 }
 meta_get() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n1; }
 
@@ -116,24 +140,27 @@ cmd_launch() {
   [ -n "$what" ] || die 2 "lint: the rendered prompt has no verdict --what \"...\""
   [[ "$what" == *"COMMIT=$HEAD"* ]] || die 2 "lint: the verdict --what lacks COMMIT=$HEAD"
   [[ "$what" == *"agent=verifier:$AGENT-verifier-$NAME"* ]] || die 2 "lint: the verdict --what lacks agent=verifier:$AGENT-verifier-$NAME"
-  # ---- one at a time ----
+  # ---- the fleet-wide cap (one fixed lock, MAX_ACTIVE) ----
+  [[ "$MAX_ACTIVE" =~ ^[0-9]+$ ]] && [ "$MAX_ACTIVE" -ge 1 ] || die 9 "MAX_ACTIVE must be an integer >= 1 (got '$MAX_ACTIVE')"
+  mkdir -p "$(dirname "$LOCK")" || die 2 "cannot create $(dirname "$LOCK")"
   mkdir -p "$ROOT" || die 2 "cannot create $ROOT"
-  exec 9>"$ROOT/.launch.lock"
-  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act
+  exec 9>"$LOCK"
+  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act nact
   while :; do
-    flock -x 9
+    flock -x -w "$LOCK_WAIT_S" 9 || die 6 "could not take $LOCK in ${LOCK_WAIT_S}s; held by:$(lock_holder)"
     act="$(active_units | tr '\n' ' ')"
-    [ -z "${act// /}" ] && break
-    if [ "$QUEUE" != 1 ]; then die 2 "another verifier unit is active (${act% }); one at a time (use --queue to wait)"; fi
+    nact="$(printf '%s' "$act" | wc -w)"
+    [ "$nact" -lt "$MAX_ACTIVE" ] && break
+    if [ "$QUEUE" != 1 ]; then die 2 "verifier cap reached: $nact of $MAX_ACTIVE active (${act% }); use --queue to wait"; fi
     flock -u 9
     [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s (active: ${act% })"
     sleep "$POLL"; waited=$((waited + POLL))
   done
-  # ---- room ----
-  local room
+  # ---- room: the running units' 2 G MemoryMax caps plus this one ----
+  local room need=$((2048 * (nact + 1)))
   # shellcheck disable=SC2086
-  room="$($ROOM_CMD 2048 --json 2>/dev/null)"
-  [ "$(printf '%s' "$room" | jq -r '.ok' 2>/dev/null)" = true ] || die 3 "no room for a 2048 MB verifier: $(printf '%s' "$room" | tr -d '\n' | cut -c1-200)"
+  room="$(timeout "$CMD_TIMEOUT_S" $ROOM_CMD "$need" --json 2>/dev/null)"
+  [ "$(printf '%s' "$room" | jq -r '.ok' 2>/dev/null)" = true ] || die 3 "no room for ${need} MB ($nact active + this verifier): $(printf '%s' "$room" | tr -d '\n' | cut -c1-200)"
   # ---- write ----
   local unit="$AGENT-verifier-$NAME" claude="${AIDE_VERIFIER_CLAUDE:-$HOME/.npm-global/bin/claude}" oauth="${AIDE_VERIFIER_OAUTH_CONF:-$HOME/.config/environment.d/90-claude-oauth.conf}"
   mkdir -p "$DIR" || die 2 "cannot create $DIR"
@@ -151,10 +178,11 @@ cmd_launch() {
   chmod 755 "$DIR/launch.sh"
   printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" >"$DIR/meta"
   # ---- start ----
-  if ! "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
+  exec 9>&-   # the lock covers count + room + systemd-run only; the 9>&- above already kept it out of the unit
   echo "$(iso) launched unit=$unit repo=$REPO pr=$PR head=$HEAD gated=$GATED" >>"$DIR/state"
   echo "$unit"
 }
@@ -253,6 +281,12 @@ selftest() {
 #!/bin/bash
 printf '%s\n' "$*" >>"$FAKE_DIR/sdrun.log"
 [ -z "${FAKE_SDRUN_FAIL:-}" ] || { echo "Failed to connect to bus" >&2; exit 1; }
+[ -z "${FAKE_SDRUN_HANG:-}" ] || exec sleep 30
+[ -z "${FAKE_SDRUN_DELAY:-}" ] || sleep "$FAKE_SDRUN_DELAY"
+[ -z "${FAKE_SDRUN_BG:-}" ] || { sleep 20 >/dev/null 2>&1 </dev/null & echo $! >>"$FAKE_DIR/bgpids"; }
+if [ -n "${FAKE_SDRUN_APPEND:-}" ]; then
+  args=("$@"); for i in "${!args[@]}"; do [ "${args[$i]}" = --unit ] && { echo "${args[$((i + 1))]}.service" >>"$FAKE_DIR/active"; break; }; done
+fi
 d="$(dirname "${@: -1}")"
 printf '%s' "${FAKE_RESULT_JSON:-{\"is_error\":false,\"result\":\"ok\"\}}" >"$d/result.json"
 F
@@ -273,11 +307,12 @@ case "$1" in
 esac
 F
   printf '#!/bin/bash\nprintf "%%s|%%s\\n" "${EVENT_SOURCE:-}" "$*" >>"$FAKE_DIR/bell.log"\n' >"$T/bin/fake-bell"
-  printf '#!/bin/bash\nif [ "${FAKE_ROOM:-ok}" = ok ]; then echo "{\\"ok\\":true,\\"room_mb\\":9000}"; else echo "{\\"ok\\":false,\\"room_mb\\":-5}"; exit 1; fi\n' >"$T/bin/fake-room"
+  printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\n[ -z "${FAKE_ROOM_HANG:-}" ] || exec sleep 30\nif [ "${FAKE_ROOM:-ok}" = ok ]; then echo "{\\"ok\\":true,\\"room_mb\\":9000}"; else echo "{\\"ok\\":false,\\"room_mb\\":-5}"; exit 1; fi\n' >"$T/bin/fake-room"
   chmod +x "$T"/bin/*
   export HOME="$T/home" FAKE_DIR="$T" AIDE_VERIFIER_DIR="$T/av" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$T/bin/fake-sdrun" \
     AIDE_VERIFIER_SYSTEMCTL="$T/bin/fake-systemctl" AIDE_VERIFIER_WM_DECIDE="$T/bin/fake-wmd" AIDE_VERIFIER_BELL="$T/bin/fake-bell" AIDE_VERIFIER_POLL_S=1
-  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT
+  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT AIDE_VERIFIER_MAX_ACTIVE AIDE_VERIFIER_LOCK
+  export AIDE_VERIFIER_SELFTEST=1
   local A=(--repo j0yen/dotfiles --pr 7 --gated "$G" --token 'tests/*.test.sh EXIT=0' --suite 'bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"')
   L() { local nm="$1"; shift; "$SELF" launch "$nm" "$@" 2>&1; }
 
@@ -296,16 +331,65 @@ F
   [ "$rc" = 2 ] && [[ "$out" == *"lacks agent=verifier:"* ]]; chk "lint: a --what lacking agent=verifier: -> exit 2" $?
   out="$(L Bad_Name "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 2 ]; chk "lint: bad unit name -> exit 2" $?
 
-  echo "aide-verifier-other.service" >"$T/active"
+  printf 'aide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(L act1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]] && [ ! -e "$T/sdrun.log" ]; chk "another unit active, no --queue -> exit 2, nothing started" $?
-  ( sleep 2; : >"$T/active" ) & local t0=$SECONDS
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [ ! -e "$T/sdrun.log" ]; chk "(b) 2 active, no --queue -> exit 2, nothing started" $?
+  ( sleep 2; echo "aide-verifier-other.service" >"$T/active" ) & local t0=$SECONDS
   out="$(L act2 "${A[@]}" --head "$H" --queue)"; rc=$?; wait
-  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$out" = aide-verifier-act2 ]; chk "--queue waits until the other unit is gone, then launches ($out, $((SECONDS - t0)) s)" $?
-  echo "aide-verifier-other.service" >"$T/active"
+  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$out" = aide-verifier-act2 ]; chk "(b) 2 active, --queue waits until one is gone, then launches ($out, $((SECONDS - t0)) s)" $?
+  printf 'aide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(AIDE_VERIFIER_QUEUE_MAX_S=2 L act3 "${A[@]}" --head "$H" --queue)"; rc=$?
   [ "$rc" = 6 ]; chk "--queue gives up after AIDE_VERIFIER_QUEUE_MAX_S -> exit 6" $?
   : >"$T/active"
+
+  # ---- vcap: the fleet-wide 2-slot cap at ONE fixed lock ----
+  rm -f "$T/sdrun.log" "$T/room.log"
+  echo "rb-verifier-other.service" >"$T/active"
+  out="$(L cap1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-cap1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(a) 1 active of 2 -> launches ($out)" $?
+  ask="$(cat "$T/room.log")"; [ "$ask" = 4096 ]; chk "(a) room asked for 2048 x (1 active + 1) = $ask MB" $?
+  : >"$T/active"; rm -f "$T/room.log"; L cap0 "${A[@]}" --head "$H" >/dev/null
+  ask="$(cat "$T/room.log")"; [ "$ask" = 2048 ]; chk "(a) 0 active -> room asked for 2048 ($ask)" $?
+  # (c) RACE: 1 active, two --queue launches started together -> exactly one systemd-run until a unit is removed, then the second
+  rm -f "$T/sdrun.log"; echo "aide-verifier-pre1.service" >"$T/active"
+  FAKE_SDRUN_APPEND=1 FAKE_SDRUN_DELAY=1 L race1 "${A[@]}" --head "$H" --queue >"$T/race1.out" 2>&1 & local p1=$!
+  FAKE_SDRUN_APPEND=1 FAKE_SDRUN_DELAY=1 L race2 "${A[@]}" --head "$H" --queue >"$T/race2.out" 2>&1 & local p2=$!
+  sleep 4
+  calls="$(wc -l <"$T/sdrun.log")"; [ "$calls" = 1 ] && [ "$(grep -c . "$T/active")" = 2 ]; chk "(c) RACE: two --queue launches with 1 active -> exactly one systemd-run call while 2 are active ($calls call)" $?
+  grep -v 'pre1' "$T/active" >"$T/active.tmp"; mv "$T/active.tmp" "$T/active"   # the pre-existing unit leaves; the first launcher's own unit stays
+  wait "$p1" "$p2"
+  calls="$(wc -l <"$T/sdrun.log")"; [ "$calls" = 2 ]; chk "(c) RACE: once a unit is gone the second launcher goes ($calls calls)" $?
+  : >"$T/active"
+  # (d) MAX_ACTIVE 0 / "x" under the selftest -> exit 9 (distinct from busy = 2), nothing started
+  rm -f "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_MAX_ACTIVE=0 L capd0 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(d) AIDE_VERIFIER_MAX_ACTIVE=0 under the selftest -> exit 9" $?
+  out="$(AIDE_VERIFIER_MAX_ACTIVE=x L capdx "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(d) AIDE_VERIFIER_MAX_ACTIVE=x under the selftest -> exit 9" $?
+  printf 'rb-verifier-a.service\nrb-verifier-b.service\n' >"$T/active"
+  out="$(AIDE_VERIFIER_MAX_ACTIVE=3 L capd3 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(d) selftest override MAX_ACTIVE=3 with 2 active -> launches" $?
+  out="$(AIDE_VERIFIER_SELFTEST=0 AIDE_VERIFIER_MAX_ACTIVE=9 L capd9 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"2 of 2"* ]]; chk "(d) without AIDE_VERIFIER_SELFTEST=1 a seat env AIDE_VERIFIER_MAX_ACTIVE=9 is ignored: still cap 2 -> exit 2" $?
+  : >"$T/active"
+  # (e) the lock is closed right after the launch: a unit-lingering child of systemd-run must not hold it
+  LK="$HOME/.local/state/verifier-cap/launch.lock"
+  FAKE_SDRUN_BG=1 L cape "${A[@]}" --head "$H" >/dev/null
+  [ -s "$T/bgpids" ] && kill -0 "$(head -n1 "$T/bgpids")" 2>/dev/null && timeout 2 flock -n "$LK" true; chk "(e) after a launch whose systemd-run left a child running, flock -n on the lock path succeeds within 2 s" $?
+  while read -r bp; do kill "$bp" 2>/dev/null; done <"$T/bgpids"
+  # (f)+(h) different AIDE_VERIFIER_DIR values contend on ONE fixed lock; a held lock -> exit 6 naming the holder
+  [ -e "$LK" ] && [ ! -e "$T/av/.launch.lock" ]; chk "(f) the lock lives at \$HOME/.local/state/verifier-cap/launch.lock, not under AIDE_VERIFIER_DIR" $?
+  flock -x "$LK" sleep 8 & local hp=$!
+  sleep 0.5
+  rm -f "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_DIR="$T/avA" AIDE_VERIFIER_LOCK_WAIT_S=1 L lka "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 6 ] && [ ! -e "$T/sdrun.log" ]; chk "(f) AIDE_VERIFIER_DIR=avA blocked by the held lock -> exit 6" $?
+  out2="$(AIDE_VERIFIER_DIR="$T/avB" AIDE_VERIFIER_LOCK_WAIT_S=1 L lkb "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 6 ] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/avA/.launch.lock" ] && [ ! -e "$T/avB/.launch.lock" ]; chk "(f) AIDE_VERIFIER_DIR=avB blocked by the SAME lock -> exit 6" $?
+  [[ "$out" == *"could not take $LK"* ]] && [[ "$out" == *"pid="* ]]; chk "(h) lock timeout names the lock path and a holder pid (best effort): ${out:0:150}" $?
+  kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+  # (i) timeouts: a hung room command -> exit 3, a hung systemd-run -> exit 1 (both under AIDE_VERIFIER_TIMEOUT_S, default 120)
+  out="$(FAKE_ROOM_HANG=1 AIDE_VERIFIER_TIMEOUT_S=1 L tmo1 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 3 ]; chk "(i) a hung carbon-room.sh is cut by timeout -> exit 3" $?
+  rm -f "$T/sdrun.log"
+  out="$(FAKE_SDRUN_HANG=1 AIDE_VERIFIER_TIMEOUT_S=1 L tmo2 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 1 ] && grep -q launch-failed "$T/av/tmo2/state"; chk "(i) a hung systemd-run is cut by timeout -> exit 1, state records it" $?
+  grep -qE 'timeout "\$CMD_TIMEOUT_S" "\$SD_RUN"' "$SELF" && grep -q 'timeout "\$CMD_TIMEOUT_S" \$ROOM_CMD' "$SELF" && grep -q '^MAX_ACTIVE=2$' "$SELF"; chk "the script hard-codes MAX_ACTIVE=2 and wraps room + systemd-run in timeout" $?
 
   rm -f "$T/sdrun.log"
   out="$(FAKE_ROOM=no L room1 "${A[@]}" --head "$H")"; rc=$?
@@ -367,12 +451,12 @@ F
   local V7=d-20261023-063000-r7-1b2c
   out="$(AIDE_VERIFIER_AGENT=bogus L ag0 "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"must be aide, rb or r7"* ]] && [ ! -e "$T/av/ag0" ]; chk "AIDE_VERIFIER_AGENT=bogus -> exit 2, nothing written" $?
-  echo "aide-verifier-other.service" >"$T/active"
+  printf 'aide-verifier-other.service\nr7-verifier-other.service\n' >"$T/active"
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an aide-verifier-* unit blocks an r7 launch" $?
-  echo "rb-verifier-other.service" >"$T/active"
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached"* ]]; chk "the cap spans agents: an aide- and an r7-verifier-* unit block an r7 launch" $?
+  printf 'rb-verifier-other.service\naide-verifier-other.service\n' >"$T/active"
   out="$(L ag1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an rb-verifier-* unit blocks an aide launch" $?
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached"* ]]; chk "the cap spans agents: an rb- and an aide-verifier-* unit block an aide launch" $?
   : >"$T/active"; rm -f "$T/bell.log" "$T/wmd.log" "$T/sdrun.log"
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?; D="$T/av/ag1"
   [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
