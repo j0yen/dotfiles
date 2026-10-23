@@ -12,12 +12,14 @@
 #   --exempt NAME     record `exempt` = NAME in the state file (rb-run-coder.sh --no-cargo)
 #   --selftest        stub-only checks (never real ssh, never the real hand dir): the six watcher-premise cases; prints
 #                     `SELFTEST PASS rb-spawn-hold.sh` (exit 0) or `SELFTEST FAIL ...` (exit 1); the service runs it as ExecStartPre
-# env: RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
+# env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 45; a timeout reads `rc=124` in the failure text),
+#      RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
 #      CARGO_SLOT_HAND_DIR (default /mnt/data/hand on the host; the HAND-YIELD flag lives there)
 #      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
 # HAND-YIELD writes carry a premise (watcher-premise.sh): ARM = wp_gate && wp_emit_write && ssh write, only on a state change
 #   (flag absent, or ours and < 10 min from expiry); CLEAR is never gated (a flag we wrote we can always remove) but still emits.
-# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0.
+# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0;
+#   an ssh read appends ` walls=runs:<s>,land:<s>,daemon:<s>,builder:<s>` (per-table remote wall seconds).
 #
 # HOLD iff EITHER
 #   lagging: a `release-mem` decision=refuse row < 30 min old whose run_id has no later release-mem grant / driver-adopted /
@@ -113,9 +115,28 @@ if [ -n "$jf" ]; then
   cp -- "$jf" "$jfile" 2>"$tmpd/err" || rerr="journal file unreadable: $(head -c 120 "$tmpd/err" | tr '\n' ' ')"
 else
   since=$(date -u -d "@$((now_epoch - 3600))" +%Y-%m-%dT%H:%M:%SZ)
-  remote='export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH; wm-build journal --since '"$since"
-  if ! timeout 20 "${ssh_cmd[@]}" "$host" "$remote" >"$jfile" 2>"$tmpd/err"; then
-    rerr="ssh $host journal failed: $(head -c 120 "$tmpd/err" | tr '\n' ' ')"
+  # shj: one `wm-build journal --table <t>` read per table the predicate uses, in parallel inside one ssh session (POSIX sh on the
+  # host). runs = release-mem*/update, land = land-cargo-granted, daemon = driver-adopted (filtered remote-side: it is 3 MB/h),
+  # builder = cargo-jobs-taken/released/reaped (the leading HOLD's held hand jobs). Each table prints `### table=<t> rc=<n> wall_s=<n>`
+  # before its rows; grep rc 1 (no match) is success, rc >= 2 is a failure. An ssh timeout kill can leak the remote mktemp -d.
+  remote='export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH; d=$(mktemp -d) || exit 3
+trap '\''rm -rf -- "${d:?}"'\'' EXIT; trap '\''exit 129'\'' HUP; trap '\''exit 143'\'' TERM
+rd() { t=$1; s=$(date +%s)
+  wm-build journal --since '"$since"' --table "$t" >"$d/$t.raw" 2>"$d/$t.err"; rc=$?
+  if [ $rc -eq 0 ] && [ -n "$2" ]; then grep -F -- "$2" "$d/$t.raw" >"$d/$t.out"; g=$?; [ $g -le 1 ] || rc=$((100+g))
+  elif [ $rc -eq 0 ]; then mv -- "$d/$t.raw" "$d/$t.out"; else : >"$d/$t.out"; head -c 200 "$d/$t.err" >&2; fi
+  echo "$rc $(( $(date +%s) - s ))" >"$d/$t.hdr"; }
+rd runs "" & rd land "" & rd daemon '\''"op":"driver-adopted"'\'' & rd builder "" & wait
+bad=0
+for t in runs land daemon builder; do
+  if [ -r "$d/$t.hdr" ]; then read -r rc w <"$d/$t.hdr"; else rc=255; w=0; : >"$d/$t.out"; fi
+  printf "### table=%s rc=%s wall_s=%s\n" "$t" "$rc" "$w"; cat "$d/$t.out"; [ "$rc" -eq 0 ] || bad=1
+done
+exit $bad'
+  timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-45}"
+  timeout "$timeout_s" "${ssh_cmd[@]}" "$host" "$remote" >"$jfile" 2>"$tmpd/err"; src_rc=$?
+  if [ "$src_rc" -ne 0 ]; then
+    rerr="ssh $host journal failed: $(head -c 120 "$tmpd/err" | tr '\n' ' ') rc=$src_rc"
   fi
 fi
 
@@ -124,7 +145,8 @@ decision=$(RSH_JFILE="$jfile" RSH_RERR="$rerr" RSH_STATE="$state" RSH_NOW="$now"
 import json, os, re, datetime as dt
 
 CEIL = 1800
-now = dt.datetime.strptime(os.environ["RSH_NOW"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+TABLES = ("runs", "land", "daemon", "builder")
+now =dt.datetime.strptime(os.environ["RSH_NOW"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
 state_path = os.environ["RSH_STATE"]; rerr = os.environ["RSH_RERR"]; src = os.environ["RSH_SRC"]
 exempt = os.environ["RSH_EXEMPT"] or None
 
@@ -144,13 +166,19 @@ except Exception:
     prev = None
 
 rows = []
+walls = ""
 if not rerr:
     bad = n = 0
+    hdrs = {}
     try:
         with open(os.environ["RSH_JFILE"]) as f:
             for line in f:
                 line = line.strip()
                 if not line: continue
+                if line.startswith("###"):   # per-table frame from the parallel remote read: `### table=<t> rc=<n> wall_s=<n>`
+                    m = re.match(r"### table=(\w+) rc=(\d+) wall_s=(\d+)$", line)
+                    if m: hdrs[m.group(1)] = (int(m.group(2)), int(m.group(3)))
+                    continue
                 n += 1
                 try:
                     r = json.loads(line); r["_t"] = pts(r["ts"]); rows.append(r)
@@ -160,6 +188,11 @@ if not rerr:
         rerr = "journal unreadable: %s" % e
     if not rerr and n and not rows:
         rerr = "journal had %d lines, none parseable" % n
+    # a table read that failed (or a frame that never arrived) makes the whole read a failure: the survivors are not a complete picture
+    if not rerr and src == "ssh":
+        failed = ["%s rc=%d" % (t, hdrs[t][0]) for t in TABLES if t in hdrs and hdrs[t][0] != 0] + ["%s missing" % t for t in TABLES if t not in hdrs]
+        if failed: rerr = "ssh journal table read failed: %s" % ", ".join(failed)
+    if hdrs: walls = ",".join("%s:%d" % (t, hdrs[t][1]) for t in TABLES if t in hdrs)
 rows.sort(key=lambda r: r["_t"])
 
 out = {"active": False, "run_id": None, "refusal": None, "refused_at": None, "read_at": iso(now),
@@ -223,9 +256,11 @@ else:
         kind, run, refusal, t, parts, k = hit
         out.update(active=True, run_id=int(run) if run and run.isdigit() else run, refusal=refusal, refused_at=iso(t), hand_slots=k, parts=parts)
         line = "HOLD run=%s refusal=%s age_s=%d hand_slots=%d source=%s" % (run, refusal, int((now - t).total_seconds()), k, src)
+        if walls: line += " walls=" + walls
     else:
         why = "no unresolved memory refusal in the last 60 min (%d journal rows)" % len(rows)
         line = "OK %s source=%s" % (why, src)
+        if walls: line += " walls=" + walls
 
 tmp = state_path + ".tmp.%d" % os.getpid()
 with open(tmp, "w") as f: json.dump(out, f, sort_keys=True); f.write("\n")
