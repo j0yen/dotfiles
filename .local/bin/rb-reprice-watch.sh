@@ -23,7 +23,11 @@
 #      sources the fleet token (the driver is its own systemd-run unit, daemon.driver_via_systemd_run = true, so it does not live in this unit's cgroup),
 #      (d) RB-BELL REPRICE-RECOVER, (e) clear T4R_*, T4_N=0, keep looping. No recovery by 2 h -> RB-BELL REPRICE-RECOVER-STUCK once. Never unpause/--force/--ungated.
 # PREMISE: 2 inners compiling on RedBaron can saturate the SATA /mnt/data disk; IO full avg60 > 10 for 5 min with no hand job means the inners themselves are the cause.
-# EXPIRES: 2026-11-21   (enforced: expired() gates every write; RW_TODAY overrides the date for the selftest only)
+# EXPIRES: 2026-11-21   (enforced by the shared lib: wp_gate (watcher-premise.sh) gates every fleet write; EXPIRES stays this ONE date, taken as the end of that day, same as the old bare check)
+#   RWH3 (rb 10-23, hand PR rwh3): (1) premise + EXPIRES + write gate come from the shared lib (wp_arm / wp_gate / wp_emit_write); every FLEET write (wm-build run pause, wm-build run redrive, reprice --apply, the max_runs set) is
+#      `wp_gate && wp_emit_write <kind> redbaron:<run> ... && <write>`; the watcher's own ledger / state / log files stay ungated. PREMISE cmd reads LOCAL FILES ONLY (host = "redbaron", 1 <= max_runs <= 2, a numeric inner cap): rc 2 = UNKNOWN = still armed.
+#      (2) host guard: off RedBaron the watcher prints WRONG-HOST and exits 0 (--selftest skips it; --circuit-gate exits 2 so wip-redrive.sh never reads it as ok). (3) a HELD row is checked BEFORE the W1 circuit gate (it never touches rr_fail / the circuit counters)
+#      and early_release SKIPS a held row and tries the next eligible one (still at most ONE release attempt per pass). (4) a disarmed gate with open ledger rows rings RB-BELL WP-DISARMED-LEDGER-NONEMPTY n=<k> once per ledger pass and sets status.json wp_disarmed_ledger=<k>.
 #   ROUND 4 (rb 10-22 1:3x PM, row d-20261022-132754-rb-1012, Fable APPROVE-WITH-FIXES): T2 now ARMS T4R exactly like T4 (t4r_cost + t4r_arm BEFORE runs_to_1, revert kept, NO exit;
 #      the loop continues). While T4R_RUN is set neither T2 nor T4 fires a second pause or arm (one arm, one state file). The state file gains lowered_from (new key; load falls back
 #      to t4_lowered_from), t4r_cause=T2|T4 and daemon_restart_within=<secs since wm-build.service ActiveEnterTimestamp at the arm, or unknown>. A T2-armed pause adds a recovery gate to
@@ -57,6 +61,12 @@
 #      a success rings `RB-BELL PAUSE-RELEASED run=<id> early premise-recovered`. PREMISE (W4): an adopted/foreign memory pause whose premise (MemAvailable < 12G, PSI) no longer holds waits the full 90 min for no reason. EXPIRES stays 2026-11-21.
 # Output: /mnt/data/hand/reprice-watch.log ; lines with RB-BELL wake the seat. --selftest exercises the trigger arithmetic, the T4 cases and T4R R1-R18 (hermetic, under mktemp -d).
 export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH
+case "${1:-}" in --selftest) ;; *)  # E4 host guard: this watcher drives RedBaron's wm-build only; anywhere else it does nothing (and --circuit-gate is NOT an ok)
+  [ "$(hostname -s 2>/dev/null)" = redbaron ] || { echo "WRONG-HOST rb-reprice-watch runs on redbaron only (this host: $(hostname -s 2>/dev/null))"; [ "${1:-}" = "--circuit-gate" ] && exit 2; exit 0; };; esac
+WP_LIB=${WP_LIB:-$HOME/.local/lib/watcher-premise.sh}
+if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; fi   # no lib = every fleet write disarmed
+export WP_OWNER=rb
+export WP_DECIDE_BIN=${WP_DECIDE_BIN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/rb-reprice-watch-decide.sh}   # E6: wm-decide capped at `timeout 10` so a hung record cannot stall a pause
 DB=${RW_DB:-$HOME/.local/state/wm-build/state.db}
 EV=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/memory.events
 LOG=/mnt/data/hand/reprice-watch.log
@@ -71,10 +81,17 @@ REPRICE=${RW_REPRICE:-$HOME/.local/bin/reprice-inner-cap.sh}; WIP_REDRIVE=${RW_W
 SLEEP=20; T4_WINDOW=300; T4_N=0; T4_WHY=; EXPIRES=2026-11-21
 T4R_FROM=; T4R_RUN=; T4R_PAUSED_AT=; T4R_N=0; T4R_COST=unknown; T4R_LAST=; T4R_STUCK=0; T4R_EXPLOG=; T4R_IO=; T4R_CAUSE=T4; T4R_RESTART=unknown; T4R_ATT=0; T4R_HOLD=0; T4R_HRSEEN=; T4R_SATT=0; T4R_SOK=; declare -A T4R_EMPTYN
 now_s(){ echo "${RW_NOW:-$(date +%s)}"; }
-expired(){ [ "${RW_TODAY:-$(date +%F)}" \> "$EXPIRES" ]; }
+expired(){ ! wp_gate 2>/dev/null; }   # disarmed = premise GONE, past EXPIRES, or no lib; used for status/idle only. Every fleet write site below runs its own `wp_gate && wp_emit_write ... && <write>`
+rw_premise_cmd(){ # $1 = config.toml path -> the `bash -c` text wp_gate runs. LOCAL FILES ONLY (E1): rc 0 HOLDS, rc 1 GONE, rc 2 UNKNOWN (unreadable) which stays armed until EXPIRES
+  local q; q=$(printf '%q' "$1")
+  printf '%s' "c=$q; [ -r \"\$c\" ] || exit 2; grep -Eq '^host *= *\"redbaron\"' \"\$c\" || exit 1; m=\$(grep -E '^max_runs *=' \"\$c\" | head -1 | sed -E 's/^max_runs *= *([0-9]+).*/\\1/'); case \"\$m\" in ''|*[!0-9]*) exit 2;; esac; [ \"\$m\" -ge 1 ] && [ \"\$m\" -le 2 ] || exit 1; i=\$(awk '/^\\[/{s=(\$0 ~ /^\\[cargo_jobs\\.mem_caps_gb\\]/)} s && /^inner *=/{v=\$0; sub(/^inner *= */,\"\",v); sub(/[^0-9.].*/,\"\",v); print v; exit}' \"\$c\"); case \"\$i\" in ''|*[!0-9.]*) exit 1;; esac; exit 0"; }
+rw_arm(){ # $1 = config path for the premise, $2 = EXPIRES ISO (default: end of the EXPIRES day)
+  wp_arm rb-reprice-watch "$(rw_premise_cmd "$1")" "${2:-$EXPIRES 23:59:59}" "RedBaron runs wm-build host mode with 1 <= max_runs <= 2 and an inner cap configured (local config.toml only)" || true; }
 runs_to_1(){ # $1 why -> d-4acd reverse: max_runs 1 via limits-guard (set + enforce), logged
-  wm-build-limits-guard set max_runs=1 --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch: d-4acd reverse ($1)" >> "$LOG" 2>&1; log "max_runs->1 set rc=$?"
-  wm-build-limits-guard enforce >> "$LOG" 2>&1; log "limits enforce rc=$?"; }
+  if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs -> 1 (d-4acd reverse: $1)" "$1" "wm-build-limits-guard set max_runs=<t4_lowered_from> (T4R restores it) or by hand"; then  # RWH3 gate: set + enforce are one write
+    wm-build-limits-guard set max_runs=1 --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch: d-4acd reverse ($1)" >> "$LOG" 2>&1; log "max_runs->1 set rc=$?"
+    wm-build-limits-guard enforce >> "$LOG" 2>&1; log "limits enforce rc=$?"
+  else log "WP-DISARMED max_runs->1 NOT set (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"; fi; }
 load_conf(){ MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; IO_FULL_AVG60_MAX=10; IO_RECOVER_AVG60_MAX=5; T4R_WINDOW=600; [ -f "$CONF" ] && . "$CONF"; }
 log(){ echo "$(date '+%-I:%M:%S %p') $*" | tee -a "$LOG"; }
 ev(){ awk -v k="$1" '$1==k{print $2}' "$EV"; }
@@ -228,11 +245,15 @@ t4r_fire(){ # recovery window met: (a) re-read the row, (b) max_runs 1 -> t4_low
   # NOTE (round 6): max_runs is restored here, BEFORE the redrive rc is known. Harmless if the redrive then fails or is refused: a paused run still counts toward max_runs, so the raised cap admits nothing extra while the run waits for its retry.
   if [ -n "$why" ]; then log "T4R max_runs=${cur:-unreadable} left (redrive skipped: $why; t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable})"  # AGATE
   elif [ -n "$T4R_FROM" ] && [ "$T4R_FROM" -gt 1 ] && [ "$cur" = 1 ]; then  # MAXRUNS1 FLAGGATE
-    wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
-    wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
+    if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs 1 -> $T4R_FROM (T4R restore after run $id)" "io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" "wm-build-limits-guard set max_runs=1"; then  # RWH3 gate (set + enforce)
+      wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
+      wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
+    else log "WP-DISARMED T4R max_runs->$T4R_FROM NOT set (${WP_VERDICT:-no-lib})"; res="disarmed(left $cur)"; fi
   else log "T4R max_runs=${cur:-unreadable} left (t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable} t4_lowered_from=${T4R_FROM:-none})"; fi
   if [ -z "$why" ]; then
-    if [ -n "$d" ]; then  # DIRTYSEL
+    if ! { wp_gate && wp_emit_write redrive "redbaron:$id" "redrive run $id --from inner (T4R recovery)" "T4R window met: io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes, mem clear, sigma gate granted" "wm-build run pause $id"; }; then  # RWH3 gate: disarmed = rc 87 = the round-5 retry path keeps the state
+      rc=87; log "WP-DISARMED T4R redrive run=$id NOT run (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"
+    elif [ -n "$d" ]; then  # DIRTYSEL
       ( set -a; . "$ENVF" || exit 97; set +a; bash "$WIP_REDRIVE" "$id" ) >> "$LOG" 2>&1; rc=$?; log "T4R redrive run=$id via wip-redrive.sh (dirty wt) rc=$rc (the script's rc is its last echo, check paused_at_null)"
     else
       ( set -a; . "$ENVF" || exit 97; set +a; wm-build run redrive "$id" --from inner ) >> "$LOG" 2>&1; rc=$?; log "T4R redrive run=$id --from inner (clean wt) rc=$rc"; fi
@@ -255,8 +276,10 @@ t4r_seat_redrove(){ # R16: the state is present and the row is open but no longe
   local id=$T4R_RUN cur pm sr=- er=- res; cur=$(t4r_cfg_max); pm=$(( ($(now_s) - T4R_PAUSED_AT) / 60 ))
   log "T4R seat-redrove run=$id (row open, no longer paused): state cleared, no redrive"
   if [ -n "$T4R_FROM" ] && [ "$T4R_FROM" -gt 1 ] && [ "$cur" = 1 ]; then  # SEATRESTORE
-    wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: the seat redrove run $id by hand, restoring what the pause lowered" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
-    wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
+    if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs 1 -> $T4R_FROM (T4R restore, seat redrove run $id)" "row open, no longer paused" "wm-build-limits-guard set max_runs=1"; then  # RWH3 gate (set + enforce)
+      wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: the seat redrove run $id by hand, restoring what the pause lowered" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
+      wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
+    else log "WP-DISARMED T4R max_runs->$T4R_FROM NOT set (${WP_VERDICT:-no-lib})"; res="disarmed(left $cur)"; fi
   else log "T4R max_runs=${cur:-unreadable} left (t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable} t4_lowered_from=${T4R_FROM:-none})"; fi
   log "RB-BELL REPRICE-RECOVER run=$id paused_min=$pm pause_cost_coder_min=$T4R_COST max_runs=$res redrive_rc=skipped(seat redrove by hand) t4_lowered_from=${T4R_FROM:-none}"
   t4r_state_rm; T4R_FROM=; T4R_RUN=; T4R_PAUSED_AT=; T4R_N=0; T4R_STUCK=0; T4R_EXPLOG=; T4R_COST=unknown; T4R_LAST=; T4R_CAUSE=T4; T4R_RESTART=unknown; T4R_ATT=0; T4R_HOLD=0; T4R_HRSEEN=; T4R_SATT=0; T4R_SOK=; T4_N=0; return 0; }
@@ -299,6 +322,11 @@ EARLY_REC=${RW_EARLY:-/mnt/data/hand/pause-early.tsv}; EARLY_N=0; EARLY_HOLD=0; 
 EARLY_RE='sigma-guard|MemAvailable|(^|[^A-Za-z0-9])T2([^A-Za-z0-9]|$)'   # memory-class pause causes on the DAEMON row; T2 is word-bounded so a timestamp (...T22:43...) never matches
 HELD_REC=${RW_HELD:-/mnt/data/hand/pause-held.tsv}   # RWH: once-per (run, paused_at) record for HELD rows (run<TAB>paused_at<TAB>epoch)
 HELD_RE='squash|(^|[^a-z])(hold|held)([^a-z]|$)|never (redrive|unpause)|do not (release|redrive)|release (only )?(by hand|via redrive --from land)|keep paused'   # RWH: a non-watcher pause cause that says a human holds the row (case-insensitive; hold/held word-bounded so threshold/holder never match)
+row_held(){ # $1 stage $2 DAEMON paused_cause $3 train_hold_reason -> 0 when the row is HELD (RWH rules; ONE definition for release_run and early_release)
+  local h=0; [ -z "$3" ] || h=1
+  case "$2" in "rb-reprice-watch T2 "*|"rb-reprice-watch T4 "*) ;; *) [ "$1" != land ] || h=1;; esac
+  case "$2" in "rb-reprice-watch T"*) ;; *) ! grep -qiE "$HELD_RE" <<< "$2" || h=1;; esac
+  [ "$h" = 1 ]; }
 held_skip(){ # $1 run $2 paused_at $3 stage $4 cause $5 train_hold_reason. RWH: log + one bell per (run, paused_at); no redrive, no extension, no rr_fail; the ledger row stays
   local now; [ -z "$(awk -F'\t' -v r="$1" -v p="$2" '$1==r && $2==p' "$HELD_REC" 2>/dev/null)" ] || return 0
   now=$(now_s); mkdir -p "$(dirname "$HELD_REC")"; { awk -F'\t' -v m=$((now - 1209600)) '$3 >= m' "$HELD_REC" 2>/dev/null; printf '%s\t%s\t%s\n' "$1" "$2" "$now"; } > "$HELD_REC.tmp.$$" && mv -f -- "$HELD_REC.tmp.$$" "$HELD_REC"
@@ -349,13 +377,15 @@ ledger_set_u(){ # run paused_at expires ext
 ledger_set(){ ledger_lockrun ledger_set_u "$@"; }
 wpause(){ # $1 run id, $2 trigger text -> `wm-build run pause <id> --cause "<trigger>; owner rb; expires <ISO now+90m>"` + a ledger row carrying the DAEMON's paused_at (W2)
   local id=$1 exp cause rc pa; exp=$(iso_at $(( $(now_s) + PAUSE_MIN*60 ))); cause="rb-reprice-watch $2; owner rb; expires $exp"
-  wm-build run pause "$id" --cause "$cause" >> "$LOG" 2>&1; rc=$?; log "pause rc=$rc"
+  if wp_gate && wp_emit_write pause "redbaron:$id" "pause run $id ($2)" "$2" "wm-build run redrive $id --from inner (release); ledger expiry $exp"; then  # RWH3 gate
+    wm-build run pause "$id" --cause "$cause" >> "$LOG" 2>&1; rc=$?; log "pause rc=$rc"
+  else rc=87; log "WP-DISARMED pause run=$id NOT run (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"; fi
   [ "$rc" = 0 ] || return 0
   pa=$(sqlite3 -readonly "$DB" "select paused_at from runs where id=$id" 2>/dev/null)
   if [ -n "$pa" ]; then ledger_add "$id" "$pa" "$exp" "$cause" 0; log "LEDGER-ADD run=$id paused_at=$pa expires=$exp"
   else log "LEDGER-ADD-DEFER run=$id (paused_at unreadable); the next pass adopts it as unledgered"; fi; }
 status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,overdue}, redrive_defer{count_24h,last_ts,last_op}, premise{verdict,expires}
-  local now open=0 old= over=0 e x r p d c n lt lo v tmp; now=$(now_s)
+  local now open=0 old= over=0 e x r p d c n lt lo v wk tmp; now=$(now_s)
   if [ -s "$LEDGER" ]; then
     while IFS=$'\t' read -r r p e d x; do [ -n "$r" ] || continue; open=$((open+1)); n=$(epoch_of "$e"); case "$n" in ''|*[!0-9]*) continue;; esac
       if [ -z "$old" ] || [ "$n" -lt "$old" ]; then old=$n; fi
@@ -367,10 +397,10 @@ status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,
     awk -F'\t' -v m=$((now-86400)) '$1>=m' "$DEFERLOG" > "$DEFERLOG.tmp.$$" && mv -f -- "$DEFERLOG.tmp.$$" "$DEFERLOG"
     c=$(wc -l < "$DEFERLOG"); if [ "$c" -gt 0 ]; then lt=$(tail -n 1 "$DEFERLOG" | cut -f1); lo=$(tail -n 1 "$DEFERLOG" | cut -f2); fi
   fi
-  if expired; then v=expired; else v=armed; fi
+  wk=0; if expired; then if [ "${WP_DEFECT:-}" = expired ]; then v=expired; else v=disarmed; fi; wk=$open; else v=armed; fi   # RWH3 E2: wp_disarmed_ledger = open ledger rows while the gate is down
   mkdir -p "$(dirname "$STATUS")"; tmp="$STATUS.tmp.$$"
-  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" \
-    '{watcher:"rb-reprice-watch", ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}}' > "$tmp" \
+  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" --argjson wk "$wk" \
+    '{watcher:"rb-reprice-watch", ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}, wp_disarmed_ledger:$wk}' > "$tmp" \
     && mv -f -- "$tmp" "$STATUS" || log "status.json write failed ($STATUS)"; }
 release_refused(){ # $1 run $2 paused_at $3 ext $4 why. (d): extend +30 min up to EXT_MAX times, then PAUSE-OVERDUE once (ext -> EXT_MAX+1) and keep re-checking every pass
   local now x=$3; now=$(now_s)
@@ -381,26 +411,24 @@ rr_fail(){ # $1 run $2 paused_at $3 ext $4 why $5 early(0|1). Expiry path: the e
   local now; if [ "${5:-0}" != 1 ]; then release_refused "$1" "$2" "$3" "$4"; return 0; fi
   now=$(now_s); EARLY_HOLD=2; if [ $((now - EARLY_LOG_AT)) -ge $((10 * PAUSE_PASS_S)) ]; then EARLY_LOG_AT=$now; log "EARLY-RELEASE-REFUSED run=$1 why=\"$4\""; fi; return 0; }
 early_note(){ local now; now=$(now_s); mkdir -p "$(dirname "$EARLY_REC")"; { awk -F'\t' -v m=$((now - 7200)) '$2 >= m' "$EARLY_REC" 2>/dev/null; printf '%s\t%s\n' "$1" "$now"; } > "$EARLY_REC.tmp.$$" && mv -f -- "$EARLY_REC.tmp.$$" "$EARLY_REC"; }
-release_run(){ # $1 run $2 paused_at $3 ext $4 early(0|1, default 0). Returns 0 only when the run was released (redrive took, row no longer paused). Gate order: W1 circuit, row re-read, stage, Σ (MG), then the redrive.
-  local id=$1 pa=$2 x=$3 early=${4:-0} q slug e st pnow wt d rc stg2 cp hc cause thr held
-  if [ "$CGDONE" = 0 ]; then gate_ok ledger-release; CGRC=$?; CGDONE=1; fi   # evidence read once per pass
-  [ "$CGRC" = 0 ] || { rr_fail "$id" "$pa" "$x" "circuit gate: $CG_V ($CG_WHY)" "$early"; return 1; }
+release_run(){ # $1 run $2 paused_at $3 ext $4 early(0|1, default 0). Returns 0 only when the run was released (redrive took, row no longer paused). Gate order (RWH3): row re-read + stale drop, HELD skip, W1 circuit, stage, Σ (MG), then the redrive.
+  local id=$1 pa=$2 x=$3 early=${4:-0} q slug e st pnow wt d rc stg2 cp hc cause thr
   q=$(sqlite3 -readonly -separator '|' "$DB" "select slug, ended is null, coalesce(stage,''), coalesce(paused_at,'') from runs where id=$id" 2>/dev/null); [ -n "$q" ] || { log "LEDGER-RELEASE run=$id row read empty, left alone"; return 1; }
   IFS='|' read -r slug e st pnow <<< "$q"
   if [ "$e" != 1 ] || [ "$pnow" != "$pa" ]; then log "LEDGER-STALE run=$id ledger_paused_at=$pa daemon_paused_at=${pnow:-NULL} ended=$([ "$e" = 1 ] && echo no || echo yes); row dropped, NO redrive"; ledger_drop "$id" "$pa"; return 1; fi
   hc=$(sqlite3 -readonly -separator $'\x1f' "$DB" "select replace(coalesce(paused_cause,''), char(10), ' '), replace(coalesce(train_hold_reason,''), char(10), ' ') from runs where id=$id" 2>/dev/null) || { log "LEDGER-RELEASE run=$id cause read failed, left alone"; return 1; }
-  IFS=$'\x1f' read -r cause thr <<< "$hc"; held=0   # RWH: a HELD row (train hold, a land not paused by this watcher, or a hand/CTRL cause saying hold) is never redriven, extended or counted by the ledger
-  [ -z "$thr" ] || held=1
-  case "$cause" in "rb-reprice-watch T2 "*|"rb-reprice-watch T4 "*) ;; *) [ "$st" != land ] || held=1;; esac
-  case "$cause" in "rb-reprice-watch T"*) ;; *) ! grep -qiE "$HELD_RE" <<< "$cause" || held=1;; esac
-  if [ "$held" = 1 ]; then held_skip "$id" "$pa" "$st" "$cause" "$thr"; return 1; fi
+  IFS=$'\x1f' read -r cause thr <<< "$hc"   # RWH: a HELD row (train hold, a land not paused by this watcher, or a hand/CTRL cause saying hold) is never redriven, extended or counted by the ledger
+  if row_held "$st" "$cause" "$thr"; then held_skip "$id" "$pa" "$st" "$cause" "$thr"; return 1; fi   # RWH3 AC3: the HELD check runs BEFORE the W1 circuit gate, so a held row never reaches rr_fail or the circuit counters
+  if [ "$CGDONE" = 0 ]; then gate_ok ledger-release; CGRC=$?; CGDONE=1; fi   # evidence read once per pass
+  [ "$CGRC" = 0 ] || { rr_fail "$id" "$pa" "$x" "circuit gate: $CG_V ($CG_WHY)" "$early"; return 1; }
   case "$st" in inner|gate|land) ;; *) rr_fail "$id" "$pa" "$x" "stage=$st has no redrive class" "$early"; return 1;; esac
   SIG_RUN=$id; t4r_sigma; rc=$?; SIG_RUN=
   if [ "$rc" != 0 ]; then
     [ "$early" = 1 ] || log "LEDGER-RELEASE run=$id sigma-refused sigma=$SIG_SUM cap=$SIG_CAP budget=${SIG_BUD:-unknown} parts=${SIG_PARTS:-none}"
     rr_fail "$id" "$pa" "$x" "sigma refused (sum $SIG_SUM + cap $SIG_CAP > budget ${SIG_BUD:-unknown}; parts ${SIG_PARTS:-none})" "$early"; return 1; fi
   wt=$WT_ROOT/$slug; d=; [ "$st" = inner ] && d=$(git -C "$wt" status --porcelain 2>/dev/null)
-  if [ -n "$d" ]; then ( set -a; . "$ENVF" || exit 97; set +a; bash "$WIP_REDRIVE" "$id" ) >> "$LOG" 2>&1; rc=$?; log "LEDGER-RELEASE run=$id via wip-redrive.sh (dirty wt) rc=$rc"
+  if ! { wp_gate && wp_emit_write redrive "redbaron:$id" "redrive run $id --from $st (ledger release${early:+, early=$early})" "pause-ledger row expired or premise recovered; W1 circuit + sigma gates passed" "wm-build run pause $id"; }; then rc=87; log "WP-DISARMED LEDGER-RELEASE run=$id redrive NOT run (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"   # RWH3 gate
+  elif [ -n "$d" ]; then ( set -a; . "$ENVF" || exit 97; set +a; bash "$WIP_REDRIVE" "$id" ) >> "$LOG" 2>&1; rc=$?; log "LEDGER-RELEASE run=$id via wip-redrive.sh (dirty wt) rc=$rc"
   else ( set -a; . "$ENVF" || exit 97; set +a; wm-build run redrive "$id" --from "$st" ) >> "$LOG" 2>&1; rc=$?; log "LEDGER-RELEASE run=$id --from $st rc=$rc"; fi
   cp=$(sqlite3 -readonly "$DB" "select coalesce(paused_at,'') from runs where id=$id" 2>/dev/null)
   if [ "$rc" = 0 ] && [ -z "$cp" ] && [ -n "$(sqlite3 -readonly "$DB" "select id from runs where id=$id and ended is null" 2>/dev/null)" ]; then
@@ -416,28 +444,29 @@ early_clear(){ # W4: one sample, 0 = memory AND io are clear NOW (mem_bad empty;
   [ -z "$(mem_bad "$av" "$psi")" ] || return 1
   awk -v p="$io" -v m="$IO_FULL_AVG60_MAX" 'BEGIN{exit !(p+0 <= m+0)}'; }
 early_release(){ # W4 change 3. $1 = now, $2 = ledger lines "expires<TAB>run<TAB>paused_at<TAB>cause<TAB>ext" sorted oldest first. At most ONE attempt per pass (first eligible row). Returns release_run's rc, 1 when nothing was eligible.
-  local now=$1 e r p lc x q st pa cause pe n last
+  local now=$1 e r p lc x q st pa cause thr pe n last
   if [ "$EARLY_HOLD" -gt 0 ]; then EARLY_HOLD=$((EARLY_HOLD - 1)); return 1; fi
   while IFS=$'\t' read -r e r p lc x; do [ -n "$r" ] || continue
     n=$(epoch_of "$e"); case "$n" in ''|*[!0-9]*) continue;; esac; [ "$n" -gt "$now" ] || continue   # NON-expired rows only; the expiry loop owns the rest
     [ "$r" != "$T4R_RUN" ] || continue
     case "$lc" in unledgered|"rb-reprice-watch T2"*) ;; *) continue;; esac
-    q=$(sqlite3 -readonly -separator '|' "$DB" "select coalesce(stage,''), coalesce(paused_at,''), replace(coalesce(paused_cause,''), char(10), ' ') from runs where id=$r and ended is null" 2>/dev/null); [ -n "$q" ] || continue
-    IFS='|' read -r st pa cause <<< "$q"
+    q=$(sqlite3 -readonly -separator $'\x1f' "$DB" "select coalesce(stage,''), coalesce(paused_at,''), replace(coalesce(paused_cause,''), char(10), ' '), replace(coalesce(train_hold_reason,''), char(10), ' ') from runs where id=$r and ended is null" 2>/dev/null); [ -n "$q" ] || continue
+    IFS=$'\x1f' read -r st pa cause thr <<< "$q"
     [ "$st" = inner ] || continue   # G6: a land / gate row is never early-released
     [ "$pa" = "$p" ] || continue
     grep -qE "$EARLY_RE" <<< "$cause" || continue   # daemon truth, memory-class only
     pe=$(epoch_of "$pa"); case "$pe" in ''|*[!0-9]*) continue;; esac; [ $((now - pe)) -ge $((2 * PAUSE_PASS_S)) ] || continue   # the pause must predate the two clear samples
     last=$(awk -F'\t' -v r="$r" '$1==r{v=$2} END{print v}' "$EARLY_REC" 2>/dev/null)
     case "$last" in ''|*[!0-9]*) ;; *) [ $((now - last)) -ge "$EARLY_GRACE" ] || continue;; esac   # G5: re-paused within 30 min of an early release -> waits for expiry
+    if row_held "$st" "$cause" "$thr"; then held_skip "$r" "$p" "$st" "$cause" "$thr"; continue; fi   # RWH3 AC4: a HELD row never uses the one attempt of this pass; try the next eligible row
     log "EARLY-RELEASE-TRY run=$r paused_at=$p clear_passes=$EARLY_N cause=\"${cause:0:80}\""
     release_run "$r" "$p" "${x:-0}" 1; return $?
   done <<< "$2"
   return 1; }
 ledger_pass(){ # W2, throttled to PAUSE_PASS_S. (a) stale drop (b) adopt unledgered + one bell (c) at most ONE expired release, oldest first (d) refusal -> extend/overdue. Always ends with status.json.
-  local now r p e d x q pa n ids rel=0 row rows; now=$(now_s)
+  local now r p e d x q pa n ids rel=0 row rows k; now=$(now_s)
   [ $((now - LP_LAST)) -ge "$PAUSE_PASS_S" ] || return 0; LP_LAST=$now
-  if expired; then status_write; return 0; fi
+  if expired; then k=$(grep -c . "$LEDGER" 2>/dev/null); [ "${k:-0}" -le 0 ] || log "RB-BELL WP-DISARMED-LEDGER-NONEMPTY n=$k"; status_write; return 0; fi   # RWH3 E2: a disarmed gate with paused rows left in the ledger rings once per ledger pass
   if [ -s "$LEDGER" ]; then  # (a) the daemon is the source of truth: a ledger row whose run is ended / not paused / paused at another time is dropped; an empty read is unknown and keeps the row
     while IFS=$'\t' read -r r p e d x; do [ -n "$r" ] || continue
       q=$(sqlite3 -readonly -separator '|' "$DB" "select ended is null, coalesce(paused_at,'') from runs where id=$r" 2>/dev/null); [ -n "$q" ] || continue
@@ -462,7 +491,9 @@ ledger_pass(){ # W2, throttled to PAUSE_PASS_S. (a) stale drop (b) adopt unledge
   if [ "$rel" = 0 ] && [ "$EARLY_N" -ge 2 ]; then early_release "$now" "$(awk -F'\t' '{print $3 "\t" $1 "\t" $2 "\t" $4 "\t" $5}' "$LEDGER" 2>/dev/null | sort)"; fi   # W4/G4: ONE release per pass in total
   status_write; }
 revert(){ gb=$(target); log "RB-BELL REPRICE-REVERSE $1 -> apply inner=$gb (max priced + 3 G)"
-  bash "$REPRICE" --apply "$gb" --by "rb-reprice-watch 10-20 (Fable SET-10.5 reverse = max priced + 3 G): $1" >> "$LOG" 2>&1; log "reprice rc=$?"; }
+  if wp_gate && wp_emit_write limit redbaron:inner-cap "reprice inner cap -> $gb (max priced + 3 G)" "$1" "reprice-inner-cap.sh --apply <previous cap>"; then  # RWH3 gate
+    bash "$REPRICE" --apply "$gb" --by "rb-reprice-watch 10-20 (Fable SET-10.5 reverse = max priced + 3 G): $1" >> "$LOG" 2>&1; log "reprice rc=$?"
+  else log "WP-DISARMED reprice --apply $gb NOT run (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"; fi; }
 t2_fire(){ # $1 = live_inners output. T2 (MemAvailable/PSI with 2 inners live). Returns 0 when it fired. Refuses while a recovery watch is armed (one arm, one state file).
   local young av psi why
   [ -z "$T4R_RUN" ] || return 1  # ARMED2
@@ -506,9 +537,10 @@ t4_selftest(){ # hermetic: fake io pressure, app.slice and /proc under a mktemp 
   # S5: one inner live -> never fires, and the count resets
   T4_N=0; for ((i=1;i<need;i++)); do t4_eval 2; done; t4_eval 1 && { echo "SELFTEST FAIL T4 S5 fired with 1 inner"; rm -rf "$t"; return 1; }
   [ "$T4_N" = 0 ] || { echo "SELFTEST FAIL T4 S5 count not reset (N=$T4_N)"; rm -rf "$t"; return 1; }
-  # S6: EXPIRES gate - the day after expiry disarms, expiry day itself still armed
-  RW_TODAY=2026-11-22 expired || { echo "SELFTEST FAIL T4 S6 not expired after EXPIRES"; rm -rf "$t"; return 1; }
-  RW_TODAY=2026-11-21 expired && { echo "SELFTEST FAIL T4 S6 expired on EXPIRES day"; rm -rf "$t"; return 1; }
+  # S6: EXPIRES gate lives in the shared lib: the ONE date is 2026-11-21 (end of that day), an EXPIRES in the past disarms (expired), one in the future stays armed
+  [ "$EXPIRES" = 2026-11-21 ] || { echo "SELFTEST FAIL T4 S6 EXPIRES=$EXPIRES, not the single 2026-11-21"; rm -rf "$t"; return 1; }
+  sim_expire; expired && [ "$WP_DEFECT" = expired ] || { echo "SELFTEST FAIL T4 S6 not expired after EXPIRES (defect=${WP_DEFECT:-})"; rm -rf "$t"; return 1; }
+  rw_arm "$RWT/premise.toml" "$(date -d '+1 hour' '+%F %T')"; expired && { echo "SELFTEST FAIL T4 S6 expired before EXPIRES"; rm -rf "$t"; return 1; }; sim_arm
   rm -rf "$t"; echo "T4 S1-S6 ok need=$need"; }
 t4r_selftest(){ # hermetic: fake state.db, wt, io/mem pressure, config, clock and fake wm-build / limits-guard / wip-redrive under a mktemp -d; prints a short ok string or SELFTEST FAIL T4R <case>
   local t need i CT NOW0 CALLS L2=$'6\n7'; t=$(mktemp -d) && [ -d "$t" ] || { echo "SELFTEST FAIL T4R mktemp"; return 1; }
@@ -516,7 +548,7 @@ t4r_selftest(){ # hermetic: fake state.db, wt, io/mem pressure, config, clock an
   LOG=$t/log; DB=$t/s.db; IO_PSI=$t/io; MEM_PSI=$t/mpsi; MEMINFO=$t/meminfo; WT_ROOT=$t/wt; CONFIG=$t/config.toml; WIP_REDRIVE=$t/wip.sh; ENVF=$t/env
   CONF=$t/conf; REPRICE=$t/bin/reprice.sh; APP_SLICE=$t/app; PROC=$t/proc; T4_WINDOW=300; SLEEP=20; mkdir -p "$APP_SLICE" "$PROC"   # R14-R18 fire the real t2_fire/t4_fire against fakes
   JOURNAL=$t/journal.jsonl; : > "$JOURNAL"; LEDGER=$t/ledger.tsv; LEDGER_LOCK=$LEDGER.lock; DEFERLOG=$t/defer.tsv; STATUS=$t/sw/status.json   # W: the pause ledger / defer log / status.json stay under $t too
-  T4R_STATE=$t/t4r.state; HELD_REC=$t/held.tsv; PATH=$t/bin:$PATH; RW_TODAY=2026-10-22; IO_RECOVER_AVG60_MAX=5; T4R_WINDOW=600; MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; CT=1700000000; NOW0=$((CT + 37*60 + 30))
+  T4R_STATE=$t/t4r.state; HELD_REC=$t/held.tsv; PATH=$t/bin:$PATH; IO_RECOVER_AVG60_MAX=5; T4R_WINDOW=600; MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; CT=1700000000; NOW0=$((CT + 37*60 + 30))
   log(){ echo "$*" >> "$LOG"; }   # no tee: the real log must never be touched by the selftest
   mkdir -p "$t/bin" "$t/wt"; local b
   for b in wm-build wm-build-limits-guard; do printf '#!/bin/bash\necho "%s $*" >> "$FAKE_CALLS"\n' "$b" > "$t/bin/$b"; chmod +x "$t/bin/$b"; done
@@ -549,7 +581,7 @@ FAKEWIP
   fresh0(){ : > "$CALLS"; : > "$LOG"; rm -rf "$t/wt/s1"; git init -q "$t/wt/s1" 2>/dev/null
     GIT_AUTHOR_DATE="$CT +0000" GIT_COMMITTER_DATE="$CT +0000" git -C "$t/wt/s1" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q --allow-empty -m c1
     rm -f "$t/s.db"; sqlite3 "$t/s.db" "create table runs(id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, ended TEXT, stage TEXT, paused_at TEXT); insert into runs(id,slug,ended,stage,paused_at) values (7,'s1',NULL,'inner','2026-10-22 13:00:00'); create table circuits(class text primary key, state text, resets_at text); insert into circuits values('quota','closed',null); create table alarms(id integer primary key, ref_ text, closed text); create table steps(id INTEGER PRIMARY KEY, kind TEXT, priced_peak_kb INTEGER); insert into steps(kind,priced_peak_kb) values ('inner',8388608),('inner',4194304),('gate',99999999)"
-    cfg "${ARM_MR:-2}"; io 3; mem 30000000; RW_NOW=$NOW0; RW_TODAY=2026-10-22; SELF_NLIVE=1; load_conf
+    cfg "${ARM_MR:-2}"; io 3; mem 30000000; RW_NOW=$NOW0; sim_arm; SELF_NLIVE=1; load_conf
     if [ -n "${ARM_DEW:-}" ]; then RW_DAEMON_ENTER=$((NOW0-ARM_DEW)); else RW_DAEMON_ENTER=unknown; fi
     rm -f -- "$T4R_STATE" "$FAKE_RCS" "$FAKE_WIPSTILL"; T4R_EMPTYN=(); T4R_SATT=0; T4R_SOK=; DB=$t/s.db; T4R_ATT=0; T4R_HOLD=0; T4R_HRSEEN=; T4R_SATT=0; T4R_SOK=; T4R_RUN=; T4R_FROM=; T4R_N=0; T4R_STUCK=0; T4R_EXPLOG=; T4R_CAUSE=T4; T4R_RESTART=unknown; T4R_COST=unknown; T4R_LAST=; T4_N=0; }
   fresh(){ fresh0; t4r_cost 7; t4r_arm 7 "${ARM_CAUSE:-T4}"; cfg 1; }   # arm reads max_runs BEFORE the pause lowers it; then runs_to_1 is done: live config reads 1
@@ -578,8 +610,8 @@ FAKEWIP
   # R5: dirty wt -> the wip-redrive fake is called, not run redrive
   fresh; echo wip > "$t/wt/s1/dirty.txt"; passes "$need"
   [ "$(cnt '^wip 7$')" = 1 ] && [ "$(cnt 'run redrive')" = 0 ] || { fail "R5 calls=[$(tr '\n' '|' < "$CALLS")]"; return 1; }
-  # R6: expired (RW_TODAY past EXPIRES) -> zero fake calls
-  fresh; RW_TODAY=2026-11-23; passes $((need+2))
+  # R6: expired (lib EXPIRES in the past) -> zero fake calls
+  fresh; sim_expire; passes $((need+2))
   [ ! -s "$CALLS" ] && grep -q 'T4R disarmed (expired)' "$LOG" || { fail "R6 calls=[$(tr '\n' '|' < "$CALLS")]"; return 1; }
   # R7: mem_bad true on one pass inside the window -> the count resets, no fire after need passes
   fresh; passes 9; mem 1000000; t4r_step; mem 30000000; passes $((need-10))
@@ -747,7 +779,7 @@ w_selftest(){ # hermetic Appendix W selftest (W1 circuit gate, W2 expiring pause
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null FAKE_CALLS=$t/calls FAKE_DB=$t/s.db FAKE_REFUSE=$t/refuse
   LOG=$t/log; DB=$t/s.db; JOURNAL=$t/journal.jsonl; LEDGER=$t/ledger.tsv; LEDGER_LOCK=$LEDGER.lock; DEFERLOG=$t/defer.tsv; STATUS=$t/sw/status.json
   WT_ROOT=$t/wt; CONFIG=$t/config.toml; WIP_REDRIVE=$t/wip.sh; ENVF=$t/env; APP_SLICE=$t/app; PROC=$t/proc; mkdir -p "$APP_SLICE" "$PROC" "$t/bin" "$t/wt"
-  PATH=$t/bin:$PATH; MEMINFO=$t/meminfo; MEM_PSI=$t/mpsi; IO_PSI=$t/ipsi; EARLY_REC=$t/early.tsv; HELD_REC=$t/held.tsv; MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; IO_FULL_AVG60_MAX=10; RW_TODAY=2026-10-22; NOW0=$(date -u -d 2026-10-22T20:00:00Z +%s); RW_NOW=$NOW0; EXPIRES=2026-11-21; T4R_RUN=; PAUSE_PASS_S=240
+  PATH=$t/bin:$PATH; MEMINFO=$t/meminfo; MEM_PSI=$t/mpsi; IO_PSI=$t/ipsi; EARLY_REC=$t/early.tsv; HELD_REC=$t/held.tsv; MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; IO_FULL_AVG60_MAX=10; NOW0=$(date -u -d 2026-10-22T20:00:00Z +%s); RW_NOW=$NOW0; EXPIRES=2026-11-21; T4R_RUN=; PAUSE_PASS_S=240
   P1=2026-10-22T18:00:00.000000000+00:00; P1B=2026-10-22T18:10:00.000000000+00:00; P3=2026-10-22T19:30:00.000000000+00:00
   log(){ echo "$*" >> "$LOG"; }   # no tee: the real log must never be touched by the selftest
   case "$LOG$LEDGER$STATUS$DEFERLOG$DB$JOURNAL$EARLY_REC$HELD_REC$MEMINFO$IO_PSI" in "$t"/*"$t"/*"$t"/*"$t"/*"$t"/*"$t"/*"$t"/*"$t"/*"$t"/*"$t"/*) ;; *) echo "SELFTEST FAIL W hermetic"; return 1;; esac
@@ -765,7 +797,7 @@ FAKEWB
   wfail(){ echo "SELFTEST FAIL W $*"; rm -rf "$t"; return 1; }
   setmem(){ printf 'MemAvailable:   %s kB\n' "$1" > "$MEMINFO"; printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=%s avg300=0.00 total=0\n' "$2" > "$MEM_PSI"; printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=%s avg300=0.00 total=0\n' "$3" > "$IO_PSI"; }   # avail_kb mem_psi io_psi
   nextpass(){ RW_NOW=$((RW_NOW + PAUSE_PASS_S)); }
-  wreset(){ rm -rf -- "$LEDGER" "$LEDGER_LOCK" "$DEFERLOG" "$t/sw" "$FAKE_REFUSE" "$DB" "$EARLY_REC" "$HELD_REC"; setmem 26000000 0.00 0.00; EARLY_N=0; EARLY_HOLD=0; EARLY_LOG_AT=0; : > "$FAKE_CALLS"; : > "$LOG"; : > "$JOURNAL"; LP_LAST=0; CGDONE=0; CGRC=0; CG_LOG_AT=0; CG_NOTE_AT=0; CG_BELL_AT=0; T4R_RUN=; RW_NOW=$NOW0; RW_TODAY=2026-10-22
+  wreset(){ rm -rf -- "$LEDGER" "$LEDGER_LOCK" "$DEFERLOG" "$t/sw" "$FAKE_REFUSE" "$DB" "$EARLY_REC" "$HELD_REC"; setmem 26000000 0.00 0.00; EARLY_N=0; EARLY_HOLD=0; EARLY_LOG_AT=0; : > "$FAKE_CALLS"; : > "$LOG"; : > "$JOURNAL"; LP_LAST=0; CGDONE=0; CGRC=0; CG_LOG_AT=0; CG_NOTE_AT=0; CG_BELL_AT=0; T4R_RUN=; RW_NOW=$NOW0; sim_arm; : > "$FAKE_DECIDE_REC"
     sqlite3 "$DB" "create table runs(id integer primary key, slug text, ended text, stage text, paused_at text, paused_cause text, train_hold_reason text); create table circuits(class text primary key, state text, resets_at text); create table alarms(id integer primary key, ref_ text, closed text); insert into circuits values('quota','closed',null);"; }
   jl(){ printf '{"op":"%s","row":{"class":"quota","reason":"quota-circuit resets=%s","run_id":1,"slug":"s","stage":"inner"},"table":"daemon","ts":"%s"}\n' "$1" "$3" "$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%S.123456789+00:00)" >> "$JOURNAL"; }
   cnt(){ grep -c -- "$1" "$2" 2>/dev/null || true; }
@@ -813,7 +845,7 @@ FAKEWB
   ledger_pass; [ ! -s "$FAKE_CALLS" ] && [ "$(led 7 | cut -f5)" = 0 ] || { wfail "E9 T4R-owned run touched"; return 1; }
   wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0-60)))" c 0; sqlite3 "$DB" "update circuits set state='open'"; jl circuit-skip $((NOW0-60)) 2026-10-22T23:00:00+00:00   # W1 on the W2 path: open circuit -> no redrive, extension, defer logged
   ledger_pass; [ ! -s "$FAKE_CALLS" ] && [ "$(led 7 | cut -f5)" = 1 ] && grep -q 'REDRIVE-DEFER circuit=quota last_op=circuit-skip' "$LOG" && [ "$(jq -r .redrive_defer.count_24h "$STATUS")" = 1 ] && [ "$(jq -r .redrive_defer.last_op "$STATUS")" = circuit-skip ] || { wfail "I1 open circuit on the ledger path [$(cat "$LOG")] calls=[$(cat "$FAKE_CALLS")]"; return 1; }
-  wreset; RW_TODAY=2026-11-22; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0-60)))" c 0   # premise expired: no write, status says expired
+  wreset; sim_expire; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0-60)))" c 0   # premise expired: no write, status says expired
   ledger_pass; [ ! -s "$FAKE_CALLS" ] && [ "$(jq -r .premise.verdict "$STATUS")" = expired ] && [ "$(jq -r .premise.expires "$STATUS")" = 2026-11-21 ] || { wfail "X1 expired premise wrote or status wrong"; return 1; }
   wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0+600)))" c 0; ledger_pass   # S1: status shape (tmp+rename leaves no tmp file)
   [ "$(jq -r '.pause_ledger.open' "$STATUS")" = 1 ] && [ "$(jq -r '.pause_ledger.oldest_expires' "$STATUS")" = "$(iso_at $((NOW0+600)))" ] && [ "$(jq -r '.pause_ledger.overdue' "$STATUS")" = 0 ] && [ "$(jq -r '.redrive_defer.last_ts' "$STATUS")" = null ] \
@@ -883,11 +915,43 @@ FAKEWB
   RW_JOURNAL_TAIL=1000000 ledger_pass; grep -q '^SIGMA-DRIFT local=0 daemon=36.5' "$LOG" || { wfail "V17b the same journal with a wide window logs drift [$(cat "$LOG")]"; return 1; }
   wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0-60)))" c 0; jrm refuse 36.5 $((NOW0-7200))   # V15: a 2 h old journal row is not comparable -> silent
   ledger_pass; [ "$(rdr)" = 1 ] && ! grep -q 'SIGMA-DRIFT' "$LOG" || { wfail "V15 stale journal row must not log drift [$(cat "$LOG")]"; return 1; }
-  rm -rf "$t"; echo "W1 G1-G6 ok W2 E1-E9 E4b I1 X1 S1 ok W4 V1-V17 ok RWH H1-H5 ok"; }
+  # ---- RWH3: held-row follow-ups + the shared-lib premise gate (fake wm-decide records argv under $RWT; every write site goes through wp_gate && wp_emit_write) ----
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at,paused_cause) values(7,'s1',NULL,'inner','$P4','hold: MemAvailable 11G, do not release'),(8,'s2',NULL,'inner','$P4','$CSG')"; ledger_add 7 "$P4" "$(iso_at $((NOW0+1000)))" unledgered 0; ledger_add 8 "$P4" "$(iso_at $((NOW0+3000)))" unledgered 0; EARLY_N=5
+  ledger_pass   # (i) a HELD head row (oldest expiry) must not use the pass's one early attempt: the next eligible row is released
+  [ "$(cnt 'run redrive' "$FAKE_CALLS")" = 1 ] && [ "$(cnt '^wm-build run redrive 8 --from inner$' "$FAKE_CALLS")" = 1 ] && [ "$(cnt '^LEDGER-HELD-SKIP run=7 stage=inner' "$LOG")" = 1 ] && [ "$(cnt '^RB-BELL PAUSE-RELEASED run=8 early premise-recovered$' "$LOG")" = 1 ] && [ -n "$(led 7)" ] && [ -z "$(led 8)" ] || { wfail "(i) held head row blocked the early release; calls=[$(tr '\n' '|' < "$FAKE_CALLS")] log=[$(cat "$LOG")]"; return 1; }
+  wreset; hins land "$CH" ''; ledger_add 7 "$P4" "$(iso_at $((NOW0-60)))" unledgered 1; sqlite3 "$DB" "update circuits set state='open', resets_at='2026-10-22T23:00:00+00:00'; insert into alarms values(1,'circuit:quota',NULL)"; jl circuit-skip $((NOW0-60)) 2026-10-22T23:00:00+00:00
+  ledger_pass   # (ii) a HELD row with the W1 circuit open and ext = EXT_MAX-1: rr_fail is never reached, the ext counter and expiry stay, no REDRIVE-DEFER
+  [ "$(led 7 | cut -f3,5)" = "$(printf '%s\t1' "$(iso_at $((NOW0-60)))")" ] && [ "$(cnt '^LEDGER-HELD-SKIP run=7' "$LOG")" = 1 ] && [ "$(cnt 'LEDGER-EXTEND\|PAUSE-OVERDUE\|REDRIVE-DEFER' "$LOG")" = 0 ] && [ ! -s "$DEFERLOG" ] && [ ! -s "$FAKE_CALLS" ] || { wfail "(ii) held row touched rr_fail/circuit counters; ledger=[$(led 7)] log=[$(cat "$LOG")]"; return 1; }
+  wreset; hins inner 'CTRL pause' ''; ledger_add 7 "$P4" "$(iso_at $((NOW0-60)))" unledgered 1; sqlite3 "$DB" "update circuits set state='open', resets_at='2026-10-22T23:00:00+00:00'; insert into alarms values(1,'circuit:quota',NULL)"; jl circuit-skip $((NOW0-60)) 2026-10-22T23:00:00+00:00
+  ledger_pass   # (ii) control: the SAME circuit with a non-held row does move the counter (1 -> 2), so the fixture can see the difference
+  [ "$(led 7 | cut -f5)" = 2 ] && [ "$(cnt '^LEDGER-EXTEND run=7 ext=2' "$LOG")" = 1 ] && [ ! -s "$FAKE_CALLS" ] || { wfail "(ii) control: an open circuit must extend a non-held row to ext=2; ledger=[$(led 7)] log=[$(cat "$LOG")]"; return 1; }
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at,paused_cause) values(7,'s1',NULL,'inner','$P4','CTRL pause')"; ledger_add 7 "$P4" "$(iso_at $((NOW0-60)))" unledgered 0; ob0=$(cat "$WP_STATE"/outbox-*.jsonl 2>/dev/null | wc -l); sim_expire
+  wpause 7 t; runs_to_1 t; revert t 2>/dev/null; release_run 7 "$P4" 0 0; release_run 7 "$P4" 0 1   # (iii) premise expired: no fleet write runs at ANY site and the fake decide records nothing
+  [ ! -s "$FAKE_CALLS" ] && [ ! -s "$FAKE_DECIDE_REC" ] && [ "$(cat "$WP_STATE"/outbox-*.jsonl 2>/dev/null | wc -l)" = "$ob0" ] && [ "$(cnt '^WP-DISARMED' "$LOG")" = 5 ] || { wfail "(iii) expired premise: calls=[$(tr '\n' '|' < "$FAKE_CALLS")] decide=[$(cat "$FAKE_DECIDE_REC")] log=[$(cat "$LOG")]"; return 1; }
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at,paused_cause) values(7,'s1',NULL,'inner','$P4','CTRL pause')"; rw_arm "$RWT/no-such-config.toml"
+  wpause 7 t   # (v) E1: the premise cmd cannot read its config (rc 2 = UNKNOWN): still ARMED, the pause runs and exactly one decide record lands
+  [ "$WP_VERDICT" = UNKNOWN ] && [ "$WP_ARMED" = 1 ] && [ "$(cnt '^wm-build run pause 7 ' "$FAKE_CALLS")" = 1 ] && [ "$(cnt '--target redbaron:7 ' "$FAKE_DECIDE_REC")" = 1 ] && [ "$(cnt '--via rb-reprice-watch --model none --kind guard' "$FAKE_DECIDE_REC")" = 1 ] && [ "$(cnt '--agent rb ' "$FAKE_DECIDE_REC")" = 1 ] || { wfail "(v) premise rc 2 must stay armed and write; verdict=$WP_VERDICT armed=$WP_ARMED calls=[$(tr '\n' '|' < "$FAKE_CALLS")] decide=[$(cat "$FAKE_DECIDE_REC")]"; return 1; }
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at,paused_cause) values(7,'s1',NULL,'inner','$P4','CTRL pause')"; printf '[daemon]\nhost = "redbaron"\nmax_runs = 3\n\n[cargo_jobs.mem_caps_gb]\ninner = 10.5\n' > "$RWT/gone.toml"; rw_arm "$RWT/gone.toml"
+  wpause 7 t   # (v-b) a premise that is really GONE (max_runs 3) blocks the write: rc 1 = GONE, nothing recorded
+  [ "$WP_VERDICT" = GONE ] && [ "$WP_ARMED" = 0 ] && [ ! -s "$FAKE_CALLS" ] && [ ! -s "$FAKE_DECIDE_REC" ] || { wfail "(v-b) premise GONE must disarm; verdict=$WP_VERDICT calls=[$(tr '\n' '|' < "$FAKE_CALLS")]"; return 1; }
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0+600)))" c 0; sim_expire
+  ledger_pass; nextpass; ledger_pass   # (vi) E2: gate down + 1 ledger row: one bell per ledger pass, status.json carries wp_disarmed_ledger=1
+  [ "$(cnt '^RB-BELL WP-DISARMED-LEDGER-NONEMPTY n=1$' "$LOG")" = 2 ] && [ "$(jq -r .wp_disarmed_ledger "$STATUS")" = 1 ] && [ ! -s "$FAKE_CALLS" ] || { wfail "(vi) disarmed-with-ledger bell/status; log=[$(cat "$LOG")] status=[$(cat "$STATUS")]"; return 1; }
+  wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0+600)))" c 0
+  ledger_pass   # (vi-b) armed: no bell, wp_disarmed_ledger=0
+  [ "$(cnt 'WP-DISARMED-LEDGER-NONEMPTY' "$LOG")" = 0 ] && [ "$(jq -r .wp_disarmed_ledger "$STATUS")" = 0 ] || { wfail "(vi-b) armed gate must not bell; log=[$(cat "$LOG")]"; return 1; }
+  sim_arm
+  rm -rf "$t"; echo "W1 G1-G6 ok W2 E1-E9 E4b I1 X1 S1 ok W4 V1-V17 ok RWH H1-H5 ok RWH3 i ii iii v vi ok"; }
 if [ "${1:-}" = "--circuit-gate" ]; then  # read-only W1 gate for wip-redrive.sh and the seat: prints "<ok|defer|unparsable> last_op=.. resets=.. why=..", exit 0 ok / 1 defer / 2 unparsable
   circuit_gate; rc=$?; echo "$CG_V last_op=$CG_OP resets=$CG_RESETS why=\"$CG_WHY\""; exit "$rc"; fi
 if [ "${1:-}" = "--selftest" ]; then
   load_conf
+  [ -r "$WP_LIB" ] || { echo "SELFTEST FAIL RWH3 shared lib not readable: $WP_LIB"; exit 1; }
+  RWT=$(mktemp -d) && [ -d "$RWT" ] || { echo "SELFTEST FAIL RWH3 mktemp"; exit 1; }   # RWH3: the lib's state, log and the fake wm-decide all live under this root; sim_arm / sim_expire re-arm the gate against a fixed premise file
+  export WP_STATE=$RWT/wp WP_LOG=$RWT/wp.log WP_GATE_TTL=30 WP_DECIDE_BIN=$RWT/decide.sh FAKE_DECIDE_REC=$RWT/decide.rec; : > "$FAKE_DECIDE_REC"; trap 'rm -rf -- "${RWT:?}"' EXIT
+  printf '#!/bin/bash\necho "$*" >> "$FAKE_DECIDE_REC"\n' > "$WP_DECIDE_BIN"; chmod +x "$WP_DECIDE_BIN"
+  printf '[daemon]\nhost = "redbaron"\nmax_runs = 2\n\n[cargo_jobs.mem_caps_gb]\ninner = 10.5\n' > "$RWT/premise.toml"
+  sim_arm(){ rw_arm "$RWT/premise.toml"; }; sim_expire(){ rw_arm "$RWT/premise.toml" "2020-01-01 00:00:00"; }; sim_arm
   # 12:22 PM case: swap 2.4 G, MemAvailable 19 G, PSI full avg60 1.6 -> NO pause (swap is not an input any more)
   [ -z "$(mem_bad 19230476 1.63)" ] && [ -z "$(mem_bad 12582912 10)" ] && [ -n "$(mem_bad 12000000 0)" ] && [ -n "$(mem_bad 20000000 10.5)" ] \
     && [ -n "$(ev max)" ] && [ "$(echo 7.29 | awk '{v=$1+3; printf "%.1f", (int(v*2)+(v*2>int(v*2)))/2}')" = "10.5" ] \
@@ -904,14 +968,19 @@ if [ "${1:-}" = "--selftest" ]; then
   t4r=$(t4_selftest) || { echo "$t4r"; exit 1; }
   t4rr=$(t4r_selftest) || { echo "$t4rr"; exit 1; }
   ww=$(w_selftest) || { echo "$ww"; exit 1; }
+  rm -rf -- "${RWT:?}"
   [ "$z" = 0 ] && [ "$one" = "1020 " ] && echo "SELFTEST PASS target_now=$(target) land+2gates->inners=0 +inner->[$one] $t4r $t4rr $ww" || { echo "SELFTEST FAIL inners: land+2gates=$z +inner=[$one]"; exit 1; }; exit 0; fi
 STEP0=$(sqlite3 "$DB" "select max(id) from steps"); MAX0=$(ev max); OOM0=$(ev oom_kill)
+DISARM_SEEN=; rw_arm "$CONFIG"   # RWH3: the premise is read from the real config.toml (local file only)
 load_conf; log "ARMED avail_min_kb=$MEM_AVAIL_MIN_KB psi_full60_max=$PSI_FULL_AVG60_MAX io_full60_max=$IO_FULL_AVG60_MAX t4_passes=$(t4_need) step0=$STEP0 max0=$MAX0 oom_kill0=$OOM0"
 t4r_load   # restore a persisted T4R watch after a restart (stale -> deleted); the --selftest path exits before this line
 while :; do
   hi=$(sqlite3 -separator ' ' "$DB" "select run_id, priced_peak_kb from steps where id>$STEP0 and priced_peak_kb > 7864320 limit 1")
-  expired && [ -n "$T4R_RUN" ] && t4r_note_expired
-  expired && { log "PREMISE EXPIRED ($EXPIRES): writes disarmed, watcher idle; re-arm = new PREMISE/EXPIRES + DECISION row"; status_write; sleep 3600; continue; }
+  if expired; then  # RWH3: wp_gate down (premise GONE, past EXPIRES, no lib): no trigger is evaluated, no fleet write runs; the ledger pass keeps status.json and the E2 bell alive
+    [ -z "$T4R_RUN" ] || t4r_note_expired
+    [ "$DISARM_SEEN" = "${WP_VERDICT:-}/${WP_DEFECT:-}" ] || { log "PREMISE DISARMED (verdict=${WP_VERDICT:-none} defect=${WP_DEFECT:--} expires=$EXPIRES): fleet writes disarmed, watcher idle; re-arm = new PREMISE/EXPIRES + DECISION row"; DISARM_SEEN="${WP_VERDICT:-}/${WP_DEFECT:-}"; }
+    ledger_pass; status_write; if [ "${WP_DEFECT:-}" = expired ]; then sleep 3600; else sleep 60; fi; continue; fi
+  DISARM_SEEN=
   [ -n "$hi" ] && { revert "T1 priced_peak_kb>7.5GiB run/kb=$hi"; STEP0=$(sqlite3 "$DB" "select max(id) from steps"); log "T1 re-armed step0=$STEP0"; }
   if [ "$(ev max)" != "$MAX0" ] || [ "$(ev oom_kill)" != "$OOM0" ]; then revert "T3 app.slice memory.events max $MAX0->$(ev max) oom_kill $OOM0->$(ev oom_kill) (five-whys due)"; exit 0; fi
   # 9:22 AM 10-20: EVERY run's driver unit is named wm-build-inner<id>-a whatever its stage, so the unit glob counted a land + 2 gates
