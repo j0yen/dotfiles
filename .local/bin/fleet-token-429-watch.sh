@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # fleet-token-429-watch.sh -- every 2 min on carbon (fleet-token-429-watch.timer): when the plan's usage limit has hit the fleet, rotate to the next account.
 # PREMISE: seat-tick's quota_wait_until is the fleet-wide limit signal
-# EXPIRES: 2026-11-06T23:59:59-08:00 (14 days from the commit date 2026-10-23). Past it the watcher logs `disarmed` and exits 0; re-arm = a reviewed edit of this line.
+# EXPIRES: 2026-11-06T00:00:00-07:00. Premise + expiry + the per-write decision row come from the shared watcher lib (.local/lib/watcher-premise.sh): wp_arm/wp_gate
+#   disarm the whole watcher past EXPIRES or when the premise command says GONE (it logs `disarmed` once and exits 0); re-arm = a reviewed edit of the wp_arm line.
+#   Premise command: ctl-tick.json (the seat-tick file this watcher reads) exists. WP_OWNER=aide (the wm-decide --agent).
 #   TRIGGER   (>= 2 seats of ctl rb r7 have now < quota_wait_until AND quota_account == token.json.account)
 #             OR (exactly 1 such seat AND a confirming haiku probe on the CURRENT token fails with a limit message),
 #             AND the earliest of those resets is more than 20 min away.
 #   CANDIDATE the next account in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/ring (ordered names, # comments) after the current one that has a store
 #             entry, skipping an account rotated away from < 6 h ago (floor) or whose rotations.log previous_reset_at is still in the future,
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
-#   ACTION    fleet-token-rotate.sh <candidate> --by fleet-token-429-watch --trigger 429 --why "<the evidence>" (it records the wm-decide row, bells, starts the seat ticks).
+#   ACTION    wp_gate && wp_emit_write rotate ... && fleet-token-rotate.sh <candidate> --by fleet-token-429-watch --trigger 429 --why "<the evidence>" (it bells and starts the seat ticks).
+#             ONE wm-decide row per watcher rotation: the lib's (pre-write, premise-stamped, outbox first); rotate's own row is switched off for this call
+#             (FLEET_TOKEN_RECORD_CMD=true). A hand or schedule rotation still gets rotate's row.
 #   NO CANDIDATE -> ALARM at most once per 30 min. STORE AGE: ALARM once per day per store entry older than FLEET_TOKEN_STORE_MAX_DAYS (default 30).
 #   The probe runs `claude -p --model claude-haiku-5-5 'reply ok'` with the current account's STORE token in that call's environment only
 #   (else the inherited CLAUDE_CODE_OAUTH_TOKEN); only "failed AND the output is a limit line" counts, the output is never logged.
-# Env (injectable): FLEET_TOKEN_PROBE_CMD FLEET_TOKEN_ROTATE_CMD FLEET_TOKEN_STORE_MAX_DAYS XDG_CONFIG_HOME FLEET_DASH_DIR FLEET_TOKEN_STATE_DIR; FLEET_TOKEN_SELFTEST=1 + FLEET_TOKEN_NOW_EPOCH (fake clock).
+# Env (injectable): FLEET_TOKEN_PROBE_CMD FLEET_TOKEN_ROTATE_CMD FLEET_TOKEN_STORE_MAX_DAYS XDG_CONFIG_HOME FLEET_DASH_DIR FLEET_TOKEN_STATE_DIR WP_LIB WP_STATE WP_DECIDE_BIN;
+#   FLEET_TOKEN_SELFTEST=1 + FLEET_TOKEN_NOW_EPOCH (fake clock) + FLEET_TOKEN_429_EXPIRES (the lib reads the REAL clock, so the selftest moves EXPIRES instead).
 # Exit 0 always except usage (64) and a rotate failure it could not absorb (nothing: failures are stamped and ALARMed by rotate).
 set -euo pipefail
 set +x
@@ -21,7 +26,12 @@ set +x
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 PREMISE="seat-tick's quota_wait_until is the fleet-wide limit signal"
-EXPIRES="2026-11-06T23:59:59-08:00"
+EXPIRES="2026-11-06T00:00:00-07:00"
+[ "${FLEET_TOKEN_SELFTEST:-}" != 1 ] || EXPIRES="${FLEET_TOKEN_429_EXPIRES:-$EXPIRES}"
+# the shared watcher lib; no lib = disarmed, never armed-by-default
+WP_LIB="${WP_LIB:-$(dirname "$SELF")/../lib/watcher-premise.sh}"
+if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; fi
+export WP_OWNER=aide
 MIN_AWAY=1200      # the earliest reset must be more than 20 min away
 FLOOR=21600        # never rotate back to an account rotated away from < 6 h ago
 FAIL_BACKOFF=1800  # a candidate whose rotation failed is skipped for 30 min
@@ -81,12 +91,15 @@ skip_reason() {
 }
 
 watch() {
-  local now exp
-  now="$(ft_now)"; exp="$(date -d "$EXPIRES" +%s)"
+  local now dmsg
+  now="$(ft_now)"
   mkdir -p "$FT_STATE"
   exec 9>>"$FT_STATE/429-watch.lock"; flock -n 9 || exit 0
-  if [ "$now" -gt "$exp" ]; then
-    [ "$(tail -n1 "$FT_STATE/429-watch.log" 2>/dev/null | cut -d' ' -f2-)" = "disarmed (premise: $PREMISE; expired $EXPIRES)" ] || wlog "disarmed (premise: $PREMISE; expired $EXPIRES)"
+  wp_arm fleet-token-429-watch "test -r '$FT_DASH/ctl-tick.json'" "$EXPIRES" "$PREMISE" || true
+  if ! wp_gate 2>/dev/null; then
+    if [ "${WP_DEFECT:-}" = expired ]; then dmsg="disarmed (premise: $PREMISE; expired $EXPIRES)"
+    else dmsg="disarmed (premise: $PREMISE; verdict=${WP_VERDICT:-?} defect=${WP_DEFECT:--})"; fi
+    [ "$(tail -n1 "$FT_STATE/429-watch.log" 2>/dev/null | cut -d' ' -f2-)" = "$dmsg" ] || wlog "$dmsg"
     exit 0
   fi
   store_age_check
@@ -140,8 +153,13 @@ watch() {
   fi
   wlog "TRIGGER: $evidence -> rotating to $cand"
   local rc=0
-  ${FLEET_TOKEN_ROTATE_CMD:-"$(dirname "$SELF")/fleet-token-rotate.sh"} "$cand" --by fleet-token-429-watch --trigger 429 --why "429 trigger: $evidence" --evidence "premise: $PREMISE; ring order from $cur" || rc=$?
-  if [ "$rc" != 0 ]; then printf '%s\n' "$now" >"$FT_STATE/fail-$cand.stamp"; wlog "rotate to $cand FAILED rc=$rc (candidate skipped for 30 min; rotate raised its own ALARM)"; fi
+  if wp_gate && wp_emit_write rotate "carbon token.json account=$cur" "TOKEN ROTATE to $cand (429, by fleet-token-429-watch)" \
+      "429 trigger: $evidence; ring order from $cur" "fleet-token-rotate.sh $cur --by <who> --trigger hand (the store keeps both entries; daemons and adopted units hold the old token until restarted)"; then
+    FLEET_TOKEN_RECORD_CMD=true ${FLEET_TOKEN_ROTATE_CMD:-"$(dirname "$SELF")/fleet-token-rotate.sh"} "$cand" --by fleet-token-429-watch --trigger 429 --why "429 trigger: $evidence" --evidence "premise: $PREMISE; ring order from $cur" || rc=$?
+    if [ "$rc" != 0 ]; then printf '%s\n' "$now" >"$FT_STATE/fail-$cand.stamp"; wlog "rotate to $cand FAILED rc=$rc (candidate skipped for 30 min; rotate raised its own ALARM)"; fi
+  else
+    wlog "rotate to $cand NOT done: the watcher lib refused the write (disarmed or the decision row could not be appended)"
+  fi
   exit 0
 }
 
@@ -151,6 +169,8 @@ selftest() {
     local o="$T/out" e="$T/err" rc NOW=1790000000 A B Cc
     export FLEET_TOKEN_NOW_EPOCH=$NOW
     export FLEET_TOKEN_ROTATE_CMD="$(dirname "$SELF")/fleet-token-rotate.sh"
+    # the lib: throwaway state, the fake record cmd standing in for wm-decide, a future EXPIRES (the lib reads the REAL clock)
+    export WP_STATE="$T/home/.local/state/watcher-premise" WP_DECIDE_BIN="$T/fakes/record" FLEET_TOKEN_429_EXPIRES="$(date -d '+1 day' -Is)"
     cat >"$T/fakes/probe" <<'EOF2'
 #!/usr/bin/env bash
 set +x
@@ -177,7 +197,7 @@ EOF2
         else printf '{"quota_wait_until":%s,"quota_account":"%s"}\n' "$((NOW + v))" "$acct" >"$FT_DASH/$s-tick.json"; fi
       done
     }
-    reset() { rm -f "$FAKE_LOG_DIR"/*.log "$FT_ROTLOG" "$FT_STATE"/*.stamp "$FT_DASH/ctl-events.log"; "$(dirname "$SELF")/fleet-token-store.sh" current acctA >/dev/null; printf '{"account":"acctA","placed_at":null,"by":"hand","trigger":"seed"}\n' >"$FT_TOKJSON"; ft_st_store acctB "$c-2"; ft_st_store acctC "$c-3"; ft_st_store acctD "$c-4"; unset FAKE_PROBE; }
+    reset() { rm -rf "$WP_STATE"; rm -f "$FAKE_LOG_DIR"/*.log "$FT_ROTLOG" "$FT_STATE"/*.stamp "$FT_DASH/ctl-events.log"; "$(dirname "$SELF")/fleet-token-store.sh" current acctA >/dev/null; printf '{"account":"acctA","placed_at":null,"by":"hand","trigger":"seed"}\n' >"$FT_TOKJSON"; ft_st_store acctB "$c-2"; ft_st_store acctC "$c-3"; ft_st_store acctD "$c-4"; unset FAKE_PROBE; }
     runw() { "$SELF" >"$o" 2>"$e"; }
 
     # 1. nothing limited / the wait is already over / limited under ANOTHER account
@@ -196,13 +216,17 @@ EOF2
     [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ]; ft_st_chk "1 seat + a probe that fails WITHOUT a limit message: nothing rotates" $?
     reset; seats - 7200 -; FAKE_PROBE=limit runw; rc=$?
     [ "$rc" = 0 ] && [ "$(tokj .account)" = acctB ] && [ "$(tokj .trigger)" = 429 ] && [ "$(tokj .by)" = fleet-token-429-watch ] && [ "$(wc -l <"$FAKE_LOG_DIR/place.log")" = 1 ]; ft_st_chk "1 seat + a probe failing with a limit message: rotates to the next ring entry (acctB)" $?
-    fl record | grep -q -- '--why 429 trigger: seat rb is quota-waiting on account acctA until .* a haiku probe on the current token failed with a limit message --evidence'; ft_st_chk "the row's --why carries the probe evidence" $?
+    fl record | grep -q -- '--evidence 429 trigger: seat rb is quota-waiting on account acctA until .* a haiku probe on the current token failed with a limit message; ring order from acctA'; ft_st_chk "the row's --evidence carries the probe evidence" $?
+    [ "$(wc -l <"$FAKE_LOG_DIR/record.log")" = 1 ] && fl record | grep -q '^record --agent aide --via fleet-token-429-watch --model none --kind guard --what TOKEN ROTATE to acctB (429, by fleet-token-429-watch) --why guard write; premise: seat-tick.s quota_wait_until' \
+      && fl record | grep -q -- '--tag by=joe-[0-9]*+fleet-token-429-watch'; ft_st_chk "exactly ONE decision row per rotation (the lib's: agent aide, via the watcher, by= tag; rotate's own row is off for this call)" $?
+    [ "$(wc -l <"$WP_STATE"/outbox-*.jsonl)" = 2 ] && grep -q '"kind":"rotate"' "$WP_STATE"/outbox-*.jsonl && grep -q '"owner":"aide"' "$WP_STATE"/outbox-*.jsonl && grep -c '"ev":"recorded"' "$WP_STATE"/outbox-*.jsonl | grep -q 1 \
+      && [ "$(cut -f4,6 "$WP_STATE/fleet-token-429-watch.tsv")" = "$(printf 'HOLDS\t1')" ]; ft_st_chk "the outbox holds the write row + its recorded marker; the lib status line says HOLDS armed" $?
     [ "$(wc -l <"$FAKE_LOG_DIR/bell.log")" = 3 ] && [ "$(wc -l <"$FAKE_LOG_DIR/systemctl.log")" = 1 ]; ft_st_chk "the rotation belled 3 seats and started the seat ticks" $?
 
     # 3. two seats, next ring entry WITH a store file, cooldowns
     reset; seats 7200 7200 -; rm -f "$FT_STORE/acctB"; runw
     [ "$(tokj .account)" = acctC ] && [ -z "$(fl probe)" ]; ft_st_chk "2 seats, no probe: rotates to the next ring entry that has a store file (acctB missing -> acctC)" $?
-    fl record | grep -q -- '--why 429 trigger: seats ctl rb are quota-waiting on account acctA until '; ft_st_chk "the row's --why names the seats" $?
+    fl record | grep -q -- '--evidence 429 trigger: seats ctl rb are quota-waiting on account acctA until '; ft_st_chk "the row's --evidence names the seats" $?
     reset; seats 7200 7200 -
     printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=null\n' "$(ft_iso)" "$((NOW - 3600))" >"$FT_ROTLOG"
     printf '%s | ts=%s account=acctA previous=acctC by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 36000))" "$((NOW + 3600))" >>"$FT_ROTLOG"
@@ -236,12 +260,16 @@ EOF2
     reset; seats 7200 7200 -; rm -f "$FT_TOKJSON"; runw; runw
     [ -z "$(fl place)" ] && [ "$(grep -c 'is missing, so the account in use is unknown' "$FT_DASH/ctl-events.log")" = 1 ]; ft_st_chk "a quota-wait with no token.json: no rotation, one ALARM to seed it" $?
 
-    # 7. expired premise
-    export FLEET_TOKEN_NOW_EPOCH=$(date -d "2026-11-07T00:00:00-08:00" +%s)
-    reset; ( NOW=$FLEET_TOKEN_NOW_EPOCH; seats 7200 7200 - ); runw; rc=$?
-    [ "$rc" = 0 ] && [ -z "$(fl place)" ] && grep -q 'disarmed (premise: seat-tick.s quota_wait_until is the fleet-wide limit signal' "$o"; ft_st_chk "past EXPIRES: logs 'disarmed', exits 0, rotates nothing" $?
+    # 7. expired premise (the lib reads the REAL clock: move EXPIRES into the past) / premise command GONE / decision row cannot be appended
+    export FLEET_TOKEN_429_EXPIRES="2026-09-01T00:00:00-07:00"
+    reset; seats 7200 7200 -; runw; rc=$?
+    [ "$rc" = 0 ] && [ -z "$(fl place)" ] && grep -q 'disarmed (premise: seat-tick.s quota_wait_until is the fleet-wide limit signal' "$o" && [ "$(cut -f10 "$WP_STATE/fleet-token-429-watch.tsv")" = expired ]; ft_st_chk "past EXPIRES (lib path): logs 'disarmed', status defect=expired, exits 0, rotates nothing" $?
     runw; [ "$(grep -c disarmed "$FT_STATE/429-watch.log")" = 1 ]; ft_st_chk "disarmed is logged once, not every 2 minutes" $?
-    export FLEET_TOKEN_NOW_EPOCH=$NOW
+    export FLEET_TOKEN_429_EXPIRES="$(date -d '+1 day' -Is)"
+    reset; seats 7200 7200 -; rm -f "$FT_DASH/ctl-tick.json"; runw; rc=$?
+    [ "$rc" = 0 ] && [ -z "$(fl place)" ] && [ -z "$(fl record)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'disarmed (premise: .* verdict=GONE' "$o" && [ "$(cut -f4,6 "$WP_STATE/fleet-token-429-watch.tsv")" = "$(printf 'GONE\t0')" ]; ft_st_chk "premise command GONE (ctl-tick.json missing): disarmed, no rotation, no row" $?
+    reset; seats 7200 7200 -; mkdir -p "$WP_STATE"; mkdir "$WP_STATE/outbox-$(date +%Y%m%d).jsonl"; runw; rc=$?
+    [ "$rc" = 0 ] && [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'rotate to acctB NOT done: the watcher lib refused the write' "$FT_STATE/429-watch.log"; ft_st_chk "decision row cannot be appended: the write is BLOCKED (no rotation)" $?
 
     # 8. store age: one ALARM per day per entry
     reset; seats - - -

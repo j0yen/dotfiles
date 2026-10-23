@@ -13,7 +13,7 @@
 # Every write site is   wp_gate && wp_emit_write ... && <the write>      (or: if wp_gate && wp_emit_write ...; then <the write>; fi)
 # PREMISE_CMD runs in a fresh `bash -c` (exported env only), 20 s timeout: rc 0 = HOLDS, rc 1 = GONE, anything else = UNKNOWN (E3).
 # Env: WP_STATE (default ~/.local/state/watcher-premise)  WP_GATE_TTL (s, default 5)  WP_PREMISE_TIMEOUT (default 20)  WP_UNIT  WP_LOG
-#      WP_OWNER (r7|rb, the wm-decide --agent, default r7)  WP_DECIDE_BIN (default wm-decide)  WP_DECIDE_KIND (default guard)
+#      WP_OWNER (r7|rb|aide, the wm-decide --agent, default r7)  WP_DECIDE_BIN (default wm-decide)  WP_DECIDE_KIND (default guard)
 #      WP_GUARD_NAME (by= name when it differs from NAME)
 
 WP_LIB_PATH=${BASH_SOURCE[0]}
@@ -194,6 +194,8 @@ r=json.loads(open(sys.argv[1]).readline()); print(sorted(r)==sorted([\"ev\",\"id
   mv "$T/bin/wm-decide.stub" "$T/bin/wm-decide"
   BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'" "pt"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r"; echo "rc=$? lines=$(wc -l < $WP_STATE/outbox-*.jsonl) rec=$(grep -c "\"ev\":\"recorded\"" $WP_STATE/outbox-*.jsonl) kind=$(grep -c -- "--kind guard" $HOME/decide.argv) agent=$(grep -c -- "--agent r7 --via t1" $HOME/decide.argv) tag=$(grep -c -- "--tag by=joe-" $HOME/decide.argv)"'
   _st_ok decide-ok "rc=0 lines=2 rec=1 kind=1 agent=1 tag=1"
+  ENVV="WP_OWNER=aide" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write rotate "host=h" "w" "e" "r"; echo "rc=$? agent=$(grep -c -- "--agent aide --via t1" $HOME/decide.argv) r7=$(grep -c -- "--agent r7" $HOME/decide.argv) owner=$(grep -c "\"owner\":\"aide\"" $WP_STATE/outbox-*.jsonl)"'
+  _st_ok owner-aide "rc=0 agent=1 r7=0 owner=1"
   ENVV="WP_STUB_RC=2" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r"; echo "rc=$? lines=$(wc -l < $WP_STATE/outbox-*.jsonl) rec=$(grep -c "\"ev\":\"recorded\"" $WP_STATE/outbox-*.jsonl) dec=$(grep -c "\"decide\":\"attempt\"" $WP_STATE/outbox-*.jsonl)"'
   _st_ok decide-fails-write-proceeds "rc=0 lines=1 rec=0 dec=1"
   ENVV="WP_DECIDE_BIN=nonexistent-wm-decide" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r"; echo "rc=$? dec=$(grep -c "\"decide\":\"none\"" $WP_STATE/outbox-*.jsonl)"'
