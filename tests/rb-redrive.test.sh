@@ -87,5 +87,32 @@ for b in ssh wm-decide wm-build; do
   if [ -s "$R/logs/$b.log" ]; then bad "(b) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(b) fake $b log empty"; fi
 done
 
+# --- rrdfc2: the two rssh guards, each reached with the DECIDE guard satisfied (a stub decide under $R), so rssh is the guard that fires ---
+# sigma's rssh runs in a pipeline subshell, so main can continue past it: the stub decide IS invoked (logged), and the call-57 rssh lands the exit-71 -> "REFUSED by the daemon" rc 4.
+printf '#!/bin/bash\nprintf "%%s\\n" "$0 $*" >> "%s/logs/stubdecide.log"\necho d-20261023-060000-rb-abcd\n' "$R" > "$R/stubdecide"; chmod +x "$R/stubdecide"
+mkdir -p "$R/emptyfix"
+
+# (c) FIX_SSH_DIR empty -> the :18 guard
+for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
+cout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR= RB_REDRIVE_DECIDE="$R/stubdecide" bash "$script" 1039 --from land --why t 2>&1); crc=$?
+printf '%s\n' "$cout" > "$R/c.out"
+[ "$crc" = 4 ] && pass "(c) FIX_SSH_DIR-empty run rc 4 (the subshell's 71 -> REFUSED by the daemon)" || bad "(c) rc=$crc (expected 4): $cout"
+grep -q 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset' <<<"$cout" && pass "(c) output: $(grep -m1 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset' <<<"$cout")" || bad "(c) no 'REFUSED selftest-unhermetic: FIX_SSH_DIR unset': $cout"
+for b in ssh wm-decide wm-build; do
+  if [ -s "$R/logs/$b.log" ]; then bad "(c) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(c) fake $b log empty"; fi
+done
+echo "INFO (c) stub decide invoked $(wc -l < "$R/logs/stubdecide.log") time(s) before the ssh refusal (main runs past sigma's subshell exit)"
+
+# (d) FIX_SSH_DIR an EMPTY dir -> the :20 guard; the .n counter lives in the sigma/rssh subshells, so a repeating "fixture 1 missing" is expected
+for b in ssh wm-decide wm-build stubdecide; do : > "$R/logs/$b.log"; done
+dout=$(RB_REDRIVE_SELFTEST=1 FIX_SSH_DIR="$R/emptyfix" RB_REDRIVE_DECIDE="$R/stubdecide" bash "$script" 1039 --from land --why t 2>&1); drc=$?
+printf '%s\n' "$dout" > "$R/d.out"
+[ "$drc" != 0 ] && pass "(d) empty-fixture-dir run rc != 0 (rc=$drc)" || bad "(d) rc 0: it failed OPEN: $dout"
+grep -qE 'REFUSED selftest-unhermetic: fixture [0-9]+ missing' <<<"$dout" && pass "(d) output: $(grep -m1 -E 'REFUSED selftest-unhermetic: fixture [0-9]+ missing' <<<"$dout")" || bad "(d) no 'REFUSED selftest-unhermetic: fixture N missing': $dout"
+for b in ssh wm-decide wm-build; do
+  if [ -s "$R/logs/$b.log" ]; then bad "(d) fake $b was CALLED: $(head -c 300 "$R/logs/$b.log")"; else pass "(d) fake $b log empty"; fi
+done
+echo "INFO (d) stub decide invoked $(wc -l < "$R/logs/stubdecide.log") time(s)"
+
 if [ "$fail" = 0 ]; then echo "rb-redrive.test: PASS"; else echo "rb-redrive.test: FAIL"; fi
 exit "$fail"
