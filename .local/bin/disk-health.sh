@@ -50,7 +50,7 @@ KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I
 USB_DTYPES = ("sntasmedia", "sntrealtek", "sat", "sntjmicron")   # tried after the plain call; the order is the coordinator's (RedBaron 0781:55af: sat fails, snt* pass)
 USB_RESET_RE = re.compile(r"\busb [\d.-]+: reset (?:low|full|high|super)-?speed\+? USB", re.I)
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "zfs", "jfs", "reiserfs"}
-# controller ruling f8b9: the 85 % hand-targets prune line must be a mechanism, not prose. Keep in step with fleet-dash disk_health.py BYTES_*_PCT.
+# controller ruling f8b9: the 85 % hand-targets prune line must be a mechanism, not prose. Drift-guarded against fleet-dash disk_health.py by tests/disk-health-thresholds-drift.test.sh.
 BYTES_YELLOW_PCT = 85
 BYTES_RED_PCT = 92
 SKIP_DEV = re.compile(r"^(loop|zram|ram|sr|fd|md|dm-)")
