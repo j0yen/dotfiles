@@ -7,16 +7,16 @@ ocard_setup
 fd="$work/fleet-status.json"
 cat >"$fd" <<'JSON'
 {"decisions":{"per_agent":{
-  "rb":{"n20":20,"corrected20":8,"n20_all":20,"corrected_all":8,"share":0.4,"upgrade_flag":true,"held_until":"2026-10-26","n_current":20,"current_model":"claude-opus-5-5","current_since":"2026-10-21T19:02:00-07:00","status":"measured"},
+  "rb":{"n20":20,"corrected20":8,"n20_all":20,"corrected_all":8,"share":0.4,"upgrade_flag":true,"held_until":"2026-10-26","n_current":20,"current_model":"claude-opus-5-5","current_since":"2026-10-21T19:02:00-07:00","status":"measured","judged":9,"judged_text":"unmeasured (judged 9/20)"},
   "rb/verifier":{"n20":13,"corrected20":6,"share":0.462},
   "r7":{"n20":20,"corrected20":5,"share":0.25,"upgrade_flag":null,"n_current":2,"current_model":"claude-opus-5-5","current_since":"2026-10-22T12:04:00-07:00","status":"unmeasured"},
-  "controller":{"n20":20,"corrected20":9,"share":0.45,"upgrade_flag":true,"hold_expired":true,"n_current":20,"current_model":"claude-fable-5-1","current_since":"2026-10-22T11:53:00-07:00","status":"measured"},
+  "controller":{"n20":20,"corrected20":9,"share":0.45,"upgrade_flag":true,"hold_expired":true,"judged":12,"judged_text":null,"n_current":20,"current_model":"claude-fable-5-1","current_since":"2026-10-22T11:53:00-07:00","status":"measured"},
   "coder:x":{"n20":3,"corrected20":1,"share":0.333}}},
  "alarms":[{"text":"seat-upgrade-held rb until 2026-10-26"},{"text":"seat-hold-expired controller 0.45 hold expired, flag up, awaiting Joe"},{"text":"verifier-rate rb/verifier 6/13 0.462"},{"text":"chain-red x"}]}
 JSON
 export OPERATOR_FLEET_STATUS="$fd" TZ=America/Los_Angeles
 out="$("$CARD")"; assert_eq "$?" "0" "card exits 0"
-assert_contains "$out" "  rb 8/20 0.4 (20 on claude-opus-5-5 since 7:02 pm) · held until 2026-10-26" "held seat, current-model run"
+assert_contains "$out" "  rb 8/20 unmeasured (judged 9/20) (20 on claude-opus-5-5 since 7:02 pm) · held until 2026-10-26" "judged < MIN_JUDGED: unmeasured (judged k/n) replaces the share; hold and current-model run still print"
 assert_contains "$out" "  r7 5/20 0.25 at threshold (2 on claude-opus-5-5 since 12:04 pm, unmeasured until 20)" "at threshold + unmeasured current-model note"
 assert_contains "$out" "  controller 9/20 0.45 (20 on claude-fable-5-1 since 11:53 am) · hold expired, flag up, awaiting Joe" "expired hold with the flag up"
 assert_contains "$out" "  seat-upgrade-held rb until 2026-10-26" "seat-upgrade-held alarm printed"
