@@ -448,6 +448,11 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/cargo-block-carbon.sh"
           },
           {
@@ -463,6 +468,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/output-cap.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
+            "timeout": 5
           }
         ]
       },
