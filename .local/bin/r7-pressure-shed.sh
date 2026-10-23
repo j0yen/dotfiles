@@ -27,6 +27,10 @@ read_hot() {
   siso=$(( ((si2-si1)+(so2-so1))*4/1024/5 ))
   fi
   hot=0; { [ "$avail" -lt 4 ] || [ "$full10" -gt 20 ] || [ "$some10" -gt 40 ] || [ "${swapg:-0}" -gt 24 ] || { [ "$siso" -gt 20 ] && [ "$avail" -lt 8 ]; }; } && hot=1
+  # bec8 (CTRL 10-22 10:35 PM): name every clause that fired, with its value, for the row
+  FIRED=""; [ "$avail" -lt 4 ] && FIRED="$FIRED avail=${avail}G<4G"; [ "$full10" -gt 20 ] && FIRED="$FIRED full10=$full10>20"
+  [ "$some10" -gt 40 ] && FIRED="$FIRED some10=$some10>40"; [ "${swapg:-0}" -gt 24 ] && FIRED="$FIRED swapT7=${swapg}G>24G"
+  { [ "$siso" -gt 20 ] && [ "$avail" -lt 8 ]; } && FIRED="$FIRED siso=${siso}MBps>20+avail=${avail}G<8G"; FIRED=${FIRED# }
 }
 GUARD=${R7_SHED_GUARD:-$HOME/.local/bin/ryzen7-pressure-guard.sh}
 DROPF=$HOME/.local/state/ryzen7-pressure-guard.drop; CALMF=$HOME/.local/state/ryzen7-pressure-guard.calm
@@ -66,7 +70,7 @@ prow_row() { # SCRIPT OLD NEW WHY: call right after a limits-guard set. Never fa
     gl=$(grep "limits-set key=max_runs value=$new " "$GLOG" 2>/dev/null | tail -1)
     gts=${gl%% *}; gep=$(date -d "$gts" +%s 2>/dev/null || echo 0)
     if [ -z "$gl" ] || [ $(( $(date +%s) - gep )) -gt 300 ]; then prow_say "PROW-SKIP $scr max_runs $old->$new: no fresh limits-set value=$new line in limits-guard.log (set not applied), no row"; exit 0; fi
-    what="$scr: max_runs $old->$new"; ev="ryzen7 limits-guard.log line ts $gts: limits-set key=max_runs value=$new"; rev="max_runs $old"
+    what="$scr: max_runs $old->$new${FIRED:+ (fired: $FIRED)}"; ev="ryzen7 limits-guard.log line ts $gts: limits-set key=max_runs value=$new"; rev="max_runs $old"
     rcmd='export PATH=$HOME/.local/bin:$PATH; wm-decide record'
     for a in --agent r7 --via "$scr" --kind limit --target host:ryzen7 --key max_runs --expect "$new" --what "$what" --why "$why" --evidence "$ev" --reverse-text "$rev" --tag "by=joe-$(date +%Y%m%d)+${scr%.sh}"; do rcmd="$rcmd $(printf '%q' "$a")"; done
     out=$(timeout 20s ssh -o BatchMode=yes -o ConnectTimeout=10 carbon "$rcmd" 2>&1); rc=$?
@@ -169,7 +173,7 @@ S
   shp() { HOME=$T SH_SELFTEST=1 R7_SHED_GUARD="$T/.local/bin/ryzen7-pressure-guard.sh" PATH="$T/.local/bin:$PATH" "$@" bash "$self" > "$T/out" 2>&1 || true; }
   lines() { if [ -e "$1" ]; then grep -c . "$1" || true; else echo 0; fi; }
   mkp 3; shp "${SPIKE[@]}"
-  ok "$(cur)/$(lines "$T/set.calls")/$(lines "$T/wmd.calls")/$(grep -cF '|--kind|limit|--target|host:ryzen7|--key|max_runs|--expect|1|' "$T/wmd.calls")/$(grep -cF 'r7-pressure-shed.sh: max_runs 3->1|' "$T/wmd.calls")/$(grep -cF '|--reverse-text|max_runs 3|' "$T/wmd.calls")/$([ -s "$T/.local/state/r7-seat/pressure-last-shed" ] && echo stamp)/$([ -e "$T/.local/state/r7-seat/pending-decisions.jsonl" ] && echo pend || echo nopend)/$(grep -c '^PROW-ROW d-' "$T/out")" "1/1/1/1/1/1/stamp/nopend/1" "prow-a:drop-one-row"; rm -rf "$T"
+  ok "$(cur)/$(lines "$T/set.calls")/$(lines "$T/wmd.calls")/$(grep -cF '|--kind|limit|--target|host:ryzen7|--key|max_runs|--expect|1|' "$T/wmd.calls")/$(grep -cF 'r7-pressure-shed.sh: max_runs 3->1 (fired: full10=21>20 siso=639MBps>20+avail=7G<8G)|' "$T/wmd.calls")$(grep -cF 'restore: guard re-raises' "$T/wmd.calls")/$(grep -cF '|--reverse-text|max_runs 3|' "$T/wmd.calls")/$([ -s "$T/.local/state/r7-seat/pressure-last-shed" ] && echo stamp)/$([ -e "$T/.local/state/r7-seat/pending-decisions.jsonl" ] && echo pend || echo nopend)/$(grep -c '^PROW-ROW d-' "$T/out")" "1/1/1/1/11/1/stamp/nopend/1" "prow-a:drop-one-row"; rm -rf "$T"
   mkp 3; touch "$T/ssh.fail"; shp "${SPIKE[@]}"
   ok "$(cur)/$(lines "$T/set.calls")/$(lines "$T/.local/state/r7-seat/pending-decisions.jsonl")/$(python3 -I -c 'import json,sys; d=json.loads(open(sys.argv[1]).readline()); print(d["kind"],d["expect"],d["reverse_text"].replace(" ","_"),d["rc"])' "$T/.local/state/r7-seat/pending-decisions.jsonl")/$(grep -c '^PROW-PENDING 1' "$T/out")" "1/1/1/limit 1 max_runs_3 255/1" "prow-b:ssh-fail-pending-set-applied"; rm -rf "$T"
   mkp 3; touch "$T/wmd.reject"; shp "${SPIKE[@]}"
@@ -219,12 +223,12 @@ if [ "${cur:-1}" -gt 1 ] && [ "$DRY" != 1 ]; then
     out=$(wm-build-limits-guard set max_runs=1 --by "joe-$(date +%Y%m%d)+r7-pressure-shed" "$TAG" 2>&1 | tail -1); wm-build-limits-guard enforce >/dev/null 2>&1 || true
     prow_stamp
     log "DROPPED max_runs ${cur}->1 guard-owned (ceiling ${from:-$cur}; guard re-raises after 10 min quiet + 2 calm reads/step) ($out)"
-    prow_row r7-pressure-shed.sh "$cur" 1 "shed HOT avail=${avail}G full10=$full10 some10=$some10 swapT7=${swapg}G siso=${siso}MBps (HOT = avail<4G | full10>20 | some10>40 | swapT7>24G | siso>20MBps with avail<8G)"
+    prow_row r7-pressure-shed.sh "$cur" 1 "shed HOT fired=[${FIRED}] (all: avail=${avail}G full10=$full10 some10=$some10 swapT7=${swapg}G siso=${siso}MBps; HOT = avail<4G | full10>20 | some10>40 | swapT7>24G | siso>20MBps with avail<8G); restore: guard re-raises +1/step after HOLD_MIN=${HOLD_MIN} min since this shed (prow_hold, shared by shed + guard, so the guard cannot raise while a shed is fresh) + 10 min quiet + 2 calm reads/step, up to the limits.lock ceiling"
   else
     out=$(wm-build-limits-guard set max_runs=1 --by "joe-$(date +%Y%m%d)+r7-pressure-shed" "STOP WAITING FOR MY APPROVAL." 2>&1 | tail -1); wm-build-limits-guard enforce >/dev/null 2>&1 || true
     prow_stamp
     log "DROPPED max_runs ${cur}->1 shed-drop-unowned (no TAG in $GUARD; the guard will NOT re-raise — seat restores) ($out)"
-    prow_row r7-pressure-shed.sh "$cur" 1 "shed HOT avail=${avail}G full10=$full10 some10=$some10 swapT7=${swapg}G siso=${siso}MBps (unowned drop: no TAG in the guard)"
+    prow_row r7-pressure-shed.sh "$cur" 1 "shed HOT fired=[${FIRED}] (all: avail=${avail}G full10=$full10 some10=$some10 swapT7=${swapg}G siso=${siso}MBps; unowned drop: no TAG in the guard, the guard will NOT re-raise; restore = seat limits-guard set)"
   fi
 fi
 [ -n "${SH_SELFTEST:-}" ] && exit 0
