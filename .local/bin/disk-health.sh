@@ -13,7 +13,10 @@
 #
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
 #        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot, kernel_io_last,
-#        usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct}, errors:[...]}
+#        usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct},
+#        mounts:[{mount, fs, bytes_pct, inode_pct, bytes_level: ok|yellow|red}] (every real filesystem + tmpfs /tmp),
+#        max_bytes_level: ok|yellow|red (the worst mount), errors:[...]}
+#   bytes_level: yellow at BYTES_YELLOW_PCT (85), red at BYTES_RED_PCT (92); fleet-dash disk_health.py raises the same thresholds as alarms.
 #   source: smartctl | smartctl:<dtype> | nvme-cli | nvme-cli+smartctl[:<dtype>] | needs-sudo | no-smartctl | error
 #           <dtype> = the smartctl `-d` type that answered for a USB bridge (sntasmedia | sntrealtek | sat | sntjmicron)
 #   USB bridges (the SSDs are NVMe behind a bridge; `-d sat` fails on them): smartctl is tried plain, then -d sntasmedia, sntrealtek, sat,
@@ -47,6 +50,9 @@ KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I
 USB_DTYPES = ("sntasmedia", "sntrealtek", "sat", "sntjmicron")   # tried after the plain call; the order is the coordinator's (RedBaron 0781:55af: sat fails, snt* pass)
 USB_RESET_RE = re.compile(r"\busb [\d.-]+: reset (?:low|full|high|super)-?speed\+? USB", re.I)
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "zfs", "jfs", "reiserfs"}
+# controller ruling f8b9: the 85 % hand-targets prune line must be a mechanism, not prose. Keep in step with fleet-dash disk_health.py BYTES_*_PCT.
+BYTES_YELLOW_PCT = 85
+BYTES_RED_PCT = 92
 SKIP_DEV = re.compile(r"^(loop|zram|ram|sr|fd|md|dm-)")
 NEEDS_SUDO = re.compile(r"password is required|not allowed|may not run|a terminal is required|no tty")
 
@@ -239,9 +245,15 @@ def pct(s):
     return int(m.group(1)) if m else None
 
 
+def bytes_level(v):
+    return "ok" if v is None or v < BYTES_YELLOW_PCT else "yellow" if v < BYTES_RED_PCT else "red"
+
+
 def df_max(errors):
-    """-> (max_inode_pct, max_bytes_pct) over real filesystems + tmpfs /tmp."""
+    """-> (max_inode_pct, max_bytes_pct, mounts) over real filesystems + tmpfs /tmp.
+    mounts = [{mount, fs, bytes_pct, inode_pct, bytes_level}], sorted by mount, only mounts with a bytes reading; a mount df lists twice keeps its higher figure."""
     best = {}
+    per = {}
     for key, flags, col in (("inode", ["-PTi"], 5), ("bytes", ["-PT"], 5)):
         rc, out, err = run(["df"] + flags)
         if rc != 0 and not out:
@@ -257,10 +269,16 @@ def df_max(errors):
             if not (fstype in REAL_FS or (fstype == "tmpfs" and mount == "/tmp")):
                 continue
             v = pct(p[col])
+            m = per.setdefault(mount, {"mount": mount, "fs": fstype, "bytes_pct": None, "inode_pct": None})
+            if v is not None and (m[key + "_pct"] is None or v > m[key + "_pct"]):
+                m[key + "_pct"] = v
             if v is not None and (top is None or v > top["pct"]):
                 top = {"mount": mount, "pct": v}
         best[key] = top
-    return best["inode"], best["bytes"]
+    mounts = sorted((m for m in per.values() if m["bytes_pct"] is not None), key=lambda m: m["mount"])   # a mount with no bytes reading is not a bytes row
+    for m in mounts:
+        m["bytes_level"] = bytes_level(m["bytes_pct"])
+    return best["inode"], best["bytes"], mounts
 
 
 def collect():
@@ -274,12 +292,13 @@ def collect():
             errors.append("needs-sudo")
     rows = [smart_device(d, prefix, ok, errors) for d in devs]
     kcount, klast, usb_resets = kernel_io(errors)
-    inode, byts = df_max(errors)
+    inode, byts, mounts = df_max(errors)
     errors = list(dict.fromkeys(errors))
     return {"host": os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0],
             "ts": now, "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             "devices": rows, "kernel_io_errors_since_boot": kcount, "kernel_io_last": klast, "usb_resets_since_boot": usb_resets,
-            "max_inode_pct": inode, "max_bytes_pct": byts, "errors": errors}
+            "max_inode_pct": inode, "max_bytes_pct": byts,
+            "mounts": mounts, "max_bytes_level": bytes_level(byts["pct"]) if byts else "ok", "errors": errors}
 
 
 def write(doc, path):
@@ -304,7 +323,7 @@ def summary(doc):
         "n/a" if doc.get("kernel_io_errors_since_boot") is None else doc["kernel_io_errors_since_boot"],
         "n/a" if doc.get("usb_resets_since_boot") is None else doc["usb_resets_since_boot"],
         "%s%% %s" % (inode["pct"], inode["mount"]) if inode else "n/a",
-        "%s%% %s" % (byts["pct"], byts["mount"]) if byts else "n/a",
+        "%s%% %s (%s)" % (byts["pct"], byts["mount"], doc.get("max_bytes_level") or bytes_level(byts["pct"])) if byts else "n/a",
         ",".join(doc.get("errors") or []) or "none")
 
 
@@ -402,8 +421,8 @@ F
   df_i() { # df_i <tmp-iuse%>
     printf 'Filesystem     Type     Inodes  IUsed   IFree IUse%% Mounted on\ntmpfs          tmpfs    819200   2001  817199    1%% /run\n/dev/nvme0n1p2 ext4   31195136 2751321 28443815    9%% /\ntmpfs          tmpfs   1933446 800000 1133446   %s%% /tmp\n/dev/sda1      vfat          0      0       0     - /boot/efi\noverlay        overlay 9999999 9999999 0 100%% /var/lib/docker/x\n' "$1"
   }
-  df_b() {
-    printf 'Filesystem     Type     1024-blocks      Used Available Capacity Mounted on\n/dev/nvme0n1p2 ext4       490048472 133106972 331974896      29%% /\ntmpfs          tmpfs        7733784      7444   7726340       1%% /tmp\n/dev/sda1      ext4       1000000    870000    130000      87%% /mnt/data\noverlay        overlay 100 100 0 100%% /var/lib/docker/x\n'
+  df_b() { # df_b [/mnt/data bytes%, default 87]
+    printf 'Filesystem     Type     1024-blocks      Used Available Capacity Mounted on\n/dev/nvme0n1p2 ext4       490048472 133106972 331974896      29%% /\ntmpfs          tmpfs        7733784      7444   7726340       1%% /tmp\n/dev/sda1      ext4       1000000    870000    130000      %s%% /mnt/data\noverlay        overlay 100 100 0 100%% /var/lib/docker/x\n' "${1:-87}"
   }
   printf 'Oct 22 kernel: Linux version\nOct 22 kernel: EXT4-fs (sda1): mounted\nOct 22 kernel: nvme0n1: ok\n' >"$fx/journal.clean"
 
@@ -439,6 +458,17 @@ F
   check "healthy: max inode /tmp 42 (overlay + vfat dash ignored)" "$d/c1.json" "d['max_inode_pct']=={'mount':'/tmp','pct':42}"
   check "healthy: max bytes /mnt/data 87 (overlay ignored)" "$d/c1.json" "d['max_bytes_pct']=={'mount':'/mnt/data','pct':87}"
   check "healthy: no errors" "$d/c1.json" "d['errors']==[] and d['host']=='fx' and isinstance(d['ts'],int)"
+  check "mounts: every real fs + tmpfs /tmp, overlay and dash-inode vfat handled" "$d/c1.json" "[(m['mount'],m['fs'],m['bytes_pct'],m['inode_pct']) for m in d['mounts']]==[('/','ext4',29,9),('/mnt/data','ext4',87,None),('/tmp','tmpfs',1,42)]"
+  check "mounts: bytes_level ok/yellow/ok, max_bytes_level yellow (87 %)" "$d/c1.json" "[m['bytes_level'] for m in d['mounts']]==['ok','yellow','ok'] and d['max_bytes_level']=='yellow'"
+
+  # ---- case 1b: bytes thresholds (controller ruling f8b9): 84 ok, 85 yellow, 92 red on the same mount
+  for lv in 84:ok 85:yellow 91:yellow 92:red; do
+    df_b "${lv%%:*}" >"$fx/df.b"; go "$d/c1b${lv%%:*}.json"
+    check "bytes ${lv%%:*} % -> ${lv##*:}" "$d/c1b${lv%%:*}.json" "[m['bytes_level'] for m in d['mounts'] if m['mount']=='/mnt/data']==['${lv##*:}'] and d['max_bytes_level']=='${lv##*:}'"
+  done
+  env -i HOME="$d" PATH="$bin" DISK_HEALTH_OUT="$d/c1b92.json" "$BASH" "$self" --summary >"$d/c1b.sum" 2>&1
+  n=$((n + 1)); if grep -q 'bytes max 92% /mnt/data (red)' "$d/c1b.sum"; then echo "  ok   summary names the worst mount and its level"; else echo "  FAIL summary worst mount: $(cat "$d/c1b.sum")"; fails=$((fails + 1)); fi
+  df_b >"$fx/df.b"
 
   # ---- case 1c: USB bridges, one answer type each: sat only, sntjmicron only, none, and two answering (sntasmedia wins by order)
   cp "$fx/lsblk" "$fx/lsblk.orig"
