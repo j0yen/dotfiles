@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rb-spawn-hold.test.sh - CSH: rb-spawn-hold.sh decisions (a-e,g-i), rb-run-coder.sh gate (f), units (j), HAND-YIELD flag (AC7),
+# rb-spawn-hold.test.sh - CSH: rb-spawn-hold.sh decisions (a-e,g-i), rb-run-coder.sh gates (f: 76 hold, 74 empty, 77 pair-lint), units (j), HAND-YIELD flag (AC7),
 # watcher-premise binding (w-a..w-f: stub ssh logging argv, stub wm-decide; no real ssh, no real host path).
 # Every fixture, state file and "remote" hand dir lives under a mktemp -d root this test created; no ssh, no real host path.
 set -u
@@ -127,6 +127,12 @@ HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra_ok" bash "$runc" f3 
 [ $rc = 0 ] && [ -e "$R/claude.ran" ] && pass "(f3) OK -> spawn proceeds rc=0" || bad "(f3) rc=$rc"
 : > "$R/empty.md"; HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f4 "$R/empty.md" >/dev/null 2>&1; rc=$?
 [ $rc = 74 ] && pass "(f4) empty prompt still exits 74 before the hold gate" || bad "(f4) rc=$rc"
+# (f6) pair-lint gate (exit 77): wm-decide record with --target AND --pr is refused BEFORE the hold gate (HOLD state still active in $extra); report + seat-event carry the line text
+rm -f "$R/claude.ran"; { printf 'ctx %0200d\n' 0; printf 'wm-decide record --agent rb --kind verdict --target redbaron --pr wm-build#347 --what x\n'; } > "$R/pair.md"
+HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f6 "$R/pair.md" >/dev/null 2>&1; rc=$?
+rep=$(cat "$H/.cache/rb-seat/coders/f6.report.md" 2>/dev/null)
+if [ $rc = 77 ] && [[ $rep == "REFUSED pair-lint $R/pair.md: line 2: --target with --pr"*"| text: wm-decide record --agent rb"* ]] && [ ! -e "$R/claude.ran" ] && grep -q 'RB-CODER f6 REFUSED pair-lint: wm-decide record --agent rb' "$R/events.log"; then
+  pass "(f6) --target with --pr -> rc=77 before the hold gate, report '$rep', seat-event, claude not run"; else bad "(f6) rc=$rc report='$rep' ran=$(ls $R/claude.ran 2>&1)"; fi
 grep -q 'rb-cargo-freeze\|RB_CODER_NO_CARGO' "$runc" && bad "(f5) interim freeze-file gate still present" || pass "(f5) interim rb-cargo-freeze gate removed"
 
 # --- (j) timer/service pass systemd-analyze verify ---
