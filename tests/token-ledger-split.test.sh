@@ -41,7 +41,7 @@ assert_eq "$(ledger_field 2026-09-11 11)" "2" "compactions = flag + prefix marke
 assert_eq "$(ledger_field 2026-09-12 11)" "0" "day with no markers has compactions 0"
 assert_eq "$(ledger_field 2026-09-11 3)" "284" "existing weighted column unchanged"
 assert_eq "$(cat "$state/today-summary.txt")" \
-  "TOKENS yesterday 2026-09-11: 284 budget off · today so far 7 (10:15Z) · forecast 16 · hosts carbon missing  · split in/cw/cr/out 7/0/0/0 · compactions 0 · build_share 0% (coder+inner 0M of 0M)" \
+  "TOKENS yesterday 2026-09-11: 284 budget off · today so far 7 (10:15Z) · forecast 16 · hosts carbon missing  · split in/cw/cr/out 7/0/0/0 · compactions 0 · build_share n/a" \
   "summary keeps the old text and appends split + compactions (today)"
 
 # --- old 8-column ledger is upgraded in place, not moved aside ---

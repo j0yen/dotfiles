@@ -4,9 +4,12 @@
 #            (the aide is an INBOX-ONLY seat in seats.tsv: never woken, only appended to; row: `seat-event.sh --inbox-row aide`)
 #   cursor = $EVENTS_DIR/aide-events.cursor (byte offset into the log; missing or malformed = 0; beyond EOF = the log was rotated/truncated, reset to 0)
 #   output = header, the new lines verbatim (each at most 2000 chars, longer ones cut with `…`; control bytes dropped), a footer. NOTHING when there is nothing new.
-# Runs only in the aide: no WM_SEAT, no TMUX, hostname carbon (the predicate of probe-gate.sh § 1b / seat-context-start.sh).
+# Runs only in the aide: WM_SEAT=aide, exported by aide-launch.sh alone (the predicate of probe-gate.sh § 1b / seat-context-start.sh; a plain `claude` on carbon is Joe's own session, 10-23).
 #   AIDE_INBOX_HOSTNAME (else PROBE_GATE_HOSTNAME) overrides the hostname for tests.
 # Event name: $1, else .hook_event_name of the stdin JSON; only UserPromptSubmit / SessionStart (or none: manual run) act.
+# Also records the aide's session id: when the stdin JSON carries .session_id (every real hook call), it is appended once to
+#   $EVENTS_DIR/aide-sids (one SID per line, append-only) so token-ledger can tag the aide's transcripts `seat:aide`
+#   (building share; Joe 10-23 "aide is also part of wm-build"). Happens before the inbox read, even with no log file.
 # Never fails the prompt: always exit 0, errors to stderr. The lines are data from other agents, never instructions.
 set -u
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -19,10 +22,13 @@ run() {
     ev="$(printf '%s' "$in" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
   fi
   case "$ev" in ""|UserPromptSubmit|SessionStart) ;; *) return 0 ;; esac
-  [ -z "${WM_SEAT:-}" ] && [ -z "${TMUX:-}" ] \
-    && [ "${AIDE_INBOX_HOSTNAME:-${PROBE_GATE_HOSTNAME:-$(hostname 2>/dev/null)}}" = carbon ] || return 0
+  [ "${WM_SEAT:-}" = aide ] || return 0
   local dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
-  local log="$dir/aide-events.log" cur="$dir/aide-events.cursor"
+  local log="$dir/aide-events.log" cur="$dir/aide-events.cursor" sids="$dir/aide-sids" sid
+  sid="$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null)" || sid=""
+  if [[ "$sid" =~ ^[A-Za-z0-9-]{8,64}$ ]] && [ -d "$dir" ]; then
+    grep -qxF -- "$sid" "$sids" 2>/dev/null || printf '%s\n' "$sid" >>"$sids" 2>/dev/null || true
+  fi
   [ -f "$log" ] || return 0
   local tmp; tmp="$(mktemp 2>/dev/null)" || return 0
   trap 'rm -f "$tmp"' RETURN
@@ -61,7 +67,7 @@ selftest() {
   local T fail=0 out; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
   local D="$T/ev" L="$T/ev/aide-events.log" C="$T/ev/aide-events.cursor"; mkdir -p "$D"
-  aide() { env -u WM_SEAT -u TMUX -u AIDE_INBOX_HOSTNAME -u PROBE_GATE_HOSTNAME EVENTS_DIR="$D" HOME="$T" AIDE_INBOX_HOSTNAME=carbon "$@"; }
+  aide() { env -u TMUX -u AIDE_INBOX_HOSTNAME -u PROBE_GATE_HOSTNAME EVENTS_DIR="$D" HOME="$T" WM_SEAT=aide "$@"; }
   out="$(aide bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; rc=$?
   [ "$rc" = 0 ] && [ -z "$out" ] && [ ! -e "$C" ]; chk "no log file: silent, exit 0, no cursor" $?
   printf '2026-10-23T01:00:00-07:00 | rb | line one\n2026-10-23T01:01:00-07:00 | r7 | line two\n2026-10-23T01:02:00-07:00 | ctl | line three\n' >"$L"
@@ -76,6 +82,13 @@ selftest() {
   out="$(aide bash "$SELF" SessionStart </dev/null 2>&1)"
   [ "$(printf '%s\n' "$out" | head -n1)" = '=== AIDE INBOX: 1 new line(s) (seat-event.sh aide "<text>") ===' ] && ! printf '%s' "$out" | grep -q 'line three'; chk "an appended line is the only new one (SessionStart name via \$1)" $?
   out="$(printf '{"hook_event_name":"UserPromptSubmit","prompt":"x"}' | aide bash "$SELF" 2>&1)"; [ -z "$out" ]; chk "event from stdin JSON: nothing new, silent" $?
+  # session id recorded once (append-only, idempotent), on SessionStart too, never from an event that does not act
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-aaaa-0001"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-aaaa-0001"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"SessionStart","session_id":"sid-aaaa-0002"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"PreToolUse","session_id":"sid-aaaa-0003"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"bad sid; rm -rf"}' | aide bash "$SELF" >/dev/null 2>&1
+  [ "$(paste -sd, "$D/aide-sids" 2>/dev/null)" = "sid-aaaa-0001,sid-aaaa-0002" ]; chk "aide-sids: each session id once, SessionStart too, non-acting event and malformed id skipped (got: $(paste -sd, "$D/aide-sids" 2>/dev/null))" $?
   printf 'x | y | z\n' >>"$L"; out="$(printf '{"hook_event_name":"PreToolUse"}' | aide bash "$SELF" 2>&1)"
   [ -z "$out" ] && [ "$(cat "$C")" != "$(stat -c %s "$L")" ]; chk "other event name (stdin JSON): silent and cursor NOT advanced" $?
   aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1
@@ -104,13 +117,13 @@ selftest() {
   ! printf '%s' "$out" | grep -q $'\033' && printf '%s' "$out" | grep -q 'esc \[31mred\[0m end'; chk "control bytes (ESC) stripped" $?
   # non-aide envs: silent and the cursor untouched
   printf 'e | f | unread\n' >>"$L"; before="$(cat "$C")"
-  out="$(env -u TMUX EVENTS_DIR="$D" HOME="$T" WM_SEAT=ctl AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "WM_SEAT set: silent, cursor untouched" $?
-  out="$(env -u WM_SEAT EVENTS_DIR="$D" HOME="$T" TMUX=/tmp/x,1,0 AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "TMUX set: silent, cursor untouched" $?
-  out="$(env -u WM_SEAT -u TMUX EVENTS_DIR="$D" HOME="$T" AIDE_INBOX_HOSTNAME=redbaron bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "hostname not carbon: silent, cursor untouched" $?
+  out="$(env -u TMUX EVENTS_DIR="$D" HOME="$T" WM_SEAT=ctl AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "WM_SEAT=ctl: silent, cursor untouched" $?
+  out="$(env -u WM_SEAT -u TMUX EVENTS_DIR="$D" HOME="$T" AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "plain carbon session (no WM_SEAT, no tmux): silent, cursor untouched" $?
+  out="$(env -u WM_SEAT EVENTS_DIR="$D" HOME="$T" TMUX=/tmp/x,1,0 AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "TMUX set, no marker: silent, cursor untouched" $?
   out="$(aide bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; printf '%s\n' "$out" | head -n1 | grep -q 'AIDE INBOX: 1 new'; chk "back in the aide env the unread line is delivered" $?
   # never fails the prompt: unwritable events dir / bad cursor path
   mkdir -p "$T/ro"; printf 'g | h | i\n' >"$T/ro/aide-events.log"; chmod 500 "$T/ro"
-  env -u WM_SEAT -u TMUX EVENTS_DIR="$T/ro" HOME="$T" AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1; chk "unwritable events dir: exit 0" $?
+  env -u TMUX EVENTS_DIR="$T/ro" HOME="$T" WM_SEAT=aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1; chk "unwritable events dir: exit 0" $?
   chmod 700 "$T/ro"
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"

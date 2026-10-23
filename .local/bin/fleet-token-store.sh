@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # fleet-token-store.sh -- the account -> setup-token store behind fleet-token-rotate.sh. NEVER prints a token.
-#   add <account> [--tty]   read the token from STDIN into ${XDG_CONFIG_HOME:-~/.config}/fleet-token/store/<account> (0600, dir 0700).
-#                           Refuses when stdin is a terminal unless --tty (then a silent prompt), and refuses ANY argv token.
+#   add <account> [--tty]   read STDIN (first 64 KiB) and store the LAST sk-ant-oat... match into ${XDG_CONFIG_HOME:-~/.config}/fleet-token/store/<account>
+#                           (0600, dir 0700). Input with no such token (e.g. TUI escape codes from `claude setup-token`) is REFUSED, store untouched.
+#                           Refuses when stdin is a terminal unless --tty (then a silent prompt, same validation), and refuses ANY argv token.
 #   list                    `<account> <age-days>` per entry, nothing else
+#   check                   `<account> ok|BAD` per entry (BAD = no sk-ant-oat token in the file); exit 1 if any BAD
 #   rm <account>            remove an entry (shredded)
 #   current <account>       bootstrap: write ~/.cache/fleet-dash/token.json {account, placed_at:null, by:"hand", trigger:"seed"}
 #                           ONLY when it does not exist (it names the account the fleet already runs on; rotate treats a missing file as unknown)
@@ -13,10 +15,10 @@ set +x
 # shellcheck source=../lib/fleet-token-lib.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-token-lib.sh"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-usage() { echo 'usage: fleet-token-store.sh add <account> [--tty] (token on stdin) | list | rm <account> | current <account> | --selftest' >&2; exit 64; }
+usage() { echo 'usage: fleet-token-store.sh add <account> [--tty] (token on stdin) | list | check | rm <account> | current <account> | --selftest' >&2; exit 64; }
 
 cmd_add() {
-  local acct="${1:-}" tty=0 tok tmp
+  local acct="${1:-}" tty=0 tok raw tmp n
   shift || true
   ft_valid_account "$acct" || { echo "fleet-token-store: bad or missing account name" >&2; exit 64; }
   while [ $# -gt 0 ]; do
@@ -28,12 +30,18 @@ cmd_add() {
   done
   if [ -t 0 ]; then
     [ "$tty" = 1 ] || { echo "fleet-token-store: REFUSED: stdin is a terminal; pipe the token in, or pass --tty for a silent prompt" >&2; exit 64; }
-    IFS= read -rs -p "token for $acct (hidden): " tok; echo >&2
+    IFS= read -rs -p "token for $acct (hidden): " raw; echo >&2
   else
-    tok="$(head -c 8192 | grep -m1 -v '^[[:space:]]*$' || true)"
+    raw="$(head -c 65536 | tr -d '\0')"
   fi
-  tok="$(printf '%s' "$tok" | tr -d '[:space:]')"
-  [ -n "$tok" ] || { echo "fleet-token-store: REFUSED: empty token" >&2; exit 1; }
+  # only an sk-ant-oat token is ever stored: `claude setup-token` output leads with TUI escape codes, so the first line is junk
+  tok="$(printf '%s' "$raw" | grep -a -o 'sk-ant-oat[A-Za-z0-9_-]*' | tail -n1 || true)"
+  if [ -z "$tok" ]; then
+    n="$(printf '%s' "$raw" | wc -c)"; raw=""
+    echo "fleet-token-store: REFUSED: no sk-ant-oat token in input (got $n bytes); pipe: claude setup-token 2>/dev/null | grep -o 'sk-ant-oat[A-Za-z0-9_-]*' | tail -1 | fleet-token-store.sh add <acct>" >&2
+    exit 1
+  fi
+  raw=""
   ( umask 077; mkdir -p "$FT_STORE" )
   chmod 700 "$FT_CFG" "$FT_STORE"
   tmp="$(umask 077; mktemp "$FT_STORE/.add.XXXXXX")"
@@ -50,6 +58,17 @@ cmd_list() {
     [ -f "$f" ] || continue
     printf '%s %s\n' "$(basename "$f")" "$(( (now - $(stat -c %Y "$f")) / 86400 ))"
   done
+}
+
+cmd_check() {
+  local f bad=0
+  [ -d "$FT_STORE" ] || return 0
+  for f in "$FT_STORE"/*; do
+    [ -f "$f" ] || continue
+    if grep -aq 'sk-ant-oat[A-Za-z0-9_-]' "$f" 2>/dev/null; then printf '%s ok\n' "$(basename "$f")"
+    else printf '%s BAD\n' "$(basename "$f")"; bad=1; fi
+  done
+  return "$bad"
 }
 
 cmd_rm() {
@@ -72,7 +91,7 @@ cmd_current() {
 }
 
 selftest() {
-  local T out rc c=canary-tok-7f3e9a; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
+  local T out rc c=sk-ant-oat01-canary-tok-7f3e9a; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
   ( set +e; ft_st_env "$T"; FT_ST_T="$T"
     local o="$T/out" e="$T/err"
     run() { "$SELF" "$@" >"$o" 2>"$e"; }
@@ -93,6 +112,22 @@ selftest() {
     [ "$rc" = 1 ] && [ ! -e "$FT_STORE/jyen.tech" ]; ft_st_chk "empty stdin: refused" $?
     printf '%s\n' "$c" | run add '../evil'; rc=$?
     [ "$rc" = 64 ] && [ ! -e "$FT_STORE/../evil" ]; ft_st_chk "path-shaped account name refused" $?
+    # 2b. TUI junk before the token: only the token is stored; junk-only input is refused and leaves an entry unchanged
+    printf '\033[?25l\033[2J\033[1;1H  Welcome to Claude Code\n\033[0m\n   Your OAuth token:\n\n%s\033[0m\n' "${c}-tui" | run add jyen.tui; rc=$?
+    [ "$rc" = 0 ] && [ "$(cat "$FT_STORE/jyen.tui")" = "${c}-tui" ]; ft_st_chk "TUI junk then token: only the token is stored" $?
+    printf '%s\n%s\n' "${c}-first" "${c}-last" | run add jyen.tui
+    [ "$(cat "$FT_STORE/jyen.tui")" = "${c}-last" ]; ft_st_chk "two tokens in input: the last one is stored" $?
+    printf '\033[?25l\033[2J\033[1;1H  Welcome to Claude Code\n' | run add jyen.tui; rc=$?
+    [ "$rc" = 1 ] && [ "$(cat "$FT_STORE/jyen.tui")" = "${c}-last" ] && grep -q 'REFUSED: no sk-ant-oat token in input (got [0-9]* bytes)' "$e"; ft_st_chk "junk-only input: refused (exit 1), existing entry unchanged" $?
+    printf 'canary-tok-7f3e9a-notoken\n' | run add jyen.junk; rc=$?
+    [ "$rc" = 1 ] && [ ! -e "$FT_STORE/jyen.junk" ] && ! grep -qF 'canary-tok-7f3e9a' "$e"; ft_st_chk "non-oat text refused, not echoed, nothing stored" $?
+    # check: ok/BAD per entry, exit 1 on any BAD, no token content
+    run check; rc=$?
+    [ "$rc" = 0 ] && ! grep -q BAD "$o" && grep -q '^jyen.tui ok$' "$o" && ! grep -qF "$c" "$o"; ft_st_chk "check: all good entries -> ok, exit 0, no token printed" $?
+    ( umask 077; printf '\033[?25l\033[2J\n' >"$FT_STORE/jyen.bad" )
+    run check; rc=$?
+    [ "$rc" = 1 ] && grep -q '^jyen.bad BAD$' "$o" && grep -q '^jyen.tui ok$' "$o" && ! grep -qF "$c" "$o"; ft_st_chk "check: a junk entry is BAD, exit 1" $?
+    rm -f "$FT_STORE/jyen.bad" "$FT_STORE/jyen.tui"
     # 3. list: name + age only
     printf '%s-2\n' "$c" | run add jyen.tech
     touch -d "$(date -d "@$(( $(ft_now) - 5 * 86400 - 60 ))" '+%F %T')" "$FT_STORE/jyen.tech"
@@ -119,6 +154,7 @@ sub="$1"; shift
 case "$sub" in
   add) cmd_add "$@" ;;
   list) cmd_list ;;
+  check) cmd_check ;;
   rm) cmd_rm "$@" ;;
   current) cmd_current "$@" ;;
   *) usage ;;
