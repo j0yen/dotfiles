@@ -467,6 +467,10 @@
           },
           {
             "type": "command",
+            "command": "sh -c '[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\"; exit 0'"
+          },
+          {
+            "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/cargo-slot-gate.sh\" ] && exec \"$HOME/.claude/hooks/cargo-slot-gate.sh\"; exit 0'"
           }
         ]
