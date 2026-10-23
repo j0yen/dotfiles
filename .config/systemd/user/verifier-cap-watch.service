@@ -1,5 +1,5 @@
 [Unit]
-Description=verifier-cap watch: bell rb + ctl when more than 2 (aide|rb|r7)-verifier-* units are active (read-only; PREMISE + EXPIRES below)
+Description=verifier-cap watch: bell rb + ctl when more than 4 (aide|rb|r7)-verifier-* units are active or a unit's MemoryPeak tops 1024 MB (read-only; PREMISE + EXPIRES below)
 # carbon only: the files install everywhere (install.sh links the whole tree), the unit runs on carbon
 ConditionHost=carbon
 
@@ -7,7 +7,7 @@ ConditionHost=carbon
 Type=oneshot
 Environment=PATH=%h/.npm-global/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 # the watcher disarms itself past EXPIRES; re-arm = a reviewed edit of these two lines (they override the defaults in the script)
-Environment="VERIFIER_CAP_WATCH_PREMISE=a launcher that bypasses the fixed verifier-cap lock shows up as more than 2 active *-verifier-* units"
+Environment="VERIFIER_CAP_WATCH_PREMISE=a launcher that bypasses the fixed verifier-cap lock shows up as more than 4 active *-verifier-* units, and a verifier whose MemoryPeak exceeds 1024 MB shows up in the MemoryPeak of its unit"
 Environment=VERIFIER_CAP_WATCH_EXPIRES=2026-11-06T00:00:00-07:00
 ExecStart=%h/.local/bin/verifier-cap-watch.sh
 TimeoutStartSec=60
