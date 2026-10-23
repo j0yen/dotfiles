@@ -20,23 +20,45 @@
 #       NDJSON. The exact same binary runs this mode over ssh on each
 #       remote fleet host — that's how the orchestrator on one node reads
 #       another node's data without duplicating the extraction logic.
+#       Every record carries `role` (what the tokens bought), derived once
+#       per JSONL FILE from the file's path, the seat table and the first
+#       user text — nothing but the JSONL files and $SEATS_TABLE is read:
+#         inner          project dir matches wm-build-wt- or wm-build/wt/
+#         verifier|coder|runner|review|scout
+#                        file under <sid>/subagents/, by first user text:
+#                        ^(VERIF|RE-VERIFY) -> verifier (VERIF covers VERIFY, VERIFIED, verifier);
+#                        coder|implement|FIX PASS|DELTA|hand PR|binding spec|
+#                        Read your full spec -> coder; ^(RUNNER|run ) -> runner;
+#                        review|re-grade|regrade|verdict|DECISION -> review;
+#                        else scout (all case-insensitive)
+#         seat:<name>    top-level file whose SID is column 3 of $SEATS_TABLE
+#         coder|verifier|runner|interactive
+#                        other top-level file: same text rules, else interactive
 #
 # State lives under $TOKEN_LEDGER_STATE_DIR (default ~/.cache/token-ledger):
 #   ledger.tsv          one row per UTC day: date, per_model, weighted,
 #                        status, complete, hosts, missing, generated, then
 #                        (appended; older readers ignore them) split,
-#                        per_host, compactions
+#                        per_host, compactions, per_role (role=weighted;...)
 #   message-index.tsv   id -> day; an internal companion file that lets
 #                        --check catch a message double-counted across two
 #                        days without re-scanning every JSONL on disk
-#   today-summary.txt   the one line the SessionStart banner hook cats
+#   today-summary.txt   the line the SessionStart banner hook cats, plus an
+#                        `ALARM build_share ...` second line when today's
+#                        build_share (coder+inner weighted / total) is < 50 %
+#                        and today's weighted total is > 50M
+#   build-share.json    {date, build_share, build_weighted, total_weighted,
+#                        per_role:{role:weighted}} for today (build_share is a
+#                        percent with one decimal, null when per_role is
+#                        unknown); for the fleet dashboard to pick up
 #
 # Testability knobs (env vars; all optional, all default to the real
 # thing): TOKEN_LEDGER_STATE_DIR, TOKEN_LEDGER_JSONL_ROOT,
 # TOKEN_LEDGER_HOSTS ("carbon redbaron ryzen7" default),
 # TOKEN_LEDGER_LOCAL_HOST (default `hostname -s`), TOKEN_LEDGER_SSH_TIMEOUT
 # (default 30s), TOKEN_LEDGER_NOW (fakes "now" for default-window math and
-# the summary's yesterday/today split), TOKEN_BUDGET_WEIGHTED (unset or 0
+# the summary's yesterday/today split), SEATS_TABLE (seat table whose col 3
+# is the seat's SID; default ~/.claude/state/seats.tsv), TOKEN_BUDGET_WEIGHTED (unset or 0
 # => "budget off" status, per CLAUDE.md 2026-09-12 removal of the daily cap).
 set -uo pipefail
 
@@ -51,9 +73,12 @@ NOW="${TOKEN_LEDGER_NOW:-$(date -u +%FT%TZ)}"
 LEDGER_TSV="$STATE_DIR/ledger.tsv"
 INDEX_TSV="$STATE_DIR/message-index.tsv"
 SUMMARY_TXT="$STATE_DIR/today-summary.txt"
+BUILD_SHARE_JSON="$STATE_DIR/build-share.json"
+SEATS_TABLE="${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}"
 LEDGER_HEADER_V1=$'date\tper_model\tweighted\tstatus\tcomplete\thosts\tmissing\tgenerated'
-LEDGER_HEADER=$LEDGER_HEADER_V1$'\tsplit\tper_host\tcompactions'
-LEDGER_NCOLS=11
+LEDGER_HEADER_V2=$LEDGER_HEADER_V1$'\tsplit\tper_host\tcompactions'
+LEDGER_HEADER=$LEDGER_HEADER_V2$'\tper_role'
+LEDGER_NCOLS=12
 
 # jq filter: one assistant/usage record -> {id, ts, model, in, cw, cr, out}.
 JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id != null and .timestamp != null)
@@ -62,6 +87,21 @@ JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id
      cw: (.message.usage.cache_creation_input_tokens // 0),
      cr: (.message.usage.cache_read_input_tokens // 0),
      out: (.message.usage.output_tokens // 0)}'
+
+# jq filter: first user text of a transcript (stdin = its first lines) ->
+# one whitespace-collapsed line. Skips harness-injected text (command echoes,
+# system reminders, task notifications); content is a string or an array
+# whose first real .type=="text" element counts.
+JQ_FIRST_TEXT='select(.type=="user")
+  | ((.message.content // "")
+     | if type=="string" then [.]
+       elif type=="array" then [.[] | select(type=="object" and .type=="text") | .text]
+       else [] end)
+  | map(select(type=="string"
+       and (startswith("<command-name") or startswith("<local-command")
+            or startswith("<system-reminder") or startswith("<task-notification")) | not)
+       | gsub("\\s+"; " ") | sub("^ "; "") | select(length > 0))
+  | .[0] // empty | .[0:4000]'
 
 # jq filter: one compaction-summary line -> {kind:"compact", id:uuid, ts}.
 # Marker (confirmed on real transcripts): a type=="user" line carrying
@@ -101,6 +141,54 @@ status_for() {
   fi
 }
 
+# ---- role (per JSONL file; see header) -------------------------------------
+declare -A SEAT_BY_SID=()
+load_seats() {
+  [ -r "$SEATS_TABLE" ] || return 0
+  local s_seat s_sid _role _r
+  while IFS=$'\t' read -r s_seat _role s_sid _r; do
+    case "$s_seat" in ''|'#'*) continue ;; esac
+    [ -n "$s_sid" ] && SEAT_BY_SID["$s_sid"]="$s_seat"
+  done < "$SEATS_TABLE"
+}
+
+# role_from_text TEXT MODE(sub|top) -> role, or "" when no text rule fires
+# on a top-level file (the caller maps that to interactive / scout).
+role_from_text() {
+  local t="$1" mode="$2" r=""
+  shopt -s nocasematch
+  if   [[ "$t" =~ ^(VERIF|RE-VERIFY) ]]; then r="verifier"
+  elif [[ "$t" =~ (coder|implement|FIX\ PASS|DELTA|hand\ PR|binding\ spec|Read\ your\ full\ spec) ]]; then r="coder"
+  elif [[ "$t" =~ ^(RUNNER|run\ ) ]]; then r="runner"
+  elif [ "$mode" = "sub" ] && [[ "$t" =~ (review|re-grade|regrade|verdict|DECISION) ]]; then r="review"
+  fi
+  shopt -u nocasematch
+  printf '%s' "$r"
+}
+
+# file_role FILE -> role. Computed once per file; reads at most the first 60
+# lines (only when the path and seat table don't already decide it).
+file_role() {
+  local f="$1" rel proj sid text r
+  rel="${f#"$JSONL_ROOT"/}"
+  proj="${rel%%/*}"
+  if [[ "$proj" == *wm-build-wt-* || "$rel" == *wm-build/wt/* ]]; then
+    echo inner; return
+  fi
+  if [[ "$rel" == */subagents/* ]]; then
+    text="$(head -n 60 -- "$f" 2>/dev/null | jq -r "$JQ_FIRST_TEXT" 2>/dev/null | head -n1)"
+    r="$(role_from_text "$text" sub)"
+    echo "${r:-scout}"; return
+  fi
+  sid="$(basename -- "$f" .jsonl)"
+  if [ -n "${SEAT_BY_SID[$sid]:-}" ]; then
+    echo "seat:${SEAT_BY_SID[$sid]}"; return
+  fi
+  text="$(head -n 60 -- "$f" 2>/dev/null | jq -r "$JQ_FIRST_TEXT" 2>/dev/null | head -n1)"
+  r="$(role_from_text "$text" top)"
+  echo "${r:-interactive}"
+}
+
 # gather_raw SINCE -> this host's own raw (non-deduped) records as NDJSON,
 # tagged host=$LOCAL_HOST. The mtime prefilter only skips whole files that
 # could not possibly hold anything in range; the real per-record window
@@ -109,9 +197,13 @@ status_for() {
 gather_raw() {
   local since="$1" cutoff_epoch
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
-  find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null \
-    | xargs -0 -r cat -- 2>/dev/null \
-    | jq -c --arg host "$LOCAL_HOST" "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host}" 2>/dev/null
+  load_seats
+  local f role
+  while IFS= read -r -d '' f; do
+    role="$(file_role "$f")"
+    jq -c --arg host "$LOCAL_HOST" --arg role "$role" \
+      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role:\$role}" -- "$f" 2>/dev/null
+  done < <(find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null)
 }
 
 # --emit-local-records is handled first and standalone: it never touches
@@ -156,7 +248,8 @@ migrate_legacy_ledger() {
   [ -f "$LEDGER_TSV" ] || return 0
   local first_line
   first_line="$(head -n1 -- "$LEDGER_TSV" 2>/dev/null || true)"
-  { [ "$first_line" = "$LEDGER_HEADER" ] || [ "$first_line" = "$LEDGER_HEADER_V1" ]; } && return 0
+  { [ "$first_line" = "$LEDGER_HEADER" ] || [ "$first_line" = "$LEDGER_HEADER_V2" ] \
+    || [ "$first_line" = "$LEDGER_HEADER_V1" ]; } && return 0
   local bak="$STATE_DIR/ledger.tsv.pre-buckets"
   [ -e "$bak" ] && bak="$STATE_DIR/ledger.tsv.pre-buckets.$(date -u +%Y%m%dT%H%M%SZ)"
   mv -- "$LEDGER_TSV" "$bak"
@@ -278,6 +371,12 @@ agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
         | map({model: .[0].model, w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
         | sort_by(.model)
       ),
+      per_role: (
+        map(. + {role: (.role // "unknown")})
+        | group_by(.role)
+        | map({role: .[0].role, w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
+        | sort_by(.role)
+      ),
       ids: [.[].id]
     })
   | map(. + {weighted: ([.per_model[].w] | add // 0)})
@@ -308,7 +407,8 @@ while IFS= read -r day_obj; do
   d_split="$(jq -r '.split | "in=\(.in) cw=\(.cw) cr=\(.cr) out=\(.out)"' <<<"$day_obj")"
   d_perhost="$(jq -r '[.per_host[] | "\(.host)=\(.w)"] | join(" ")' <<<"$day_obj")"
   d_compactions="$(jq -r '.compactions' <<<"$day_obj")"
-  old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"$'\t'"$d_split"$'\t'"$d_perhost"$'\t'"$d_compactions"
+  d_perrole="$(jq -r '[.per_role[] | "\(.role)=\(.w)"] | join(";")' <<<"$day_obj")"
+  old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"$'\t'"$d_split"$'\t'"$d_perhost"$'\t'"$d_compactions"$'\t'"$d_perrole"
   jq -r --arg d "$d_date" '.ids[] | "\(.)\t\($d)"' <<<"$day_obj" >> "$new_index_entries"
 done < <(jq -c '.[]' <<<"$agg_json")
 
@@ -316,7 +416,7 @@ tmp_ledger="$STATE_DIR/.ledger.tsv.tmp.$$"
 {
   printf '%s\n' "$LEDGER_HEADER"
   if [ "${#old_rows[@]}" -gt 0 ]; then
-    # rows written before the split/per_host/compactions columns existed are
+    # rows written before the split/per_host/compactions/per_role columns existed are
     # padded with empty cells so every row has LEDGER_NCOLS fields
     for d in "${!old_rows[@]}"; do printf '%s\n' "${old_rows[$d]}"; done \
       | awk -F'\t' -v OFS='\t' -v n="$LEDGER_NCOLS" '{for (i=NF+1;i<=n;i++) $i=""; print}' | sort
@@ -361,8 +461,33 @@ fi
 
 summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today so far ${t_weighted} (${hhmm}Z) · forecast ${forecast} · hosts ${hosts_csv} missing ${missing_csv} · split in/cw/cr/out ${t_split_slash} · compactions ${t_compactions}"
 
+# ---- build_share: coder+inner weighted share of today's total. Unknown
+# (older row without per_role) is "n/a" and never alarms. ----------------
+t_perrole="$(get_field "$today_date" 12 "")"
+bs_alarm=""
+bs_json_share="null"
+if [ -n "$t_perrole" ] && [ "${t_weighted:-0}" -gt 0 ] 2>/dev/null; then
+  t_build="$(awk -F';' '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="coder"||a[1]=="inner") s+=a[2]}} END{printf "%d", s}' <<<"$t_perrole")"
+  bs_pct=$(( t_build * 100 / t_weighted ))
+  bs_json_share="$(awk -v b="$t_build" -v t="$t_weighted" 'BEGIN{printf "%.1f", b*100/t}')"
+  summary="$summary · build_share ${bs_pct}% (coder+inner $(( (t_build + 500000) / 1000000 ))M of $(( (t_weighted + 500000) / 1000000 ))M)"
+  if [ "$bs_pct" -lt 50 ] && [ "$t_weighted" -gt 50000000 ]; then
+    bs_alarm="ALARM build_share ${bs_pct}% < 50% — building is coder+inner; the rest is management"
+  fi
+else
+  t_build=0
+  summary="$summary · build_share n/a"
+fi
+
 tmp_summary="$STATE_DIR/.today-summary.txt.tmp.$$"
-printf '%s\n' "$summary" > "$tmp_summary"
+{ printf '%s\n' "$summary"; [ -n "$bs_alarm" ] && printf '%s\n' "$bs_alarm"; } > "$tmp_summary"
 mv -- "$tmp_summary" "$SUMMARY_TXT"
+
+tmp_bs="$STATE_DIR/.build-share.json.tmp.$$"
+jq -n --arg date "$today_date" --argjson share "$bs_json_share" \
+      --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" '
+  {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total,
+   per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
+  > "$tmp_bs" && mv -- "$tmp_bs" "$BUILD_SHARE_JSON"
 
 exit 0
