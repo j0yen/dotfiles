@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # seat-tick.sh: one operator-seat turn as a daemon run (like wm-build): `claude -p --resume <seat SID> "<prompt>"`.
-# ctl-sweep.sh generalized: ONE script, one row per seat in ~/.claude/state/seats.tsv (seat role sid tick_min timeout_sec goal_pattern old_pid).
+# ctl-sweep.sh generalized: ONE script, one row per seat in ~/.claude/state/seats.tsv (seat role sid tick_min timeout_sec goal_pattern old_pid max_turns).
 #   seat-tick.sh <seat>                  tick turn (timer seat-tick@<seat>.timer)
 #       ctl : SWEEP <time> <date> tick=<n> status_age=<N|none>m approvals_new=<k>  + a "First act:" line
 #       rb/r7: TICK <time> <date> seat=<seat> tick=<n> + the seat's /goal line from goal.md (after a ff-only pull) + the rules line
@@ -23,7 +23,13 @@
 # QUOTA-ACCOUNT (10-23, fleet-token rotation): when it records quota_wait_until it also records quota_account = the `account` in $FLEET_DASH_DIR/token.json (null when that file is absent).
 # A wait recorded under another account is not the current account's wait: whenever token.json exists with an account != quota_account (null counts as different), the wait is IGNORED
 # (treated as expired; the turn runs and the keys clear). A missing or unreadable token.json ignores nothing. fleet-token-429-watch.sh reads the same two keys.
-# State keys: last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account.
+# MAX-TURNS (10-23; 10-22 12:00 AM -> 10-23 11:20 AM the rb/r7 seats' own Opus turns were 121M weighted tokens + 141M in-session subagents vs 22M for the PRD coders; a tick turn had no bound:
+# median 19-21 assistant messages, p90 71-136, max 1857): seats.tsv column 8 `max_turns` (integer >= 1, or `-` = no cap; a 7-column row = no cap) appends `--max-turns <N>` to the claude argv of EVERY
+# turn kind (TICK/SWEEP/EVENT/ASK), after `--model <m>` and before the lean/--settings block. MEASURED (claude 2.1.293, `claude -p --max-turns 1`): a capped turn prints `Error: Reached max turns (<N>)` on stdout
+# (no trailing newline, stderr empty) and exits 1 (`--output-format json`: subtype=error_max_turns, terminal_reason=max_turns, is_error=true). That is a NORMAL turn end here: when rc != 0 and the LAST non-empty
+# line of the turn log is exactly that marker, the turn is recorded as exit 0 (events_offset advances, no SEAT-TICK FAILED bell, last_skip_reason untouched, queued asks stay consumed, the exit-0 EVENT chain still runs),
+# max_turns_hits (count, kept across runs) increments in <seat>-tick.json, and stderr says `seat-tick: <seat> max-turns <N> reached`. Any other non-zero exit is unchanged.
+# State keys: max_turns_hits last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead, then is QUEUED (exit 0), never dropped.
@@ -90,14 +96,22 @@ on_exit() {
 
 usage() { echo 'usage: seat-tick.sh <seat> [--ask "<text>" | --event | --status | --guard-check]   |   seat-tick.sh --selftest' >&2; exit 64; }
 
-# seat row from the table; sets ROLE SID TICK_MIN TIMEOUT_SEC GOAL_RE OLD_PID or returns 1
+# seat row from the table; sets ROLE SID TICK_MIN TIMEOUT_SEC GOAL_RE OLD_PID MAX_TURNS (numeric, or empty = no cap: `-`, absent 8th column, or junk with a WARN) or returns 1
 load_seat() {
   local row
-  row="$(awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7; exit}' "$SEATS" 2>/dev/null)"
+  row="$(awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8; exit}' "$SEATS" 2>/dev/null)"
   [ -n "$row" ] || return 1
-  IFS=$'\t' read -r ROLE SID TICK_MIN TIMEOUT_SEC GOAL_RE OLD_PID <<<"$row"
+  MAX_TURNS=""
+  IFS=$'\t' read -r ROLE SID TICK_MIN TIMEOUT_SEC GOAL_RE OLD_PID MAX_TURNS <<<"$row"
+  case "${MAX_TURNS:-}" in
+    ""|-) MAX_TURNS="" ;;
+    *[!0-9]*|0*) echo "seat-tick: WARN $1 max_turns '$MAX_TURNS' is not an integer >= 1 (or -): no cap" >&2; MAX_TURNS="" ;;
+  esac
   [ -n "$SID" ] && [ -n "${OLD_PID:-}" ]
 }
+
+# max_turns_hit <log>: 0 if the LAST non-empty line of a failed turn's output is claude's max-turns marker `Error: Reached max turns (<N>)`; prints N (measured: claude -p prints only that line, exit 1)
+max_turns_hit() { local l; l="$(tail -c 2048 "$1" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n1 | tr -d '\r')"; [[ "$l" =~ ^Error:\ Reached\ max\ turns\ \(([0-9]+)\)$ ]] && echo "${BASH_REMATCH[1]}"; }
 
 # print-mode claude (`claude -p ...` / --print) is a headless turn, never the interactive seat
 is_print_mode() { case " $1 " in *" -p "*|*" --print "*) return 0 ;; esac; return 1; }
@@ -295,7 +309,8 @@ selftest() {
   export FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
          SEAT_CLAUDE_BIN="$T/claude" SEAT_OAUTH_ENV="$T/oauth.conf" SEAT_LOCK_WAIT=1 SEAT_ASK_LOCK_WAIT=1
   mkdir -p "$T/dash"
-  printf '# test table\nctl\tcontroller\t%s\t20\t14400\t^/goal SWARM-CONTROL\t999999999\nrb\trb\t%s\t20\t14400\t^/goal CLEARWATER:\t-\nr7\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\ntmo\trb\t%s\t20\t4\t^/goal CLEARWATER:\t-\n' \
+  # col 8 = max_turns (ctl 60, rb 80, r7 80, tmo 80); the 'nt' row added later is a 7-column row (old table) and must run uncapped
+  printf '# test table\nctl\tcontroller\t%s\t20\t14400\t^/goal SWARM-CONTROL\t999999999\t60\nrb\trb\t%s\t20\t14400\t^/goal CLEARWATER:\t-\t80\nr7\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\t80\ntmo\trb\t%s\t20\t4\t^/goal CLEARWATER:\t-\t80\n' \
     "$CS" "$RS" "$SS" "$TS" >"$SEATS_TABLE"
   printf 'controller test-model-1\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
   # INVARIANT (10-22 night): no fixture SID, decoy argv string or fake seats row carries a SID of the REAL table (read-only); a decoy with the live rb SID
@@ -348,6 +363,7 @@ if [ -n "${FAKE_STOPHOOK_FILE:-}" ]; then   # a live /goal judge bouncing the tu
 fi
 sleep "${FAKE_SLEEP:-2}"
 echo "END $(date +%s.%N)"
+[ -n "${FAKE_MAXTURNS:-}" ] && { printf 'Error: Reached max turns (%s)' "$FAKE_MAXTURNS"; exit 1; }   # MEASURED (claude 2.1.293, --max-turns 1): this line, no newline, stderr empty, exit 1
 [ -n "${FAKE_LIMIT:-}" ] && echo "$FAKE_LIMIT"
 exit "${FAKE_EXIT:-0}"
 FAKE
@@ -362,7 +378,7 @@ FAKE
   # 1. ctl SWEEP #1: no status file yet, 3 approvals pending
   "$SELF" ctl >"$T/o1" 2>"$T/e1"; rc=$?
   [ "$rc" = 0 ]; chk "sweep 1: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 $CA --resume $CS SWEEP $ts_re tick=1 status_age=none approvals_new=3 events_new=0\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 --max-turns 60 $CA --resume $CS SWEEP $ts_re tick=1 status_age=none approvals_new=3 events_new=0\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
   grep -q "model test-model-1" "$T/o1"; chk "model comes from MRC_TABLE controller row" $?
   grep -q "token_set=yes cwd=$HOME\$" "$T/o1"; chk "oauth env sourced (token present, value not shown), cwd=\$HOME" $?
   grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o1"; chk "SWEEP: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
@@ -383,7 +399,7 @@ FAKE
   rm -f "$T/dash/fleet-status.md"; printf 'controller test-model-2\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
   "$SELF" ctl --ask "what is rb doing?" >"$T/o3" 2>"$T/e3"; rc=$?
   [ "$rc" = 0 ]; chk "ask: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 $CA --resume $CS ASK $ts_re seat=ctl approvals_new=0 events_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 --max-turns 60 $CA --resume $CS ASK $ts_re seat=ctl approvals_new=0 events_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
   grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o3"; chk "ASK: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   [ ! -e "$T/dash/fleet-status.md" ]; chk "ASK did not write the boundary marker (SWEEP only)" $?
   [ -s "$T/dash/ctl-ask-last.log" ]; chk "ctl-ask-last.log written" $?
@@ -456,7 +472,7 @@ FAKE
   rm -f "$T/dash/fleet-status.md"
   "$SELF" rb >"$T/orb" 2>"$T/erb"; rc=$?
   [ "$rc" = 0 ]; chk "rb tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb $LA --resume $RS TICK $ts_re seat=rb tick=1 events_new=0\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 $LA --resume $RS TICK $ts_re seat=rb tick=1 events_new=0\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
   [ "$(pl rb 2 | head -1)" = "$goal_rb" ] && [ "$goal_rb" != "" ]; chk "rb: prompt line 2 = the /goal CLEARWATER: line verbatim ('$(pl rb 2 | cut -c1-70)...')" $?
   [ "$(pl rb 3)" = 'Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; every EVENT line gets a read and, if real, a mitigation this turn; log a DECISION row for each action; this turn ends when you print the timestamped STATUS block.' ] && [ "$(wc -l <"$T/dash/prompt.rb.txt")" = 2 ]; chk "rb: prompt line 3 = the rules line verbatim, exactly 3 lines" $?
   ! grep -q 'approvals_new\|status_age' "$T/dash/prompt.rb.txt"; chk "rb: no approvals_new / status_age in the prompt" $?
@@ -490,12 +506,12 @@ FAKE
   ( cd "$T/notes" && git checkout -q -- wiki/goal.md ) 2>/dev/null
   # rb ASK
   "$SELF" rb --ask "status of 1025?" >"$T/orba" 2>&1; rc=$?
-  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb $LA --resume $RS ASK $ts_re seat=rb events_new=0: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
+  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 $LA --resume $RS ASK $ts_re seat=rb events_new=0: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
 
   # 10. r7 TICK
   "$SELF" r7 >"$T/or7" 2>"$T/er7"; rc=$?
   [ "$rc" = 0 ]; chk "r7 tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 $LA --resume $SS TICK $ts_re seat=r7 tick=1 events_new=0\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 $LA --resume $SS TICK $ts_re seat=r7 tick=1 events_new=0\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
   [ "$(pl r7 2)" = "$goal_r7" ] && [ "$(pl r7 3 | cut -c1-23)" = "Rules of this shape: on" ] && [ "$(wc -l <"$T/dash/prompt.r7.txt")" = 2 ]; chk "r7: line 2 = the /goal CLEARWATER-R7 line verbatim (not the rb line), line 3 = rules, 3 lines" $?
   grep -q '^seat_env=WM_SEAT=r7 CLAUDE_SESSION_NAME=r7 WM_DECIDE_AGENT=r7$' "$T/or7" && [ -e "$T/dash/r7.lock" ] && [ -s "$T/dash/r7-tick-last.log" ] && [ ! -e "$T/dash/fleet-status.md" ] && ! grep -q 'approvals_new' "$T/dash/prompt.r7.txt"; chk "r7: WM_SEAT=r7, r7.lock, r7-tick-last.log, no --open, no approvals_new" $?
   [ "$(jseat r7 .sends_total)" = 1 ] && [ "$(jseat r7 .last_prompt_kind)" = tick ]; chk "r7: state r7-tick.json sends_total=1 kind=tick" $?
@@ -1007,6 +1023,46 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
   ! grep -q 'is disab''led in `claude -p`' "$SELF"; chk "the false premise ('goal loop disabled in claude -p') is gone from the header" $?
   rm -f "$T/dash/r7-events.log" "$T/dash/r7.wake"
 
+  # 12. (10-23) max_turns: seats.tsv column 8 -> `--max-turns <N>` after --model; a max-turns end is a NORMAL end (measured: stdout `Error: Reached max turns (<N>)`, exit 1)
+  local MT_SID=selftest-mt-sid-$$-0005 MT_SID7=selftest-mt7-sid-$$-0006 MT_SIDJ=selftest-mtj-sid-$$-0007
+  cp "$SEATS_TABLE" "$T/seats.pre-mt"
+  printf 'mtd\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\t-\nmt7\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\nmtj\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\tabc\n' "$MT_SID" "$MT_SID7" "$MT_SIDJ" >>"$SEATS_TABLE"
+  FAKE_SLEEP=0 "$SELF" mtd >"$T/omt1" 2>"$T/emt1"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/omt1" && ! grep -q -- '--max-turns' "$T/omt1" && grep -q -- "--model test-model-r7 $LA --resume $MT_SID " "$T/omt1"; chk "max_turns (a): a row with '-' in column 8 runs with no --max-turns" $?
+  FAKE_SLEEP=0 "$SELF" mt7 >"$T/omt2" 2>"$T/emt2"; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/omt2" && ! grep -q -- '--max-turns' "$T/omt2"; chk "max_turns (b): a 7-column row (old table) runs with no --max-turns" $?
+  FAKE_SLEEP=0 "$SELF" mtj >"$T/omt3" 2>"$T/emt3"; rc=$?
+  [ "$rc" = 0 ] && ! grep -q -- '--max-turns' "$T/omt3" && grep -q "WARN mtj max_turns 'abc'" "$T/emt3"; chk "max_turns (c): junk in column 8 -> WARN on stderr and no cap (never a bad argv)" $?
+  for mtk in "" --event "--ask mt-ask"; do
+    rm -f "$T/dash/r7-events.log"; [ "$mtk" = --event ] && printf '%s | selftest | mt event\n' "$(date -Iseconds)" >"$T/dash/r7-events.log"
+    # shellcheck disable=SC2086
+    FAKE_SLEEP=0 "$SELF" r7 $mtk >"$T/omt4" 2>/dev/null
+    grep -Eq -- "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 $LA --resume $SS " "$T/omt4"; chk "max_turns (d): r7 ${mtk:-tick} turn: '--max-turns 80' sits between --model and --settings" $?
+  done
+  rm -f "$T/dash/r7-events.log"
+  # the measured max-turns end: exit 0, offset advances, no failure path, counter + stderr line
+  FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # normalize
+  printf '%s | selftest | mt1\n%s | selftest | mt2\n' "$(date -Iseconds)" "$(date -Iseconds)" >"$T/dash/r7-events.log"
+  local mtsk; mtsk="$(jseat r7 .ticks_skipped)"
+  FAKE_SLEEP=0 FAKE_MAXTURNS=80 "$SELF" r7 >"$T/omt5" 2>"$T/emt5"; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .last_exit)" = 0 ] && [ "$(jseat r7 .max_turns_hits)" = 1 ] && [ "$(jseat r7 .last_skip_reason)" = null ] && [ "$(jseat r7 .ticks_skipped)" = "$mtsk" ] \
+    && [ "$(jseat r7 .events_offset)" = "$(stat -c %s "$T/dash/r7-events.log")" ] && grep -qF 'seat-tick: r7 max-turns 80 reached' "$T/emt5" && grep -q -- '--max-turns 80' "$T/omt5" && ! grep -q 'ABORTED\|FAILED' "$T/emt5" "$T/omt5"
+  chk "max_turns (e): fake claude prints the measured marker + exits 1 -> unit exit 0, last_exit 0, max_turns_hits=1, events_offset advanced, last_skip_reason null, stderr '$(grep -m1 'max-turns' "$T/emt5")'" $?
+  FAKE_SLEEP=0 FAKE_MAXTURNS=80 "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .max_turns_hits)" = 2 ]; chk "max_turns (f): a second capped turn -> max_turns_hits=2" $?
+  FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ "$(jseat r7 .max_turns_hits)" = 2 ]; chk "max_turns (g): the counter survives a normal turn (still 2)" $?
+  "$SELF" r7 --status | jq -e 'has("max_turns_hits")' >/dev/null; chk "max_turns (h): --status carries max_turns_hits" $?
+  # not the marker -> still a failure
+  FAKE_SLEEP=0 FAKE_EXIT=1 "$SELF" r7 >/dev/null 2>&1; rc=$?
+  [ "$rc" = 1 ] && [ "$(jseat r7 .last_exit)" = 1 ] && [ "$(jseat r7 .max_turns_hits)" = 2 ]; chk "max_turns (i): any other exit 1 stays a failure (exit 1, hits unchanged)" $?
+  FAKE_SLEEP=0 FAKE_MAXTURNS=80 "$SELF" mtd >/dev/null 2>&1; rc=$?
+  [ "$rc" = 1 ] && [ "$(jseat mtd .max_turns_hits)" = 0 ]; chk "max_turns (j): the marker on an UNCAPPED row is not special-cased (exit 1, hits 0)" $?
+  cp "$T/seats.pre-mt" "$SEATS_TABLE"; rm -f "$T/dash/r7-events.log"
+  local mtbad=""
+  mtbad="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && NF >= 8 && $8 !~ /^(-|[1-9][0-9]*)$/ {print $1 "(" $8 ")"}' "$HOME/.claude/state/seats.tsv" 2>/dev/null)"
+  [ -z "$mtbad" ]; chk "real table: column 8 max_turns is absent, '-' or an integer >= 1${mtbad:+: $mtbad}" $?
+
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
 }
@@ -1058,6 +1114,7 @@ S_reason="$(sget '.last_skip_reason // ""')"; S_seen="$(sget '.approvals_seen //
 S_dur="$(sget '.last_duration_s // null')"; S_kind="$(sget '.last_prompt_kind // ""')"; S_gsince="$(sget '.guard_since // 0')"
 S_qw="$(sget '.quota_wait_until // empty')"; [[ "$S_qw" =~ ^[0-9]+$ ]] || S_qw=""
 S_qa="$(sget '.quota_account // empty')"
+S_mth="$(sget '.max_turns_hits // 0')"; [[ "$S_mth" =~ ^[0-9]+$ ]] || S_mth=0
 # fleet-token (10-23): token.json names the account in use; a quota wait recorded under another account is stale (the rotation changed who is limited)
 tok_account() { [ -r "$DASH/token.json" ] && jq -r '.account // empty' "$DASH/token.json" 2>/dev/null || true; }
 if [ -n "$S_qw" ]; then _cur_acct="$(tok_account)"; if [ -n "$_cur_acct" ] && [ "$_cur_acct" != "$S_qa" ]; then S_qw=""; S_qa=""; fi; fi
@@ -1071,8 +1128,8 @@ save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
   jq -n --arg seat "$SEAT" --arg iso "$iso" --argjson ep "$now" --argjson ls "$S_last_sent" --argjson sk "$S_skipped" --arg why "$S_reason" \
         --argjson sn "$S_sends" --argjson as "$S_seen" --argjson ex "$S_exit" --argjson du "$S_dur" --arg kind "$S_kind" --arg sf "$SFILE" --argjson gs "$S_gsince" \
-        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --arg qa "$S_qa" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" \
-    '{seat:$seat, asks_pending:$ap, stop_hook_bounces:$shb, stop_hook_lines_before:$shl, last_covered_at:(if $cva=="" then null else $cva end), last_covered_by:(if $cvb=="" then null else $cvb end), last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
+        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --arg qa "$S_qa" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" --argjson mth "$S_mth" \
+    '{seat:$seat, asks_pending:$ap, max_turns_hits:$mth, stop_hook_bounces:$shb, stop_hook_lines_before:$shl, last_covered_at:(if $cva=="" then null else $cva end), last_covered_by:(if $cvb=="" then null else $cvb end), last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
       sends_total:$sn, last_exit:$ex, last_duration_s:$du, last_prompt_kind:(if $kind=="" then null else $kind end),
       status_file:(if $sf=="" then null else $sf end), approvals_seen:$as,
       guard_since:(if ($why|startswith("guard:")) and $gs>0 then $gs else null end),
@@ -1223,7 +1280,8 @@ case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*|quota-wait:*) S
 S_shbefore="$(stop_hook_lines "$SID")"   # before the turn: a /goal judge bounce adds `Stop hook` lines to the session file
 pre_ok=1; save || { pre_ok=0; echo "seat-tick: WARN pre-turn state save failed" >&2; }
 trap on_exit EXIT
-LEAN_ARGV=()
+LEAN_ARGV=(); MT_ARGV=()
+[ -n "$MAX_TURNS" ] && MT_ARGV=(--max-turns "$MAX_TURNS")   # seats.tsv col 8; empty = no cap
 case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, full hook set
   rb|r7) for _kv in $LEAN_ENV_VARS; do export "$_kv"; done
          read -ra LEAN_ARGV <<<"${LEAN_FLAGS//\$HOME/$HOME}" ;;
@@ -1235,8 +1293,12 @@ if [ "$ASK_NEW" -gt 0 ]; then
     asks_consume && [ -n "$ASK_CONSUMED" ] && echo "seat-tick: $SEAT $ASK_NEW queued ask(s) carried in this prompt, queue -> ${ASK_CONSUMED##*/}"
   else echo "seat-tick: $SEAT WARN claude not launchable (or pre-turn save failed): $ASK_NEW queued ask(s) stay queued" >&2; fi
 fi
-( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
-rc="${PIPESTATUS[0]:-1}"; TURN_RC="$rc"
+( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${MT_ARGV[@]}" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
+rc="${PIPESTATUS[0]:-1}"
+# a capped turn ends `Error: Reached max turns (<N>)` with exit 1 (see MAX-TURNS in the header): the seat did its bounded sweep, a normal end
+MT_N=""; [ "$rc" != 0 ] && [ -n "$MAX_TURNS" ] && MT_N="$(max_turns_hit "$LOG")"
+if [ -n "$MT_N" ]; then S_mth=$(( S_mth + 1 )); echo "seat-tick: $SEAT max-turns $MT_N reached" >&2; echo "seat-tick: $SEAT claude exit=$rc is the max-turns marker: recorded as a normal end (exit 0)"; rc=0; fi
+TURN_RC="$rc"
 [ "$rc" = 0 ] || asks_restore   # a failed (or quota-limited) turn never answered the queued asks it carried
 end="$(date +%s)"
 echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"
