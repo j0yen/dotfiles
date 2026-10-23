@@ -17,12 +17,22 @@
 # failure nobody can act on (10-22 5:58-7:00 PM: six SEAT-TICK FAILED bells, one per 20-min tick). The tick parses the reset time (the tz in the parens, else America/Los_Angeles; today, or
 # tomorrow when already past) into quota_wait_until (epoch; null when it does not parse), sets last_skip_reason=quota-wait:<iso|unknown>, does NOT count a skip, prints
 # `seat-tick: <seat> quota-wait until <time> (session limit)` and exits 0 (the unit does not fail, no bell). While now < quota_wait_until every tick/event/ask exits 0 right after the
-# lock ("quota-wait in effect until <time>"), claude not launched, events_offset and the unread events untouched (the first turn after the wait delivers them; an ASK's text is NOT queued:
-# the caller sees the stderr line). The first exit-0 turn clears quota_wait_until and the reason. A real exit 1 with no limit line stays a failure.
-# State keys: seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until.
+# lock ("quota-wait in effect until <time>"), claude not launched, events_offset and the unread events untouched (the first turn after the wait delivers them; an ASK is QUEUED, see ASK-QUEUE).
+# The first exit-0 turn clears quota_wait_until and the reason. A real exit 1 with no limit line stays a failure.
+# State keys: asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
-# LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead.
+# LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead, then is QUEUED (exit 0), never dropped.
+# ASK-QUEUE (10-22 8:40 PM; rb's tick held the lock past 1800 s and four rulings died "lock busy after 1800s, kind=ask" exit 5): an ASK that cannot take the lock within its wait, or that
+# arrives during quota-wait, is appended as one JSON record {ts, from (EVENT_SOURCE else "ask"), text} to <seat>-asks.pending (0600, under <seat>-asks.lock), an
+# `ASK-QUEUED <seat> <ts>: <first 120 chars>` line goes into <seat>-events.log (source ask-queue; written directly, seat-event.sh is not called), <seat>.wake is touched (the running turn
+# chains one EVENT turn at its end), stderr says `seat-tick: <seat> ask queued (lock busy <N>s | quota-wait until <time>): <first 80 chars>`, and the ask exits 0 (= accepted-or-queued).
+# EVERY prompt build (TICK/SWEEP/EVENT/ASK) drains the queue: a non-empty file adds an `ASKS (queued while busy):` block (`- <ts> (from <src>): <text>`, oldest first) after the EVENTS block; the
+# live ask text of a kind=ask turn stays in the first prompt line. The bytes shown are moved to <seat>-asks.pending.consumed-<epoch> only after the pre-turn state save succeeded and the claude
+# binary resolves (asks queued since the snapshot stay); a turn that then exits non-zero (or aborts) puts the consumed records back at the head of the queue. An EVENT turn with no new
+# events but queued asks still runs. `--status` shows asks_pending (live count; the state file carries the count of its last save).
+# Not queued: an ASK refused by the guard (exit 4) or the goal-line check (exit 6) still fails loudly for the caller. When the running turn is itself the chained EVENT turn it does not chain again:
+# the queue then waits for the next timer tick.
 # LOCK-COVERED (10-22): whoever holds the lock writes `<kind> <pid> <epoch>` to <seat>.lock.holder. A timer tick that times out while that holder is a live
 # EVENT or ASK turn of the SAME seat (pid alive, cmdline `seat-tick.sh <seat> --event|--ask`) is covered: last_skip_reason=lock-covered:<kind>:<pid>,
 # ticks_skipped NOT incremented, <seat>.wake touched (the running turn chains one EVENT turn), exit 0. Any other holder (tick, foreign, stale, dead) = exit 5 + a skip.
@@ -34,7 +44,7 @@
 # LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
 # flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design;
 # its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({env: CLAUDE_CODE_AUTO_COMPACT_WINDOW 360000 + CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 50, autoCompactEnabled: true, autoCompactWindow: auto} = seats compact at 180K; ~/.claude/settings.local.json runs the aide at 1000000×50 % = 500K for $HOME and the --settings layer beats it; rb/r7 get the same pin from claude-seat/settings.json).
-# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_SELFTEST+SEAT_GUARD_TTY_OVERRIDE=<pid>:<0|1>[,...] (selftest only: fake 'has a tty' per pid) SEATS_TABLE_REAL (selftest invariant: the real table, read-only) SEAT_TICK_SELFTEST+SEAT_NOW_EPOCH (selftest only: fake clock for the quota-wait) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
+# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_SELFTEST+SEAT_GUARD_TTY_OVERRIDE=<pid>:<0|1>[,...] (selftest only: fake 'has a tty' per pid) SEATS_TABLE_REAL (selftest invariant: the real table, read-only) SEAT_TICK_SELFTEST+SEAT_NOW_EPOCH (selftest only: fake clock for the quota-wait) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR EVENT_SOURCE (the `from` of a queued ask)
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 DASH="${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}"
@@ -65,6 +75,7 @@ on_exit() {
   trap - EXIT
   S_exit="$c"; [ "$c" = 0 ] && S_exit="${TURN_RC:-1}"; [ "$S_exit" = 0 ] && S_exit=1   # a signal exit reaches the trap with $?=0
   now="$(date +%s)"; iso="$(date -Iseconds)"; S_dur=$(( now - ${start:-$now} )); S_evnew="${EV_NEW:-0}"
+  [ "${TURN_RC:-}" = 0 ] || asks_restore 2>/dev/null   # an aborted turn never answered the queued asks it carried
   save 2>/dev/null
   echo "seat-tick: ${SEAT:-?} ${KIND:-?} ABORTED before the end-of-turn save (exit=$S_exit); state recorded" >&2
 }
@@ -200,6 +211,51 @@ quota_reset() {
   [[ "$cand" =~ ^[0-9]+$ ]] && echo "$cand"
 }
 
+# ---- pending-ask queue (see ASK-QUEUE in the header). Globals set in main: ASKQ ASKLOCK EVJ EVF WAKE DASH SEAT ASK_TEXT ASK_ONE (the ask text on one line) ----
+asks_count() { local n; n="$(grep -c . "$ASKQ" 2>/dev/null)"; echo "${n:-0}"; }
+# queue_ask: record + ASK-QUEUED event + .wake. Returns 1 when the record could not be written (nothing else is done then).
+queue_ask() {
+  local ts rec evl tmp prog
+  ts="$(date -Iseconds)"
+  rec="$(jq -nc --arg ts "$ts" --arg from "${EVENT_SOURCE:-ask}" --arg text "$ASK_TEXT" '{ts:$ts,from:$from,text:$text}')" || return 1
+  { flock 6; ( umask 077; printf '%s\n' "$rec" >>"$ASKQ" ) && chmod 600 "$ASKQ"; } 6>>"$ASKLOCK" || return 1
+  evl="ASK-QUEUED $SEAT $ts: ${ASK_ONE:0:120}"
+  {
+    flock 7
+    [ -e "$EVF" ] || ( umask 077; : >"$EVF" )
+    chmod 600 "$EVF"
+    printf '%s | ask-queue | %s\n' "$ts" "$evl" >>"$EVF"
+    # the same counters seat-event.sh keeps (appended, last_event, woke_deferred, last_wake)
+    prog='({appended:0,dropped_dup:0,woke_tick:0,woke_deferred:0,last_event:null,last_wake:null} + (. // {})) | .appended += 1 | .woke_deferred += 1 | .last_event=$iso | .last_wake=$iso'
+    if tmp="$(mktemp "$DASH/.$SEAT-events.XXXXXX")"; then
+      { jq --arg iso "$ts" "$prog" "$EVJ" 2>/dev/null || echo '{}' | jq --arg iso "$ts" "$prog"; } >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$EVJ" || rm -f "$tmp"
+    fi
+  } 7>>"$DASH/$SEAT-events.lock"
+  touch "$WAKE"
+  return 0
+}
+# asks_consume: move the first ASK_BYTES bytes of the queue (what the prompt shows) to <queue>.consumed-<epoch>; sets ASK_CONSUMED (empty if nothing moved)
+asks_consume() {
+  local sz c n=0
+  ASK_CONSUMED=""
+  c="$ASKQ.consumed-$(date +%s)"; while [ -e "$c" ]; do n=$((n + 1)); c="$ASKQ.consumed-$(date +%s)-$n"; done
+  {
+    flock 6
+    sz="$(stat -c %s "$ASKQ" 2>/dev/null || echo 0)"
+    if [ "$sz" -le 0 ]; then :
+    elif [ "$sz" -le "$ASK_BYTES" ]; then mv -f "$ASKQ" "$c" && ASK_CONSUMED="$c"
+    else head -c "$ASK_BYTES" "$ASKQ" >"$c" && tail -c +$((ASK_BYTES + 1)) "$ASKQ" >"$ASKQ.rest" && mv -f "$ASKQ.rest" "$ASKQ" && ASK_CONSUMED="$c"
+    fi
+  } 6>>"$ASKLOCK"
+}
+# asks_restore: put the consumed records back at the head of the queue (the turn that carried them failed)
+asks_restore() {
+  [ -n "${ASK_CONSUMED:-}" ] && [ -e "$ASK_CONSUMED" ] || return 0
+  { flock 6; { cat -- "$ASK_CONSUMED"; cat -- "$ASKQ" 2>/dev/null; true; } >"$ASKQ.rest" && mv -f "$ASKQ.rest" "$ASKQ" && rm -f "$ASK_CONSUMED"; } 6>>"$ASKLOCK"
+  echo "seat-tick: ${SEAT:-?} the turn did not complete: queued ask(s) restored to ${ASKQ##*/}" >&2
+  ASK_CONSUMED=""
+}
+
 # ---- selftest -------------------------------------------------------------------------------------
 ST_T=""; ST_PIDS=""
 st_cleanup() { local p; for p in $ST_PIDS; do kill "$p" 2>/dev/null; done; [ -n "$ST_T" ] && [ -z "${SELFTEST_KEEP:-}" ] && rm -rf "$ST_T"; [ -n "${SELFTEST_KEEP:-}" ] && echo "kept $ST_T"; }
@@ -329,7 +385,8 @@ FAKE
   ! grep -q ALARM "$T/e61" "$T/e62"; chk "no ALARM before the 3rd skip" $?
   grep -q 'ALARM ctl tick skipped 3 ticks' "$T/e63"; chk "ALARM on stderr at ticks_skipped>=3: '$(grep ALARM "$T/e63")'" $?
   "$SELF" ctl --ask while-locked >/dev/null 2>&1; rc=$?
-  [ "$rc" = 5 ] && [ "$(j .ticks_skipped)" = 3 ]; chk "ask that cannot lock: exit 5, ticks_skipped unchanged" $?
+  [ "$rc" = 0 ] && [ "$(j .ticks_skipped)" = 3 ] && [ "$(wc -l <"$T/dash/ctl-asks.pending")" = 1 ]; chk "ask that cannot lock: queued, exit 0 (was 5, 10-22 8:40 PM), ticks_skipped unchanged" $?
+  rm -f "$T/dash/ctl-asks.pending" "$T/dash/ctl-events.log" "$T/dash/ctl.wake"   # the queued ask and its ASK-QUEUED event belong to this test only
   kill "$ph" 2>/dev/null; wait "$ph" 2>/dev/null; sleep 0.3
   FAKE_SLEEP=0 "$SELF" ctl >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && [ "$(j .ticks_skipped)" = 0 ]; chk "next successful run resets ticks_skipped to 0" $?
@@ -763,6 +820,66 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
   [ "$rc" = 0 ] && grep -q '^ARGV' "$T/oq10"; chk "quota-wait (h): SEAT_NOW_EPOCH is ignored outside selftest mode (the real clock is past the wait, claude runs)" $?
   rm -f "$T/dash/r7-events.log"
 
+  # 17b. (10-22 8:40 PM) ASK QUEUE: an ask that cannot take the lock (or arrives during quota-wait) is queued, never dropped; every prompt drains the queue
+  local AKQ="$T/dash/rb-asks.pending" aks0 akp akq_t1 akq_t2 akq_ev akq_n akq_c
+  askq_busy() {   # askq_busy <ask text> [env...]: a fake same-seat tick holds the rb lock for 3 s while the ask (SEAT_ASK_LOCK_WAIT=1) runs
+    ( exec 8>>"$EVD/rb.lock"; flock 8; sleep 3 ) & ST_PIDS="$ST_PIDS $!"; akp=$!
+    sleep 0.4
+    env "${@:2}" SEAT_ASK_LOCK_WAIT=1 "$SELF" rb --ask "$1" >"$T/oak" 2>"$T/eak"; rc=$?
+    wait "$akp" 2>/dev/null
+  }
+  rm -f "$AKQ" "$AKQ".consumed-* "$EVD/rb.wake"; : >"$EVD/rb-events.log"
+  FAKE_SLEEP=0 "$SELF" rb >/dev/null 2>&1   # normalize: events delivered, no wake, no queue
+  aks0="$(jseat rb .sends_total)"
+  akq_t1="ruling one: cordon 1025 | \"quoted\" \$dollar"
+  akq_t2="ruling two: $(printf 'x%.0s' $(seq 1 200))"
+  askq_busy "$akq_t1" EVENT_SOURCE=ctl-test
+  [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oak" && grep -qF "seat-tick: rb ask queued (lock busy 1s): ${akq_t1:0:80}" "$T/eak"; chk "ASK queue: lock held past the ask's wait -> exit 0 (not 5), claude not run, stderr 'ask queued (lock busy 1s): <first 80>'" $?
+  [ "$(wc -l <"$AKQ")" = 1 ] && [ "$(jq -r .text "$AKQ")" = "$akq_t1" ] && [ "$(jq -r .from "$AKQ")" = ctl-test ] && [ -n "$(jq -r '.ts // empty' "$AKQ")" ] && [ "$(stat -c %a "$AKQ")" = 600 ]; chk "ASK queue: 1 JSONL record {ts, from=EVENT_SOURCE, text verbatim}, mode 0600" $?
+  akq_ev="$(tail -n1 "$EVD/rb-events.log")"
+  [[ "$akq_ev" =~ ^[0-9T:+-]+\ \|\ ask-queue\ \|\ ASK-QUEUED\ rb\ [0-9T:+-]+:\ ruling\ one:\ cordon\ 1025 ]]; chk "ASK queue: events log gets '<iso> | ask-queue | ASK-QUEUED rb <ts>: <text>' ($(printf '%s' "$akq_ev" | cut -c1-110))" $?
+  [ -e "$EVD/rb.wake" ] && [ "$(jseat rb .sends_total)" = "$aks0" ] && [ "$(jq -r .appended "$EVD/rb-events.json")" -ge 1 ]; chk "ASK queue: .wake touched, sends_total unchanged ($aks0), events.json appended counted" $?
+  askq_busy "$akq_t2"
+  [ "$rc" = 0 ] && [ "$(wc -l <"$AKQ")" = 2 ] && [ "$(jq -sr '.[1].text' "$AKQ")" = "$akq_t2" ] && [ "$(jq -sr '.[1].from' "$AKQ")" = ask ] && [ "$(jq -sr '.[0].text' "$AKQ")" = "$akq_t1" ]; chk "ASK queue: a second queued ask appends (2 records, order kept, from defaults to 'ask')" $?
+  akq_ev="$(tail -n1 "$EVD/rb-events.log")"; akq_ev="${akq_ev#*ASK-QUEUED rb * }"
+  [ "${#akq_ev}" = 120 ] && [ "$akq_ev" = "${akq_t2:0:120}" ] && grep -qF "ask queued (lock busy 1s): ${akq_t2:0:80}" "$T/eak" && ! grep -qF "${akq_t2:0:81}" "$T/eak"; chk "ASK queue: event line carries the first 120 chars, stderr the first 80" $?
+  [ "$("$SELF" rb --status | jq -r .asks_pending)" = 2 ] && [ "$("$SELF" ctl --status | jq -r .asks_pending)" = 0 ]; chk "ASK queue: --status asks_pending=2 for rb, 0 for ctl" $?
+  FAKE_SLEEP=0 "$SELF" rb >"$T/oak3" 2>&1; rc=$?
+  akq_n="$(grep -n '^ASKS (queued while busy):$' "$EVD/prompt.rb.txt" | cut -d: -f1)"
+  [ "$rc" = 0 ] && [ -n "$akq_n" ] && sed -n "$((akq_n + 1))p" "$EVD/prompt.rb.txt" | grep -qF -- "(from ctl-test): $akq_t1" && sed -n "$((akq_n + 2))p" "$EVD/prompt.rb.txt" | grep -qF -- "(from ask): $akq_t2" \
+    && [ "$(grep -n '^EVENTS since ' "$EVD/prompt.rb.txt" | cut -d: -f1)" -lt "$akq_n" ]; chk "ASK queue: next tick prompt = EVENTS block, then 'ASKS (queued while busy):' with both texts in queue order" $?
+  akq_c="$(ls "$AKQ".consumed-* 2>/dev/null | wc -l)"
+  [ ! -s "$AKQ" ] && [ "$akq_c" = 1 ] && [ "$(wc -l <"$AKQ".consumed-*)" = 2 ] && [ "$("$SELF" rb --status | jq -r .asks_pending)" = 0 ] && grep -q 'queued ask(s) carried in this prompt' "$T/oak3"; chk "ASK queue: queue renamed to .consumed-<epoch> (2 records), asks_pending=0" $?
+  FAKE_SLEEP=0 "$SELF" rb >"$T/oak4" 2>&1
+  ! grep -q '^ASKS (queued' "$EVD/prompt.rb.txt"; chk "ASK queue: delivered once (the following tick has no ASKS block)" $?
+  # a claude that cannot launch leaves the queue alone; a turn that fails after launch puts the asks back
+  askq_busy "launch-fail ruling"
+  SEAT_CLAUDE_BIN="$T/no-such-claude" FAKE_SLEEP=0 "$SELF" rb >"$T/oak5" 2>&1; rc=$?
+  [ "$rc" != 0 ] && [ "$(wc -l <"$AKQ")" = 1 ] && [ "$(ls "$AKQ".consumed-* | wc -l)" = "$akq_c" ] && grep -q 'queued ask(s) stay queued' "$T/oak5"; chk "ASK queue: a tick whose claude cannot launch (exit $rc) leaves the queue intact (1 record, no new .consumed)" $?
+  FAKE_EXIT=1 FAKE_SLEEP=0 "$SELF" rb >"$T/oak6" 2>&1; rc=$?
+  grep -qF -- "launch-fail ruling" "$EVD/prompt.rb.txt" && [ "$rc" = 1 ] && [ "$(wc -l <"$AKQ")" = 1 ] && [ "$(ls "$AKQ".consumed-* | wc -l)" = "$akq_c" ] && grep -q 'restored to rb-asks.pending' "$T/oak6"; chk "ASK queue: a turn that carried the ask but exits 1 restores it to the queue (no loss; consumed copy removed)" $?
+  FAKE_SLEEP=0 "$SELF" rb >"$T/oak7" 2>&1
+  [ ! -s "$AKQ" ] && grep -qF -- "launch-fail ruling" "$EVD/prompt.rb.txt" && [ "$(ls "$AKQ".consumed-* | wc -l)" = "$((akq_c + 1))" ]; chk "ASK queue: the next good tick delivers and consumes the restored ask" $?
+  # an EVENT turn with no new events still runs for queued asks; an ask that arrives mid-turn (after the snapshot) is kept for the next prompt
+  FAKE_SLEEP=0 "$SELF" rb --event >/dev/null 2>&1   # deliver the pending ASK-QUEUED lines first: no new events from here
+  printf '{"ts":"2026-10-22T20:30:00-04:00","from":"hand","text":"event-carried ruling"}\n' >"$AKQ"
+  FAKE_SLEEP=0 "$SELF" rb --event >"$T/oak8" 2>&1; rc=$?
+  grep -q '^ARGV:.* EVENT .*seat=rb' "$T/oak8" && grep -qF -- "event-carried ruling" "$EVD/prompt.rb.txt" && [ ! -s "$AKQ" ]; chk "ASK queue: --event with queued asks runs (even with the events already delivered) and carries the ASKS block" $?
+  # quota-wait + ask: queued, not dropped, delivered by the first prompt after the wait
+  local QAN QAR QAS
+  QAN="$(TZ=America/Los_Angeles date -d '2026-10-22 18:00' +%s)"; QAR="$(TZ=America/Los_Angeles date -d '2026-10-22 19:10' +%s)"
+  rm -f "$T/dash/r7-asks.pending"*; : >"$T/dash/r7-events.log"; FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QAN" FAKE_SLEEP=0 FAKE_EXIT=1 FAKE_LIMIT="You've hit your session limit · resets 7:10pm (America/Los_Angeles)" "$SELF" r7 >/dev/null 2>&1
+  QAS="$(jseat r7 .sends_total)"
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$QAN" FAKE_SLEEP=0 "$SELF" r7 --ask "quota-time ruling" >"$T/oak9" 2>"$T/eak9"; rc=$?
+  [ "$rc" = 0 ] && ! grep -q '^ARGV' "$T/oak9" && grep -qF "seat-tick: r7 ask queued (quota-wait until $(date -d "@$QAR" '+%-I:%M %p %Z')): quota-time ruling" "$T/eak9" && [ "$(wc -l <"$T/dash/r7-asks.pending")" = 1 ] \
+    && tail -n1 "$T/dash/r7-events.log" | grep -q 'ask-queue | ASK-QUEUED r7 .*: quota-time ruling' && [ "$(jseat r7 .quota_wait_until)" = "$QAR" ] && [ "$(jseat r7 .sends_total)" = "$QAS" ] && [ -e "$T/dash/r7.wake" ]; chk "ASK queue: ask during quota-wait -> exit 0, queued + ASK-QUEUED event + .wake, claude not run, quota_wait_until kept" $?
+  SEAT_TICK_SELFTEST=1 SEAT_NOW_EPOCH="$((QAR + 60))" FAKE_SLEEP=0 "$SELF" r7 >"$T/oak10" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q '^ASKS (queued while busy):$' "$T/dash/prompt.r7.txt" && grep -qF -- "quota-time ruling" "$T/dash/prompt.r7.txt" && [ ! -s "$T/dash/r7-asks.pending" ] && [ "$(jseat r7 .quota_wait_until)" = null ]; chk "ASK queue: the first prompt after the wait carries the quota-time ask, queue consumed, quota_wait_until cleared" $?
+  # seat-ask.sh: exit 0 from seat-tick = accepted-or-queued; the queued case is told apart on stderr
+  grep -q 'ask queued' "$HERE/seat-ask.sh" && grep -q 'systemd-run --user --collect --unit "\$unit"' "$HERE/seat-ask.sh"; chk "seat-ask.sh: distinguishes a queued ask on stderr, still spawns the same transient unit" $?
+  rm -f "$T/dash/r7-events.log" "$T/dash/rb-asks.pending"*
+
   # 16. contracts against the REAL table, goal.md and unit files (read-only; no-drift)
   local real="$HOME/.claude/state/seats.tsv" realgoal="$HOME/Notes/wiki/goal.md" bad=""
   local rs rp rn
@@ -825,11 +942,13 @@ done
 [ -n "$SEAT" ] || usage
 load_seat "$SEAT" || { echo "seat-tick: unknown seat '$SEAT' (or malformed row) in $SEATS" >&2; exit 64; }
 STATE="$DASH/$SEAT-tick.json"
+ASKQ="$DASH/$SEAT-asks.pending"; ASKLOCK="$DASH/$SEAT-asks.lock"; EVJ="$DASH/$SEAT-events.json"
+ASK_ONE="$(printf '%s' "$ASK_TEXT" | tr '\r\n\t' '   ')"; ASK_CONSUMED=""
 SFILE=""; [ "$SEAT" = ctl ] && SFILE="$DASH/fleet-status.md"
 status() { cat "$STATE" 2>/dev/null || echo '{}'; }
 count_approvals() { [ -r "$APPROVALS" ] && grep -cvE '^[[:space:]]*(#|$)' "$APPROVALS" || true; }
 case "$MODE" in
-  status) status; exit 0 ;;
+  status) st="$(status)"; jq --argjson n "$(asks_count)" '.asks_pending = $n' <<<"$st" 2>/dev/null || echo "$st"; exit 0 ;;
   guard) why="$(guard)" && { echo "guard: clear ($why)"; exit 0; }; echo "guard: REFUSED $why" >&2; exit 4 ;;
 esac
 KIND="$MODE"   # tick | ask | event
@@ -854,8 +973,8 @@ save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
   jq -n --arg seat "$SEAT" --arg iso "$iso" --argjson ep "$now" --argjson ls "$S_last_sent" --argjson sk "$S_skipped" --arg why "$S_reason" \
         --argjson sn "$S_sends" --argjson as "$S_seen" --argjson ex "$S_exit" --argjson du "$S_dur" --arg kind "$S_kind" --arg sf "$SFILE" --argjson gs "$S_gsince" \
-        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" \
-    '{seat:$seat, last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
+        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --argjson ap "$(asks_count)" \
+    '{seat:$seat, asks_pending:$ap, last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
       sends_total:$sn, last_exit:$ex, last_duration_s:$du, last_prompt_kind:(if $kind=="" then null else $kind end),
       status_file:(if $sf=="" then null else $sf end), approvals_seen:$as,
       guard_since:(if ($why|startswith("guard:")) and $gs>0 then $gs else null end),
@@ -869,6 +988,10 @@ if [ "$KIND" = event ]; then   # an EVENT never waits: a running turn will chain
   if ! flock -n 9; then touch "$WAKE"; echo "seat-tick: $SEAT turn running, EVENT deferred (.wake touched)"; exit 0; fi
 elif ! flock -w "$W" 9; then
   echo "seat-tick: $SEAT lock busy after ${W}s, kind=$KIND" >&2
+  if [ "$KIND" = ask ]; then   # an ask is never dropped: queue it, the running turn chains an EVENT turn that carries it (or the next prompt does)
+    if queue_ask; then echo "seat-tick: $SEAT ask queued (lock busy ${W}s): ${ASK_ONE:0:80}" >&2; exit 0; fi
+    echo "seat-tick: $SEAT ask could NOT be queued (cannot write $ASKQ): ${ASK_ONE:0:80}" >&2; exit 1
+  fi
   if [ "$KIND" = tick ]; then
     # covered: the holder is a live EVENT/ASK turn of this seat, which is itself a full turn for the seat; the .wake makes it chain one more EVENT turn at its end
     if cov="$(holder_covers)"; then
@@ -889,6 +1012,10 @@ note_holder
 # a2. quota-wait in effect: the plan's usage limit has not reset yet, so claude cannot answer. Exit 0 (no unit failure, no bell) BEFORE the guard scan, the events read, the
 # prompt and the claude launch: events_offset, the unread events and the .wake file stay exactly as they are for the first turn after the wait.
 if [ -n "$S_qw" ] && [ "$(qw_now)" -lt "$S_qw" ]; then
+  if [ "$KIND" = ask ]; then   # the ask text is kept for the first prompt after the wait
+    if queue_ask; then echo "seat-tick: $SEAT ask queued (quota-wait until $(date -d "@$S_qw" '+%-I:%M %p %Z')): ${ASK_ONE:0:80}" >&2
+    else echo "seat-tick: $SEAT ask could NOT be queued (cannot write $ASKQ): ${ASK_ONE:0:80}" >&2; save; exit 1; fi
+  fi
   save   # last_tick moves, every other field (reason quota-wait:..., quota_wait_until, ticks_skipped, events_offset) is unchanged
   echo "seat-tick: $SEAT quota-wait in effect until $(date -d "@$S_qw" '+%-I:%M %p %Z')" >&2
   exit 0
@@ -919,7 +1046,19 @@ if [ "$ev_size" -gt "$S_evoff" ]; then
   fi
   rm -f "$evchunk"
 fi
-if [ "$KIND" = event ] && [ "$EV_NEW" = 0 ]; then
+# b3. queued asks (the same snapshot is shown and later consumed: ASK_BYTES is what the prompt carries; asks queued after this point stay for the next prompt)
+ASK_NEW=0; ASK_BLOCK=""; ASK_BYTES=0
+if [ -s "$ASKQ" ]; then
+  askchunk="$(mktemp "$DASH/.$SEAT-askchunk.XXXXXX")"
+  { flock 6; cp -- "$ASKQ" "$askchunk"; } 6>>"$ASKLOCK"
+  ASK_BYTES="$(stat -c %s "$askchunk")"
+  ASK_NEW="$(grep -c . "$askchunk")"
+  if [ "$ASK_NEW" -gt 0 ]; then
+    ASK_BLOCK="ASKS (queued while busy):"$'\n'"$(jq -rR '(try fromjson catch null) as $o | (if ($o|type)=="object" then $o else {text:.} end) | "- \(.ts // "?") (from \(.from // "?")): \(.text // "")"' "$askchunk")"
+  fi
+  rm -f "$askchunk"
+fi
+if [ "$KIND" = event ] && [ "$EV_NEW" = 0 ] && [ "$ASK_NEW" = 0 ]; then
   rm -f "$WAKE"
   case "$S_reason" in guard:*|lock-covered:*) S_reason=""; S_gsince=0; save ;; esac   # the guard just passed: an earlier refusal is over
   echo "seat-tick: $SEAT EVENT with no new events (already delivered), nothing to do"; exit 0; fi
@@ -954,6 +1093,7 @@ else
   PROMPT="$PROMPT"$'\n'"${pull_note}${goal_line}"$'\n'"$RULES_LINE"
 fi
 [ -n "$EV_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$EV_BLOCK"
+[ -n "$ASK_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$ASK_BLOCK"
 
 # d. model row: a missing row refuses (exit 3) before anything is written
 MODEL="$(awk -v r="$ROLE" '$1==r{print $2}' "$MRC" 2>/dev/null | head -1)"
@@ -982,7 +1122,7 @@ TURN_DONE=0; TURN_RC=""
 # every precondition passed (lock, guard, goal line, model row): an earlier refusal / cover is over NOW, not when the turn ends (a turn runs for hours; 10-22 r7 showed a
 # stale "guard:pid ..." + guard_since for the whole of a turn that had started clean). ticks_skipped still resets only at an exit-0 end.
 case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*|quota-wait:*) S_reason=""; S_gsince=0 ;; esac   # quota-wait: the wait is over (a2 let this turn through); quota_wait_until itself clears at an exit-0 end
-save || echo "seat-tick: WARN pre-turn state save failed" >&2
+pre_ok=1; save || { pre_ok=0; echo "seat-tick: WARN pre-turn state save failed" >&2; }
 trap on_exit EXIT
 LEAN_ARGV=()
 case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, full hook set
@@ -990,8 +1130,15 @@ case "$ROLE" in   # rb/r7 only; ctl (and any other role) = default settings, ful
          read -ra LEAN_ARGV <<<"${LEAN_FLAGS//\$HOME/$HOME}" ;;
   controller) if [ -r "$CTL_SETTINGS" ]; then LEAN_ARGV=(--settings "$CTL_SETTINGS"); else echo "seat-tick: WARN $CTL_SETTINGS missing, ctl runs without autoCompactEnabled=true" >&2; fi ;;
 esac
+# queued asks leave the queue only now: every precondition passed, the pre-turn state is saved and the claude binary resolves (a launch that cannot start leaves the queue as it was)
+if [ "$ASK_NEW" -gt 0 ]; then
+  if [ "$pre_ok" = 1 ] && command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+    asks_consume && [ -n "$ASK_CONSUMED" ] && echo "seat-tick: $SEAT $ASK_NEW queued ask(s) carried in this prompt, queue -> ${ASK_CONSUMED##*/}"
+  else echo "seat-tick: $SEAT WARN claude not launchable (or pre-turn save failed): $ASK_NEW queued ask(s) stay queued" >&2; fi
+fi
 ( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
 rc="${PIPESTATUS[0]:-1}"; TURN_RC="$rc"
+[ "$rc" = 0 ] || asks_restore   # a failed (or quota-limited) turn never answered the queued asks it carried
 end="$(date +%s)"
 echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"
 
