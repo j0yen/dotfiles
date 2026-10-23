@@ -35,6 +35,13 @@ explorefirst_setup() {
   work="$(mktemp -d)"
   trap 'explorefirst_teardown' EXIT
 
+  # Private TMPDIR: the runner makes its ephemeral data dir under $TMPDIR and
+  # the teardown tests assert none is left behind. In the shared /tmp, a
+  # concurrently running test's live data dir (or a stale one) is
+  # indistinguishable from a leak, so the assertion flaked under load.
+  mkdir -p "$work/tmp"
+  export TMPDIR="$work/tmp"
+
   bin="$work/bin"
   mkdir -p "$bin"
   ln -s "$FIXTURES/fake-mcphost" "$bin/mcphost"
@@ -98,6 +105,18 @@ YAML
   export EXPLOREFIRST_BUDGET_ASSERT="calls<=3000,tokens_out<=600000"
 
   export EXPLOREFIRST_EXTRA_PATH="$bin"
+}
+
+# wait_no_process PATTERN [SECONDS] — poll until no process matches PATTERN
+# (pgrep -f); returns 0 once gone, 1 on timeout. Replaces a fixed sleep: the
+# fake `serve` dies on TERM, but how soon depends on host load.
+wait_no_process() {
+  local pat="$1" tries=$(( ${2:-10} * 20 ))
+  while [ "$tries" -gt 0 ]; do
+    pgrep -f "$pat" >/dev/null 2>&1 || return 0
+    sleep 0.05; tries=$((tries-1))
+  done
+  return 1
 }
 
 explorefirst_teardown() {
