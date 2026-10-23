@@ -33,6 +33,12 @@ link() {
   if [[ -L "$dst" ]] && [[ "$(readlink "$dst")" == "$src" ]]; then
     return 0
   fi
+  # dst already IS src through a parent-directory symlink (e.g. ~/.config/claude-seat -> dotfiles/.config/claude-seat):
+  # linking would replace the real file inside the repo with a symlink to itself (10-22: three seat settings files
+  # became "Too many levels of symbolic links" and every seat tick lost its --settings). Same inode = nothing to do.
+  if [[ -e "$dst" ]] && [[ "$(readlink -f "$dst" 2>/dev/null)" == "$(readlink -f "$src")" ]]; then
+    return 0
+  fi
   if [[ -e "$dst" || -L "$dst" ]]; then   # -L: a dangling symlink still occupies the path
     if [[ $DRY -eq 1 ]]; then
       printf 'would back up: %s -> %s.bak.%s\n' "$dst" "$dst" "$ts"
