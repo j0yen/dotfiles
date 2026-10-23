@@ -11,7 +11,8 @@
 #             entry, skipping an account rotated away from < 6 h ago (floor) or whose rotations.log previous_reset_at is still in the future,
 #             one BLOCKED (state file blocked-until-<account> = one epoch, set by ft_block / `fleet-token-store.sh block`; a limit whose reset is known),
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
-#   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the latest limited seat's quota_wait_until) BEFORE it tries any
+#   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the later of the limited seats' quota_wait_until and the reset
+#             text in the probe's limit message, "resets Oct 26, 9pm" / "resets 3:30pm", parsed by ft_parse_la_date) BEFORE it tries any
 #             rotation, and keeps that block if the rotation fails. No candidate (all blocked / failed / floored) = no rotation, stay, one ALARM.
 #   ACTION    wp_gate && wp_emit_write rotate ... && fleet-token-rotate.sh <candidate> --by fleet-token-429-watch --trigger 429 --why "<the evidence>" (it bells and starts the seat ticks).
 #             ONE wm-decide row per watcher rotation: the lib's (pre-write, premise-stamped, outbox first); rotate's own row is switched off for this call
@@ -77,7 +78,17 @@ probe_limit() {
       if [ -n "${FLEET_TOKEN_PROBE_CMD:-}" ]; then $FLEET_TOKEN_PROBE_CMD; else timeout 60 claude -p --model claude-haiku-5-5 'reply ok'; fi 2>&1
     )"; then rc=0; else rc=$?; fi
   [ "$rc" != 0 ] || return 1
+  PROBE_OUT="$(printf '%s' "$out" | tail -c 2048)"   # kept in memory only, for probe_reset
   printf '%s' "$out" | tail -c 2048 | grep -Eiq 'hit your (session|usage|weekly) limit|resets[[:space:]]+[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m'
+}
+
+# probe_reset: prints the reset epoch named in the limit text of the last probe (weekly "resets Oct 26, 9pm" or session "resets 3:30pm", LA zone
+# via the one parser ft_parse_la_date); nothing when the text has no parseable reset
+PROBE_OUT=""
+probe_reset() {
+  local txt
+  txt="$(printf '%s' "$PROBE_OUT" | grep -Eio 'resets[[:space:]]+(([A-Za-z]{3,9}\.?[[:space:]]+[0-9]{1,2},?[[:space:]]+)?[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m)' | tail -n1 || true)"
+  [ -z "$txt" ] || ft_parse_la_date "$txt" || true
 }
 
 # skip_reason <account> <now>: prints why the account must not be rotated to (empty = eligible)
@@ -143,7 +154,10 @@ watch() {
     [[ "$q" =~ ^[0-9]+$ ]] || continue
     if [ -z "$maxreset" ] || [ "$q" -gt "$maxreset" ]; then maxreset="$q"; fi
   done
-  if [ -n "$maxreset" ] && ft_block "$cur" "$maxreset" "429 on ${limited[*]} (seat-tick quota_wait_until)" keep-later; then
+  local pr bwhy="429 on ${limited[*]} (seat-tick quota_wait_until)"
+  pr="$(probe_reset)"
+  if [ -n "$pr" ] && { [ -z "$maxreset" ] || [ "$pr" -gt "$maxreset" ]; }; then maxreset="$pr"; bwhy="429 on ${limited[*]} (reset text in the probe's limit message)"; fi
+  if [ -n "$maxreset" ] && ft_block "$cur" "$maxreset" "$bwhy" keep-later; then
     wlog "blocked $cur until $(ft_la_iso "$(ft_blocked_until "$cur")")"
   fi
 
@@ -194,6 +208,8 @@ printf 'probe sha8=%s\n' "$(printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}" | sha256s
 case "${FAKE_PROBE:-ok}" in
   limit) echo "You've hit your session limit · resets 7:10pm (America/Los_Angeles)"; exit 1 ;;
   other) echo "network unreachable"; exit 1 ;;
+  weekly) echo "You've hit your weekly limit · resets Oct 26, 9pm (America/Los_Angeles)"; exit 1 ;;
+  badtext) echo "You've hit your session limit · resets 25:99pm (America/Los_Angeles)"; exit 1 ;;
   *) echo ok; exit 0 ;;
 esac
 EOF2
@@ -316,6 +332,14 @@ EOF2
       && grep -q 'acctB(blocked until 2026-09-21T17:13-07:00 (w));' "$FT_DASH/ctl-events.log"; ft_st_chk "all-blocked-no-rotation: every other account blocked -> no verify, no place, stays acctA, ONE alarm naming the blocks" $?
     reset; seats - - -; ft_block acctB "$((NOW + 36000))" w; runw
     [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && [ ! -e "$FT_STATE/blocked-until-acctA" ]; ft_st_chk "no limit, no block: a quiet run writes no block" $?
+
+    # 10. the probe's limit text (weekly "resets Oct 26, 9pm") sets the block when it is later than the seat's quota_wait_until
+    reset; seats - 7200 -; FAKE_PROBE=weekly runw
+    [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = 1793073600 ] && grep -q "why=429 on rb (reset text in the probe's limit message)\$" "$FT_BLOCKLOG" && grep -q 'blocked acctA until 2026-10-26T21:00-07:00' "$FT_STATE/429-watch.log"; ft_st_chk "probe-weekly-text: 'resets Oct 26, 9pm' -> acctA blocked until 2026-10-26T21:00-07:00 (before the rotation)" $?
+    reset; seats - 7200 -; FAKE_PROBE=limit runw
+    [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$(ft_parse_la_date '7:10pm')" ]; ft_st_chk "probe-session-text: 'resets 7:10pm' (later than the seat's 9:13 AM wait) -> blocked until 7:10 PM LA" $?
+    reset; seats - 7200 -; FAKE_PROBE=badtext runw
+    [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 7200))" ]; ft_st_chk "probe-unparseable-text: 'resets 25:99pm' -> falls back to the seat's quota_wait_until" $?
 
     # 8. store age: one ALARM per day per entry
     reset; seats - - -
