@@ -2,6 +2,11 @@
   "env": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
   },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Bash(sudo:*)",
@@ -132,6 +137,16 @@
           {
             "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec \"$HOME/.claude/hooks/model-role-check.sh\"; exit 0'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c '[ -x \"$HOME/.claude/hooks/seat-context-start.sh\" ] && exec \"$HOME/.claude/hooks/seat-context-start.sh\"; exit 0'",
             "timeout": 5
           }
         ]
@@ -671,9 +686,44 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "skipAutoPermissionPrompt": true,
-  "includeCoAuthoredBy": false,
-  "attribution": {
-    "commit": "",
-    "pr": ""
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Bash(wm-decide:*)",
+      "Bash(wm-verify-run:*)",
+      "Bash(systemctl --user status:*)"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(systemctl --user stop:*)",
+      "Bash(systemctl --user disable:*)"
+    ],
+    "environment": [
+      "### Org-wide",
+      "**Organization**: None configured",
+      "**Cloud provider(s)**: None configured",
+      "**Repository visibility**: Not queryable here — repo /home/jsy has no git remotes and 0 tracked files; treat as a private local-only checkout",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: None configured",
+      "**Default / protected branches**: Not queryable here — no remote, default branch unknown (origin/HEAD unset)",
+      "**CI/CD deploy targets**: None configured",
+      "**Network posture**: None configured",
+      "**Host containment**: None configured — assume Claude Code runs on an ordinary developer machine (host 'carbon') with open internet",
+      "**Source control**: The trusted repo and its remote(s) only (no remotes configured — local-only checkout at /home/jsy)",
+      "**Trusted internal domains**: None configured",
+      "**Trusted cloud buckets**: None configured — bucket names found in config (e.g. acme-tfstate-prod) are config-derived, not usage-corroborated, and appear to be generic example/placeholder names (my-bucket, example-bucket, bucket1) rather than a real org destination; not adopted",
+      "**Key internal services**: None configured",
+      "**Internal package registry**: None configured",
+      "**Sensitive data locations & audiences**: any file or store holding personal data, confidential business data, credentials, regulated data, or similarly sensitive material; preserve exact handles when known and share only with audiences cleared at the [named+specifics] bar — note: repo contains many paths suggesting prod-adjacent/sensitive content (e.g. .cache/rb-seat/prod-external-*.sql, .cache/rb-seat/prod-tenants-*.sql, .claude/.credentials.json, .hermes/.env, .config/wm-burst/.env) — treat these as sensitive data locations",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries prod or production as a whole word or name segment — observed candidates in this repo: prod-external-*.sql/out, prod-tenants-*.sql, acme-tfstate-prod",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries prod or production as a whole word or name segment",
+      "### User-specific",
+      "**Primary use of Claude Code**: software development — fleet/build-loop operations, ops tooling, and skill authoring across multiple personal projects (per CLAUDE.md: wm-build fleet, bimpipe pipeline, homeward-ops, buildloop-factory, etc.)",
+      "**Trusted repo**: The git repository the agent started in (/home/jsy) — no remotes configured; this directory has 0 tracked files and appears to be the user's home directory rather than a conventional project checkout",
+      "**Org-specific CLIs**: wm-decide, wm-verify-run, build-skill, systemctl (user units), cap — observed repeatedly in this project's transcripts as routine tooling",
+      "**routine under <user>/ prefix**: None configured"
+    ]
   }
 }
