@@ -67,3 +67,14 @@ systemctl --user daemon-reload && systemctl --user enable --now watcher-lib-post
 `~/.local/seat-bin/gh` is a shim for the operator seats only. It passes every `gh` call through untouched (args, stdin, exit code) except `pr merge` (also `--auto`, the REST `pulls/N/merge` endpoint and the auto-merge GraphQL mutations), which it refuses unless `WM_DECIDE_GATE_OK=<verdict-id>` is set AND `merge-events.jsonl` holds a `gate-pass` for that verdict, PR and repo. Every refusal is logged as a wm-decide row (`--kind gate --model deterministic`, `decision=<verdict id|none>`). It is a guard, not a lock: a seat can still call `/usr/bin/gh`. `rb-merge.sh <verdict-id> <pr> <owner/name>` is the only caller that sets the variable: `set -euo pipefail`, gate output captured (never piped), then `&&` into `gh pr merge --squash --match-head-commit <full OID>` and `wm-decide merge-done`.
 
 The shim dir must be on a seat's PATH and never on `wm-build.service`'s (the daemon merges through gh): `install.sh` links it to `~/.local/seat-bin/`, not `~/.local/bin/`, and nothing in `environment.d` or a profile names it. The seat launcher puts it first (`env PATH=$HOME/.local/seat-bin:$PATH claude ...` in `seat-relaunch.sh`). `seat-gh-scope-check` proves both halves (`--selftest` offline; with no argument it reads `systemctl --user show wm-build.service -p Environment` on redbaron and ryzen7 and the PATH of the running seat processes). Tests: `tests/gh_merge_shim.test.sh`, `tests/rb_merge_wrapper.test.sh`.
+
+## Live-clone guard
+
+`live-clone-guard.sh install <repo>` writes a pre-commit hook that refuses every commit in a checkout that must only move by fast-forward from its remote (a live clone); commits in worktrees of the same repo pass, and `LIVE_CLONE_COMMIT=1` overrides for a deliberate hand action. `install.sh` runs `live-clone-guard.sh ensure`, which reads `~/.config/live-clone-guard/repos` (one absolute path per line, `#` comments; per host, not shipped by this repo). carbon's file:
+
+```
+# live clones on carbon: never commit here; use a worktree + PR
+/home/jsy/wintermute/fleet-dash
+/home/jsy/dotfiles
+/home/jsy/wintermute/wm-build
+```
