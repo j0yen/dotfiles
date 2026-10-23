@@ -1,0 +1,9 @@
+[Unit]
+Description=Per-node disk health (SMART, kernel I/O errors, inode/byte use) into ~/.cache/fleet-dash/disk-health.json for the fleet dashboard (Joe 2026-10-22 11:40 PM)
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=180
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/disk-health.sh"
