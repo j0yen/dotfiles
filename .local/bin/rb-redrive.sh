@@ -68,6 +68,7 @@ main() {
 if [ "${1:-}" = --selftest ]; then
   T=$(mktemp -d) || exit 70; f=0; ok() { echo "ok   $1"; }; no() { echo "FAIL $1"; f=1; }
   export FIX_SSH_DIR="$T/s" RB_REDRIVE_DECIDE="$T/dec"   # 10-23 11:48 AM leak (a case without fixtures redrove the real 1046, row 0cd9): hermetic default, no case reaches real ssh or wm-decide
+  echo "HERMETIC FIX_SSH_DIR=$FIX_SSH_DIR RB_REDRIVE_DECIDE=$RB_REDRIVE_DECIDE"   # tests/rb-redrive.test.sh asserts both sit under the selftest mktemp
   printf '#!/bin/bash\necho d-20261023-060000-rb-abcd\n' > "$T/dec"; chmod +x "$T/dec"; printf '#!/bin/bash\necho refused: bad\n' > "$T/decbad"; chmod +x "$T/decbad"
   mk() { rm -rf -- "${T:?}/s"; mkdir "$T/s"; local i=1; for o in "$@"; do printf '%s\n' "$o" > "$T/s/$i.out"; i=$((i+1)); done; }
   [ "$(classify 'release-mem refuse')" = refuse ] && ok "classify refuse" || no "classify refuse"
