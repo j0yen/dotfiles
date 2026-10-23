@@ -24,7 +24,6 @@
     "/home/jsy/.claude/hooks/peon-ping/scripts/hook-handle-rename.sh",
     "/home/jsy/.claude/scripts/recall-user-prompt.sh",
     "/home/jsy/.claude/scripts/recall-search-inject.sh",
-    "/home/jsy/.claude/scripts/summa-lookup-inject.sh",
     "/home/jsy/.claude/hooks/dream-marker.sh",
     "/home/jsy/.claude/hooks/agorabus-intent.sh",
     "/home/jsy/.claude/hooks/agorabus-overlap.sh",

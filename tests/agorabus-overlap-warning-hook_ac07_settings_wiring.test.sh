@@ -19,7 +19,7 @@ assert_eq "$(jq -r "$ups | (index(\"agorabus-overlap.sh\")) - (index(\"agorabus-
 mrc="model-role-check.sh\\\"; exit 0'\""
 # aide-inbox.sh (10-23, the aide inbox) is also appended after this PRD, as the last entry; it is excluded here and checked by tests/aide-inbox.test.sh.
 assert_eq "$(jq -c "$ups | map(select(. != \"agorabus-overlap.sh\" and (startswith(\"aide-inbox.sh\") | not)))" "$S")" \
-  '["peon.sh","hook-handle-use.sh","hook-handle-rename.sh","recall-user-prompt.sh","recall-search-inject.sh","summa-lookup-inject.sh","dream-marker.sh","agorabus-intent.sh","operator-notices.sh","'"$mrc"']' \
+  '["peon.sh","hook-handle-use.sh","hook-handle-rename.sh","recall-user-prompt.sh","recall-search-inject.sh","dream-marker.sh","agorabus-intent.sh","operator-notices.sh","'"$mrc"']' \
   "existing UserPromptSubmit hooks unchanged"
 assert_eq "$(jq -r '[.hooks.UserPromptSubmit[] | select(.hooks[0].command | test("aide-inbox[.]sh") | not)][-1].hooks[0] | "\(.type) \(.timeout)"' "$S")" "command 5" "entry shape matches sibling hooks"
 exit $fail
