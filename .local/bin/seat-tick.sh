@@ -34,7 +34,7 @@
 # LEAN (10-22): seats whose ROLE is rb or r7 run the same lean overlay seat-relaunch.sh gives their interactive launch (env LEAN_ENV_VARS +
 # flags LEAN_FLAGS from seat-lean.sh, flags placed before --resume). ctl stays on the default settings with the full hook set, by design;
 # its only flag is --settings ~/.config/claude-seat/ctl-settings.json ({env: CLAUDE_CODE_AUTO_COMPACT_WINDOW 360000 + CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 50, autoCompactEnabled: true, autoCompactWindow: auto} = seats compact at 180K; ~/.claude/settings.local.json runs the aide at 1000000×50 % = 500K for $HOME and the --settings layer beats it; rb/r7 get the same pin from claude-seat/settings.json).
-# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_SELFTEST+SEAT_NOW_EPOCH (selftest only: fake clock for the quota-wait) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
+# Env overrides: SEAT_TICK_SELFTEST+SEAT_GUARD_CGROUP_OVERRIDE (selftest only: fake cgroup text for the guard) SEAT_TICK_SELFTEST+SEAT_GUARD_TTY_OVERRIDE=<pid>:<0|1>[,...] (selftest only: fake 'has a tty' per pid) SEATS_TABLE_REAL (selftest invariant: the real table, read-only) SEAT_TICK_SELFTEST+SEAT_NOW_EPOCH (selftest only: fake clock for the quota-wait) SEAT_TICK_CHAINED SEAT_TICK_T0 (chain plumbing, set by this script) FLEET_DASH_DIR SEATS_TABLE MRC_TABLE GOAL_MD APPROVALS_FILE SEAT_CLAUDE_BIN SEAT_OAUTH_ENV SEAT_LOCK_WAIT SEAT_ASK_LOCK_WAIT SEAT_UNIT_DIR
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 DASH="${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}"
@@ -91,15 +91,50 @@ in_seat_unit() {   # in_seat_unit <pid>
   return 1
 }
 
-# guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise
+# field <n> of a /proc/<pid>/stat line counted AFTER the comm (2=ppid 3=pgrp 4=session 5=tty_nr, i.e. stat fields 4,5,6,7; the state letter at 1 is not numeric). The comm may hold spaces and
+# parentheses, so cut at the LAST ') ' and never split the front. Prints nothing and returns 1 on a malformed line.
+stat_after_comm() {   # stat_after_comm <line> <n>
+  local rest="${1##*) }" f
+  [ "$rest" != "$1" ] || return 1
+  read -ra f <<<"$rest"
+  [[ "${f[$(( $2 - 1 ))]:-}" =~ ^-?[0-9]+$ ]] || return 1
+  echo "${f[$(( $2 - 1 ))]}"
+}
+
+# an INTERACTIVE seat lives in a tmux pane (a pty, so a controlling tty) or has a tmux ancestor; a claude with neither (a decoy from a plain user-session
+# cgroup, 10-22 night) is not one. Selftest hook: SEAT_GUARD_TTY_OVERRIDE=<pid>:<0|1>[,<pid>:<0|1>...] decides for the listed pids, honoured only under SEAT_TICK_SELFTEST=1.
+has_tty_or_tmux() {   # has_tty_or_tmux <pid>: 0 = tty (tty_nr != 0) or tmux ancestor, 1 = neither (or the process is gone)
+  local pid="$1" o ov st tty cur pp n=0
+  if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_GUARD_TTY_OVERRIDE:-}" ]; then
+    IFS=, read -ra ov <<<"$SEAT_GUARD_TTY_OVERRIDE"
+    for o in "${ov[@]}"; do [ "${o%%:*}" = "$pid" ] && { [ "${o#*:}" = 1 ]; return; }; done
+  fi
+  st="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  tty="$(stat_after_comm "$st" 5)" || return 1
+  [ "$tty" != 0 ] && return 0
+  cur="$pid"
+  while [ "$n" -lt 64 ]; do
+    n=$(( n + 1 ))
+    st="$(cat "/proc/$cur/stat" 2>/dev/null)" || return 1
+    pp="$(stat_after_comm "$st" 2)" || return 1
+    [ "$pp" -gt 1 ] 2>/dev/null || return 1
+    case "$(cat "/proc/$pp/comm" 2>/dev/null)" in tmux|tmux:*) return 0 ;; esac
+    cur="$pp"
+  done
+  return 1
+}
+
+# guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise.
+# Interactive = claude (not print-mode) WITH a controlling tty or a tmux ancestor. A non-print claude holding the SID with neither is noted and ignored.
 guard() {
-  local p cl comm notes=""
+  local p pid cl comm notes="" old_noted=""
   if [ "$OLD_PID" != "-" ]; then
     if [ -r "/proc/$OLD_PID/cmdline" ] && kill -0 "$OLD_PID" 2>/dev/null; then
       cl="$(tr '\0' ' ' <"/proc/$OLD_PID/cmdline")"
       case "$cl" in
         *claude*) if is_print_mode "$cl"; then notes="old_pid $OLD_PID is a print-mode claude (not the interactive seat)"
-                  else echo "pid $OLD_PID alive: ${cl:0:80}"; return 1; fi ;;
+                  elif has_tty_or_tmux "$OLD_PID"; then echo "pid $OLD_PID alive: ${cl:0:80}"; return 1
+                  else notes="old_pid $OLD_PID alive without a tty: not an interactive seat, ignored"; old_noted=1; fi ;;
         *) notes="old_pid $OLD_PID alive but not claude" ;;
       esac
     else notes="old_pid $OLD_PID not alive"; fi
@@ -112,8 +147,17 @@ guard() {
     # only a process whose own command is claude (or node running claude): not a shell that merely mentions the SID
     if [ "$comm" = claude ] || [ "$comm" = node ] || [[ "$cl" =~ ^([^\ ]*/)?claude(\ |$) ]] || [[ "$cl" =~ ^([^\ ]*/)?node\ [^\ ]*claude ]]; then
       # a print-mode turn of a seat unit (this very tick's unit, or an event/ask/chained turn) holds the SID legitimately: not the interactive seat
-      if is_print_mode "$cl" && in_seat_unit "${p#/proc/}"; then notes="${notes:+$notes; }pid ${p#/proc/} is a seat-unit print-mode turn (ignored)"; continue; fi
-      echo "pid ${p#/proc/} holds session $SID: ${cl:0:80}"; return 1
+      pid="${p#/proc/}"
+      if is_print_mode "$cl" && in_seat_unit "$pid"; then notes="${notes:+$notes; }pid $pid is a seat-unit print-mode turn (ignored)"; continue; fi
+      # a non-print claude is the interactive seat only with a tty / tmux ancestor; a print-mode holder outside a seat unit (a hand-run turn) still refuses
+      if ! is_print_mode "$cl"; then
+        [ -e "$p/stat" ] || continue   # exited since the cmdline read
+        if ! has_tty_or_tmux "$pid"; then
+          [ -n "$old_noted" ] && [ "$pid" = "$OLD_PID" ] || notes="${notes:+$notes; }pid $pid holds the SID without a tty: not an interactive seat, ignored"
+          continue
+        fi
+      fi
+      echo "pid $pid holds session $SID: ${cl:0:80}"; return 1
     fi
   done
   echo "${notes:-no holder}"
@@ -166,6 +210,8 @@ selftest() {
   local CA="--settings $HOME/.config/claude-seat/ctl-settings.json"
   local LA="--settings $HOME/.config/claude-seat/settings.json --mcp-config $HOME/.config/claude-seat/mcp.json --strict-mcp-config"
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
+  # tt <pid> <cmd...>: run <cmd> with the guard told that <pid> has a tty (a fake interactive seat; the decoys here are bash children with no pty of their own)
+  tt() { env SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$1:1" "${@:2}"; }
   # the fake SIDs carry this run's pid: the guard scans every /proc cmdline for the SID, so two selftests running at once (or a seat's own session) must never share one
   local CS=selftest-ctl-sid-$$-0001 RS=selftest-rb-sid-$$-0002 SS=selftest-r7-sid-$$-0003 TS=selftest-tmo-sid-$$-0004
   export FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
@@ -174,6 +220,25 @@ selftest() {
   printf '# test table\nctl\tcontroller\t%s\t20\t14400\t^/goal SWARM-CONTROL\t999999999\nrb\trb\t%s\t20\t14400\t^/goal CLEARWATER:\t-\nr7\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\ntmo\trb\t%s\t20\t4\t^/goal CLEARWATER:\t-\n' \
     "$CS" "$RS" "$SS" "$TS" >"$SEATS_TABLE"
   printf 'controller test-model-1\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
+  # INVARIANT (10-22 night): no fixture SID, decoy argv string or fake seats row carries a SID of the REAL table (read-only); a decoy with the live rb SID
+  # made a live unit's first tick guard-fail. Every fixture SID is selftest- or 00000000- prefixed. UUID-shaped literals in this selftest must not equal a real SID.
+  local realt="${SEATS_TABLE_REAL:-$HOME/.claude/state/seats.tsv}" rsid nreal=0 leak="" fx selsec uu
+  selsec="$(sed -n '/^selftest() {$/,/^}$/p' "$SELF")"
+  for fx in "$CS" "$RS" "$SS" "$TS" "selftest-other-sid-$$" $(awk -F'\t' '!/^[[:space:]]*(#|$)/ {print $3}' "$SEATS_TABLE"); do
+    [[ "$fx" == selftest-* || "$fx" == 00000000-* ]] || leak="$leak bad-prefix:$fx"
+  done
+  if [ -r "$realt" ]; then
+    while IFS= read -r rsid; do
+      nreal=$(( nreal + 1 ))
+      for fx in "$CS" "$RS" "$SS" "$TS" "selftest-other-sid-$$"; do case "$fx" in *"$rsid"*) leak="$leak fixture:${rsid:0:8}" ;; esac; done
+      grep -qF -- "$rsid" "$SEATS_TABLE" && leak="$leak seats-row:${rsid:0:8}"
+      grep -qF -- "$rsid" <<<"$selsec" && leak="$leak selftest-source:${rsid:0:8}"
+      while IFS= read -r uu; do [ "$uu" = "$rsid" ] && leak="$leak uuid-literal:${rsid:0:8}"; done < <(grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' <<<"$selsec")
+    done < <(awk -F'\t' '!/^[[:space:]]*(#|$)/ && length($3) >= 8 {print $3}' "$realt")
+    [ -z "$leak" ]; chk "fixtures carry no real seat SID (checked $nreal real SIDs)${leak:+ LEAK:$leak}" $?
+  else
+    [ -z "$leak" ]; chk "fixtures carry no real seat SID (no real table)${leak:+ LEAK:$leak}" $?
+  fi
   echo 'CLAUDE_CODE_OAUTH_TOKEN=fake-not-a-token' >"$SEAT_OAUTH_ENV"
   printf '# c1\n# c2\n\nl1\nl2\nl3\n' >"$APPROVALS_FILE"
   # goal.md in a git work tree cloned from a bare temp remote, so the ff-only pull step runs for real
@@ -273,17 +338,19 @@ FAKE
   local runs_before; runs_before="$(j .sends_total)"
   bash -c "exec -a 'claude --resume $CS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pg=$!
   sleep 0.4
-  "$SELF" ctl >"$T/o7" 2>"$T/e7"; rc=$?
+  tt "$pg" "$SELF" ctl >"$T/o7" 2>"$T/e7"; rc=$?
   [ "$rc" = 4 ] && grep -q 'ALARM ctl guard' "$T/e7" && [ "$(j .sends_total)" = "$runs_before" ] && ! grep -q '^ARGV' "$T/o7"; chk "guard: process 'claude --resume <SID>' -> exit 4, ALARM, claude not run ('$(grep ALARM "$T/e7" | cut -c1-140)')" $?
   [[ "$(j .last_skip_reason)" == guard:* ]]; chk "guard: last_skip_reason=$(j .last_skip_reason | cut -c1-60)" $?
-  "$SELF" ctl --guard-check >/dev/null 2>&1; [ $? = 4 ]; chk "--guard-check: exit 4 while it is alive" $?
+  tt "$pg" "$SELF" ctl --guard-check >/dev/null 2>&1; [ $? = 4 ]; chk "--guard-check: exit 4 while it is alive" $?
   kill "$pg"; wait "$pg" 2>/dev/null; sleep 0.3
   FAKE_SLEEP=0 "$SELF" ctl >/dev/null 2>&1; [ $? = 0 ]; chk "guard clear after the fake exits: runs" $?
   bash -c "exec -a claude python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pq=$!
   sleep 0.4
   setpid ctl "$pq"
-  "$SELF" ctl >/dev/null 2>"$T/e7b"; rc=$?
-  [ "$rc" = 4 ] && grep -q "pid $pq alive" "$T/e7b"; chk "guard: old_pid from seats.tsv alive with 'claude' in cmdline -> exit 4" $?
+  tt "$pq" "$SELF" ctl >/dev/null 2>"$T/e7b"; rc=$?
+  [ "$rc" = 4 ] && grep -q "pid $pq alive" "$T/e7b"; chk "guard: old_pid from seats.tsv alive with 'claude' in cmdline (+ tty) -> exit 4" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pq:0" FAKE_SLEEP=0 "$SELF" ctl >"$T/e7c" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "guard clear (old_pid $pq alive without a tty: not an interactive seat, ignored)" "$T/e7c" && grep -q '^ARGV' "$T/e7c"; chk "guard: old_pid alive + claude + NO tty -> not refused, tick runs, log says 'old_pid $pq alive without a tty: not an interactive seat, ignored'" $?
   kill "$pq"; wait "$pq" 2>/dev/null
   setpid ctl "$$"
   FAKE_SLEEP=0 "$SELF" ctl >/dev/null 2>&1; [ $? = 0 ]; chk "guard: old_pid alive but cmdline without 'claude' -> not refused" $?
@@ -295,7 +362,7 @@ FAKE
 
   # 8. wiring (ctl)
   local real_row; real_row="$(SEATS_TABLE="$HOME/.claude/state/seats.tsv" awk -F'\t' '$1=="ctl"{print $3 "|" $7}' "$HOME/.claude/state/seats.tsv" 2>/dev/null)"
-  [ "$real_row" = "de73e73c-5095-4d39-9703-1fc439e7236d|3845" ]; chk "defaults: real seats.tsv ctl row = SID de73e73c-..., old pid 3845" $?
+  [[ "$real_row" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\|[0-9]+$ ]]; chk "defaults: real seats.tsv ctl row = '<uuid SID>|<old pid>' (shape only: the selftest source never embeds a real SID)" $?
   out="$(CTL_ASK_DRY=1 "$HERE/ctl-ask.sh" "hello there" 2>&1)"
   [[ "$out" == *"systemd-run --user --collect --unit seat-ask-ctl-"*"seat-tick.sh ctl --ask hello there"* ]]; chk "ctl-ask.sh wrapper (dry): '${out:0:170}'" $?
   "$SELF" ctl --status | jq -e 'has("last_tick") and has("last_sent") and has("ticks_skipped") and has("last_skip_reason") and has("sends_total") and has("last_exit") and has("last_duration_s") and has("last_prompt_kind") and has("status_file") and has("approvals_seen") and has("quota_wait_until")' >/dev/null; chk "--status prints state JSON with all keys (quota_wait_until included)" $?
@@ -357,9 +424,9 @@ FAKE
     bash -c "exec -a 'claude --resume $sid' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pz=$!
     sleep 0.4
     rm -f "$T/dash/prompt.$s.txt"
-    "$SELF" "$s" >"$T/og$s" 2>"$T/eg$s"; rc=$?
+    tt "$pz" "$SELF" "$s" >"$T/og$s" 2>"$T/eg$s"; rc=$?
     [ "$rc" = 4 ] && grep -q "ALARM $s guard" "$T/eg$s" && ! grep -q '^ARGV' "$T/og$s" && [ ! -e "$T/dash/prompt.$s.txt" ] && [[ "$(jseat "$s" .last_skip_reason)" == guard:* ]]; chk "guard $s: fake 'claude --resume $sid' -> exit 4, ALARM, claude not run" $?
-    "$SELF" "$s" --guard-check >/dev/null 2>&1; [ $? = 4 ]; chk "guard $s: --guard-check exit 4" $?
+    tt "$pz" "$SELF" "$s" --guard-check >/dev/null 2>&1; [ $? = 4 ]; chk "guard $s: --guard-check exit 4" $?
     kill "$pz"; wait "$pz" 2>/dev/null; sleep 0.3
   done
   bash -c "exec -a 'claude --resume $RS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pr=$!
@@ -371,8 +438,8 @@ FAKE
   # 11b. guard_since marks the first refusal of a run of refusals (fleet-dash alarm: guard-blocked > 60 min) and clears on a clean run
   bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pk=$!
   sleep 0.4
-  "$SELF" r7 >/dev/null 2>&1; local gs1; gs1="$(jseat r7 .guard_since)"
-  sleep 1.2; "$SELF" r7 >/dev/null 2>&1
+  tt "$pk" "$SELF" r7 >/dev/null 2>&1; local gs1; gs1="$(jseat r7 .guard_since)"
+  sleep 1.2; tt "$pk" "$SELF" r7 >/dev/null 2>&1
   [ "$gs1" != null ] && [ "$gs1" -gt 0 ] && [ "$(jseat r7 .guard_since)" = "$gs1" ]; chk "guard_since set on the first refusal ($gs1) and kept by the second" $?
   kill "$pk"; wait "$pk" 2>/dev/null; sleep 0.3
   FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1
@@ -560,7 +627,7 @@ FAKE
   kill "$pu"; wait "$pu" 2>/dev/null; sleep 0.3
   bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; pu=$!
   sleep 0.4
-  SEAT_TICK_SELFTEST=1 SEAT_GUARD_CGROUP_OVERRIDE="$UCG" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>"$T/egu4"; rc=$?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pu:1" SEAT_GUARD_CGROUP_OVERRIDE="$UCG" FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>"$T/egu4"; rc=$?
   [ "$rc" = 4 ] && grep -q "pid $pu holds session" "$T/egu4"; chk "an interactive claude (no -p) is refused even with a seat-unit cgroup, reason names pid $pu" $?
   kill "$pu"; wait "$pu" 2>/dev/null; sleep 0.3
   setpid ctl 999999999
@@ -579,7 +646,7 @@ FAKE
     local lbl="$1" rc1 gs ph2 pt w; shift
     bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; ph2=$!
     sleep 0.4
-    "$SELF" r7 "$@" >/dev/null 2>&1; rc1=$?; gs="$(jseat r7 .guard_since)"
+    tt "$ph2" "$SELF" r7 "$@" >/dev/null 2>&1; rc1=$?; gs="$(jseat r7 .guard_since)"
     kill "$ph2"; wait "$ph2" 2>/dev/null; sleep 0.3
     FAKE_SLEEP=3 "$SELF" r7 "$@" >"$T/ogs" 2>&1 & ST_PIDS="$ST_PIDS $!"; pt=$!
     for w in $(seq 1 100); do grep -q '^START' "$T/ogs" && break; sleep 0.1; done
@@ -591,11 +658,60 @@ FAKE
   gs_check ask --ask "gs ask"
   bash -c "exec -a 'claude --resume $SS' python3 -c 'import time; time.sleep(30)'" & ST_PIDS="$ST_PIDS $!"; local pn=$!
   sleep 0.4
-  "$SELF" r7 --event >/dev/null 2>&1; rc=$?
+  tt "$pn" "$SELF" r7 --event >/dev/null 2>&1; rc=$?
   [ "$rc" = 4 ] && [ "$(jseat r7 .guard_since)" != null ]; chk "EVENT behind a live holder (no new events): guard recorded, exit 4" $?
   kill "$pn"; wait "$pn" 2>/dev/null; sleep 0.3
   "$SELF" r7 --event >"$T/ogn" 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q 'no new events' "$T/ogn" && [ "$(jseat r7 .guard_since)" = null ] && [ "$(jseat r7 .last_skip_reason)" = null ]; chk "EVENT with nothing new, guard now clear: exit 0 and the stale guard reason / guard_since are cleared" $?
+
+  # 15h. TTY GATE (10-22 night): a fake `exec -a 'claude --resume <SID>' sleep` with no tty / tmux in a plain user-session cgroup was taken as the interactive seat.
+  # Interactive = non-print claude AND (controlling tty OR tmux ancestor). All SIDs here are fakes (see the invariant above).
+  local FAKESID=00000000-0000-4000-8000-00000000fa4e NTC='0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u123.service'
+  cp "$SEATS_TABLE" "$T/seats.pre-nt"
+  printf 'nt\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\n' "$FAKESID" >>"$SEATS_TABLE"
+  bash -c "exec -a 'claude --resume $FAKESID' sleep 60" & ST_PIDS="$ST_PIDS $!"; local pt1=$!
+  sleep 0.4
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:0" SEAT_GUARD_CGROUP_OVERRIDE="$NTC" FAKE_SLEEP=0 "$SELF" nt >"$T/ot1" 2>"$T/et1"; rc=$?
+  [ "$rc" = 0 ] && grep -q "guard clear (pid $pt1 holds the SID without a tty: not an interactive seat, ignored)" "$T/ot1" && grep -q '^ARGV' "$T/ot1" && ! grep -q ALARM "$T/et1"; chk "TTY GATE: non-print 'claude --resume <fake SID>' (pid $pt1), NO tty, plain cgroup -> not refused, tick runs, log: 'guard clear (pid $pt1 holds the SID without a tty: not an interactive seat, ignored)'" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:0" "$SELF" nt --guard-check >"$T/ot2" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "^guard: clear (pid $pt1 holds the SID without a tty" "$T/ot2"; chk "TTY GATE: --guard-check exit 0 and says why ('$(head -c 100 "$T/ot2")')" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_CGROUP_OVERRIDE="$NTC" FAKE_SLEEP=0 "$SELF" nt >"$T/ot3" 2>"$T/et3"; rc=$?
+  [ "$rc" = 4 ] && grep -q "ALARM nt guard.*pid $pt1 holds session $FAKESID" "$T/et3" && ! grep -q '^ARGV' "$T/ot3"; chk "TTY GATE: the same holder with tty override 1 -> refused, exit 4, reason names pid $pt1" $?
+  SEAT_GUARD_TTY_OVERRIDE="$pt1:1" "$SELF" nt --guard-check >/dev/null 2>&1; rc=$?
+  has_tty_or_tmux "$pt1"; local want_real=$(( $? == 0 ? 4 : 0 ))   # no SEAT_TICK_SELFTEST: the override must be ignored, the real tty / tmux ancestry decides
+  [ "$rc" = "$want_real" ]; chk "TTY GATE: SEAT_GUARD_TTY_OVERRIDE is ignored outside selftest mode (exit $rc, real ancestry says $want_real)" $?
+  kill "$pt1"; wait "$pt1" 2>/dev/null; sleep 0.3
+  # a decoy under a process whose comm is 'tmux' (a copy of bash named tmux) counts as tmux-hosted even with tty 0
+  mkdir -p "$T/fakebin"; cp "$(command -v bash)" "$T/fakebin/tmux"
+  printf '#!/bin/bash\necho $$ >"%s/tmuxkid.pid"\nexec -a "claude --resume %s" sleep 60\n' "$T" "$FAKESID" >"$T/tmuxkid.sh"; chmod +x "$T/tmuxkid.sh"
+  "$T/fakebin/tmux" -c "$T/tmuxkid.sh; :" & ST_PIDS="$ST_PIDS $!"; local ptm=$!
+  sleep 0.5
+  local ptk; ptk="$(cat "$T/tmuxkid.pid" 2>/dev/null)"
+  [ "$(cat "/proc/$ptm/comm" 2>/dev/null)" = tmux ] && FAKE_SLEEP=0 "$SELF" nt >/dev/null 2>"$T/et4"; rc=$?
+  [ -n "$ptk" ] && [ "$rc" = 4 ] && grep -q "pid $ptk holds session $FAKESID" "$T/et4"; chk "TTY GATE: no tty but an ancestor with comm 'tmux' -> still the interactive seat: refused, names pid ${ptk:-?}" $?
+  kill "$ptm" "$ptk" 2>/dev/null; wait "$ptm" 2>/dev/null; sleep 0.3
+  # a REAL pty (python pty.fork: setsid + controlling tty), no override at all: still refused end-to-end
+  python3 -I -c '
+import os, sys, time
+import pty
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/usr/bin/sleep", ["claude --resume " + sys.argv[1], "60"])
+open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pid" & ST_PIDS="$ST_PIDS $!"; local ppy=$!
+  sleep 0.6
+  local ppk; ppk="$(cat "$T/ptykid.pid" 2>/dev/null)"
+  if [ -n "$ppk" ] && [ -r "/proc/$ppk/stat" ] && [ "$(stat_after_comm "$(cat /proc/$ppk/stat)" 5)" != 0 ]; then
+    FAKE_SLEEP=0 "$SELF" nt >/dev/null 2>"$T/et5"; rc=$?
+    [ "$rc" = 4 ] && grep -q "pid $ppk holds session $FAKESID" "$T/et5"; chk "TTY GATE: a REAL pty-backed 'claude --resume <fake SID>' (pid $ppk, tty_nr $(stat_after_comm "$(cat /proc/$ppk/stat)" 5)), no override -> refused, exit 4" $?
+  else echo "PASS TTY GATE: real-pty case skipped (no pty available here)"; fi
+  kill "$ppk" "$ppy" 2>/dev/null; wait "$ppy" 2>/dev/null; sleep 0.3
+  # tty_nr parse: comm with spaces and parentheses (fake /proc stat lines)
+  local ST1='4242 (tmux: server) S 1 4242 4242 34816 4242 4194560 1 0 0 0 0 0 0 0 20 0 1 0 55 1 2 3'
+  local ST2='4243 (we ird) (na me) S 4242 4243 4243 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 56 1 2 3'
+  local ST3='4244 (a) b) c) R 4243 4244 4244 34817 4244 4194304 1 0 0 0'
+  [ "$(stat_after_comm "$ST1" 5)" = 34816 ] && [ "$(stat_after_comm "$ST2" 5)" = 0 ] && [ "$(stat_after_comm "$ST3" 5)" = 34817 ] && [ "$(stat_after_comm "$ST2" 2)" = 4242 ]; chk "tty_nr parse: field 7 after the LAST ')' ('tmux: server' -> 34816, '(we ird) (na me)' -> 0, 'a) b) c' -> 34817, ppid 4242)" $?
+  ! stat_after_comm 'garbage with no paren' 5 >/dev/null; chk "tty_nr parse: a line without ')' is rejected" $?
+  cp "$T/seats.pre-nt" "$SEATS_TABLE"   # drop the fake 'nt' row again
 
   # 17. (10-22 7:00 PM) quota-wait: the plan's usage limit is a wait, not a failure
   local QN1 QR1 QSK QEV QOUT
