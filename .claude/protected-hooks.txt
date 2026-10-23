@@ -1,0 +1,14 @@
+# Hooks that may never be disabled or removed from settings.json without Joe's approval
+# (Joe 10-23: summa and the wintermute features recall/agorabus/memlog/memory-sync/fleet-dash stay on).
+# A slow hook gets a longer "timeout", never removal. One basename per line.
+# Checked by .claude/hooks/protected-hooks-check.sh (tests/protected-hooks.test.sh + install.sh).
+# To switch one off, Joe's approval goes in ~/.claude/state/approvals.log as a line containing protected-hook:<basename>.
+summa-lookup-inject.sh
+summa-candidates-start.sh
+summa-vault-sync.sh
+recall-session-start.sh
+recall-user-prompt.sh
+recall-search-inject.sh
+agorabus-session-start.sh
+agorabus-session-end.sh
+agorabus-intent.sh

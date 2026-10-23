@@ -89,5 +89,16 @@ if [[ $DRY -eq 0 && -x "$lcg" ]]; then
   "$lcg" ensure || true
 fi
 
+# protected-hooks check: summa + wintermute hooks (.claude/protected-hooks.txt) must still be wired in the installed settings.json
+# unless Joe's approval is in ~/.claude/state/approvals.log. A failure makes install.sh exit non-zero (links are already in place).
+phc="$home/.claude/hooks/protected-hooks-check.sh"
+if [[ -x "$phc" && -r "$home/.claude/settings.json" ]]; then
+  if [[ $DRY -eq 1 ]]; then
+    printf 'would run: %s %s\n' "$phc" "$home/.claude/settings.json"
+  else
+    "$phc" "$home/.claude/settings.json" || { post_rc=$?; printf 'protected-hooks-check FAILED (rc=%s)\n' "$post_rc" >&2; }
+  fi
+fi
+
 printf 'done.\n'
 exit "$post_rc"

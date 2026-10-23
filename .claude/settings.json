@@ -247,7 +247,7 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/scripts/summa-lookup-inject.sh",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       },
