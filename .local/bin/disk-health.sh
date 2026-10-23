@@ -9,6 +9,7 @@
 #   disk-health.sh              collect, write the file, print the --summary line
 #   disk-health.sh --json       collect, write the file, print it
 #   disk-health.sh --summary    one line from the EXISTING file (no collect, no sudo); for seats
+#   disk-health.sh --sudoers    print a ready-to-install sudoers file for THIS host (explicit device paths, no globs); no collect, no sudo
 #   disk-health.sh --selftest   fake smartctl/nvme/lsblk/df/journalctl/sudo on a sandbox PATH; exits 1 on any failure
 #
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
@@ -25,12 +26,11 @@
 # PRIVILEGE: smartctl and nvme smart-log need root. This script never prompts and never fails the file for a missing tool:
 #   root -> direct; else `sudo -n true` or `sudo -n -l <full smartctl/nvme command line>` must succeed once, otherwise every device is
 #   smart_health "unavailable" with source "needs-sudo" (errors gets "needs-sudo"). Kernel log, df and the device list need no sudo.
-#   Sudoers: exactly the forms this script runs, one Cmnd each (read-only flags; a `*` after -d would let sudo run any smartctl option,
-#   so each -d type is spelled out). `command -v smartctl nvme` first; put in /etc/sudoers.d/disk-health (0440), check with `visudo -cf`:
-#     jsy ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -A /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A -d sntasmedia /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntrealtek /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A -d sat /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntjmicron /dev/sd[a-z], \
-#       /usr/sbin/smartctl -H -A /dev/nvme[0-9]n[0-9], /usr/sbin/nvme smart-log /dev/nvme[0-9]n[0-9]
+#   Sudoers: exactly the forms this script runs, one Cmnd each (read-only flags; each -d type is spelled out). Render it per host, then check and install:
+#     disk-health.sh --sudoers > /tmp/disk-health.sudoers && visudo -cf /tmp/disk-health.sudoers && sudo install -m 0440 /tmp/disk-health.sudoers /etc/sudoers.d/disk-health
+#   WHY per host: Ubuntu's sudo-rs (0.2.13) does not support wildcards INSIDE command arguments (`/dev/sd[a-z]` lists as allowed under `sudo -n -l` but the
+#   real run asks for a password), so the rule spells out every device path. Re-render when a disk is added. A sudo'd run that still says
+#   "interactive authentication is required" is classified needs-sudo, not error.
 #
 # ENV  DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
@@ -54,7 +54,7 @@ REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntf
 BYTES_YELLOW_PCT = 85
 BYTES_RED_PCT = 92
 SKIP_DEV = re.compile(r"^(loop|zram|ram|sr|fd|md|dm-)")
-NEEDS_SUDO = re.compile(r"password is required|not allowed|may not run|a terminal is required|no tty")
+NEEDS_SUDO = re.compile(r"password is required|interactive authentication is required|not allowed|may not run|a terminal is required|no tty")
 
 
 def run(cmd, timeout=40):
@@ -183,6 +183,7 @@ def smart_device(d, prefix, have_sudo, errors):
     if d["kind"] == "nvme" and nvme:
         out = call(["nvme", "smart-log", dev])
         if out is None:
+            errors.append("needs-sudo")
             row["source"] = "needs-sudo"
             return row
         p = parse_nvme_smartlog(out)
@@ -194,6 +195,7 @@ def smart_device(d, prefix, have_sudo, errors):
     if smartctl:
         out = call(["smartctl", "-H", "-A", dev])
         if out is None:
+            errors.append("needs-sudo")
             row["source"] = "needs-sudo"
             return row
         p = parse_smartctl(out)
@@ -202,6 +204,7 @@ def smart_device(d, prefix, have_sudo, errors):
             for dt in USB_DTYPES:
                 out2 = call(["smartctl", "-H", "-A", "-d", dt, dev])
                 if out2 is None:
+                    errors.append("needs-sudo")
                     row["source"] = "needs-sudo"
                     return row
                 p2 = parse_smartctl(out2)
@@ -360,12 +363,12 @@ selftest() {
   mkdir -p "$bin" "$fx"
   py=$(readlink -f "$(command -v python3)") || { echo "selftest: no python3" >&2; exit 1; }
   ln -s "$py" "$bin/python3"
-  for t in true cat basename; do ln -s "$(type -P "$t")" "$bin/$t"; done   # what the fakes themselves call
+  for t in true cat basename sed; do ln -s "$(type -P "$t")" "$bin/$t"; done   # what the fakes themselves call
 
   # fakes read fixtures from $FAKE_DIR; sandbox PATH = $bin only, so no real smartctl/nvme can leak in
   cat >"$bin/lsblk" <<'F'
 #!/bin/bash
-cat "$FAKE_DIR/lsblk"
+case "$*" in *-P*) cat "$FAKE_DIR/lsblk" ;; *) sed -n 's/^NAME="\([^"]*\)".*/\1/p' "$FAKE_DIR/lsblk" ;; esac   # -P = the collector; otherwise `lsblk -dno NAME` for --sudoers
 F
   cat >"$bin/smartctl" <<'F'
 #!/bin/bash
@@ -398,14 +401,16 @@ F
   cat >"$bin/sudo" <<'F'
 #!/bin/bash
 # FAKE_SUDO=ok runs the command; narrow = like a sudoers file with fixed-argument smartctl/nvme rules only (`sudo -n true` fails, a full-line `-l` and the
-# commands work); anything else fails like a password-required sudo
-[ "${FAKE_SUDO:-ok}" = ok ] || [ "${FAKE_SUDO:-}" = narrow ] || { echo "sudo: a password is required" >&2; exit 1; }
+# commands work); rs-wildcard = sudo-rs with a glob rule: `-l` succeeds but the real run says "interactive authentication is required" (exit 1);
+# anything else fails like a password-required sudo
+[ "${FAKE_SUDO:-ok}" = ok ] || [ "${FAKE_SUDO:-}" = narrow ] || [ "${FAKE_SUDO:-}" = rs-wildcard ] || { echo "sudo: a password is required" >&2; exit 1; }
 [ "$1" = -n ] && shift
 [ "${FAKE_SUDO:-ok}" = narrow ] && [ "$1" = true ] && { echo "sudo: a password is required" >&2; exit 1; }
 if [ "$1" = -l ]; then   # a fixed-argument sudoers rule only matches a full command line (tool + args)
   case "$2" in */smartctl|*/nvme) [ $# -ge 4 ] && exit 0 ;; esac
   exit 1
 fi
+[ "${FAKE_SUDO:-ok}" = rs-wildcard ] && { echo "sudo: interactive authentication is required" >&2; exit 1; }
 exec "$@"
 F
   chmod +x "$bin"/lsblk "$bin"/smartctl "$bin"/nvme "$bin"/df "$bin"/journalctl "$bin"/dmesg "$bin"/sudo
@@ -521,6 +526,18 @@ F
   go "$d/c3b.json" FAKE_SUDO=narrow
   check "narrow sudoers: SMART read, not needs-sudo" "$d/c3b.json" "d['devices'][0]['smart_health']=='PASSED' and 'needs-sudo' not in d['errors'] and d['devices'][2]['source']=='smartctl:sntasmedia'"
 
+  # ---- case 3c: sudo-rs wildcard rule: `sudo -n -l <line>` succeeds, the real run prints "interactive authentication is required" -> needs-sudo, not error
+  go "$d/c3c.json" FAKE_SUDO=rs-wildcard
+  check "sudo-rs interactive auth: every device source needs-sudo (not error)" "$d/c3c.json" "len(d['devices'])==3 and all(x['source']=='needs-sudo' and x['smart_health']=='unavailable' for x in d['devices'])"
+  check "sudo-rs interactive auth: errors has needs-sudo exactly once, no smart-unreadable" "$d/c3c.json" "d['errors'].count('needs-sudo')==1 and not any(e.startswith('smart-unreadable') for e in d['errors'])"
+
+  # ---- case 3d: --sudoers renders explicit device paths (fake lsblk: nvme0n1 sda sdb + loop0 zram0), no globs, every rule line is user + ALL=(root) NOPASSWD:
+  env -i HOME="$d" PATH="$bin" FAKE_DIR="$fx" DISK_HEALTH_HOST=fx DISK_HEALTH_EXTRA_PATH= SUDO_RULE_USER=tester "$BASH" "$self" --sudoers >"$d/c3d.out" 2>"$d/c3d.err"; rc=$?
+  n=$((n + 1)); if [ $rc = 0 ] && [ ! -s "$d/c3d.err" ] && grep -q '/dev/nvme0n1' "$d/c3d.out" && grep -q '/dev/sda' "$d/c3d.out" && grep -q '/dev/sdb' "$d/c3d.out" \
+    && ! grep -q 'loop0\|zram0' "$d/c3d.out" && ! grep -q '[][*]' "$d/c3d.out"; then echo "  ok   --sudoers: each fake device path, no [ ] or * characters, nothing on stderr"; else echo "  FAIL --sudoers devices/globs rc=$rc: $(cat "$d/c3d.out" "$d/c3d.err")"; fails=$((fails + 1)); fi
+  n=$((n + 1)); if [ "$(grep -vc '^#' "$d/c3d.out")" = 3 ] && ! grep -v '^#' "$d/c3d.out" | grep -qv '^tester ALL=(root) NOPASSWD: ' && [ "$(grep -c '^#' "$d/c3d.out")" = 1 ] \
+    && [ "$(grep -o 'smartctl -H -A -d [a-z]* /dev/sdb' "$d/c3d.out" | wc -l)" = 4 ] && grep -q 'nvme smart-log /dev/nvme0n1' "$d/c3d.out"; then echo "  ok   --sudoers: one comment line, one rule per disk (user ALL=(root) NOPASSWD:), 4 -d forms for sd*, nvme smart-log for nvme*"; else echo "  FAIL --sudoers shape: $(cat "$d/c3d.out")"; fails=$((fails + 1)); fi
+
   # ---- case 4a: nvme-cli missing only: the nvme disk is read through smartctl, errors names the tool
   rm -f "$bin/nvme"
   df_i 42 >"$fx/df.i"; cp "$fx/journal.clean" "$fx/journal"; sata_log PASSED 0 0 >"$fx/smartctl.sda"; rm -f "$fx/smartctl.sda.rc"
@@ -544,10 +561,33 @@ F
   [ $fails -eq 0 ]
 }
 
+# --sudoers: the exact fixed-argument command lines the collector runs, one rule line per whole disk, explicit device paths and NO glob characters
+# (sudo-rs does not support wildcards inside command arguments). Nothing but the file on stdout.
+sudoers() {
+  local user=${SUDO_RULE_USER:-${USER:-$(id -un 2>/dev/null)}} sc nv name dev line host=${DISK_HEALTH_HOST:-${HOSTNAME:-$(uname -n)}} today t
+  sc=$(command -v smartctl) || sc=/usr/sbin/smartctl
+  nv=$(command -v nvme) || nv=/usr/sbin/nvme
+  printf -v today '%(%F)T' -1
+  echo "# rendered by disk-health.sh --sudoers on $host $today: sudo-rs does not support wildcards inside command arguments, so every device path is explicit; re-render when a disk is added"
+  while IFS= read -r name; do
+    [[ $name =~ ^(sd[a-z]+|nvme[0-9]+n[0-9]+)$ ]] || continue
+    dev=/dev/$name
+    if [[ $name == nvme* ]]; then
+      line="$sc -H -A $dev, $nv smart-log $dev"
+    else
+      line="$sc -H -A $dev"
+      for t in sntasmedia sntrealtek sat sntjmicron; do line+=", $sc -H -A -d $t $dev"; done
+    fi
+    echo "$user ALL=(root) NOPASSWD: $line"
+  done < <(lsblk -dno NAME 2>/dev/null)
+  return 0
+}
+
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
+  --sudoers) sudoers; exit 0 ;;
   ""|--json|--summary) ;;
-  *) echo "usage: disk-health.sh [--json|--summary|--selftest]" >&2; exit 64 ;;
+  *) echo "usage: disk-health.sh [--json|--summary|--sudoers|--selftest]" >&2; exit 64 ;;
 esac
 
 command -v python3 >/dev/null 2>&1 || { echo "disk-health: python3 missing" >&2; exit 1; }
