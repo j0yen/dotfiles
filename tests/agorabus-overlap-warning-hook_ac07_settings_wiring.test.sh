@@ -17,8 +17,9 @@ assert_eq "$(jq -r "$ups | (index(\"agorabus-overlap.sh\")) - (index(\"agorabus-
 # is wired as an `sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec ...; exit 0'`
 # guard, so the basename strip above leaves its tail (model-role-check.sh\"; exit 0'\").
 mrc="model-role-check.sh\\\"; exit 0'\""
-assert_eq "$(jq -c "$ups | map(select(. != \"agorabus-overlap.sh\"))" "$S")" \
+# aide-inbox.sh (10-23, the aide inbox) is also appended after this PRD, as the last entry; it is excluded here and checked by tests/aide-inbox.test.sh.
+assert_eq "$(jq -c "$ups | map(select(. != \"agorabus-overlap.sh\" and (startswith(\"aide-inbox.sh\") | not)))" "$S")" \
   '["peon.sh","hook-handle-use.sh","hook-handle-rename.sh","recall-user-prompt.sh","recall-search-inject.sh","summa-lookup-inject.sh","dream-marker.sh","agorabus-intent.sh","operator-notices.sh","'"$mrc"']' \
   "existing UserPromptSubmit hooks unchanged"
-assert_eq "$(jq -r '.hooks.UserPromptSubmit[-1].hooks[0] | "\(.type) \(.timeout)"' "$S")" "command 5" "entry shape matches sibling hooks"
+assert_eq "$(jq -r '[.hooks.UserPromptSubmit[] | select(.hooks[0].command | test("aide-inbox[.]sh") | not)][-1].hooks[0] | "\(.type) \(.timeout)"' "$S")" "command 5" "entry shape matches sibling hooks"
 exit $fail

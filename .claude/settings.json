@@ -77,6 +77,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/scripts/resource-guard-start.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-inbox.sh SessionStart",
+            "timeout": 5
           }
         ]
       },
@@ -290,6 +295,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-inbox.sh UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -425,6 +440,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/redrive-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/probe-gate.sh"
           },
           {
@@ -443,6 +462,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/output-cap.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh",
             "timeout": 10
           }
         ]
