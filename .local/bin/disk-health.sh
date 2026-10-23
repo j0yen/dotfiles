@@ -14,12 +14,20 @@
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
 #        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot, kernel_io_last,
 #        usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct}, errors:[...]}
-#   source: smartctl | nvme-cli | nvme-cli+smartctl | needs-sudo | no-smartctl | error
+#   source: smartctl | smartctl:<dtype> | nvme-cli | nvme-cli+smartctl[:<dtype>] | needs-sudo | no-smartctl | error
+#           <dtype> = the smartctl `-d` type that answered for a USB bridge (sntasmedia | sntrealtek | sat | sntjmicron)
+#   USB bridges (the SSDs are NVMe behind a bridge; `-d sat` fails on them): smartctl is tried plain, then -d sntasmedia, sntrealtek, sat,
+#   sntjmicron, and stops at the first that yields a health verdict.
 #
 # PRIVILEGE: smartctl and nvme smart-log need root. This script never prompts and never fails the file for a missing tool:
-#   root -> direct; else `sudo -n true` or `sudo -n -l <tool>` must succeed once, otherwise every device is
+#   root -> direct; else `sudo -n true` or `sudo -n -l <full smartctl/nvme command line>` must succeed once, otherwise every device is
 #   smart_health "unavailable" with source "needs-sudo" (errors gets "needs-sudo"). Kernel log, df and the device list need no sudo.
-#   Sudoers line that grants it (read-only flags only) is in the PR body / README.
+#   Sudoers: exactly the forms this script runs, one Cmnd each (read-only flags; a `*` after -d would let sudo run any smartctl option,
+#   so each -d type is spelled out). `command -v smartctl nvme` first; put in /etc/sudoers.d/disk-health (0440), check with `visudo -cf`:
+#     jsy ALL=(root) NOPASSWD: /usr/sbin/smartctl -H -A /dev/sd[a-z], \
+#       /usr/sbin/smartctl -H -A -d sntasmedia /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntrealtek /dev/sd[a-z], \
+#       /usr/sbin/smartctl -H -A -d sat /dev/sd[a-z], /usr/sbin/smartctl -H -A -d sntjmicron /dev/sd[a-z], \
+#       /usr/sbin/smartctl -H -A /dev/nvme[0-9]n[0-9], /usr/sbin/nvme smart-log /dev/nvme[0-9]n[0-9]
 #
 # ENV  DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
@@ -36,6 +44,7 @@ BLKDEV = r"(?:sd[a-z]+\d*|nvme\d+(?:n\d+)?(?:p\d+)?|dm-\d+|md\d+|vd[a-z]+\d*|xvd
 KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I/O error|blk_update_request|EXT4-fs error"
                        r"|XFS \([^)]*\):.*(?:error|corruption)|remounting filesystem read-only"
                        r"|\bata\d+(?:\.\d+)?: (?:failed command|exception Emask|COMRESET failed|reset failed)", re.I)
+USB_DTYPES = ("sntasmedia", "sntrealtek", "sat", "sntjmicron")   # tried after the plain call; the order is the coordinator's (RedBaron 0781:55af: sat fails, snt* pass)
 USB_RESET_RE = re.compile(r"\busb [\d.-]+: reset (?:low|full|high|super)-?speed\+? USB", re.I)
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "zfs", "jfs", "reiserfs"}
 SKIP_DEV = re.compile(r"^(loop|zram|ram|sr|fd|md|dm-)")
@@ -123,18 +132,23 @@ def list_devices(errors):
     return devs
 
 
-def sudo_prefix(errors):
-    """-> (prefix list, ok). Never prompts: sudo -n only."""
+def sudo_prefix(devs):
+    """-> (prefix list, ok). Never prompts: sudo -n only. The `-l` probe names a FULL command line (tool + flags + a real device): a sudoers rule with
+    fixed arguments does not match a bare `sudo -l /usr/sbin/smartctl`."""
     if os.getuid() == 0:
         return [], True
     if shutil.which("sudo") is None:
         return None, False
     if run(["sudo", "-n", "true"], 15)[0] == 0:
         return ["sudo", "-n"], True
-    for tool in ("smartctl", "nvme"):
-        path = shutil.which(tool)
-        if path and run(["sudo", "-n", "-l", path], 15)[0] == 0:
-            return ["sudo", "-n"], True
+    smartctl, nvme = shutil.which("smartctl"), shutil.which("nvme")
+    for d in devs:
+        probes = [[smartctl, "-H", "-A", d["dev"]]] if smartctl else []
+        if d["kind"] == "nvme" and nvme:
+            probes.append([nvme, "smart-log", d["dev"]])
+        for cmd in probes:
+            if run(["sudo", "-n", "-l"] + cmd, 15)[0] == 0:
+                return ["sudo", "-n"], True
     return None, False
 
 
@@ -143,6 +157,10 @@ def smart_device(d, prefix, have_sudo, errors):
     row = {"dev": dev, "kind": d["kind"], "smart_health": "unavailable", "media_errors": None, "unsafe_shutdowns": None,
            "percentage_used": None, "reallocated": None, "pending": None, "source": "error"}
     smartctl, nvme = shutil.which("smartctl"), shutil.which("nvme")
+    if not smartctl:
+        errors.append("smartctl-missing")
+    if d["kind"] == "nvme" and not nvme:
+        errors.append("nvme-missing")
     if not have_sudo:
         row["source"] = "needs-sudo"
         return row
@@ -173,14 +191,19 @@ def smart_device(d, prefix, have_sudo, errors):
             row["source"] = "needs-sudo"
             return row
         p = parse_smartctl(out)
-        if p["health"] is None and d["kind"] == "usb":   # USB bridge: retry SAT passthrough
-            out2 = call(["smartctl", "-H", "-A", "-d", "sat", dev])
-            if out2 is not None:
+        dtype = None
+        if p["health"] is None and d["kind"] == "usb":   # NVMe/SATA behind a USB bridge: first -d type that yields a verdict wins
+            for dt in USB_DTYPES:
+                out2 = call(["smartctl", "-H", "-A", "-d", dt, dev])
+                if out2 is None:
+                    row["source"] = "needs-sudo"
+                    return row
                 p2 = parse_smartctl(out2)
                 if p2["health"] is not None:
-                    p = p2
+                    p, dtype = p2, dt
+                    break
         if p["health"] is not None:
-            used.append("smartctl")
+            used.append("smartctl" + (":" + dtype if dtype else ""))
             health = p["health"]
             for k in ("media_errors", "unsafe_shutdowns", "percentage_used"):
                 if stats.get(k) is None:
@@ -188,7 +211,6 @@ def smart_device(d, prefix, have_sudo, errors):
             stats["reallocated"], stats["pending"] = p["reallocated"], p["pending"]
     elif not used:
         row["source"] = "no-smartctl"
-        errors.append("smartctl-missing")
         return row
     if not used:
         row["source"] = "error"
@@ -247,7 +269,7 @@ def collect():
     devs = list_devices(errors)
     prefix, ok = (None, False)
     if devs:
-        prefix, ok = sudo_prefix(errors)
+        prefix, ok = sudo_prefix(devs)
         if not ok:
             errors.append("needs-sudo")
     rows = [smart_device(d, prefix, ok, errors) for d in devs]
@@ -328,8 +350,9 @@ cat "$FAKE_DIR/lsblk"
 F
   cat >"$bin/smartctl" <<'F'
 #!/bin/bash
-sat=""; for a in "$@"; do last=$a; [ "$a" = sat ] && sat=.sat; done
-f="$FAKE_DIR/smartctl.$(basename "$last")$sat"
+dt=""; prev=""; for a in "$@"; do last=$a; [ "$prev" = -d ] && dt=.$a; prev=$a; done
+echo "$(basename "$last")${dt:- plain}" >>"$FAKE_DIR/calls.log"
+f="$FAKE_DIR/smartctl.$(basename "$last")$dt"
 [ -f "$f" ] || { echo "Smartctl open device: $last failed: No such device"; exit 2; }
 cat "$f"; exit "$(cat "$f.rc" 2>/dev/null || echo 0)"
 F
@@ -355,15 +378,20 @@ cat "$FAKE_DIR/dmesg"
 F
   cat >"$bin/sudo" <<'F'
 #!/bin/bash
-# FAKE_SUDO=ok runs the command; anything else fails like a password-required sudo
-[ "${FAKE_SUDO:-ok}" = ok ] || { echo "sudo: a password is required" >&2; exit 1; }
+# FAKE_SUDO=ok runs the command; narrow = like a sudoers file with fixed-argument smartctl/nvme rules only (`sudo -n true` fails, a full-line `-l` and the
+# commands work); anything else fails like a password-required sudo
+[ "${FAKE_SUDO:-ok}" = ok ] || [ "${FAKE_SUDO:-}" = narrow ] || { echo "sudo: a password is required" >&2; exit 1; }
 [ "$1" = -n ] && shift
-[ "$1" = -l ] && exit 0
+[ "${FAKE_SUDO:-ok}" = narrow ] && [ "$1" = true ] && { echo "sudo: a password is required" >&2; exit 1; }
+if [ "$1" = -l ]; then   # a fixed-argument sudoers rule only matches a full command line (tool + args)
+  case "$2" in */smartctl|*/nvme) [ $# -ge 4 ] && exit 0 ;; esac
+  exit 1
+fi
 exec "$@"
 F
   chmod +x "$bin"/lsblk "$bin"/smartctl "$bin"/nvme "$bin"/df "$bin"/journalctl "$bin"/dmesg "$bin"/sudo
 
-  # ---- fixtures: nvme0n1 + sda (sata) + sdb (usb bridge, needs -d sat) ----
+  # ---- fixtures: nvme0n1 + sda (sata) + sdb (usb bridge, only -d sntasmedia answers) ----
   printf 'NAME="nvme0n1" TRAN="nvme" TYPE="disk"\nNAME="sda" TRAN="sata" TYPE="disk"\nNAME="sdb" TRAN="usb" TYPE="disk"\nNAME="loop0" TRAN="" TYPE="loop"\nNAME="zram0" TRAN="" TYPE="disk"\n' >"$fx/lsblk"
   nvme_log() { # nvme_log <media_errors> <unsafe> <critical_warning>
     printf 'Smart Log for NVME device:nvme0n1 namespace-id:ffffffff\ncritical_warning\t\t\t: %s\ntemperature\t\t\t\t: 35 °C (308 K)\navailable_spare\t\t\t\t: 100%%\npercentage_used\t\t\t\t: 3%%\nunsafe_shutdowns\t\t\t: %s\nmedia_errors\t\t\t\t: %s\nnum_err_log_entries\t\t\t: 0\n' "$3" "$2" "$1"
@@ -394,7 +422,8 @@ F
   nvme_log 0 295 0 >"$fx/nvme.nvme0n1"
   sata_log PASSED 0 0 >"$fx/smartctl.sda"
   printf 'smartctl 7.4\nUnknown USB bridge [0x1234:0x5678 (0x100)]\nPlease specify device type with the -d option.\n' >"$fx/smartctl.sdb"; echo 1 >"$fx/smartctl.sdb.rc"
-  sata_log PASSED 0 0 >"$fx/smartctl.sdb.sat"
+  sata_log PASSED 0 0 >"$fx/smartctl.sdb.sntasmedia"
+  printf 'smartctl 7.4\nRead Device Identity failed: scsi error unsupported scsi opcode\n' >"$fx/smartctl.sdb.sat"; echo 1 >"$fx/smartctl.sdb.sat.rc"
   printf 'smartctl 7.4\nSMART overall-health self-assessment test result: PASSED\nSMART/Health Information (NVMe Log 0x02)\nPercentage Used:                    3%%\nUnsafe Shutdowns:                   295\nMedia and Data Integrity Errors:    0\n' >"$fx/smartctl.nvme0n1"
   df_i 42 >"$fx/df.i"; df_b >"$fx/df.b"; cp "$fx/journal.clean" "$fx/journal"
   go "$d/c1.json"
@@ -404,11 +433,27 @@ F
   check "healthy: all PASSED" "$d/c1.json" "all(x['smart_health']=='PASSED' for x in d['devices'])"
   check "healthy: nvme media 0 unsafe 295 used 3" "$d/c1.json" "d['devices'][0]['media_errors']==0 and d['devices'][0]['unsafe_shutdowns']==295 and d['devices'][0]['percentage_used']==3 and d['devices'][0]['source']=='nvme-cli+smartctl'"
   check "healthy: sata reallocated/pending 0" "$d/c1.json" "d['devices'][1]['reallocated']==0 and d['devices'][1]['pending']==0 and d['devices'][1]['source']=='smartctl'"
-  check "healthy: usb needed -d sat retry" "$d/c1.json" "d['devices'][2]['smart_health']=='PASSED'"
+  check "healthy: usb answered by -d sntasmedia only, recorded in source" "$d/c1.json" "d['devices'][2]['smart_health']=='PASSED' and d['devices'][2]['source']=='smartctl:sntasmedia'"
+  n=$((n + 1)); got=$(grep '^sdb' "$fx/calls.log" | tr '\n' ','); if [ "$got" = "sdb plain,sdb.sntasmedia," ]; then echo "  ok   usb order: plain then sntasmedia, stops at the first verdict"; else echo "  FAIL usb order: $got"; fails=$((fails + 1)); fi
   check "healthy: kernel io 0" "$d/c1.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[] and d['usb_resets_since_boot']==0"
   check "healthy: max inode /tmp 42 (overlay + vfat dash ignored)" "$d/c1.json" "d['max_inode_pct']=={'mount':'/tmp','pct':42}"
   check "healthy: max bytes /mnt/data 87 (overlay ignored)" "$d/c1.json" "d['max_bytes_pct']=={'mount':'/mnt/data','pct':87}"
   check "healthy: no errors" "$d/c1.json" "d['errors']==[] and d['host']=='fx' and isinstance(d['ts'],int)"
+
+  # ---- case 1c: USB bridges, one answer type each: sat only, sntjmicron only, none, and two answering (sntasmedia wins by order)
+  cp "$fx/lsblk" "$fx/lsblk.orig"
+  printf 'NAME="sdc" TRAN="usb" TYPE="disk"\nNAME="sdd" TRAN="usb" TYPE="disk"\nNAME="sde" TRAN="usb" TYPE="disk"\nNAME="sdf" TRAN="usb" TYPE="disk"\n' >"$fx/lsblk"
+  sata_log PASSED 0 0 >"$fx/smartctl.sdc.sat"
+  sata_log PASSED 0 0 >"$fx/smartctl.sdd.sntjmicron"
+  sata_log PASSED 0 0 >"$fx/smartctl.sdf.sntasmedia"; sata_log PASSED 0 0 >"$fx/smartctl.sdf.sat"
+  : >"$fx/calls.log"
+  go "$d/c1c.json"
+  check "usb sat-only: source smartctl:sat" "$d/c1c.json" "d['devices'][0]['smart_health']=='PASSED' and d['devices'][0]['source']=='smartctl:sat'"
+  check "usb jmicron-only: source smartctl:sntjmicron" "$d/c1c.json" "d['devices'][1]['smart_health']=='PASSED' and d['devices'][1]['source']=='smartctl:sntjmicron'"
+  check "usb nobody answers: unavailable + error names the device" "$d/c1c.json" "d['devices'][2]['smart_health']=='unavailable' and d['devices'][2]['source']=='error' and 'smart-unreadable:/dev/sde' in d['errors']"
+  check "usb two answer: first in order (sntasmedia) wins" "$d/c1c.json" "d['devices'][3]['source']=='smartctl:sntasmedia'"
+  n=$((n + 1)); got=$(grep '^sde' "$fx/calls.log" | tr '\n' ','); if [ "$got" = "sde plain,sde.sntasmedia,sde.sntrealtek,sde.sat,sde.sntjmicron," ]; then echo "  ok   usb retry order: plain, sntasmedia, sntrealtek, sat, sntjmicron"; else echo "  FAIL usb retry order: $got"; fails=$((fails + 1)); fi
+  cp "$fx/lsblk.orig" "$fx/lsblk"
 
   # ---- case 2: FAILED sata (realloc 12, pending 3) + nvme media_errors 5 + 100 % /tmp inodes + 2 kernel I/O lines
   sata_log 'FAILED!' 12 3 >"$fx/smartctl.sda"; echo 4 >"$fx/smartctl.sda.rc"
@@ -441,11 +486,22 @@ F
   check "needs-sudo: dmesg fallback counted EXT4-fs error" "$d/c3.json" "d['kernel_io_errors_since_boot']==1 and d['usb_resets_since_boot']==0"
   [ "$(cat "$d/c3.json.rc")" = 0 ] || { echo "  FAIL needs-sudo exit rc=$(cat "$d/c3.json.rc")"; fails=$((fails + 1)); }
 
+  # ---- case 3b: narrow sudoers (no `sudo -n true`, only the fixed command lines): the full-line `-l` probe must find the grant
+  : >"$fx/journal"; rm -f "$fx/dmesg"; cp "$fx/journal.clean" "$fx/journal"
+  go "$d/c3b.json" FAKE_SUDO=narrow
+  check "narrow sudoers: SMART read, not needs-sudo" "$d/c3b.json" "d['devices'][0]['smart_health']=='PASSED' and 'needs-sudo' not in d['errors'] and d['devices'][2]['source']=='smartctl:sntasmedia'"
+
+  # ---- case 4a: nvme-cli missing only: the nvme disk is read through smartctl, errors names the tool
+  rm -f "$bin/nvme"
+  df_i 42 >"$fx/df.i"; cp "$fx/journal.clean" "$fx/journal"; sata_log PASSED 0 0 >"$fx/smartctl.sda"; rm -f "$fx/smartctl.sda.rc"
+  go "$d/c4a.json"
+  check "nvme-cli missing: nvme via smartctl, errors has nvme-missing only" "$d/c4a.json" "d['devices'][0]['source']=='smartctl' and d['devices'][0]['smart_health']=='PASSED' and d['errors']==['nvme-missing']"
+
   # ---- case 4: smartctl + nvme missing, journal + dmesg unreadable -> degraded file, never a failure
   rm -f "$bin/smartctl" "$bin/nvme" "$bin/dmesg" "$fx/journal"
   go "$d/c4.json"
   check "no tools: devices listed, source no-smartctl" "$d/c4.json" "len(d['devices'])==3 and all(x['smart_health']=='unavailable' and x['source']=='no-smartctl' for x in d['devices'])"
-  check "no tools: errors smartctl-missing + kernel-log-unreadable, kernel null" "$d/c4.json" "'smartctl-missing' in d['errors'] and 'kernel-log-unreadable' in d['errors'] and d['kernel_io_errors_since_boot'] is None and d['usb_resets_since_boot'] is None"
+  check "no tools: errors smartctl-missing + kernel-log-unreadable, kernel null" "$d/c4.json" "'smartctl-missing' in d['errors'] and 'nvme-missing' in d['errors'] and 'kernel-log-unreadable' in d['errors'] and d['kernel_io_errors_since_boot'] is None and d['usb_resets_since_boot'] is None"
   [ "$(cat "$d/c4.json.rc")" = 0 ] || { echo "  FAIL no-tools exit rc=$(cat "$d/c4.json.rc")"; fails=$((fails + 1)); }
 
   # ---- case 5: --summary on a missing file, --json prints the doc
