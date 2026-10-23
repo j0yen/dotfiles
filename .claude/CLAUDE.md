@@ -8,7 +8,7 @@
 
 # Hosts
 
-- CARBON = always-on light-duty host and Joe's laptop: seats, timers, monitors, memory sync, singletons; everything in tmux or a systemd-user unit, never a desktop terminal. NEVER cargo (hook `cargo-block-carbon.sh`), wm-build daemons, coders, or > ~2 G.
+- CARBON = always-on light-duty host and Joe's laptop: seats, timers, monitors, memory sync, singletons; everything in tmux or a systemd-user unit, never a desktop terminal. NEVER cargo (hook `cargo-block-carbon.sh`), wm-build daemons, build/test workloads, or > ~2 G total; claude coder SESSIONS are allowed only as systemd-run units with premise + expiry inside that total (aide rec 10-22 9:5x PM on Joe's "recommendations?", reverse with one word; ⚙ carbon claude-RSS alarm = controller item).
 - SEATS = tmux on carbon: `rb` owns RedBaron (runs, wm-build binary, its goal.md line); `r7` owns ryzen7 and all it admits (config/limits, alarms/cordons/redrives/`run close`, synthorg PRD amendments, /dream successors, its goal.md line). Neither touches the other's host; cross-host asks go by tmux message; the controller reaches both by SendMessage.
 - REDBARON + RYZEN7 = always-on headless build hosts; seats in tmux over ssh. Which PRDs go first is goal.md § Stage; an idle slot with any eligible PRD = defect.
 - Moving hosts moves SINGLETONS only (operator loop, `token-ledger`, `fleet-sync`, `prd-sync`): enable new, disable old. PER-NODE agents (`summa-commit`, `agorabus-reap`, `memlog-witness`, vault/memory sync) run everywhere. Before disabling: "if this host is the only holder, does disabling lose data or coverage?"
