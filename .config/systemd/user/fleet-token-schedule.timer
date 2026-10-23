@@ -1,0 +1,11 @@
+[Unit]
+Description=fleet-token weekly rotation, Fridays 2:05 PM Pacific (fleet-token-schedule.service; not enabled by the repo)
+ConditionHost=carbon
+
+[Timer]
+OnCalendar=Fri 14:05 America/Los_Angeles
+# a missed Friday (carbon off) runs at the next boot; a second run in the same week is a no-op
+Persistent=true
+
+[Install]
+WantedBy=timers.target

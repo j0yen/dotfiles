@@ -1,0 +1,11 @@
+[Unit]
+Description=fleet-token 429 watch: rotate the fleet to the next Claude account when seat-tick's quota_wait_until says the plan limit hit (PREMISE + EXPIRES in the script)
+# carbon only: the files install everywhere (install.sh links the whole tree), the unit runs on carbon
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet-token-429-watch.sh
+# a rotation places on 4 hosts and verifies each (haiku call, up to 90 s a host)
+TimeoutStartSec=1200
