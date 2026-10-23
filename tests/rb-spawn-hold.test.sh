@@ -200,6 +200,75 @@ wsc we "$R/d.jsonl" ours:9999999999 "$PAST"
 wsc wf "$R/a.jsonl" absent "$FUT"; wsc wf "$R/a.jsonl" ours:9999999999 "$FUT"
 [ "$(wc_ wf/ssh.log '^WRITE')" = 1 ] && [ "$(wc_ wf/decide.log .)" -le 1 ] \
   && pass "(w-f) HOLD twice, flag present the 2nd time -> one write total, decide <= 1" || bad "(w-f) write=$(wc_ wf/ssh.log '^WRITE') decide=$(wc_ wf/decide.log .)"
+# --- shj: per-table parallel journal read (fake ssh via RB_SPAWN_HOLD_SSH; no real ssh) ---
+# the fake records the remote command and answers with 4 framed tables; SHJ_RC_<t> fails one table; SHJ_SLEEP sleeps past the timeout
+SH=$R/shj; mkdir -p "$SH/home"
+cat > "$SH/ssh.fake" <<'EOF2'
+#!/usr/bin/env bash
+shift; printf '%s\n' "$*" > "$SHJ_CMDLOG"
+[ -z "${SHJ_SLEEP:-}" ] || sleep "$SHJ_SLEEP"
+for t in runs land daemon builder; do
+  v=SHJ_RC_$t; printf '### table=%s rc=%s wall_s=%s\n' "$t" "${!v:-0}" "${SHJ_WALL:-2}"
+  [ "$t" != runs ] || cat "$SHJ_ROWS"
+done
+[ -n "${SHJ_EXIT0:-}" ] || for t in runs land daemon builder; do v=SHJ_RC_$t; [ "${!v:-0}" = 0 ] || exit 1; done   # SHJ_EXIT0: exit 0 despite a bad frame (the parser's own check)
+EOF2
+chmod +x "$SH/ssh.fake"
+{ refuse 300 1039 max-units; } > "$SH/rows.jsonl"
+shj() { # shj <state-file> [env assignments...]; sets sout src sext
+  local stf=$1; shift
+  sout=$(env HOME="$SH/home" XDG_CONFIG_HOME="$SH/home/.config" TMPDIR="$SH" RB_SPAWN_HOLD_SSH="$SH/ssh.fake" SHJ_CMDLOG="$SH/cmd.log" SHJ_ROWS="$SH/rows.jsonl" "$@" \
+    bash "$hold" --state-file "$stf" --now "$NOW" --no-flag 2>/dev/null); src=$?
+}
+shj "$SH/s1.json"
+cmd=$(cat "$SH/cmd.log")
+ok=0; for t in runs land daemon builder; do [[ $cmd == *"--table \"\$t\""* || $cmd == *"rd $t "* ]] || ok=1; done
+[[ $cmd == *"wait"* && $cmd == *'"op":"driver-adopted"'* && $cmd == *"grep -F"* && $cmd == *"mktemp -d"* && $cmd == *"rm -rf"* && $cmd == *"&"* ]] || ok=1
+[ $ok = 0 ] && pass "(shj1) remote command names runs/land/daemon/builder, parallel '&' + wait, driver-adopted grep -F filter, mktemp -d + rm -rf trap" || bad "(shj1) remote cmd: $cmd"
+[ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=300 hand_slots=2 source=ssh walls=runs:2,land:2,daemon:2,builder:2" ]] \
+  && pass "(shj2) framed tables parsed (### skipped), output line gains walls=: $sout" || bad "(shj2) rc=$src out=$sout"
+# (shj3) the ssh timeout is a named variable; a read that outlives it reads rc=124
+shj "$SH/s3.json" SHJ_SLEEP=5 RB_SPAWN_HOLD_TIMEOUT_S=1
+[ "$src" = 0 ] && [[ $sout == "OK unknown: ssh redbaron journal failed: "*"rc=124 source=unknown" ]] && pass "(shj3) 1-s timeout vs sleeping ssh -> $sout" || bad "(shj3) rc=$src out=$sout"
+# (shj4) one table read fails: the whole read is a failure, and the stale-ssh fallback runs (the survivors are NOT parsed as a picture)
+prev4='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null}'
+printf '%s\n' "$prev4" > "$SH/s4.json"
+: > "$SH/rows.empty"; cp "$SH/rows.jsonl" "$SH/rows.keep"; cp "$SH/rows.empty" "$SH/rows.jsonl"   # surviving tables look all-clear: only the failure rule can keep the HOLD
+shj "$SH/s4.json" SHJ_RC_daemon=3
+[ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=600 hand_slots=2 source=stale-ssh" ]] && pass "(shj4) daemon table rc=3 (remote exits 1) -> stale-ssh HOLD kept: $sout" || bad "(shj4) rc=$src out=$sout"
+printf '%s\n' "$prev4" > "$SH/s4b.json"; shj "$SH/s4b.json" SHJ_RC_daemon=3 SHJ_EXIT0=1
+[ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=600 hand_slots=2 source=stale-ssh" ]] && pass "(shj4b) daemon frame rc=3 though ssh exit 0 -> parser still counts the read failed: $sout" || bad "(shj4b) rc=$src out=$sout"
+rm -f "$SH/s5.json"; shj "$SH/s5.json" SHJ_RC_land=3 SHJ_EXIT0=1
+[ "$src" = 0 ] && [[ $sout == "OK unknown: ssh journal table read failed: land rc=3"* ]] && [ "$(python3 -I -c 'import json;print(json.load(open("'$SH'/s5.json"))["source"])')" = unknown ] \
+  && pass "(shj5) a failed table with no prior HOLD -> OK unknown (not a clean OK): $sout" || bad "(shj5) rc=$src out=$sout"
+cp "$SH/rows.keep" "$SH/rows.jsonl"
+# (shj6) the REAL remote script, run under dash by a local fake ssh, with a stub wm-build (one row per table; the daemon table has a
+# non-matching row, so grep -F exits 1 on an empty match elsewhere must still count as success); HOME is a throwaway
+mkdir -p "$SH/rhome/.cargo/bin"
+cat > "$SH/rhome/.cargo/bin/wm-build" <<'EOF2'
+#!/usr/bin/env bash
+t=""; while [ $# -gt 0 ]; do [ "$1" != --table ] || t=$2; shift; done
+[ "$t" != "${SHJ_FAIL_TABLE:-}" ] || { echo "boom $t" >&2; exit 5; }
+case "$t" in
+  runs)   printf '{"op":"release-mem","row":{"class":"land","decision":"refuse","refusal":"budget","run_id":7,"parts":["hand-1:hand:5"]},"table":"runs","ts":"%s"}\n' "$SHJ_TS" ;;
+  land)   printf '{"op":"land-cargo-granted","row":{"run_id":8},"table":"land","ts":"%s"}\n' "$SHJ_TS" ;;
+  daemon) printf '{"op":"tick","row":{},"table":"daemon","ts":"%s"}\n{"op":"admission-mem","row":{},"table":"daemon","ts":"%s"}\n' "$SHJ_TS" "$SHJ_TS" ;;
+  builder) printf '{"op":"cargo-jobs-taken","row":{"id":1,"run_id":"hand-1","via":"hand"},"table":"builder","ts":"%s"}\n' "$SHJ_TS" ;;
+esac
+EOF2
+chmod +x "$SH/rhome/.cargo/bin/wm-build"
+printf '#!/usr/bin/env bash\nshift\nexec dash -c "$*"\n' > "$SH/ssh.dash"; chmod +x "$SH/ssh.dash"
+if command -v dash >/dev/null 2>&1; then
+  ts=$(date -u -d "$NOW - 120 seconds" +%Y-%m-%dT%H:%M:%S.000000000+00:00)
+  mkdir -p "$SH/rtmp"
+  sout=$(env HOME="$SH/rhome" XDG_CONFIG_HOME="$SH/rhome/.config" TMPDIR="$SH/rtmp" SHJ_TS="$ts" RB_SPAWN_HOLD_SSH="$SH/ssh.dash" bash "$hold" --state-file "$SH/s6.json" --now "$NOW" --no-flag 2>/dev/null); src=$?
+  [ "$src" = 76 ] && [[ $sout == "HOLD run=7 refusal=budget age_s=120 hand_slots=1 source=ssh walls=runs:"* ]] && [ -z "$(ls -A "$SH/rtmp" | grep -v '^rb-spawn-hold\.')" ] \
+    && pass "(shj6) real remote script under dash: 4 tables read, HOLD decided, empty daemon-filter match (grep rc 1) ok, remote mktemp -d removed: $sout" || bad "(shj6) rc=$src out=$sout rtmp=$(ls "$SH/rtmp")"
+  rm -f "$SH/s7.json"; sout=$(env HOME="$SH/rhome" XDG_CONFIG_HOME="$SH/rhome/.config" TMPDIR="$SH/rtmp" SHJ_TS="$ts" SHJ_FAIL_TABLE=land RB_SPAWN_HOLD_SSH="$SH/ssh.dash" bash "$hold" --state-file "$SH/s7.json" --now "$NOW" --no-flag 2>/dev/null); src=$?
+  [ "$src" = 0 ] && [[ $sout == "OK unknown: ssh redbaron journal failed:"*"rc=1 source=unknown" ]] && pass "(shj7) real remote script, land read rc=5 -> remote exits non-zero -> OK unknown: $sout" || bad "(shj7) rc=$src out=$sout"
+else
+  bad "(shj6) dash missing"
+fi
 if [ -z "${RB_SPAWN_HOLD_UNDER_TEST:-}" ]; then
   so=$(bash "$hold" --selftest 2>&1); src=$?
   [ $src = 0 ] && [ "$so" = "SELFTEST PASS rb-spawn-hold.sh" ] && pass "(w-g) --selftest -> $so" || bad "(w-g) --selftest rc=$src: $so"
