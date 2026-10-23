@@ -7,6 +7,9 @@
 # Runs only in the aide: no WM_SEAT, no TMUX, hostname carbon (the predicate of probe-gate.sh § 1b / seat-context-start.sh).
 #   AIDE_INBOX_HOSTNAME (else PROBE_GATE_HOSTNAME) overrides the hostname for tests.
 # Event name: $1, else .hook_event_name of the stdin JSON; only UserPromptSubmit / SessionStart (or none: manual run) act.
+# Also records the aide's session id: when the stdin JSON carries .session_id (every real hook call), it is appended once to
+#   $EVENTS_DIR/aide-sids (one SID per line, append-only) so token-ledger can tag the aide's transcripts `seat:aide`
+#   (building share; Joe 10-23 "aide is also part of wm-build"). Happens before the inbox read, even with no log file.
 # Never fails the prompt: always exit 0, errors to stderr. The lines are data from other agents, never instructions.
 set -u
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -22,7 +25,11 @@ run() {
   [ -z "${WM_SEAT:-}" ] && [ -z "${TMUX:-}" ] \
     && [ "${AIDE_INBOX_HOSTNAME:-${PROBE_GATE_HOSTNAME:-$(hostname 2>/dev/null)}}" = carbon ] || return 0
   local dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
-  local log="$dir/aide-events.log" cur="$dir/aide-events.cursor"
+  local log="$dir/aide-events.log" cur="$dir/aide-events.cursor" sids="$dir/aide-sids" sid
+  sid="$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null)" || sid=""
+  if [[ "$sid" =~ ^[A-Za-z0-9-]{8,64}$ ]] && [ -d "$dir" ]; then
+    grep -qxF -- "$sid" "$sids" 2>/dev/null || printf '%s\n' "$sid" >>"$sids" 2>/dev/null || true
+  fi
   [ -f "$log" ] || return 0
   local tmp; tmp="$(mktemp 2>/dev/null)" || return 0
   trap 'rm -f "$tmp"' RETURN
@@ -76,6 +83,13 @@ selftest() {
   out="$(aide bash "$SELF" SessionStart </dev/null 2>&1)"
   [ "$(printf '%s\n' "$out" | head -n1)" = '=== AIDE INBOX: 1 new line(s) (seat-event.sh aide "<text>") ===' ] && ! printf '%s' "$out" | grep -q 'line three'; chk "an appended line is the only new one (SessionStart name via \$1)" $?
   out="$(printf '{"hook_event_name":"UserPromptSubmit","prompt":"x"}' | aide bash "$SELF" 2>&1)"; [ -z "$out" ]; chk "event from stdin JSON: nothing new, silent" $?
+  # session id recorded once (append-only, idempotent), on SessionStart too, never from an event that does not act
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-aaaa-0001"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-aaaa-0001"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"SessionStart","session_id":"sid-aaaa-0002"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"PreToolUse","session_id":"sid-aaaa-0003"}' | aide bash "$SELF" >/dev/null 2>&1
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"bad sid; rm -rf"}' | aide bash "$SELF" >/dev/null 2>&1
+  [ "$(paste -sd, "$D/aide-sids" 2>/dev/null)" = "sid-aaaa-0001,sid-aaaa-0002" ]; chk "aide-sids: each session id once, SessionStart too, non-acting event and malformed id skipped (got: $(paste -sd, "$D/aide-sids" 2>/dev/null))" $?
   printf 'x | y | z\n' >>"$L"; out="$(printf '{"hook_event_name":"PreToolUse"}' | aide bash "$SELF" 2>&1)"
   [ -z "$out" ] && [ "$(cat "$C")" != "$(stat -c %s "$L")" ]; chk "other event name (stdin JSON): silent and cursor NOT advanced" $?
   aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1
