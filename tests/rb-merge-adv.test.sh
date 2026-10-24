@@ -77,6 +77,7 @@ REPO=j0yen/synthorg; PR=434
 # (a) a non-trigger repo with no brief passes through to merge-gate and merges
 REPO=j0yen/swarm-decide; PR=7
 case_run a $REPO $PR '[]'; passed "(a) non-trigger repo, no brief, no ADV row: passes through to merge-gate and merges"
+check "$(grep -c '^ADV-OK ' "$tmp/err")" 0 "(a) no ADV-OK marker when the trigger does not fire"
 REPO=j0yen/synthorg; PR=434
 # (b)..(j)
 case_run b $REPO $PR '[]'; refused "(b) synthorg PR with no ADV row: ADV-MISSING" ADV-MISSING
@@ -84,6 +85,12 @@ case_run c $REPO $PR "[$(adv "$FAILW")]"; refused "(c) newest ADV row is ADV-FAI
 case_run d $REPO $PR "[$(adv "$PASSW" '"commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')]"; refused "(d) the ADV-PASS names another COMMIT: ADV-STALE" ADV-STALE
 case_run e $REPO $PR "[$(adv "$PASSW")]"; passed "(e) a valid ADV-PASS for (G, COMMIT): proceeds to merge"
 check "$(grep -c "GATE_OK=$V\] pr merge" "$tmp/calls")" 1 "(e) gh pr merge carries WM_DECIDE_GATE_OK"
+check "$(grep '^ADV-OK ' "$tmp/err")" "ADV-OK ${rowids[0]} 2026-10-24T11:01:00-07:00 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa $REPO#$PR" "(e) the triggered pass prints ADV-OK <A-id> <A-ts> <H> <owner/name>#<pr> (one line)"
+check "$(grep -c '^ADV-OK ' "$tmp/err")" 1 "(e) exactly one ADV-OK marker"
+# G1: a row that ends right after the log path (no ':' or space) matches the grammar (red at 33924c6: ADV_RE ended (:| ))
+ENDW='ADV-PASS {repo}#{pr} COMMIT={commit} agent=verifier:v434-adv scope=adversarial log='"$PASSLOG"
+case_run e2 $REPO $PR "[$(adv "$ENDW")]"; passed "(e2) G1: an ADV-PASS whose what ends right after the log path proceeds"
+case_run e3 $REPO $PR "[$(adv "${ENDW/$PASSLOG/$ABSENTLOG}")]"; refused "(e3) G1: a path-terminated row naming an absent log is ADV-NOLOG (it matched the grammar)" ADV-NOLOG
 case_run f $REPO $PR "[$(adv "$PASSW" '"min":1'),$(adv "$FAILW" '"min":2')]"; refused "(f) ADV-PASS then ADV-FAIL: the newest decides, refused (ADV-NOT-PASS)" ADV-NOT-PASS
 case_run g $REPO $PR "[$(adv "$FAILW" '"min":1'),$(adv "$PASSW" '"min":2')]"; passed "(g) ADV-FAIL then ADV-PASS: proceeds"
 case_run h $REPO $PR '[]'; echo "not a database" > "$tmp/st-h/decisions.sqlite"
@@ -95,6 +102,26 @@ case_run h3 $REPO $PR '[]'; : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-h3" bash 
 refused "(h) the verdict row is not in the ledger: ADV-UNCHECKED" ADV-UNCHECKED
 case_run i $REPO $PR "[$(adv "$PASSW" '"gates":"other"')]"; refused "(i) the ADV-PASS gates a different row: ADV-MISSING" ADV-MISSING
 case_run j $REPO $PR "[$(adv "$UNVW")]"; refused "(j) ADV-UNVERIFIED: ADV-NOT-PASS" ADV-NOT-PASS
+
+# same-second tie fails closed: order by ts only, the id never breaks a tie (red at 33924c6: PASS with the higher id won)
+case_run t1 $REPO $PR "[$(adv "$PASSW" '"min":5'),$(adv "$FAILW" '"min":5')]"; refused "(t1) PASS (lower id) and FAIL (higher id) at the same ts: refused" ADV-NOT-PASS
+case_run t2 $REPO $PR "[$(adv "$FAILW" '"min":5'),$(adv "$PASSW" '"min":5')]"; refused "(t2) FAIL (lower id) and PASS (higher id) at the same ts: refused" ADV-NOT-PASS
+case_run t3 $REPO $PR "[$(adv "$PASSW" '"min":5'),$(adv "$UNVW" '"min":5')]"; refused "(t3) PASS and ADV-UNVERIFIED at the same ts: refused" ADV-NOT-PASS
+case_run t4 $REPO $PR "[$(adv "$PASSW" '"min":5'),$(adv "$PASSW" '"min":5')]"; passed "(t4) two PASS rows at the same ts: proceeds"
+case_run t5 $REPO $PR "[$(adv "$FAILW" '"min":4'),$(adv "$PASSW" '"min":5'),$(adv "$PASSW" '"min":5')]"; passed "(t5) an older FAIL under two same-ts PASS rows: proceeds"
+
+# provenance: an ADV row counts only with ledger via=verifier (a caller-set --via flag: residual risk named in the PR body)
+case_run p1 $REPO $PR "[$(adv "$PASSW" '"via":"seat-tick"')]"; refused "(p1) an ADV-PASS recorded via=seat-tick: ADV-MISSING" ADV-MISSING
+case_run p2 $REPO $PR "[$(adv "$PASSW" '"via":"r7"')]"; refused "(p2) an ADV-PASS recorded via=r7: ADV-MISSING" ADV-MISSING
+case_run p3 $REPO $PR "[$(adv "$PASSW" '"via":"verifier"')]"; passed "(p3) an ADV-PASS recorded via=verifier: proceeds"
+# filter BEFORE select: a newer non-verifier PASS must not hide (or replace) an older verifier FAIL
+case_run p4 $REPO $PR "[$(adv "$FAILW" '"min":1'),$(adv "$PASSW" '"min":2,"via":"seat-tick"')]"; refused "(p4) older verifier FAIL + newer seat-tick PASS: ADV-NOT-PASS (not MISSING, not a pass)" ADV-NOT-PASS
+case_run p5 $REPO $PR "[$(adv "$PASSW" '"min":1'),$(adv "$FAILW" '"min":2,"commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')]"; passed "(p5) a newer FAIL for another COMMIT does not decide: the older PASS for this COMMIT proceeds"
+OTHERPR='ADV-FAIL {repo}#999 COMMIT={commit} agent=verifier:v434-adv scope=adversarial log='"$PASSLOG"': other pr'
+case_run p6 $REPO $PR "[$(adv "$PASSW" '"min":1'),$(adv "$OTHERPR" '"min":2')]"; passed "(p6) a newer FAIL for another PR does not decide"
+# M1 holes: rows the mutations h (scope=adversarial dropped) and i (agent=verifier: prefix dropped) would turn green
+case_run s1 $REPO $PR "[$(adv "${PASSW/scope=adversarial/scope=suite}")]"; refused "(s1) an otherwise valid PASS with scope=suite: ADV-MISSING" ADV-MISSING
+case_run s2 $REPO $PR "[$(adv "${PASSW/agent=verifier:v434-adv/agent=seat:r7}")]"; refused "(s2) an otherwise valid PASS with agent=seat:r7: ADV-MISSING" ADV-MISSING
 
 # log= (ctl bcc6 CORRECT 2)
 NOLOGW='ADV-PASS {repo}#{pr} COMMIT={commit} agent=verifier:v434-adv scope=adversarial: checked the brief items'
@@ -121,22 +148,34 @@ waive_case() {   # waive_case NAME REPO PR ROW_JSON WANT(ok|bad) MSG
   : > "$tmp/calls"; RB_MERGE_ADV_WAIVE="$wid" WM_DECIDE_STATE="$tmp/st-$1" bash "$wrap" "$V" "$3" "$2" >/dev/null 2>"$tmp/err"; rc=$?
   if [ "$5" = ok ]; then
     check "$rc:$(merged):$(gated):$(grep -cx "ADV-WAIVED $wid" "$tmp/err")" "0:1:1:1" "$6"
-  else
-    check "$rc:$(merged):$(gated):$(grep -cx "ADV-WAIVER-BAD - $2#$3" "$tmp/err")" "4:0:0:1" "$6"
+  else   # bad:<reason> -- the one refusal line AND the reason line (so a refusal for the wrong reason is red)
+    check "$rc:$(merged):$(gated):$(grep -cx "ADV-WAIVER-BAD - $2#$3" "$tmp/err"):$(grep -cx "ADV-REASON ${5#bad:}" "$tmp/err")" "4:0:0:1:1" "$6 [reason ${5#bad:}]"
   fi
 }
 waive_case k1 $REPO $PR "$(wv "$WOK")" ok "(k1) a valid controller waiver proceeds, logs ADV-WAIVED <id>, merge-done runs"
 check "$(grep -c '^wmd merge-done' "$tmp/calls")" 1 "(k1) merge-done ran after the waived merge"
-waive_case k2 $REPO $PR "$(wv "$WOK" '"agent":"r7"')" bad "(k2) an r7-authored waiver is refused (ADV-WAIVER-BAD)"
-waive_case k3 $REPO $PR "$(wv "$WOK agent=controller" '"agent":"r7"')" bad "(k3) what says agent=controller but the author column is r7: refused"
-waive_case k3b $REPO $PR "$(wv "$WOK agent=ctl" '"agent":"r7"')" bad "(k3b) what says agent=ctl but the author column is r7: refused"
-waive_case k4 $REPO $PR "$(wv 'ADV-WAIVE {repo}#999 until=2999-01-01T00:00:00Z')" bad "(k4) a waiver for another PR is refused"
-waive_case k4b $REPO $PR "$(wv 'ADV-WAIVE {repo}#43 until=2999-01-01T00:00:00Z')" bad "(k4b) a waiver for PR 43 does not cover PR 434"
-waive_case k5 $REPO $PR "$(wv "$WOK" '"kind":"verdict"')" bad "(k5) a waiver row of kind verdict is refused"
-waive_case k6 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} until=2020-01-01T00:00:00Z')" bad "(k6) an expired until= is refused"
-waive_case k7 $REPO $PR "$(wv "$WOK" '"agent":"ctl"')" bad "(k7) a waiver whose agent column is ctl (not the recorder-set controller) is refused: pins the real value"
-waive_case k8 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} no deadline')" bad "(k8) a waiver with no until= is refused"
-waive_case k9 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} until=2999-01-01')" bad "(k9) an until= with no time part is refused"
+waive_case k2 $REPO $PR "$(wv "$WOK" '"agent":"r7"')" bad:agent "(k2) an r7-authored waiver is refused (ADV-WAIVER-BAD)"
+waive_case k3 $REPO $PR "$(wv "$WOK agent=controller" '"agent":"r7"')" bad:agent "(k3) what says agent=controller but the author column is r7: refused"
+waive_case k3b $REPO $PR "$(wv "$WOK agent=ctl" '"agent":"r7"')" bad:agent "(k3b) what says agent=ctl but the author column is r7: refused"
+waive_case k4 $REPO $PR "$(wv 'ADV-WAIVE {repo}#999 until=2999-01-01T00:00:00Z')" bad:pr-text "(k4) a waiver for another PR is refused"
+waive_case k4b $REPO $PR "$(wv 'ADV-WAIVE {repo}#43 until=2999-01-01T00:00:00Z')" bad:pr-text "(k4b) a waiver for PR 43 does not cover PR 434"
+waive_case k5 $REPO $PR "$(wv "$WOK" '"kind":"verdict"')" bad:kind "(k5) a waiver row of kind verdict is refused"
+waive_case k6 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} until=2020-01-01T00:00:00Z')" bad:until-past "(k6) an expired until= is refused"
+waive_case k7 $REPO $PR "$(wv "$WOK" '"agent":"ctl"')" bad:agent "(k7) a waiver whose agent column is ctl (not the recorder-set controller) is refused: pins the real value"
+waive_case k8 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} no deadline')" bad:no-until "(k8) a waiver with no until= is refused"
+waive_case k9 $REPO $PR "$(wv 'ADV-WAIVE {repo}#{pr} until=2999-01-01')" bad:no-until "(k9) an until= with no time part is refused"
+waive_case k11 $REPO $PR "$(wv "$WOK" '"via":"runner"')" bad:via "(k11) a controller waiver recorded via=runner is refused"
+waive_case k11b $REPO $PR "$(wv "$WOK" '"via":"controller"')" bad:via "(k11b) a controller waiver recorded via=controller (not seat-tick) is refused"
+waive_case k12 $REPO $PR "$(wv "$WOK" '"regrade":null')" bad:no-regrade "(k12) a waiver with no Fable regrade is refused"
+waive_case k13 $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"CORRECT"}')" bad:regrade-not-confirm "(k13) a waiver whose regrade is CORRECT is refused"
+waive_case k13b $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"ESCALATE"}')" bad:regrade-not-confirm "(k13b) a waiver whose regrade is ESCALATE is refused"
+waive_case k13c $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"DISAGREE"}')" bad:regrade-not-confirm "(k13c) a waiver whose regrade is DISAGREE is refused"
+waive_case k14 $REPO $PR "$(wv "$WOK" '"regrade":{"by":"controller"}')" bad:regrade-agent "(k14) a CONFIRM regrade by a non-regrader agent (controller) is refused"
+waive_case k14b $REPO $PR "$(wv "$WOK" '"regrade":{"by":"r7"}')" bad:regrade-agent "(k14b) a CONFIRM regrade by r7 is refused"
+waive_case k15 $REPO $PR "$(wv "$WOK" '"graded_at":"2026-10-24T10:00:00-07:00"')" bad:regrade-ts "(k15) a CONFIRM graded BEFORE the waiver row (graded_at earlier than ts) is refused"
+waive_case k15b $REPO $PR "$(wv "$WOK" '"graded_at":"not-a-time"')" bad:regrade-ts "(k15b) a CONFIRM with an unparsable graded_at is refused"
+waive_case k15c $REPO $PR "$(wv "$WOK" '"graded_at":null')" bad:regrade-ts "(k15c) a CONFIRM with no graded_at is refused"
+waive_case k16 $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"CORRECT","by":"r7"}')" bad:regrade-agent "(k16) a CORRECT from a non-regrader is refused (agent checked first)"
 case_run k10 $REPO $PR '[]'; : > "$tmp/calls"; RB_MERGE_ADV_WAIVE=d-20261024-000000-r7-ffff WM_DECIDE_STATE="$tmp/st-k10" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc:$(merged):$(grep -cx "ADV-WAIVER-BAD - $REPO#$PR" "$tmp/err")" "4:0:1" "(k10) a waiver id that is not in the ledger is refused"
 
@@ -171,6 +210,17 @@ agree "$ADV_RE_FMT" j0yen/synthorg 434 "ADV-PASS j0yenxsynthorg#434 COMMIT=$C40 
 agree "$ADV_RE_FMT" j0yen/synthorg 434 "MERGE-OK j0yen/synthorg#434 COMMIT=$C40 agent=verifier:v1 scope=suite" 0
 agree "$ADV_WAIVE_RE_FMT" j0yen/synthorg 434 "x ADV-WAIVE j0yen/synthorg#434 until=2999-01-01T00:00:00Z" 1
 agree "$ADV_WAIVE_RE_FMT" j0yen/synthorg 43 "x ADV-WAIVE j0yen/synthorg#434 until=2999-01-01T00:00:00Z" 0
+# one regex: the string the helper compiles (--dump-re, read from the environment) is byte-equal to adv_ere from the sourced lib
+for rp in "j0yen/synthorg 434" "j0yen/mcphost 7" "j0yen/swarm-decide 12" "j0yen/a.b-c 5"; do
+  set -- $rp; want="$(adv_ere "$ADV_RE_FMT" "$1" "$2")"
+  got="$(env "ADV_RE_FMT=$ADV_RE_FMT" python3 -I "$here/.local/lib/rb-merge-adv-check.py" --dump-re "$1" "$2")"
+  check "$got" "$want" "no-drift: the python pattern is byte-equal to adv_ere for $1#$2"
+done
+check "$(grep -c 'ADV_RE_FMT' "$wrap")" 0 "no-drift: rb-merge.sh names no pattern variable (every ADV_* var reaches the helper by compgen)"
+# G1 in both engines: a line ending right after the path matches under grep -E and python re
+agree "$ADV_RE_FMT" j0yen/synthorg 434 "ADV-PASS j0yen/synthorg#434 COMMIT=$C40 agent=verifier:v1 scope=adversarial log=/x/y.log" 1
+agree "$ADV_RE_FMT" j0yen/synthorg 434 "ADV-PASS j0yen/synthorg#434 COMMIT=$C40 agent=verifier:v1 scope=adversarial log=" 0
+agree "$ADV_RE_FMT" j0yen/synthorg 434 "ADV-PASS j0yen/synthorg#434 COMMIT=$C40 agent=verifier:v1 scope=suite log=/x/y.log" 0
 check "$(printf '%s' 'ADV-PASS x COMMIT=a scope=adversarial log=/p/q.log: z' | sed -nE "s#.*$ADV_LOG_RE.*#\1#p")" "/p/q.log" "grammar: ADV_LOG_RE extracts the log path (ERE)"
 
 [ "$fail" = 0 ] && echo "ALL OK - rb-merge-adv ($n checks)" || echo "FAILED - rb-merge-adv"

@@ -15,7 +15,8 @@
 # j0yen/mcphost or j0yen/synthorg (any PR, brief or not), or any PR whose gated row G cites a brief (what/why/evidence), needs an adversarial-pass row for (G, the verdict's COMMIT): the NEWEST
 # one decides. Refusals exit 4 (exit 3 stays attribution-only) with ONE stderr line `ADV-<REASON> <G> <owner/name>#<pr>` and gh is never asked to merge: ADV-MISSING, ADV-STALE (other COMMIT),
 # ADV-NOT-PASS (newest is FAIL/UNVERIFIED), ADV-NOLOG (the log= file is not a non-empty regular file here), ADV-UNCHECKED (row read failed), ADV-WAIVER-BAD.
-# RB_MERGE_ADV_WAIVE=<d-id> skips it only for a controller-authored kind=other row naming this PR with a future until= (stderr ADV-WAIVED <d-id>). Grammar: .local/lib/adv-grammar.sh (the one copy).
+# RB_MERGE_ADV_WAIVE=<d-id> skips it only for a controller-authored (agent=controller, via=seat-tick) kind=other row naming this PR with a future until= AND its own `regrade` column = fable-regrader CONFIRM with graded_at later than the row's ts (stderr ADV-WAIVED <d-id>; a refusal adds an `ADV-REASON <why>` line).
+# A triggered pass prints `ADV-OK <A-id> <A-ts> <H> <owner/name>#<pr>` on stderr before the gate; an ADV row counts only with ledger via=verifier. Grammar: .local/lib/adv-grammar.sh (the one copy).
 # The ledger is read from the sqlite file wm-decide writes ($WM_DECIDE_STATE or ~/.local/state/swarm-decide), mode=ro, no time window, by .local/lib/rb-merge-adv-check.py.
 set -euo pipefail
 usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name>" >&2; exit 64; }
@@ -28,18 +29,17 @@ GH="${RB_MERGE_GH:-gh}"
 
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
 adv_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
-adv_refuse() { echo "$1 ${2:--} $repo#$pr" >&2; exit "${ADV_EXIT:-4}"; }   # ADV_EXIT=4 from adv-grammar.sh (not sourced yet when the lib itself is missing)
+adv_refuse() { echo "$1 ${2:--} $repo#$pr" >&2; [ -z "${3:-}" ] || echo "ADV-REASON $3" >&2; exit "${ADV_EXIT:-4}"; }   # ADV_EXIT=4 from adv-grammar.sh (not sourced yet when the lib itself is missing)
 [ -r "$adv_lib/adv-grammar.sh" ] && [ -r "$adv_lib/rb-merge-adv-check.py" ] || adv_refuse ADV-UNCHECKED -
 . "$adv_lib/adv-grammar.sh"
-adv_out="$(env ADV_PASS_WORD="$ADV_PASS_WORD" ADV_ROW_KIND="$ADV_ROW_KIND" ADV_RE_FMT="$ADV_RE_FMT" ADV_LOG_RE="$ADV_LOG_RE" ADV_COMMIT_RE="$ADV_COMMIT_RE" \
-  ADV_TRIGGER_REPOS="$ADV_TRIGGER_REPOS" ADV_BRIEF_RE="$ADV_BRIEF_RE" ADV_WAIVE_KIND="$ADV_WAIVE_KIND" ADV_WAIVE_AGENT="$ADV_WAIVE_AGENT" \
-  ADV_WAIVE_RE_FMT="$ADV_WAIVE_RE_FMT" ADV_UNTIL_RE="$ADV_UNTIL_RE" \
-  python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite" "$v" "$repo" "$pr" ${RB_MERGE_ADV_WAIVE:+"$RB_MERGE_ADV_WAIVE"} 2>/dev/null)" \
+adv_env=(); for adv_v in $(compgen -A variable ADV_); do adv_env+=("$adv_v=${!adv_v}"); done   # every ADV_* variable of the lib reaches the helper: no second list to drift
+adv_out="$(env "${adv_env[@]}" python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite" "$v" "$repo" "$pr" ${RB_MERGE_ADV_WAIVE:+"$RB_MERGE_ADV_WAIVE"} 2>/dev/null)" \
   || adv_out="REFUSE ADV-UNCHECKED -"
 case "$adv_out" in
-  "OK "*|NOTRIGGER) ;;
+  NOTRIGGER) ;;
+  "OK "*) read -r _ adv_g adv_aid adv_ats adv_h <<<"$adv_out"; echo "ADV-OK $adv_aid $adv_ats $adv_h $repo#$pr" >&2 ;;   # the merge log can be re-checked against the ledger row
   "WAIVED "*) echo "ADV-WAIVED ${adv_out#WAIVED }" >&2 ;;   # merge-done has no note flag, so the waiver id reaches the terminal/journal only
-  "REFUSE "*) adv_rest="${adv_out#REFUSE }"; adv_refuse "${adv_rest%% *}" "${adv_rest#* }" ;;
+  "REFUSE "*) read -r _ adv_tok adv_g adv_why <<<"$adv_out"; adv_refuse "$adv_tok" "$adv_g" "${adv_why:-}" ;;
   *) adv_refuse ADV-UNCHECKED - ;;
 esac
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams

@@ -50,13 +50,18 @@ for a in spec.get("rows", []):
     if a["role"] == "adv":
         what = a["what"].format(repo=repo, pr=pr, commit=a.get("commit", commit))
         gates = G["id"] if a.get("gates", "G") == "G" else "d-20261024-100000-r7-0000"
-        out.append(copy(REAL_V, rid("a%d" % n), what=what, ts=ts, gates=gates, kind=a.get("kind", "verdict")))
+        out.append(copy(REAL_V, rid("a%d" % n), what=what, ts=ts, gates=gates, kind=a.get("kind", "verdict"), via=a.get("via", REAL_V["via"]), agent=a.get("agent", REAL_V["agent"])))
     else:   # waiver: a copy of the real kind=other row G, kind / agent / what are the knobs
         what = a["what"].format(repo=repo, pr=pr)
-        out.append(copy(REAL_G, rid("w%d" % n), what=what, ts=ts, kind=a.get("kind", "other"), agent=a.get("agent", "controller")))
+        # the waiver's grade: the real row G's own `regrade` JSON ({"by": "fable-regrader", "verdict": "CONFIRM", ...}) and graded_at column, with graded_at moved after the
+        # waiver row's ts; "regrade": null = ungraded, {..} = fields overridden; "graded_at" overrides the column
+        rg = a.get("regrade", {})
+        regrade = None if rg is None else json.dumps(dict(json.loads(REAL_G["regrade"]), **rg))
+        out.append(copy(REAL_G, rid("w%d" % n), what=what, ts=ts, kind=a.get("kind", "other"), agent=a.get("agent", "controller"), via=a.get("via", "seat-tick"), regrade=regrade, graded_at=a.get("graded_at", "2026-10-24T12:00:00-07:00")))
 os.makedirs(state, exist_ok=True)
 db = sqlite3.connect(os.path.join(state, "decisions.sqlite"))
-db.executescript(open(os.path.join(HERE, "decisions.ddl.sql")).read())
+ddl = open(os.path.join(HERE, "decisions.ddl.sql")).read()
+db.executescript(ddl)
 cols = [c[1] for c in db.execute("PRAGMA table_info(decisions)")]
 for r in out:
     db.execute("INSERT INTO decisions (%s) VALUES (%s)" % (",".join(cols), ",".join("?" * len(cols))), [r.get(c) for c in cols])

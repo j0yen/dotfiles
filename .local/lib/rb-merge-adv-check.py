@@ -3,11 +3,13 @@
 Reads the ledger FILE wm-decide writes (decisions.sqlite, mode=ro, no time window, no wm_decide import). Every pattern comes from the environment, set by
 rb-merge.sh from .local/lib/adv-grammar.sh: this file holds no copy of the grammar. Prints ONE line and exits 0:
   NOTRIGGER            neither trigger holds; rb-merge.sh goes on to the merge gate
-  OK <G>               the newest ADV row for (G, V's COMMIT) passes and its log is a non-empty regular file
+  OK <G> <A-id> <A-ts> <H>   the newest ADV row for (G, V's COMMIT) passes and its log is a non-empty regular file (H = the A row's COMMIT)
   WAIVED <d-id>        a valid controller waiver for this PR
-  REFUSE <TOKEN> <G>   TOKEN in ADV-MISSING ADV-STALE ADV-NOT-PASS ADV-NOLOG ADV-UNCHECKED ADV-WAIVER-BAD (G = '-' when unknown)
-Any exception is printed as REFUSE ADV-UNCHECKED (fail closed)."""
+  REFUSE <TOKEN> <G> [reason]   TOKEN in ADV-MISSING ADV-STALE ADV-NOT-PASS ADV-NOLOG ADV-UNCHECKED ADV-WAIVER-BAD (G = '-' when unknown; reason only on a waiver refusal)
+Any exception is printed as REFUSE ADV-UNCHECKED (fail closed).
+`--dump-re OWNER/NAME PR` prints the ADV row pattern this helper compiles (for the no-drift test: it must be byte-equal to adv_ere in adv-grammar.sh)."""
 import datetime as dt
+import json
 import os
 import re
 import sqlite3
@@ -15,21 +17,28 @@ import sys
 from urllib.parse import quote
 
 
+BAD_TS = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+
 class Refuse(Exception):
-    def __init__(self, token, g="-"):
+    def __init__(self, token, g="-", reason=""):
         super().__init__(token)
-        self.token, self.g = token, g
+        self.token, self.g, self.reason = token, g, reason
 
 
 def sub(fmt, repo, pr):
-    return fmt.replace("@REPO@", re.escape(repo)).replace("@PR@", re.escape(pr))
+    """The same substitution as adv_ere in adv-grammar.sh (dots escaped, nothing else), so the two engines compile byte-equal text."""
+    if not re.fullmatch(r"[0-9]+", pr):
+        raise Refuse("ADV-UNCHECKED")
+    return fmt.replace("@REPO@", repo.replace(".", "\\.")).replace("@PR@", pr)
 
 
 def parse_ts(s):
+    """Unparsable -> the minimum, so a bad graded_at is never 'later than' anything; ADV rows check ts is not BAD_TS and fail closed."""
     try:
         t = dt.datetime.fromisoformat(s)
     except (TypeError, ValueError):
-        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        return BAD_TS
     return t if t.tzinfo else t.astimezone()
 
 
@@ -38,24 +47,52 @@ def get(db, rid):
     return dict(r) if r else None
 
 
+def waiver_bad(reason):
+    return Refuse("ADV-WAIVER-BAD", "-", reason)
+
+
+def regrade_of(w):
+    """The waiver row's own Fable grade: the `regrade` JSON column ({"by","verdict",...}, one value per row, written by swarm-decide-regrade). None if absent or not an object."""
+    try:
+        j = json.loads(w.get("regrade") or "null")
+    except (TypeError, ValueError):
+        return None
+    return j if isinstance(j, dict) else None
+
+
 def check_waiver(db, wid, repo, pr, env):
     w = get(db, wid)
-    if w is None or w["kind"] != env["ADV_WAIVE_KIND"] or w["agent"] != env["ADV_WAIVE_AGENT"]:
-        raise Refuse("ADV-WAIVER-BAD")
+    if w is None:
+        raise waiver_bad("not-found")
+    if w["kind"] != env["ADV_WAIVE_KIND"]:
+        raise waiver_bad("kind")
+    if w["agent"] != env["ADV_WAIVE_AGENT"]:
+        raise waiver_bad("agent")
+    if w["via"] != env["ADV_WAIVE_VIA"]:
+        raise waiver_bad("via")
     what = w["what"] or ""
     if not re.search(sub(env["ADV_WAIVE_RE_FMT"], repo, pr), what):
-        raise Refuse("ADV-WAIVER-BAD")
+        raise waiver_bad("pr-text")
     untils = [m.group(1) for m in re.finditer(env["ADV_UNTIL_RE"], what)]
     if not untils:
-        raise Refuse("ADV-WAIVER-BAD")
+        raise waiver_bad("no-until")
     now = dt.datetime.now(dt.timezone.utc)
     for u in untils:
         try:
             t = dt.datetime.fromisoformat(u)
         except ValueError:
-            raise Refuse("ADV-WAIVER-BAD")
+            raise waiver_bad("until-unparsable")
         if (t if t.tzinfo else t.astimezone()) <= now:
-            raise Refuse("ADV-WAIVER-BAD")
+            raise waiver_bad("until-past")
+    rg = regrade_of(w)
+    if rg is None:
+        raise waiver_bad("no-regrade")
+    if rg.get("by") != env["ADV_REGRADER_AGENT"]:
+        raise waiver_bad("regrade-agent")
+    if rg.get("verdict") != env["ADV_REGRADE_OK"]:
+        raise waiver_bad("regrade-not-confirm")
+    if parse_ts(w.get("graded_at")) <= parse_ts(w["ts"]):   # an unparsable graded_at parses to the minimum, so it is never later
+        raise waiver_bad("regrade-ts")
     return wid
 
 
@@ -88,34 +125,46 @@ def run(db_path, vid, repo, pr, waive, env):
         return "NOTRIGGER"
     vc = verdict_commit(v, g, env)
     adv = re.compile(sub(env["ADV_RE_FMT"], repo, pr))
+    # every filter BEFORE the newest pick: kind, gates G, via, the grammar (the agent and scope tokens, this owner/name#pr), then the COMMIT
     rows = []
-    for a in db.execute("SELECT * FROM decisions WHERE gates = ? AND kind = ?", (gid, env["ADV_ROW_KIND"])):
+    for a in db.execute("SELECT * FROM decisions WHERE gates = ? AND kind = ? AND via = ?", (gid, env["ADV_ROW_KIND"], env["ADV_ROW_VIA"])):
         a = dict(a)
         m = adv.match(a["what"] or "")
         if m:
-            rows.append((parse_ts(a["ts"]), a["id"], m.group(1), re.search(env["ADV_COMMIT_RE"], a["what"], re.I).group(1).lower(), a["what"]))
+            ts = parse_ts(a["ts"])
+            if ts == BAD_TS:
+                raise Refuse("ADV-UNCHECKED", gid)   # a candidate row whose ts cannot be ordered could hide a newer FAIL
+            rows.append((ts, a["id"], m.group(1), re.search(env["ADV_COMMIT_RE"], a["what"], re.I).group(1).lower(), a["what"], a["ts"]))
     if not rows:
         raise Refuse("ADV-MISSING", gid)
-    same = sorted(r for r in rows if r[3].startswith(vc))
+    same = [r for r in rows if r[3].startswith(vc)]
     if not same:
         raise Refuse("ADV-STALE", gid)
-    _ts, _id, word, _c, what = same[-1]   # the NEWEST row decides
-    if word != env["ADV_PASS_WORD"]:
-        raise Refuse("ADV-NOT-PASS", gid)
+    top = max(r[0] for r in same)
+    newest = sorted(r for r in same if r[0] == top)   # order by ts only: the id never breaks a tie
+    if any(r[2] != env["ADV_PASS_WORD"] for r in newest):
+        raise Refuse("ADV-NOT-PASS", gid)   # a same-instant PASS + FAIL fails closed
+    _ts, aid, _word, acommit, what, ats = newest[0]
     log = re.search(env["ADV_LOG_RE"], what).group(1)
     if not (os.path.isfile(log) and os.path.getsize(log) > 0):
         raise Refuse("ADV-NOLOG", gid)
-    return "OK " + gid
+    return "OK %s %s %s %s" % (gid, aid, ats, acommit)
 
 
 def main(argv):
+    if len(argv) == 4 and argv[1] == "--dump-re":
+        try:
+            print(sub(os.environ["ADV_RE_FMT"], argv[2], argv[3]))
+        except Exception:
+            return 1
+        return 0
     if len(argv) not in (5, 6):
         print("REFUSE ADV-UNCHECKED -")
         return 0
     try:
         out = run(argv[1], argv[2], argv[3], argv[4], argv[5] if len(argv) == 6 else "", os.environ)
     except Refuse as r:
-        out = "REFUSE %s %s" % (r.token, r.g)
+        out = "REFUSE %s %s%s" % (r.token, r.g, " " + r.reason if r.reason else "")
     except Exception:
         out = "REFUSE ADV-UNCHECKED -"
     print(out)
