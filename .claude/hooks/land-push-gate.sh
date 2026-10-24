@@ -11,7 +11,7 @@
 # Indirection (rlp1b): for rb, any command with the word `push` is blocked ("indirect") when it contains `wm-build/` or any of `$`, backtick, eval, xargs, sh -c / bash -c, unless it is ONE
 #   simple command whose first word is rb-land-push.sh (nothing chaining after it). This closes eval, `bash -c`, xargs, `B=wm-; ... ${B}build/x` and `rb-land-push.sh ...; git push ...`.
 #   Cost of coarse: an rb command that mentions `push` together with `$VAR`/`$(...)` is refused even for a hand branch. Out of scope (known gaps): main/master pushes, git aliases (`git p`).
-# Parsing is by python3 -I shlex (segments split on ; && || | &, `bash -c '...'` unwrapped). Fails OPEN on a missing jq/python3 or a non-Bash payload; fails CLOSED on a push it cannot parse.
+# Parsing is by python3 -I shlex (segments split on ; && || | &, `bash -c '...'` and the remote command of `ssh <h> ...` unwrapped; rlp1c: an ssh `git push` with no readable destination is refused). Fails OPEN on a missing jq/python3 or a non-Bash payload; fails CLOSED on a push it cannot parse.
 set -uo pipefail
 case "${WM_SEAT:-}" in rb|rb-coder) ;; *) [ -n "${RB_CODER_ID:-}" ] || exit 0 ;; esac
 JQ=$(command -v jq) || exit 0
@@ -71,6 +71,13 @@ def check(text, depth=0):
                     r = check(seg[j + 1], depth + 1)
                     if r[0] != "pass" and worst[0] != "block": worst = r
                     break
+            continue
+        if w == "ssh" and depth < 4:
+            # rlp1c: the remote command of `ssh <h> ...` is parsed like a local one (every suffix of the args, so options and the host fall away)
+            for k in range(i + 1, len(seg)):
+                r = check(" ".join(seg[k:]), depth + 1)
+                if r[0] == "block": return r
+                if r[0] != "pass" and worst[0] != "block": worst = r
             continue
         if w != "git": continue
         j = i + 1

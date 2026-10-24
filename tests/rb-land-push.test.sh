@@ -11,7 +11,7 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/rblp.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 fail=0; n=0
 ok()  { n=$((n+1)); echo "ok - rb-land-push: $1"; }
 bad() { n=$((n+1)); echo "NOT OK - rb-land-push: $1"; fail=1; }
-export HOME="$T/home" WM_DECISIONS_DB="$T/d.sqlite" RB_LAND_PUSH_LOG="$T/home/.local/state/rb-seat/land-push.log" WM_SEAT=rb-test; unset CLAUDE_AGENT_ID
+export HOME="$T/home" WM_DECISIONS_DB="$T/d.sqlite" RB_LAND_PUSH_LOG="$T/home/.local/state/rb-seat/land-push.log" WM_SEAT=rb-test RB_LAND_PUSH_TEST_ORIGIN=1 RB_LAND_PUSH_REPO_PREFIXES="$T/"; unset CLAUDE_AGENT_ID
 mkdir -p "$HOME"; g=(git -c user.name=t -c user.email=t@t)
 # the schema line from `sqlite3 decisions.sqlite '.schema decisions'` (columns the wrapper reads)
 sqlite3 "$WM_DECISIONS_DB" "create table decisions (id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, what TEXT NOT NULL, regrade TEXT);"
@@ -22,9 +22,11 @@ mkdir -p "$T/bin"; : > "$T/ssh.log"; export FAKE_SSH_LOG="$T/ssh.log"
 cat > "$T/bin/ssh" <<'EOS'
 #!/usr/bin/env bash
 [ -n "${FAKE_SSH_RC:-}" ] && exit "$FAKE_SSH_RC"
-[ "${1:-}" = -o ] && [ "${2:-}" = BatchMode=yes ] || exit 97
-echo call >> "$FAKE_SSH_LOG"; shift 3
-exec bash -c "$*"
+[ "${1:-}" = -o ] && [ "${2:-}" = BatchMode=yes ] && [ "${3:-}" = -o ] && [ "${4:-}" = StrictHostKeyChecking=yes ] && [ "${5:-}" = -- ] || exit 97
+shift 6; printf 'call %s\n' "$(printf %s "$*" | tr '\n' ' ')" >> "$FAKE_SSH_LOG"
+bash -c "$*"; rc=$?
+[ -n "${FAKE_SSH_AFTER_PUSH:-}" ] && [[ "$*" == *"push -q origin"* ]] && eval "$FAKE_SSH_AFTER_PUSH"
+exit $rc
 EOS
 chmod +x "$T/bin/ssh"; export PATH="$T/bin:$PATH"; [ "$(command -v ssh)" = "$T/bin/ssh" ] || { echo "abort: fake ssh not first on PATH"; exit 1; }
 XA=(); REPO="$T/wt"
@@ -108,6 +110,8 @@ git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD
 clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"; : > "$T/ssh.log"; : > "$RB_LAND_PUSH_LOG"
 out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1); rc=$?
 [ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && ok "remote: happy push through the fake ssh reaches the bare origin" || bad "remote push failed: rc=$rc out=$out"
+grep -q " verified $ID sha=$H8 host=redbaron\$" "$RB_LAND_PUSH_LOG" && ok "remote: post-push ls-remote from the caller verified the pinned sha (log: verified sha=<8>)" || bad "no verified line: $(cat "$RB_LAND_PUSH_LOG")"
+grep -c 'push -q origin' "$T/ssh.log" | grep -qx 1 && grep 'push -q origin' "$T/ssh.log" | grep -q 'git -c core.hooksPath=/dev/null -C ' && ok "remote: the push call runs git -c core.hooksPath=/dev/null" || bad "push call lacks the hook-disabling -c: $(cat "$T/ssh.log")"
 [ "$(wc -l < "$T/ssh.log")" = 2 ] && ok "remote: exactly two ssh round trips (checks, push)" || bad "remote: ssh calls = $(wc -l < "$T/ssh.log")"
 [[ "$out" == *" pushed $ID confirm_ts=$TS agent=rb-test $B "*"..$H8 host=redbaron" ]] && grep -q ' pushing .* host=redbaron$' "$RB_LAND_PUSH_LOG" && ok "remote: log lines carry host=redbaron" || bad "remote log line wrong: $out"
 git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"
@@ -134,6 +138,41 @@ out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --check 2>&1); r
 [ $rc = 0 ] && [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "--check without --host (local): CHECK-OK ... host=local" || bad "local --check: rc=$rc out=$out"
 XA=(--host redbaron --check);                                                                           refused "--check still refuses (branch-mismatch)" branch-mismatch "$ID" wm-build/y
 XA=(); clear
+# --- rlp1c v0.4: hardening, origin + path allowlists, post-push proof, --check never pushes
+reset_tip() { git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"; }
+reset_tip; clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"; XA=(--host redbaron)
+# (g) --check makes zero push calls (argv log of the fake ssh)
+: > "$T/ssh.log"; bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron --check >/dev/null 2>&1
+[ "$(wc -l < "$T/ssh.log")" = 1 ] && ! grep -q ' push ' "$T/ssh.log" && ok "(g) --check: one ssh call, zero push calls in the fake-ssh argv log" || bad "(g) --check pushed or made extra calls: $(cat "$T/ssh.log")"
+# (h) origin allowlist: a non-github, a github-but-not-j0yen, and (without RB_LAND_PUSH_TEST_ORIGIN) a local push url are all refused; the fetch never runs against them
+git clone -q "$T/origin.git" "$T/wto" 2>/dev/null; REPO="$T/wto"
+git -C "$T/wto" remote set-url origin https://evil.example/j0yen/x.git;                                refused "(h) origin https://evil.example/j0yen/x.git" origin-not-allowed "$ID"
+git -C "$T/wto" remote set-url origin https://github.com/other/x.git;                                  refused "(h) origin github.com/other/x.git (not j0yen)" origin-not-allowed "$ID"
+git -C "$T/wto" remote set-url origin "$T/origin.git"; git -C "$T/wto" remote set-url --push origin https://evil.example/j0yen/x.git
+refused "(h) a hostile pushurl is the one checked (git remote get-url --push)" origin-not-allowed "$ID"; REPO="$T/wt"
+out=$(env -u RB_LAND_PUSH_TEST_ORIGIN bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
+[ $rc = 2 ] && [[ "$out" == "REFUSED origin-not-allowed"* ]] && ok "(h) a local-path push url is refused without RB_LAND_PUSH_TEST_ORIGIN=1" || bad "local origin not refused: rc=$rc out=$out"
+# (i) repo prefix allowlist (--host mode only)
+REPO=/usr/local/src/x;                                                                                  refused "(i) --host repo outside RB_LAND_PUSH_REPO_PREFIXES" repo-not-allowed "$ID"
+REPO="$T/../x";                                                                                         refused "(i) a .. component is refused" repo-not-allowed "$ID"
+out=$(env -u RB_LAND_PUSH_REPO_PREFIXES bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1)
+[[ "$out" == "REFUSED repo-not-allowed"* ]] && ok "(i) the default prefix is /mnt/data/" || bad "default prefix not enforced: $out"
+REPO="$T/wt"
+# repo config holding include.* keys is refused (git cannot unset a repo's own includes with -c)
+git -C "$T/wt" config include.path /dev/null;                                                           refused "repo config with include.path" repo-config-include "$ID"; git -C "$T/wt" config --unset include.path
+# (j) post-push mismatch: the origin ref is moved after the push -> exit 3 + push-verify-mismatch, no verified line
+reset_tip; : > "$RB_LAND_PUSH_LOG"
+out=$(FAKE_SSH_AFTER_PUSH="git -C $T/origin.git update-ref refs/heads/$B $(git -C "$T/wt" rev-parse HEAD~1)" bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1); rc=$?
+[ $rc = 3 ] && [[ "$out" == *" push-verify-mismatch $ID sha=$H8 got="* ]] && grep -q ' push-verify-mismatch ' "$RB_LAND_PUSH_LOG" && ! grep -q ' verified ' "$RB_LAND_PUSH_LOG" && ok "(j) moved origin ref after the push -> exit 3, push-verify-mismatch logged, not verified" || bad "(j) rc=$rc out=$out log=$(cat "$RB_LAND_PUSH_LOG")"
+# (k) a core.hooksPath pre-push hook must NOT run (control: a plain git push does run it)
+mkdir -p "$T/hooks"; printf '#!/bin/sh\ntouch "%s/marker"\nexit 0\n' "$T" > "$T/hooks/pre-push"; chmod +x "$T/hooks/pre-push"; git -C "$T/wt" config core.hooksPath "$T/hooks"
+git -C "$T/wt" push -q origin HEAD~1:refs/heads/hookctl >/dev/null 2>&1; [ -e "$T/marker" ] && ok "(k) control: the planted pre-push hook fires on a plain git push" || bad "(k) control: hook did not fire; test is vacuous"
+rm -f "$T/marker"; reset_tip
+bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && [ ! -e "$T/marker" ] && ok "(k) remote push: planted pre-push hook did NOT run (marker absent), push landed" || bad "(k) remote: rc=$rc marker=$([ -e "$T/marker" ] && echo present || echo absent)"
+reset_tip; XA=(); bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && [ ! -e "$T/marker" ] && ok "(k) local push: planted pre-push hook did NOT run (marker absent)" || bad "(k) local: rc=$rc"
+git -C "$T/wt" config --unset core.hooksPath; reset_tip; clear
 # no force anywhere in the push path
 grep -nE -- '--force|--force-with-lease|push .*\+' "$wrap" | grep -vE '^[0-9]+:\s*#' | grep -q . && bad "wrapper source contains a force push" || ok "no --force / --force-with-lease / + refspec in the push path"
 # selftest

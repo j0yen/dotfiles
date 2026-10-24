@@ -77,6 +77,9 @@ for who in "$RB" RB_CODER_ID=x; do
   t "[$who] ssh bash -s with the push in a heredoc body is refused" block $'ssh redbaron bash -s <<\'EOF\'\ngit -C /mnt/data/wt/x push origin HEAD:refs/heads/wm-build/x\nEOF' $who
   t "[$who] remote invocation of rb-land-push.sh over ssh stays refused" block "ssh redbaron '~/.local/bin/rb-land-push.sh --confirm $ID --repo /x --branch wm-build/x'" $who
   t "[$who] ssh with cd; git push origin HEAD:refs/heads/... is refused" block "ssh redbaron 'cd /mnt/data/wt/x; git push origin HEAD:refs/heads/wm-build/x'" $who
+  t "[$who] a cd && git push (no refspec) is refused as an unparsed target" unparsed 'cd /mnt/data/wt/x && git push' $who
+  t "[$who] ssh with 'cd ... && git push' is refused (the ssh remainder is parsed)" unparsed "ssh redbaron 'cd /mnt/data/wt/x && git push'" $who
+  t "[$who] ssh with a hand-branch push passes (same as locally)" pass "ssh redbaron 'git -C /mnt/data/wt/x push origin HEAD:refs/heads/ci/x'" $who
   t "[$who] rb-land-push.sh --host chained with && true is refused" block "rb-land-push.sh --confirm $ID --host redbaron --repo /x --branch wm-build/x && true" $who
   t "[$who] rb-land-push.sh --host redbaron --repo --branch as ONE simple command passes" pass "rb-land-push.sh --confirm $ID --host redbaron --repo /mnt/data/wt/x --branch wm-build/x" $who
   t "[$who] rb-land-push.sh --host redbaron --check as ONE simple command passes" pass "rb-land-push.sh --confirm $ID --host redbaron --repo /mnt/data/wt/x --branch wm-build/x --check" $who

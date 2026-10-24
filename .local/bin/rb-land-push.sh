@@ -7,6 +7,12 @@
 #     `ssh -o BatchMode=yes <h> ...` in TWO round trips: (i) rev-parse HEAD + tree + current branch, `fetch origin refs/heads/<branch>`, `merge-base --is-ancestor FETCH_HEAD <sha>`;
 #     (ii) the push. <h> must match ^[a-z0-9][a-z0-9-]*$ [bad-host] and be in RB_LAND_PUSH_HOSTS (space-separated, default `redbaron`) [host-not-allowed]; the repo must match
 #     ^/[A-Za-z0-9._/-]+$ [bad-repo]; both values are printf %q quoted for the remote shell; the remote command first sources ~/.config/environment.d/*.conf (non-login ssh has no token).
+#   Hardening (every git call, remote and local): `git -c core.hooksPath=/dev/null` (a planted pre-push hook never fires); ssh argv `-o BatchMode=yes -o StrictHostKeyChecking=yes -- <h>`;
+#     a repo config with include.* keys is refused [repo-config-include] (`-c include.path=` is not valid git). The push url (`git remote get-url --push origin`) must be
+#     github j0yen/* [origin-not-allowed] (a local absolute path only with RB_LAND_PUSH_TEST_ORIGIN=1, tests only; the fetch is skipped for a refused url); in --host mode --repo must sit under a
+#     prefix in RB_LAND_PUSH_REPO_PREFIXES (space-separated, default /mnt/data/), with no `..` [repo-not-allowed].
+#   Post-push proof: after a push with rc 0, `git ls-remote <that push url> refs/heads/<branch>` run FROM THE CALLER must print the pinned sha; log `verified`; else log + print
+#     `push-verify-mismatch` and exit 3.
 #   --check: run checks 0-4 plus `git ls-remote origin refs/heads/<branch>` (remote in --host mode), print `CHECK-OK sha=<8> host=<h|local>` or the refusal; NEVER pushes, never logs.
 # Checks, in order (reason in brackets):
 #   0 branch is not main/master [branch-protected] and does not start with `-` / has only [A-Za-z0-9._/-] [bad-branch]; the d-id is well formed [bad-confirm-id]; the db opens read-only [db-unreadable];
@@ -34,7 +40,13 @@ word() { local b; b=$(printf '%s' "$2" | sed 's/[][\.*^$+?(){}|/]/\\&/g'); print
 # rsh <host|""> <POSIX sh text>: run the text locally (bash -c) or over ssh. Remote text first sources ~/.config/environment.d/*.conf (a non-login ssh carries no token).
 # Real ssh joins its args for the remote shell, so every interpolated value in <text> is printf %q'd (and regex-validated) by the caller.
 ENVSRC='set -a; for f in ~/.config/environment.d/*.conf; do [ -f "$f" ] && . "$f"; done >/dev/null 2>&1; set +a'
-rsh() { if [ -n "$1" ]; then ssh -o BatchMode=yes "$1" "$ENVSRC; $2" </dev/null; else bash -c "$2" </dev/null; fi; }
+# GC: every git call (remote and local) runs with hooks disabled, so a pre-push hook planted in the worktree never fires. (`-c include.path=` is rejected by git as an
+# unparsable empty relative include, and a -c cannot unset the repo's own includes, so a repo config holding include.* keys is refused instead: [repo-config-include].)
+GC='git -c core.hooksPath=/dev/null'
+# an allowlisted push URL: github j0yen/*; a local absolute path only with RB_LAND_PUSH_TEST_ORIGIN=1 (tests)
+ORIGIN_RE='^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)j0yen/[A-Za-z0-9._-]+(\.git)?$'
+origin_ok() { [[ "$1" =~ $ORIGIN_RE ]] || { [ "${RB_LAND_PUSH_TEST_ORIGIN:-}" = 1 ] && [[ "$1" =~ ^/[A-Za-z0-9._/-]+$ ]]; }; }
+rsh() { if [ -n "$1" ]; then ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$1" "$ENVSRC; $2" </dev/null; else bash -c "$2" </dev/null; fi; }
 
 USAGE="usage: rb-land-push.sh --confirm <d-id> --repo <git dir> --branch <branch> [--host <h>] [--check] | --selftest"
 run_push() {
@@ -57,24 +69,37 @@ run_push() {
   case "$branch" in main|master|refs/heads/main|refs/heads/master) refuse branch-protected "$branch" ;; esac
   branch="${branch#refs/heads/}"
   printf '%s' "$branch" | grep -Eq '^[A-Za-z0-9._/][A-Za-z0-9._/-]*$' || refuse bad-branch "$branch"
-  if [ -n "$host" ]; then printf '%s' "$repo" | grep -Eq '^/[A-Za-z0-9._/-]+$' || refuse bad-repo "$repo"; fi
+  if [ -n "$host" ]; then
+    printf '%s' "$repo" | grep -Eq '^/[A-Za-z0-9._/-]+$' || refuse bad-repo "$repo"
+    local pfx okp=0
+    case "/$repo/" in */../*) refuse repo-not-allowed "$repo (..)" ;; esac
+    for pfx in ${RB_LAND_PUSH_REPO_PREFIXES:-/mnt/data/}; do case "$repo" in "$pfx"*) okp=1 ;; esac; done
+    [ $okp = 1 ] || refuse repo-not-allowed "$repo"
+  fi
   printf '%s' "$id" | grep -Eq '^d-[0-9]{8}-[0-9]{6}-[a-z0-9]+-[0-9a-f]{4}$' || refuse bad-confirm-id "$id"
   [ -r "$DB" ] && sq 'select 1' >/dev/null 2>&1 || refuse db-unreadable "$DB"
   # one round trip: HEAD sha + tree + current branch, then fetch origin's tip and the ancestor test, all on the sha captured here (TOCTOU: nothing below re-reads HEAD)
   local qr qb ic out irc
   qr=$(printf '%q' "$repo"); qb=$(printf '%q' "$branch")
-  ic="repo=$qr; branch=$qb; "'cd "$repo" 2>/dev/null || exit 0; sha=$(git rev-parse --verify HEAD 2>/dev/null) || exit 0; tree=$(git rev-parse --verify "HEAD^{tree}" 2>/dev/null) || exit 0;
-echo "sha=$sha"; echo "tree=$tree"; echo "sbr=$(git symbolic-ref --short -q HEAD 2>/dev/null)";
-if git fetch -q origin "refs/heads/$branch" >/dev/null 2>&1; then echo "old=$(git rev-parse --verify FETCH_HEAD 2>/dev/null)"; if git merge-base --is-ancestor FETCH_HEAD "$sha" 2>/dev/null; then echo anc=yes; else echo anc=no; fi; else echo "old="; fi;'
-  [ $check = 1 ] && ic="$ic"'lsr=$(git ls-remote origin "refs/heads/$branch" 2>/dev/null); echo "lsrc=$?"; echo "lsr=$(printf %s "$lsr" | cut -f1)";'
+  ic="repo=$qr; branch=$qb; re=$(printf '%q' "$ORIGIN_RE"); tst=$(printf '%q' "${RB_LAND_PUSH_TEST_ORIGIN:-0}"); "'cd "$repo" 2>/dev/null || exit 0; sha=$(@G@ rev-parse --verify HEAD 2>/dev/null) || exit 0; tree=$(@G@ rev-parse --verify "HEAD^{tree}" 2>/dev/null) || exit 0;
+echo "sha=$sha"; echo "tree=$tree"; echo "sbr=$(@G@ symbolic-ref --short -q HEAD 2>/dev/null)";
+purl=$(@G@ remote get-url --push origin 2>/dev/null); echo "purl=$purl"; inc=$(@G@ config --local --name-only --get-regexp "^include" 2>/dev/null | wc -l);
+inc=$((inc+0)); echo "inc=$inc";
+ok=0; if printf %s "$purl" | grep -Eq "$re"; then ok=1; elif [ "$tst" = 1 ] && printf %s "$purl" | grep -Eq "^/[A-Za-z0-9._/-]+$"; then ok=1; fi;
+if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >/dev/null 2>&1; then echo "old=$(@G@ rev-parse --verify FETCH_HEAD 2>/dev/null)"; if @G@ merge-base --is-ancestor FETCH_HEAD "$sha" 2>/dev/null; then echo anc=yes; else echo anc=no; fi; else echo "old="; fi;'
+  [ $check = 1 ] && ic="$ic"'if [ "$ok" = 1 ] && [ "$inc" = 0 ]; then lsr=$(@G@ ls-remote origin "refs/heads/$branch" 2>/dev/null); echo "lsrc=$?"; echo "lsr=$(printf %s "$lsr" | cut -f1)"; fi;'
+  ic="${ic//@G@/$GC}"
   out=$(rsh "$host" "$ic" 2>/dev/null); irc=$?
   [ $irc = 0 ] || refuse "ssh-failed rc=$irc" "${host:-local}"
-  local head="" tree="" sbr="" old="" anc="" lsrc="" lsr="" k v
+  local head="" tree="" sbr="" old="" anc="" lsrc="" lsr="" purl="" inc="" k v
   while IFS== read -r k v; do
-    case "$k" in sha) head=$v ;; tree) tree=$v ;; sbr) sbr=$v ;; old) old=$v ;; anc) anc=$v ;; lsrc) lsrc=$v ;; lsr) lsr=$v ;; esac
+    case "$k" in sha) head=$v ;; tree) tree=$v ;; sbr) sbr=$v ;; old) old=$v ;; anc) anc=$v ;; lsrc) lsrc=$v ;; lsr) lsr=$v ;; purl) purl=$v ;; inc) inc=$v ;; esac
   done <<<"$out"
   [[ "$head" =~ ^[0-9a-f]{40,64}$ ]] && [[ "$tree" =~ ^[0-9a-f]{40,64}$ ]] || refuse not-a-repo "$repo"
   local h8=${head:0:8} t8=${tree:0:8}
+  # origin allowlist + no config includes: before any row check or push
+  origin_ok "$purl" || refuse origin-not-allowed "push url '$purl'"
+  [ "${inc:-0}" = 0 ] || refuse repo-config-include "$repo local config has include.* keys"
 
   # 1. the row
   local n agent kind what cts regrade
@@ -121,26 +146,36 @@ print(str(v).upper())' 2>/dev/null)
   local line hostf=""; [ -n "$host" ] && hostf=" host=$host"
   line="$(date -u +%Y-%m-%dT%H:%M:%SZ) pushing $id confirm_ts=$cts agent=${CLAUDE_AGENT_ID:-${WM_SEAT:-unknown}} $branch ${old:0:8}..${h8}$hostf"
   printf '%s\n' "$line" >> "$LOG" || refuse log-unwritable "$LOG"
-  rsh "$host" "git -C $qr push -q origin $head:refs/heads/$qb"; local prc=$?
+  rsh "$host" "$GC -C $qr push -q origin $head:refs/heads/$qb"; local prc=$?
   if [ $prc = 0 ]; then line="${line/ pushing / pushed }"; else line="${line/ pushing / push-failed rc=$prc }"; fi
   printf '%s\n' "$line" >> "$LOG"; printf '%s\n' "$line"
-  return $prc
+  [ $prc = 0 ] || return $prc
+  # post-push proof FROM THE CALLER: the allowlisted origin url must now hold exactly the pinned sha
+  local got vline
+  got=$($GC ls-remote "$purl" "refs/heads/$branch" 2>/dev/null </dev/null | cut -f1)
+  if [ "$got" = "$head" ]; then
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ) verified $id sha=$h8$hostf" >> "$LOG"; return 0
+  fi
+  vline="$(date -u +%Y-%m-%dT%H:%M:%SZ) push-verify-mismatch $id sha=$h8 got=${got:0:8}$hostf"
+  printf '%s\n' "$vline" >> "$LOG"; printf '%s\n' "$vline"; return 3
 }
 
 selftest() {
   local T; T=$(mktemp -d "${TMPDIR:-/tmp}/rblp-selftest.XXXXXX"); trap 'rm -rf "$T"' RETURN
   local self; self=$(readlink -f "${BASH_SOURCE[0]}")
   local pass=0 total=0 g=(git -c user.name=t -c user.email=t@t)
-  export HOME="$T/home"; mkdir -p "$HOME"; export WM_DECISIONS_DB="$T/d.sqlite" RB_LAND_PUSH_LOG="$T/land-push.log" WM_SEAT=selftest
+  export HOME="$T/home"; mkdir -p "$HOME"; export WM_DECISIONS_DB="$T/d.sqlite" RB_LAND_PUSH_LOG="$T/land-push.log" WM_SEAT=selftest RB_LAND_PUSH_TEST_ORIGIN=1 RB_LAND_PUSH_REPO_PREFIXES="$T/"
   sqlite3 "$WM_DECISIONS_DB" "create table decisions (id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, what TEXT NOT NULL, regrade TEXT);"
   # fake ssh (no real ssh, ever): strips `-o BatchMode=yes <h>`, runs the remainder through bash -c "$*" exactly as a remote shell would (so %q quoting is exercised); FAKE_SSH_RC forces a failure
   mkdir -p "$T/bin"; : > "$T/ssh.log"; export FAKE_SSH_LOG="$T/ssh.log"
   cat > "$T/bin/ssh" <<'EOS'
 #!/usr/bin/env bash
 [ -n "${FAKE_SSH_RC:-}" ] && exit "$FAKE_SSH_RC"
-[ "${1:-}" = -o ] && [ "${2:-}" = BatchMode=yes ] || exit 97
-echo call >> "$FAKE_SSH_LOG"; shift 3
-exec bash -c "$*"
+[ "${1:-}" = -o ] && [ "${2:-}" = BatchMode=yes ] && [ "${3:-}" = -o ] && [ "${4:-}" = StrictHostKeyChecking=yes ] && [ "${5:-}" = -- ] || exit 97
+shift 6; printf 'call %s\n' "$(printf %s "$*" | tr '\n' ' ')" >> "$FAKE_SSH_LOG"
+bash -c "$*"; rc=$?
+[ -n "${FAKE_SSH_AFTER_PUSH:-}" ] && [[ "$*" == *"push -q origin"* ]] && eval "$FAKE_SSH_AFTER_PUSH"
+exit $rc
 EOS
   chmod +x "$T/bin/ssh"; export PATH="$T/bin:$PATH"; [ "$(command -v ssh)" = "$T/bin/ssh" ] || { echo "selftest: fake ssh not first on PATH"; return 1; }
   git init -q --bare -b main "$T/origin.git"; git clone -q "$T/origin.git" "$T/wt" 2>/dev/null
@@ -205,6 +240,23 @@ EOS
   total=$((total+1)); : > "$RB_LAND_PUSH_LOG"; ob=$(git ls-remote "$T/origin.git"); oo=$(bash "$self" --confirm "$ok" --repo "$T/wt" --branch "$B" --host redbaron --check 2>&1); oa=$(git ls-remote "$T/origin.git")
   if [ "$oo" = "CHECK-OK sha=${H:0:8} host=redbaron" ] && [ "$ob" = "$oa" ] && [ ! -s "$RB_LAND_PUSH_LOG" ]; then pass=$((pass+1)); echo "ok - --check prints CHECK-OK, pushes nothing, logs nothing"; else echo "NOT OK - --check: out=$oo"; fi
   XA=(--host redbaron --check);                                                                 case_ check-refuses-branch-mismatch branch-mismatch "$ok" wm-build/y
+  # --- hardening, origin/path allowlists, post-push proof
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
+  XA=(--host redbaron --check); : > "$T/ssh.log"; bash "$self" --confirm "$ok" --repo "$T/wt" --branch "$B" --host redbaron --check >/dev/null 2>&1
+  total=$((total+1)); local npush; npush=$(grep -c ' push ' "$T/ssh.log")
+  if [ "$(wc -l < "$T/ssh.log")" = 1 ] && [ "$npush" = 0 ]; then pass=$((pass+1)); echo "ok - --check makes zero push calls"; else echo "NOT OK - --check push calls: $(cat "$T/ssh.log")"; fi
+  XA=(--host redbaron); git clone -q "$T/origin.git" "$T/wto" 2>/dev/null; git -C "$T/wto" remote set-url origin https://evil.example/j0yen/x.git
+  REPO="$T/wto";                                                                                case_ origin-not-allowed origin-not-allowed "$ok"
+  REPO=/usr/local/src/x;                                                                        case_ repo-not-allowed repo-not-allowed "$ok"; REPO="$T/wt"
+  total=$((total+1)); oo=$(env -u RB_LAND_PUSH_TEST_ORIGIN bash "$self" --confirm "$ok" --repo "$T/wt" --branch "$B" 2>&1)
+  if [[ "$oo" == "REFUSED origin-not-allowed"* ]]; then pass=$((pass+1)); echo "ok - local push url refused without RB_LAND_PUSH_TEST_ORIGIN=1"; else echo "NOT OK - local url: $oo"; fi
+  total=$((total+1)); oo=$(FAKE_SSH_AFTER_PUSH="git -C $T/origin.git update-ref refs/heads/wm-build/x $(git -C "$T/wt" rev-parse HEAD~1)" bash "$self" --confirm "$ok" --repo "$T/wt" --branch "$B" --host redbaron 2>&1); rc=$?
+  if [ $rc = 3 ] && [[ "$oo" == *" push-verify-mismatch $ok sha=${H:0:8} got="* ]]; then pass=$((pass+1)); echo "ok - post-push mismatch -> exit 3 push-verify-mismatch"; else echo "NOT OK - mismatch: rc=$rc $oo"; fi
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
+  mkdir -p "$T/hooks"; printf '#!/bin/sh\ntouch "%s/marker"\n' "$T" > "$T/hooks/pre-push"; chmod +x "$T/hooks/pre-push"; git -C "$T/wt" config core.hooksPath "$T/hooks"
+  bash "$self" --confirm "$ok" --repo "$T/wt" --branch "$B" --host redbaron >/dev/null 2>&1; rc=$?
+  total=$((total+1)); if [ $rc = 0 ] && [ ! -e "$T/marker" ] && [ "$(git -C "$T/origin.git" rev-parse refs/heads/wm-build/x)" = "$H" ]; then pass=$((pass+1)); echo "ok - planted core.hooksPath pre-push hook did not run"; else echo "NOT OK - hook: rc=$rc marker=$([ -e "$T/marker" ] && echo present || echo absent)"; fi
+  git -C "$T/wt" config --unset core.hooksPath
   XA=(); clear
   echo "selftest ok $pass/$total"; [ "$pass" = "$total" ]
 }
