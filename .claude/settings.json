@@ -467,6 +467,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/land-push-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\"; exit 0'"
           },
           {
