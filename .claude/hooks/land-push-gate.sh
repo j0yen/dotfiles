@@ -8,6 +8,9 @@
 # Rule: a command whose segment is `git [-C dir] push ...` with a destination branch under wm-build/ is blocked (exit 2, one reason line naming rb-land-push.sh).
 #   A segment whose first word is rb-land-push.sh (or its full path) passes. A destination the parser cannot resolve (bare `git push`, `git push origin`, `HEAD`, `--all`, `--mirror`,
 #   `$VAR`/glob refspec, unbalanced quotes) is blocked for an rb-marked process: "unparsed push target". Hand branches (ci/split-contracts-core, rb/...) pass.
+# Indirection (rlp1b): for rb, any command with the word `push` is blocked ("indirect") when it contains `wm-build/` or any of `$`, backtick, eval, xargs, sh -c / bash -c, unless it is ONE
+#   simple command whose first word is rb-land-push.sh (nothing chaining after it). This closes eval, `bash -c`, xargs, `B=wm-; ... ${B}build/x` and `rb-land-push.sh ...; git push ...`.
+#   Cost of coarse: an rb command that mentions `push` together with `$VAR`/`$(...)` is refused even for a hand branch. Out of scope (known gaps): main/master pushes, git aliases (`git p`).
 # Parsing is by python3 -I shlex (segments split on ; && || | &, `bash -c '...'` unwrapped). Fails OPEN on a missing jq/python3 or a non-Bash payload; fails CLOSED on a push it cannot parse.
 set -uo pipefail
 case "${WM_SEAT:-}" in rb|rb-coder) ;; *) [ -n "${RB_CODER_ID:-}" ] || exit 0 ;; esac
@@ -20,6 +23,16 @@ CMD=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.command // empty' 2>/dev/null
 verdict=$(printf '%s' "$CMD" | "$PY" -I -c '
 import re, shlex, sys
 cmd = sys.stdin.read()
+# Indirection rule (rlp1b, Fable edits 1+2). Coarse on purpose, on top of the parser: eval, sh -c, xargs and $VAR splices cannot be parsed.
+# Allowlist = ONE simple command whose first word is rb-land-push.sh (or its full path): nothing after it may chain (; && || | newline, $( , backtick, lone &).
+words = cmd.strip().split(None, 1)
+rest = words[1] if len(words) > 1 else ""
+allow = bool(words) and words[0].rsplit("/", 1)[-1] == "rb-land-push.sh" and not re.search(r"[;|`\n]|&&|\$\(|(?<![>&])&(?![>&])", rest)
+if allow:
+    print("pass"); sys.exit()
+if re.search(r"\bpush\b", cmd):
+    if "wm-build/" in cmd or re.search(r"[$`]|\beval\b|\bxargs\b|\b(?:ba|z|da)?sh\s+(?:-\S+\s+)*-\w*c\b", cmd):
+        print("indirect"); sys.exit()
 if not (re.search(r"\bgit\b", cmd) and re.search(r"\bpush\b", cmd)):
     print("pass"); sys.exit()
 PUSH_VAL = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
@@ -94,6 +107,7 @@ print(v + (" " + d if d else ""))
 [ -n "$verdict" ] || verdict="unparsed"
 case "$verdict" in
   pass) exit 0 ;;
+  indirect) echo "land-push-gate: a command with 'push' that names wm-build/ or uses \$VAR, backticks, eval, xargs or sh -c is refused for rb; the only allowed form is ONE simple command: rb-land-push.sh --confirm <ctl CONFIRM d-id> --repo <dir> --branch <branch> (no ; && || | newline \$( after it)" >&2; exit 2 ;;
   block*) echo "land-push-gate: a bare git push to wm-build run branch '${verdict#block }' is refused for rb; use rb-land-push.sh --confirm <ctl CONFIRM d-id> --repo <dir> --branch ${verdict#block }" >&2; exit 2 ;;
   *) echo "land-push-gate: unparsed push target; a git push whose destination branch cannot be read is refused for rb (name it: git push origin HEAD:refs/heads/<branch>, or use rb-land-push.sh --confirm <d-id> --repo <dir> --branch <branch> for a wm-build/* branch)" >&2; exit 2 ;;
 esac

@@ -40,6 +40,13 @@ clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
 row d-20261024-101000-controller-1111 2026-10-24T10:10:00-07:00 controller verdict "CORRECT $ID"; refused "CORRECTed by a later row naming the full d-id" withdrawn "$ID"
 clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
 row d-20261024-101000-controller-1111 2026-10-24T10:10:00-07:00 controller note "WITHDRAWN abcd"; refused "a later WITHDRAWN row (note kind) still withdraws" withdrawn "$ID"
+# collision (ctl c4ed E3): an UNRELATED later controller row that holds CORRECT and the confirm's 4-hex suffix as a whole token still refuses (fail closed),
+# and the REFUSED line names THAT row's id (the collider), not the confirm's, after "by"
+COL=d-20261024-103000-controller-9f9f
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
+row "$COL" 2026-10-24T10:30:00-07:00 controller verdict "CORRECT the unrelated bridge plan, tile abcd"
+b=$(tip $B); out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" 2>&1); rc=$?; a=$(tip $B)
+if [ $rc = 2 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 1 ] && [[ "$out" == "REFUSED withdrawn "* ]] && [ "${out##* by }" = "$COL" ] && [ "${out##* by }" != "$ID" ] && [ "$b" = "$a" ]; then ok "suffix-collision row refuses (fail closed) and the REFUSED line names the collider $COL: $out"; else bad "collision case: rc=$rc out='$out' (want REFUSED withdrawn ... by $COL)"; fi
 clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
 row d-20261024-101000-rb-2222 2026-10-24T10:10:00-07:00 rb verdict "WITHDRAWN abcd"; sqlite3 "$WM_DECISIONS_DB" "select count(*) from decisions" >/dev/null
 b=$(tip $B); out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
