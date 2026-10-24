@@ -28,6 +28,6 @@ L="$EVENTS_DIR/tst-events.log"
 grep -q ' | aide | aide 6:41 AM re ctl 6:0x: reply body one$' "$L" && grep -q ' | aide | aide 6:41 AM: reply body two$' "$L" && grep -q ' | aide | aide 6:41 AM: reply body three$' "$L"; ok "each stored line carries the real stamp (aide 6:41 AM)" $?
 [ "$(jq -r '[.stamped,.typed_label_replaced]|@csv' "$EVENTS_DIR/tst-events.json")" = "3,2" ]; ok "events.json counters stamped=3 typed_label_replaced=2" $?
 a="$("$ASK" tst "rb 6:1x AM: ask body" 2>&1)"
-[[ "$a" == *" tst --ask aide 6:41 AM: ask body" ]] && ! [[ "$a" == *6:1x* ]]; ok "seat-ask argv carries the real stamp and not the typed clock" $?
+[[ "$a" == *" tst --ask [seat-ask from aide sent 6:41 AM; queue="*" ahead] aide 6:41 AM: ask body" ]] && ! [[ "$a" == *6:1x* ]]; ok "seat-ask argv carries the real stamp and not the typed clock" $?
 [ "$fail" = 0 ] && echo "ALL OK" || echo "FAILED"
 exit "$fail"
