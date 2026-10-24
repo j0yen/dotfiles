@@ -115,6 +115,10 @@ printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/b
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
 head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
+# fvg: rb-run-coder.sh's fable-verdict gate (78) refuses a spec-less prompt, so this prompt carries a valid Hatch row in a fixture DB (the gate under test here is spawn-hold)
+export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
+HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; printf '\nHatch: %s\n' "$HID" >> "$R/prompt.md"; PSHA=$(grep -v '^Hatch: ' "$R/prompt.md" | sha256sum | cut -d' ' -f1)
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN spawn-hold test", "sha256:" + sys.argv[3], None)); d.commit()' "$RB_DECISIONS_DB" "$HID" "$PSHA"
 cat "$R/a.jsonl" > /dev/null
 extra="--journal-file $R/a.jsonl --state-file $R/f.state.json --now $NOW"
 HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f1 "$R/prompt.md" >/dev/null 2>&1; rc=$?
