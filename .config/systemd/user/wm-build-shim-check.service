@@ -1,0 +1,8 @@
+[Unit]
+Description=wm-build bound-shim drift check (alarm only, never rewrites; PREMISE until the wm-build status/runs whole-journal fix is promoted, EXPIRES 2026-10-31)
+# No-op on hosts where the shim was never installed (carbon, orch): fires only where wm-build.real exists.
+ConditionPathExists=%h/.cargo/bin/wm-build.real
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/wm-build-shim-ctl.sh check
