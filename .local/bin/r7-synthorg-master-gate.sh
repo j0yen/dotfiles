@@ -11,10 +11,17 @@
 # `promise-lint-clock:` line of `synthorg promise lint` (WARN, exit 0, so it never reaches status). expected = master's src/synthorg/promise.py has that line.
 # The clock moves with the date, not the sha: a SAME-SHA tick is clock-only (re-lint, rewrite ONLY clock via .new + mv; status/parts/notify untouched,
 # lint rc ignored), and a full gate run re-lints every 10 min (clockbeat) so clock.ts stays fresh. fleet-dash promise_clock.py alarms on it.
+# IDS (gateids): the failed pytest nodeids of both lanes survive the run. Parsed ONLY from the text after pytest's `short test summary info` marker
+# (a decoy FAILED line in captured stdout is ignored); written to ~/.local/state/r7-synthorg-master-gate.{failed,flaky}.ids (.tmp + mv, every run, empty on
+# green or partial) and summarized in the state JSON: ids_status complete|partial (partial = red/timeout exit with no summary marker -> failed_ids_n null),
+# failed_ids_n, flaky_ids_n, baseline present|missing, baseline_n, baseline_sha256, new_vs_baseline + new_ids (main lane only, vs the committed
+# r7-synthorg-master-gate.baseline.ids beside the script, then the state-dir copy), baseline_still_failing_n, baseline_fixed_ids. The main lane's raw
+# output is kept at ~/.local/state/r7-synthorg-master-gate.pytest.last.out (head+tail when > 5 MB) because the run dir is deleted on return.
 set -u
 export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH
 ST=$HOME/.local/state; OUT=$ST/r7-synthorg-master-gate.json; LOG=$ST/r7-synthorg-master-gate.log; NOTIFY=$ST/r7-lever2.notify
 URL=https://github.com/j0yen/synthorg.git
+BASEDIR=$(dirname "$(readlink -f "$0")")
 SELF=0; [ "${1:-}" = "--selftest" ] && SELF=1
 log() { echo "$(date '+%F %I:%M:%S %p') $*" >> "$LOG"; }
 prev() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get(sys.argv[2],""))' "$OUT" "$1" 2>/dev/null; }
@@ -25,7 +32,10 @@ d={"sha":sys.argv[2],"status":sys.argv[3],"parts":sys.argv[4],"ts":datetime.date
 try: c=json.loads(sys.argv[5]) if sys.argv[5] else json.load(open(sys.argv[1])).get("clock")
 except Exception: c=None
 if c: d["clock"]=c
-json.dump(d,open(sys.argv[1]+".new","w")); os.replace(sys.argv[1]+".new",sys.argv[1])' "$OUT" "$1" "$2" "$3" "${CLK:-}"; }
+try: i=json.loads(sys.argv[6]) if len(sys.argv)>6 and sys.argv[6] else None
+except Exception: i=None
+if i: d.update(i)
+json.dump(d,open(sys.argv[1]+".new","w")); os.replace(sys.argv[1]+".new",sys.argv[1])' "$OUT" "$1" "$2" "$3" "${CLK:-}" "${IDS:-}"; }
 # mkclock <lint-output-file> <expected 0|1>: the clock JSON from the `promise-lint-clock: surface_age_days=<n> expired_allow=<n> expired_keys=<k1,k2|->` line (last one wins)
 mkclock() {
   python3 -I -c '
@@ -70,6 +80,70 @@ clockbeat() {  # clockbeat <dir>: during a long full gate run, re-lint every 10 
   local D=$1
   while sleep 600; do [ -d "$D/s" ] || break; clocklint "$D"; [ -d "$D/s" ] && clockfrom "$D"; done
 }
+# --- failed-id capture (gateids). Every extraction pipeline ends `|| :` (a green run has no summary: grep exits 1; the script must not die on it).
+extract_ids() {  # extract_ids <pytest.out>: nodeids after the `short test summary info` marker, whole nodeid kept (params with spaces / " - " inside brackets), one per line
+  awk '/^=+ short test summary info =+$/{f=1;next} f' "$1" 2>/dev/null | grep -E '^(FAILED|ERROR) ' | sed -E 's/^(FAILED|ERROR) //; s/^((\[[^]]*\]|[^[ ])*(\[[^]]*\])?) - .*/\1/' | LC_ALL=C sort -u || :
+}
+idsrec() {  # idsrec <dir> <lane> <raw rc>: <dir>/<lane>.ids + <lane>.idst (complete|partial). No marker: complete only when pytest ended clean (rc 0 = green, 5 = nothing collected); a red/timeout exit without the summary is partial (ids empty, unknown)
+  local d=$1 p=$2 rc=$3 f=$1/$2.out st=partial
+  if grep -qE '^=+ short test summary info =+$' "$f" 2>/dev/null || [ "$rc" = 0 ] || [ "$rc" = 5 ]; then st=complete; fi
+  if [ $st = complete ]; then extract_ids "$f" > "$d/$p.ids"; else : > "$d/$p.ids"; fi
+  echo $st > "$d/$p.idst"; return 0
+}
+putstate() { { cat "$1" 2>/dev/null || :; } > "$2.tmp" && mv -f "$2.tmp" "$2"; }  # putstate <src> <dest>: .tmp + mv, a missing src writes an empty dest
+putlast() {  # putlast <pytest.out> <dest>: copy, or head 1 MiB + tail 3 MiB when over 5 MB
+  local f=$1 o=$2
+  if [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -gt 5242880 ]; then
+    { head -c 1048576 "$f"; printf '\n[... truncated by r7-synthorg-master-gate: head 1 MiB + tail 3 MiB ...]\n'; tail -c 3145728 "$f"; } > "$o.tmp"
+  else cat "$f" > "$o.tmp" 2>/dev/null || : > "$o.tmp"; fi
+  mv -f "$o.tmp" "$o"
+}
+basefile() {  # the baseline ids: beside the script (readlink -f dir, committed), then the state dir; rc 1 = missing
+  local c; for c in "$BASEDIR/r7-synthorg-master-gate.baseline.ids" "$ST/r7-synthorg-master-gate.baseline.ids"; do [ -f "$c" ] && { echo "$c"; return 0; }; done; return 1
+}
+idsfinish() {  # idsfinish <dir>: writes the state ids files + pytest.last.out; prints the ids JSON fragment for save
+  local D=$1 b; b=$(basefile) || b=""
+  putstate "$D/pytest.ids" "$ST/r7-synthorg-master-gate.failed.ids"
+  putstate "$D/pytestflaky.ids" "$ST/r7-synthorg-master-gate.flaky.ids"
+  putlast "$D/pytest.out" "$ST/r7-synthorg-master-gate.pytest.last.out"
+  python3 -I -c '
+import json,sys,hashlib
+D,b=sys.argv[1],sys.argv[2]
+def rd(p):  # strip \r and trailing spaces, drop blanks
+    return sorted({l.replace("\r","").rstrip() for l in open(p,errors="replace")} - {""})
+def st(p):
+    try: return open(p).read().strip()
+    except OSError: return "partial"
+def ids(p):
+    try: return rd(p)
+    except OSError: return []
+m=ids(D+"/pytest.ids"); f=ids(D+"/pytestflaky.ids"); ms=st(D+"/pytest.idst"); fs=st(D+"/pytestflaky.idst")
+r={"ids_status":ms,"failed_ids_n":len(m) if ms=="complete" else None,"flaky_ids_n":len(f) if fs=="complete" else None}
+base=None
+if b:
+    try: base=rd(b); sha=hashlib.sha256(open(b,"rb").read()).hexdigest()[:12]
+    except OSError: base=None
+if base is None: r.update(baseline="missing",baseline_n=None,baseline_sha256=None)
+else: r.update(baseline="present",baseline_n=len(base),baseline_sha256=sha)
+if base is not None and ms=="complete":
+    bs=set(base); fa=set(m)
+    new=[x for x in m if x not in bs]
+    r.update(new_vs_baseline=len(new),new_ids=new[:20],baseline_still_failing_n=len(bs&fa),baseline_fixed_ids=[x for x in base if x not in fa][:20])
+else: r.update(new_vs_baseline=None,new_ids=None,baseline_still_failing_n=None,baseline_fixed_ids=None)
+print(json.dumps(r))' "$D" "$b"
+}
+flagcheck() {  # flagcheck <pytest argv>: prints it with ONE `-q -rfE` after `-m pytest`; rc 1 when it carries -qq / --no-summary (the summary the ids come from would be lost or reshaped)
+  local a=$1 w prev="" out="" bad=0
+  for w in $a; do
+    case $w in
+      -qq|--no-summary) bad=1 ;;
+      -q|-rfE) ;;
+      *) out="$out $w"; [ "$w" = pytest ] && [ "$prev" = -m ] && out="$out -q -rfE" ;;
+    esac
+    prev=$w
+  done
+  echo "${out# }"; return $bad
+}
 # EXPECT = every `run: uv run …` one-liner in synthorg .github/workflows/gate.yml (both jobs; the second job's
 # "not flaky and not slow" is a subset of the first). The argv part diffs it against the cloned sha's gate.yml, so a CI
 # command added, removed or changed turns this gate red (+added / -missing) instead of drifting silently (ctl 1:5x, 90a0).
@@ -106,7 +180,8 @@ gate() {
       pytest) (cd "$d/s" && SYNTHORG_LOAD_GUARD=1 timeout 4500 uv run --with pytest-timeout python -m pytest -q -rfE -p no:cacheprovider -o faulthandler_timeout=600 --timeout=600 -m "not flaky") > "$d/$p.out" 2>&1 ;;
       pytestflaky) (cd "$d/s" && timeout 1800 uv run --with pytest-timeout --with pytest-rerunfailures python -m pytest -q -rfE -p no:cacheprovider --timeout=600 -m flaky --reruns 2 --reruns-delay 5) > "$d/$p.out" 2>&1 ;;
     esac
-    r=$?; local rep=0; [ $p = pytestflaky ] && rep=1   # flaky lane = gate.yml continue-on-error: reported, never red/green
+    r=$?; case $p in pytest|pytestflaky) idsrec "$d" "$p" "$r" ;; esac   # raw rc, before the timeout adjustment below
+    local rep=0; [ $p = pytestflaky ] && rep=1   # flaky lane = gate.yml continue-on-error: reported, never red/green
     [ $r = 0 ] || [ $rep = 1 ] || bad=1
     local to=""; case $p in pytest*) to=$(grep -cE 'Timeout >[0-9.]+s|^\+{5,} Timeout \+{5,}' "$d/$p.out"); [ "$to" -gt 0 ] && { [ $rep = 1 ] || bad=1; [ $r = 0 ] && r=1; }; to=" timeouts=$to" ;; esac
     [ $rep = 1 ] && to="$to report-only"
@@ -124,7 +199,7 @@ decide() {  # decide <sha> <rc> <parts>: save + notify on red or transition
   fi
 }
 main() {
-  local sha D rc parts
+  local sha D rc parts IDS
   sha=$(git ls-remote "$URL" refs/heads/master | cut -f1); [ -n "$sha" ] || { log "ls-remote failed"; return 0; }
   [ "$sha" = "$(prev sha)" ] && [ "$(prev status)" != error ] && { clockonly "$sha"; return 0; }  # an error (clone/sync) retries next tick; same sha = clock-only
   # clone on disk (~/.cache, ext4), never tmpfs /tmp (the inode trap); TMPDIR lives inside it. The unit is single-instance,
@@ -141,13 +216,14 @@ main() {
   local hb; clocklint "$D"; clockfrom "$D"; clockbeat "$D" & hb=$!   # fresh clock now (this sha's state row lands at the end), re-linted every 10 min during the gate
   parts=$(HOME=$D/h XDG_CONFIG_HOME=$D/h/.config TMPDIR=$D/t gate "$D"); rc=$?
   kill $hb 2>/dev/null; clocklint "$D"; CLK=$(mkclock "$D/promise.clock.out" "$(cat "$D/expected")")
+  IDS=$(idsfinish "$D")   # before the RETURN trap deletes $D
   # measured cost (Fable NEEDS-READ b249): this unit's cgroup memory.peak vs its MemoryMax, in the saved parts
   local cg pk mx; cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup); pk=$(cat "$cg/memory.peak" 2>/dev/null); mx=$(cat "$cg/memory.max" 2>/dev/null)
   [ -n "$pk" ] && parts="$parts mem_peak_mib=$((pk/1048576)) mem_max=${mx:-?}"
   decide "$sha" "$rc" "$parts"
 }
 selftest() {
-  local S fail=0; S=$(mktemp -d); OUT=$S/out.json; LOG=$S/log; NOTIFY=$S/notify
+  local S fail=0; S=$(mktemp -d); OUT=$S/out.json; LOG=$S/log; NOTIFY=$S/notify; ST=$S/st; BASEDIR=$S/nobase; mkdir -p "$ST" "$BASEDIR"
   chk() { if eval "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
   decide aaaa 0 "all=0"; chk '[ "$(prev status)" = green ] && [ ! -s "$NOTIFY" ]' "first green -> saved, no notify"
   decide bbbb 1 "ruff=1"; chk '[ "$(prev status)" = red ] && grep -q "RED master bbbb" "$NOTIFY"' "red -> notify"
@@ -199,6 +275,33 @@ selftest() {
   CLK='{"line_present":true,"ts":"x"}'; decide hhhh 0 "all=0"; unset CLK
   chk '[ "$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))[\"clock\"][\"ts\"])" "$OUT")" = x ]' "clock: decide saves the clock passed in CLK"
   decide iiii 99 "clone failed"; chk '[ "$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))[\"clock\"][\"ts\"])" "$OUT")" = x ]' "clock: an error save carries the previous clock over"
+  # --- gateids: every fixture lives in this mktemp root (ST/BASEDIR were redirected into it above); runs under the script's real `set -u`
+  local X=$S/fx J=$S/fx/ids.json; mkdir -p "$X"; printf '%s\n' tests/a_test.py::test_one tests/gone_test.py::test_gone > "$S/base.ids"; cp "$S/base.ids" "$ST/r7-synthorg-master-gate.baseline.ids"
+  jq_() { python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); $2" "$1"; }   # jq_ <json> <python expr over d, must be truthy>
+  printf '=== test session starts ===\nFAILED tests/decoy_test.py::test_decoy - boom\n(captured stdout)\n=== FAILURES ===\n=========================== short test summary info ============================\nFAILED tests/a_test.py::test_one - AssertionError: x\nFAILED tests/b_test.py::test_p[case one] - assert 1 == 2\nERROR tests/broken_test.py - ImportError: nope\n=== 2 failed, 1 error in 3s ===\n' > "$X/pytest.out"
+  printf '=== short test summary info ===\nFAILED tests/f_test.py::test_f[1 - 2] - AssertionError\n=== 1 failed ===\n' > "$X/pytestflaky.out"
+  idsrec "$X" pytest 1; idsrec "$X" pytestflaky 1; idsfinish "$X" > "$J"
+  chk '[ "$(cat "$X/pytest.ids" | paste -sd" ")" = "tests/a_test.py::test_one tests/b_test.py::test_p[case one] tests/broken_test.py" ]' "ids: parametrized id with a space kept whole, collection ERROR reduces to its path, decoy FAILED above the marker ignored"
+  chk 'jq_ "$J" "d[\"ids_status\"]==\"complete\" and d[\"failed_ids_n\"]==3 and d[\"new_vs_baseline\"]==2 and d[\"new_ids\"]==[\"tests/b_test.py::test_p[case one]\",\"tests/broken_test.py\"] and d[\"baseline_n\"]==2 and d[\"baseline_still_failing_n\"]==1 and d[\"baseline_fixed_ids\"]==[\"tests/gone_test.py::test_gone\"] and len(d[\"baseline_sha256\"])==12 and d[\"baseline\"]==\"present\""' "ids: 2 FAILED + 1 ERROR, one in the baseline -> failed_ids_n=3, new_vs_baseline=2, still_failing=1, fixed named"
+  chk '[ "$(cat "$ST/r7-synthorg-master-gate.failed.ids" | wc -l)" = 3 ] && [ "$(cat "$ST/r7-synthorg-master-gate.flaky.ids")" = "tests/f_test.py::test_f[1 - 2]" ] && jq_ "$J" "d[\"flaky_ids_n\"]==1"' "ids: state files written (main 3, flaky lane id with \" - \" inside brackets whole); flaky_ids_n only, not in new_vs_baseline"
+  chk 'cmp -s "$X/pytest.out" "$ST/r7-synthorg-master-gate.pytest.last.out"' "ids: pytest.out copied to pytest.last.out before the run dir goes"
+  printf '===== 5 passed in 1s =====\n' > "$X/pytest.out"; : > "$X/pytestflaky.out"; idsrec "$X" pytest 0; idsrec "$X" pytestflaky 0; idsfinish "$X" > "$J"
+  chk '[ ! -s "$ST/r7-synthorg-master-gate.failed.ids" ] && [ -f "$ST/r7-synthorg-master-gate.failed.ids" ] && jq_ "$J" "d[\"ids_status\"]==\"complete\" and d[\"failed_ids_n\"]==0 and d[\"new_vs_baseline\"]==0 and d[\"new_ids\"]==[] and d[\"baseline_still_failing_n\"]==0 and len(d[\"baseline_fixed_ids\"])==2"' "ids: green output (no summary marker, rc 0) -> empty ids file, failed_ids_n=0, new_vs_baseline=0 (set -u, no abort)"
+  rm -f "$ST/r7-synthorg-master-gate.baseline.ids"; printf '=== short test summary info ===\nFAILED tests/a_test.py::test_one - x\n' > "$X/pytest.out"; idsrec "$X" pytest 1; idsfinish "$X" > "$J"
+  chk 'jq_ "$J" "d[\"baseline\"]==\"missing\" and d[\"new_vs_baseline\"] is None and d[\"baseline_n\"] is None and d[\"failed_ids_n\"]==1"' "ids: missing baseline -> new_vs_baseline null + baseline missing (never 0)"
+  printf '%s\r\n%s  \n\n' tests/a_test.py::test_one tests/other_test.py::t > "$BASEDIR/r7-synthorg-master-gate.baseline.ids"; idsfinish "$X" > "$J"
+  chk 'jq_ "$J" "d[\"baseline\"]==\"present\" and d[\"baseline_n\"]==2 and d[\"new_vs_baseline\"]==0 and d[\"baseline_still_failing_n\"]==1"' "ids: baseline beside the script wins; CR and trailing spaces stripped before the match"
+  printf '=== test session starts ===\ntests/x.py ..F\nKilled\n' > "$X/pytest.out"; idsrec "$X" pytest 124; idsfinish "$X" > "$J"
+  chk '[ ! -s "$ST/r7-synthorg-master-gate.failed.ids" ] && jq_ "$J" "d[\"ids_status\"]==\"partial\" and d[\"failed_ids_n\"] is None and d[\"new_vs_baseline\"] is None"' "ids: red/timeout exit with truncated output and no marker -> failed_ids_n null, ids_status partial, ids file empty"
+  head -c 6291456 /dev/zero | tr '\0' 'x' > "$X/big.out"; putlast "$X/big.out" "$X/big.last"
+  chk '[ "$(stat -c %s "$X/big.last")" -lt 5242880 ] && grep -q "truncated by r7-synthorg-master-gate" "$X/big.last"' "ids: a pytest.out over 5 MB is kept head + tail"
+  CLK=; IDS='{"ids_status":"complete","failed_ids_n":3}'; decide jjjj 1 "pytest=1(3 failed)"; unset IDS
+  chk 'jq_ "$OUT" "d[\"ids_status\"]==\"complete\" and d[\"failed_ids_n\"]==3 and d[\"status\"]==\"red\""' "ids: decide/save merges the ids fragment into the state JSON"
+  # --- F6 flags: -qq / --no-summary rejected, one -q -rfE; the script's own two pytest lanes must already be normalized
+  out=$(flagcheck "python -m pytest -qq -rfE -m x"); rc=$?; chk '[ $rc = 1 ] && [ "$out" = "python -m pytest -q -rfE -m x" ]' "flags: -qq rejected, normalized to one -q -rfE"
+  out=$(flagcheck "python -m pytest -q --no-summary -q -m x"); rc=$?; chk '[ $rc = 1 ] && [ "$out" = "python -m pytest -q -rfE -m x" ]' "flags: --no-summary rejected, doubled -q collapsed, -rfE added"
+  local ln n=0 bad=0 a; while IFS= read -r ln; do a=${ln#*python -m pytest }; a="python -m pytest ${a%%\) > *}"; n=$((n+1)); [ "$(flagcheck "$a")" = "$a" ] && flagcheck "$a" > /dev/null || bad=1; done < <(grep -E '^ +pytest(flaky)?\) ' "$0")
+  chk '[ $n = 2 ] && [ $bad = 0 ]' "flags: both of the script's own pytest lanes (main + flaky) already carry exactly one -q -rfE and no -qq/--no-summary"
   rm -rf "$S"; [ $fail = 0 ] && echo "selftest ok" || echo "selftest FAIL"; return $fail
 }
 if [ "$SELF" = 1 ]; then selftest; exit $?; fi
