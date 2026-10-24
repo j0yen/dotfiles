@@ -61,8 +61,9 @@
 #      a success rings `RB-BELL PAUSE-RELEASED run=<id> early premise-recovered`. PREMISE (W4): an adopted/foreign memory pause whose premise (MemAvailable < 12G, PSI) no longer holds waits the full 90 min for no reason. EXPIRES stays 2026-11-21.
 # RRS (rb 10-24, hand PR rrs4): redrive_heal wraps the two CLEAN-wt redrives (T4R recovery, ledger release). A redrive that fails with "no PRD entry on record" gets ONE `wm-build scan` (a fleet write through
 #   wp_gate + wp_emit_write, this watcher's own premise + expiry; throttle one scan per run per 30 min) and ONE retry; a failed gate logs `SCAN-HEAL run=<id> gate_failed gate_rc=<n> ret=<rc>` and returns the original rc.
-#   Every redrive failure line carries err=<first error line, 200 chars>, once per helper call; 3 identical err= on one run = ONE `T4R-STUCK run=<id> err=<line>` (re-arms on a changed err or a success).
-#   SCAN-HEAL and T4R-STUCK each call seat-event.sh (rb) and count into status.json scan_heal.count_24h / t4r_stuck.count_24h. `--deploy-check <path>` exits non-zero when <path> differs from THIS script (sha256).
+#   Every redrive failure line carries err=<first error line, 200 chars>, once per helper call; 3 CONSECUTIVE failed heals on one run (any err text, emit/gate failures included) = ONE `T4R-STUCK run=<id> n=3 err=<latest err>`;
+#   no second alarm for that run until a heal success resets the count and re-arms (rrs v0.3.3). The redrive output is captured in ONE file `${T4R_STATE%.state}.heal.out`, truncated per call.
+#   SCAN-HEAL and T4R-STUCK each call seat-event.sh (rb) and count into status.json scan_heal.count_24h / t4r_stuck.count_24h; `SCAN-HEAL ... emit_failed` lines count in scan_heal.emit_failed_24h instead. `--deploy-check <path>` exits non-zero when <path> differs from THIS script (sha256).
 #   Guard, not root: the root fix is wm-build + rpe v0.2 (admission writes the prds row; redrive heals the slug in-process). The fleet-dash alarm on the two counts is d-20261024-034612-controller-ee45 (owner controller).
 # Output: /mnt/data/hand/reprice-watch.log ; lines with RB-BELL wake the seat. --selftest exercises the trigger arithmetic, the T4 cases and T4R R1-R18 (hermetic: DB/EV/CONF/LOG are fixtures under mktemp -d, no env var needed; RW_DB overrides the live state.db path only).
 export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH
@@ -236,30 +237,32 @@ t4r_load(){ # once at startup: restore a persisted recovery watch; a run that en
 # RRS (rb 10-24, hand PR rrs4, spec ~/.cache/rb-seat/coders/rrs4.spec.md v0.3.2; incident: 1054 sat 53 min on 47 x rc=1 "no PRD entry on record" until a hand `wm-build scan`).
 # redrive_heal is a GUARD, not the root fix (root owner = wm-build + rpe v0.2: admission writes the prds row, redrive heals the one slug in-process). It is a plain function called in the SAME shell that ran
 # rw_arm, so the wp_* state (non-exported WP_NAME / WP_ARMED ...) reaches wp_gate; never run it in a child process.
-heal_event(){ # $1 seat-event line, $2 kind (scan_heal|t4r_stuck), $3 run id: one count row for status_write + a NEW seat-event.sh call (best effort, never fails the caller)
+heal_event(){ # $1 seat-event line, $2 kind (scan_heal|scan_emit_failed|t4r_stuck), $3 run id: one count row for status_write + a NEW seat-event.sh call (best effort, never fails the caller)
   mkdir -p "$(dirname "$HEALBASE")" 2>/dev/null; printf '%s\t%s\t%s\n' "$(now_s)" "$2" "$3" >> "$HEALBASE.events" 2>/dev/null || true
   EVENT_SOURCE=rb-reprice-watch timeout 30 "$SEAT_EVENT" rb "$1" >/dev/null 2>&1 || true; }
 heal_throttle_set(){ local now; now=$(now_s); mkdir -p "$(dirname "$HEALBASE")" 2>/dev/null
   { awk -F'\t' -v r="$1" -v m=$((now-86400)) '$1!=r && $2>=m' "$HEALBASE.throttle" 2>/dev/null; printf '%s\t%s\n' "$1" "$now"; } > "$HEALBASE.throttle.tmp.$$" && mv -f -- "$HEALBASE.throttle.tmp.$$" "$HEALBASE.throttle"; }
-heal_stuck(){ # $1 run $2 rc $3 err. Per-run marker in $HEALBASE.stuck (run<TAB>n<TAB>alarmed<TAB>err): n = consecutive identical err lines. rc 0 clears the marker.
-  # Fires ONE T4R-STUCK at n >= 3; the marker then stays armed-off until the err CHANGES (fires once for the new err, n restarts at 1) or the redrive succeeds (marker deleted).
-  local id=$1 rc=$2 err=${3:-"(no output)"} n=0 al=0 le= fire=0 line new=
+heal_counts(){ # heal events pruned to 24 h like DEFERLOG, counted by kind: HC_SH = scan forms + gate_failed, HC_SE = emit_failed (own count), HC_SK = t4r_stuck
+  local now; now=$(now_s); HC_SH=0; HC_SE=0; HC_SK=0
+  if [ -s "$HEALBASE.events" ]; then awk -F'\t' -v m=$((now-86400)) '$1>=m' "$HEALBASE.events" > "$HEALBASE.events.tmp.$$" && mv -f -- "$HEALBASE.events.tmp.$$" "$HEALBASE.events"
+    HC_SH=$(awk -F'\t' '$2=="scan_heal"' "$HEALBASE.events" | wc -l); HC_SE=$(awk -F'\t' '$2=="scan_emit_failed"' "$HEALBASE.events" | wc -l); HC_SK=$(awk -F'\t' '$2=="t4r_stuck"' "$HEALBASE.events" | wc -l); fi; }
+heal_stuck(){ # $1 run $2 rc $3 err. Per-run marker in $HEALBASE.stuck (run<TAB>n<TAB>alarmed<TAB>err): n = CONSECUTIVE failed heals since the last success, whatever the err text. rc 0 deletes the marker (re-arm).
+  # Fires ONE T4R-STUCK when n reaches 3; alarmed=1 then holds for the run until a success deletes the marker.
+  local id=$1 rc=$2 err=${3:-"(no output)"} n=0 al=0 fire=0 line new=
   line=$(awk -F'\t' -v r="$id" '$1==r{print; exit}' "$HEALBASE.stuck" 2>/dev/null)
-  [ -z "$line" ] || IFS=$'\t' read -r _ n al le <<< "$line"
+  [ -z "$line" ] || IFS=$'\t' read -r _ n al _ <<< "$line"
   case "$n" in ''|*[!0-9]*) n=0;; esac; [ "$al" = 1 ] || al=0
   if [ "$rc" != 0 ]; then
-    if [ "$err" = "$le" ]; then n=$((n+1)); else n=1; [ "$al" = 1 ] && fire=1; fi
-    [ "$al" = 0 ] && [ "$n" -ge 3 ] && fire=1
-    [ "$fire" = 1 ] && al=1
+    n=$((n+1)); [ "$al" = 0 ] && [ "$n" -ge 3 ] && { fire=1; al=1; }
     new=$(printf '%s\t%s\t%s\t%s' "$id" "$n" "$al" "$err")
   fi
   mkdir -p "$(dirname "$HEALBASE")" 2>/dev/null
   { awk -F'\t' -v r="$id" '$1!=r' "$HEALBASE.stuck" 2>/dev/null; [ -z "$new" ] || printf '%s\n' "$new"; } > "$HEALBASE.stuck.tmp.$$" && mv -f -- "$HEALBASE.stuck.tmp.$$" "$HEALBASE.stuck"
-  [ "$fire" = 0 ] || { log "T4R-STUCK run=$id err=$err"; heal_event "T4R-STUCK run=$id err=$err" t4r_stuck "$id"; }; return 0; }
+  [ "$fire" = 0 ] || { log "T4R-STUCK run=$id n=$n err=$err"; heal_event "T4R-STUCK run=$id n=$n err=$err" t4r_stuck "$id"; }; return 0; }
 _rh_run(){ ( set -a; . "$ENVF" || exit 97; set +a; wm-build run redrive "$1" --from "$2" ) > "$3" 2>&1; }   # $1 run $2 stage $3 capture file
 redrive_heal(){ # $1 run id, $2 --from stage, $3 the caller's log label (the line is "<label> rc=<rc>[ err=<first error line>]", written ONCE per call, from the FINAL outcome). Returns the redrive rc; sets RH_ERR.
-  local id=$1 from=$2 label=$3 out rc ret now last g e sr; RH_ERR=
-  out=$(mktemp "${TMPDIR:-/tmp}/rrs-redrive.XXXXXX") || { ( set -a; . "$ENVF" || exit 97; set +a; wm-build run redrive "$id" --from "$from" ) >> "$LOG" 2>&1; rc=$?; log "$label rc=$rc"; return "$rc"; }   # no capture file: plain redrive, no heal
+  local id=$1 from=$2 label=$3 out rc ret now last g e sr; RH_ERR=; out=$HEALBASE.out   # ONE capture file next to the heal state, truncated per call (no mktemp, no /tmp file, no trap)
+  { mkdir -p "$(dirname "$out")" && : > "$out"; } 2>/dev/null || { ( set -a; . "$ENVF" || exit 97; set +a; wm-build run redrive "$id" --from "$from" ) >> "$LOG" 2>&1; rc=$?; log "$label rc=$rc"; return "$rc"; }   # no capture file: plain redrive, no heal
   _rh_run "$id" "$from" "$out"; rc=$?; cat "$out" >> "$LOG"
   if [ "$rc" != 0 ] && grep -q 'no PRD entry on record' "$out"; then   # the CAPTURED output, never $LOG
     ret=$rc; now=$(now_s); last=$(awk -F'\t' -v r="$id" '$1==r{v=$2} END{print v+0}' "$HEALBASE.throttle" 2>/dev/null); last=${last:-0}
@@ -267,13 +270,12 @@ redrive_heal(){ # $1 run id, $2 --from stage, $3 the caller's log label (the lin
     else wp_gate; g=$?   # the scan is a FLEET write: this watcher's own premise + expiry (RWH3)
       if [ "$g" != 0 ]; then log "SCAN-HEAL run=$id gate_failed gate_rc=$g ret=$ret"; heal_event "SCAN-HEAL run=$id gate_failed gate_rc=$g ret=$ret" scan_heal "$id"
       else wp_emit_write scan "redbaron:scan" "wm-build scan (redrive self-heal, run $id: no PRD entry on record)" "redrive run $id --from $from rc=$ret: no PRD entry on record" "none: wm-build scan only re-reads PRD files into the prds table"; e=$?
-        if [ "$e" != 0 ]; then log "SCAN-HEAL run=$id emit_failed emit_rc=$e ret=$ret"; heal_event "SCAN-HEAL run=$id emit_failed emit_rc=$e ret=$ret" scan_heal "$id"
+        if [ "$e" != 0 ]; then log "SCAN-HEAL run=$id emit_failed emit_rc=$e ret=$ret"; heal_event "SCAN-HEAL run=$id emit_failed emit_rc=$e ret=$ret" scan_emit_failed "$id"
         else ( set -a; . "$ENVF" || exit 97; set +a; wm-build scan ) >> "$LOG" 2>&1; sr=$?; heal_throttle_set "$id"
           log "SCAN-HEAL run=$id scan rc=$sr"; heal_event "SCAN-HEAL run=$id scan rc=$sr" scan_heal "$id"
           _rh_run "$id" "$from" "$out"; rc=$?; cat "$out" >> "$LOG"; fi; fi; fi   # the retry runs ONCE and its rc is the answer
   fi
   if [ "$rc" != 0 ]; then RH_ERR=$(awk 'tolower($0) ~ /error/ {print; f=1; exit} NF && !first {first=$0} END{if (!f) print first}' "$out" | head -n1 | tr '\t\r' '  ' | cut -c1-200); RH_ERR=${RH_ERR:-"(no output)"}; fi
-  rm -f -- "$out"   # single exit path: no trap, so the watcher's own EXIT trap (selftest) is never replaced
   log "$label rc=$rc${RH_ERR:+ err=$RH_ERR}"; heal_stuck "$id" "$rc" "$RH_ERR"; return "$rc"; }
 t4r_fire(){ # recovery window met: (a) re-read the row, (b) max_runs 1 -> t4_lowered_from only when (a) passed AND t4_lowered_from > 1 AND config reads exactly 1, (c) redrive, (d) bell, (e) clear
   local id=$T4R_RUN row slug e s p why= cur sr=- er=- rc=- wt d= res pm pan en unk
@@ -438,7 +440,7 @@ wpause(){ # $1 run id, $2 trigger text -> `wm-build run pause <id> --cause "<tri
   if [ -n "$pa" ]; then ledger_add "$id" "$pa" "$exp" "$cause" 0; log "LEDGER-ADD run=$id paused_at=$pa expires=$exp"
   else log "LEDGER-ADD-DEFER run=$id (paused_at unreadable); the next pass adopts it as unledgered"; fi; }
 status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,overdue}, redrive_defer{count_24h,last_ts,last_op}, premise{verdict,expires}
-  local now open=0 old= over=0 e x r p d c n lt lo v wk tmp sh sk; now=$(now_s)
+  local now open=0 old= over=0 e x r p d c n lt lo v wk tmp sh se sk; now=$(now_s)
   if [ -s "$LEDGER" ]; then
     while IFS=$'\t' read -r r p e d x; do [ -n "$r" ] || continue; open=$((open+1)); n=$(epoch_of "$e"); case "$n" in ''|*[!0-9]*) continue;; esac
       if [ -z "$old" ] || [ "$n" -lt "$old" ]; then old=$n; fi
@@ -450,13 +452,12 @@ status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,
     awk -F'\t' -v m=$((now-86400)) '$1>=m' "$DEFERLOG" > "$DEFERLOG.tmp.$$" && mv -f -- "$DEFERLOG.tmp.$$" "$DEFERLOG"
     c=$(wc -l < "$DEFERLOG"); if [ "$c" -gt 0 ]; then lt=$(tail -n 1 "$DEFERLOG" | cut -f1); lo=$(tail -n 1 "$DEFERLOG" | cut -f2); fi
   fi
-  sh=0; sk=0   # RRS: heal events pruned to 24 h like DEFERLOG, counted by kind
-  if [ -s "$HEALBASE.events" ]; then awk -F'\t' -v m=$((now-86400)) '$1>=m' "$HEALBASE.events" > "$HEALBASE.events.tmp.$$" && mv -f -- "$HEALBASE.events.tmp.$$" "$HEALBASE.events"
-    sh=$(awk -F'\t' '$2=="scan_heal"' "$HEALBASE.events" | wc -l); sk=$(awk -F'\t' '$2=="t4r_stuck"' "$HEALBASE.events" | wc -l); fi
+  heal_counts   # RRS: sets HC_SH HC_SE HC_SK
+  sh=$HC_SH; se=$HC_SE; sk=$HC_SK
   wk=0; if expired; then if [ "${WP_DEFECT:-}" = expired ]; then v=expired; else v=disarmed; fi; wk=$open; else v=armed; fi   # RWH3 E2: wp_disarmed_ledger = open ledger rows while the gate is down
   mkdir -p "$(dirname "$STATUS")"; tmp="$STATUS.tmp.$$"
-  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" --argjson wk "$wk" --argjson sh "$sh" --argjson sk "$sk" \
-    '{watcher:"rb-reprice-watch", ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}, wp_disarmed_ledger:$wk, scan_heal:{count_24h:$sh}, t4r_stuck:{count_24h:$sk}}' > "$tmp" \
+  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" --argjson wk "$wk" --argjson sh "$sh" --argjson se "$se" --argjson sk "$sk" \
+    '{watcher:"rb-reprice-watch", ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}, wp_disarmed_ledger:$wk, scan_heal:{count_24h:$sh, emit_failed_24h:$se}, t4r_stuck:{count_24h:$sk}}' > "$tmp" \
     && mv -f -- "$tmp" "$STATUS" || log "status.json write failed ($STATUS)"; }
 release_refused(){ # $1 run $2 paused_at $3 ext $4 why. (d): extend +30 min up to EXT_MAX times, then PAUSE-OVERDUE once (ext -> EXT_MAX+1) and keep re-checking every pass
   local now x=$3; now=$(now_s)
@@ -998,9 +999,9 @@ FAKEWB
   [ "$(cnt 'WP-DISARMED-LEDGER-NONEMPTY' "$LOG")" = 0 ] && [ "$(jq -r .wp_disarmed_ledger "$STATUS")" = 0 ] || { wfail "(vi-b) armed gate must not bell; log=[$(cat "$LOG")]"; return 1; }
   sim_arm
   rm -rf "$t"; echo "W1 G1-G6 ok W2 E1-E9 E4b I1 X1 S1 ok W4 V1-V17 ok RWH H1-H5 ok RWH3 i ii iii v vi ok"; }
-heal_selftest(){ # hermetic RRS s1-s7 (redrive_heal): fake wm-build / seat-event / decide under a mktemp -d; s7 runs the REAL watcher-premise.sh gate; prints a short ok string or SELFTEST FAIL RRS <case>
+heal_selftest(){ # hermetic RRS s1-s11 (redrive_heal): fake wm-build / seat-event / decide under a mktemp -d; s7 runs the REAL watcher-premise.sh gate; prints a short ok string or SELFTEST FAIL RRS <case>
   local t f gdef edef self c; t=$(mktemp -d) && [ -d "$t" ] || { echo "SELFTEST FAIL RRS mktemp"; return 1; }
-  LOG=$t/log; ENVF=$t/env; HEALBASE=$t/heal; SEAT_EVENT=$t/se.sh; RW_NOW=1700000000; PATH=$t/bin:$PATH; HEAL_THROTTLE_S=1800; T4R_STATE=$t/t4r.state
+  LOG=$t/log; ENVF=$t/env; T4R_STATE=$t/t4r.state; HEALBASE=${T4R_STATE%.state}.heal; SEAT_EVENT=$t/se.sh; RW_NOW=1700000000; PATH=$t/bin:$PATH; HEAL_THROTTLE_S=1800
   export FAKE_CALLS=$t/calls FAKE_SCANNED=$t/scanned FAKE_MODE=$t/mode FAKE_SE=$t/se.rec WP_STATE=$t/wp WP_LOG=$t/wp.log WP_GATE_TTL=30 WP_DECIDE_BIN=$t/decide.sh FAKE_DECIDE_REC=$t/decide.rec
   log(){ echo "$*" >> "$LOG"; }; mkdir -p "$t/bin"; echo ': fake fleet token env' > "$ENVF"
   printf '#!/bin/bash\necho "$*" >> "$FAKE_SE"\n' > "$SEAT_EVENT"; printf '#!/bin/bash\necho "$*" >> "$FAKE_DECIDE_REC"\n' > "$WP_DECIDE_BIN"; chmod +x "$SEAT_EVENT" "$WP_DECIDE_BIN"
@@ -1039,14 +1040,14 @@ FAKEWB
   wp_gate(){ return 1; }; echo noprd-rc3 > "$FAKE_MODE"; rset; redrive_heal 1054 inner "LBL"; c=$?
   [ "$c" = 3 ] && [ "$(nc '^SCAN-HEAL run=1054 gate_failed gate_rc=1 ret=3$' "$LOG")" = 1 ] && [ "$(nc 'scan' "$FAKE_CALLS")" = 0 ] && [ "$(nc '^wm-build run redrive' "$FAKE_CALLS")" = 1 ] || { fail "s4 rc=$c log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
   stubs
-  # s5: 4 identical failures -> exactly one T4R-STUCK (at the 3rd), one err= line per call; a 5th with a different err -> a second T4R-STUCK (the marker re-arms); a success clears it and 3 identical failures fire again
-  echo err:same > "$FAKE_MODE"; rset; for f in 1 2 3 4; do redrive_heal 9 inner "LBL 9"; done
-  [ "$(nc '^T4R-STUCK' "$LOG")" = 1 ] && [ "$(nc '^LBL 9 rc=1 err=' "$LOG")" = 4 ] && [ "$(nc 'T4R-STUCK run=9 err=wm-build: error: same' "$FAKE_SE")" = 1 ] || { fail "s5 first 4: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
-  echo err:different > "$FAKE_MODE"; redrive_heal 9 inner "LBL 9"
-  [ "$(nc '^T4R-STUCK' "$LOG")" = 2 ] && [ "$(nc '^T4R-STUCK run=9 err=wm-build: error: different$' "$LOG")" = 1 ] && [ "$(nc '^LBL 9 rc=1 err=' "$LOG")" = 5 ] || { fail "s5 5th: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
-  redrive_heal 9 inner "LBL 9"; redrive_heal 9 inner "LBL 9"; [ "$(nc '^T4R-STUCK' "$LOG")" = 2 ] || { fail "s5 same err after the re-arm must not alarm again"; return 1; }
+  # s5: 3 failures with 3 DIFFERENT errs -> exactly one T4R-STUCK (at the 3rd, n=3); failures 4-6 (any errs) -> no second alarm; one success -> 3 failures -> exactly one more alarm (total 2)
+  rset; for e in e1 e2 e3; do echo "err:$e" > "$FAKE_MODE"; redrive_heal 9 inner "LBL 9"; done
+  [ "$(nc '^T4R-STUCK' "$LOG")" = 1 ] && [ "$(nc '^T4R-STUCK run=9 n=3 err=wm-build: error: e3$' "$LOG")" = 1 ] && [ "$(nc '^LBL 9 rc=1 err=' "$LOG")" = 3 ] && [ "$(nc 'T4R-STUCK run=9 n=3 err=wm-build: error: e3' "$FAKE_SE")" = 1 ] || { fail "s5 first 3: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
+  for e in e4 e4 e6; do echo "err:$e" > "$FAKE_MODE"; redrive_heal 9 inner "LBL 9"; done
+  [ "$(nc '^T4R-STUCK' "$LOG")" = 1 ] && [ "$(nc '^LBL 9 rc=1 err=' "$LOG")" = 6 ] || { fail "s5 failures 4-6 must not alarm again: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
   echo ok > "$FAKE_MODE"; redrive_heal 9 inner "LBL 9"; [ "$(grep -c '^9	' "$HEALBASE.stuck" 2>/dev/null || true)" = 0 ] || { fail "s5 success must clear the marker"; return 1; }
-  echo err:third > "$FAKE_MODE"; for f in 1 2 3; do redrive_heal 9 inner "LBL 9"; done; [ "$(nc '^T4R-STUCK' "$LOG")" = 3 ] && [ "$(nc 't4r_stuck' "$HEALBASE.events")" = 3 ] || { fail "s5 re-arm after success: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
+  for e in e7 e8 e9; do echo "err:$e" > "$FAKE_MODE"; redrive_heal 9 inner "LBL 9"; done
+  [ "$(nc '^T4R-STUCK' "$LOG")" = 2 ] && [ "$(nc 't4r_stuck' "$HEALBASE.events")" = 2 ] || { fail "s5 re-arm after success: log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
   # s6: --deploy-check on an identical copy -> 0, a one-byte-different copy -> non-zero, no path -> 2
   cp "$self" "$t/same"; cp "$self" "$t/diff"; printf '#' >> "$t/diff"
   bash "$self" --deploy-check "$t/same" > "$t/dc0" 2>&1; f=$?; bash "$self" --deploy-check "$t/diff" > "$t/dc1" 2>&1; c=$?
@@ -1057,7 +1058,20 @@ FAKEWB
   echo noprd > "$FAKE_MODE"; rset; : > "$t/gate.rc"; redrive_heal 1054 inner "LBL 1054"; c=$?
   [ "$c" = 0 ] && [ "$(cat "$t/gate.rc")" = 0 ] && [ "$(nc '^SCAN-HEAL run=1054 scan rc=0$' "$LOG")" = 1 ] && [ "$(nc '^wm-build scan$' "$FAKE_CALLS")" = 1 ] && [ "$(nc '^wm-build run redrive 1054 --from inner$' "$FAKE_CALLS")" = 2 ] \
     && [ "$(cat "$WP_STATE"/outbox-*.jsonl 2>/dev/null | grep -c '"kind":"scan"')" = 1 ] && [ "$(nc 'kind guard\|--target redbaron:scan' "$FAKE_DECIDE_REC")" -ge 1 ] || { fail "s7 rc=$c gate.rc=[$(tr '\n' ' ' < "$t/gate.rc")] log=[$(tr '\n' '|' < "$LOG")] calls=[$(tr '\n' '|' < "$FAKE_CALLS")]"; return 1; }
-  rm -rf "$t"; echo "RRS s1-s7 ok (s7 real wp_gate rc=0)"; }
+  # s8: alternating errs A,B,A -> ONE T4R-STUCK, at the 3rd
+  stubs; rset; for e in A B A; do echo "err:$e" > "$FAKE_MODE"; redrive_heal 8 inner "LBL 8"; done
+  [ "$(nc '^T4R-STUCK' "$LOG")" = 1 ] && [ "$(nc '^T4R-STUCK run=8 n=3 err=wm-build: error: A$' "$LOG")" = 1 ] || { fail "s8 log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
+  # s9: an emit failure counts in emit_failed_24h, NOT in count_24h, and toward the stuck counter (3 emit failures on one run -> one T4R-STUCK)
+  wp_emit_write(){ return 7; }; echo noprd-always > "$FAKE_MODE"; rset; for f in 1 2 3; do redrive_heal 5 inner "LBL 5"; done; heal_counts
+  [ "$HC_SE" = 3 ] && [ "$HC_SH" = 0 ] && [ "$(nc 'emit_failed emit_rc=7' "$LOG")" = 3 ] && [ "$(nc '^wm-build scan$' "$FAKE_CALLS")" = 0 ] && [ "$(nc '^T4R-STUCK run=5 n=3' "$LOG")" = 1 ] && [ "$HC_SK" = 1 ] || { fail "s9 se=$HC_SE sh=$HC_SH sk=$HC_SK log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
+  echo noprd > "$FAKE_MODE"; stubs; rset; redrive_heal 5 inner "LBL 5"; heal_counts; [ "$HC_SE" = 0 ] && [ "$HC_SH" = 1 ] || { fail "s9 control: a good scan counts in count_24h (se=$HC_SE sh=$HC_SH)"; return 1; }
+  # s10: a watcher restart (a FRESH shell reading the same heal state) between attempts does not reset the 30-min scan throttle
+  stubs; echo noprd-always > "$FAKE_MODE"; rset; redrive_heal 1054 inner "LBL"; RW_NOW=$((RW_NOW+600))
+  env FAKE_CALLS="$FAKE_CALLS" FAKE_SCANNED="$FAKE_SCANNED" FAKE_MODE="$FAKE_MODE" FAKE_SE="$FAKE_SE" PATH="$PATH" bash -c "$(declare -f now_s log wp_gate wp_emit_write heal_event heal_throttle_set heal_stuck heal_counts _rh_run redrive_heal); LOG=$LOG ENVF=$ENVF HEALBASE=$HEALBASE SEAT_EVENT=$SEAT_EVENT RW_NOW=$RW_NOW HEAL_THROTTLE_S=$HEAL_THROTTLE_S; redrive_heal 1054 inner LBL" > /dev/null 2>&1
+  [ "$(nc '^wm-build scan$' "$FAKE_CALLS")" = 1 ] && [ "$(nc '^T4R scan-throttled run=1054' "$LOG")" = 1 ] || { fail "s10 scans=$(nc '^wm-build scan$' "$FAKE_CALLS") log=[$(tr '\n' '|' < "$LOG")]"; return 1; }
+  # s11: no /tmp/rrs-redrive.* file is left or created; the ONE capture file exists next to the heal state
+  [ -z "$(ls "${TMPDIR:-/tmp}"/rrs-redrive.* 2>/dev/null)" ] && [ -e "${T4R_STATE%.state}.heal.out" ] && [ "${T4R_STATE%.state}.heal.out" = "$HEALBASE.out" ] && [[ "$HEALBASE.out" == "$t"/* ]] || { fail "s11 capture=${T4R_STATE%.state}.heal.out tmp=[$(ls "${TMPDIR:-/tmp}"/rrs-redrive.* 2>/dev/null)]"; return 1; }
+  rm -rf "$t"; echo "RRS s1-s11 ok (s7 real wp_gate rc=0)"; }
 if [ "${1:-}" = "--circuit-gate" ]; then  # read-only W1 gate for wip-redrive.sh and the seat: prints "<ok|defer|unparsable> last_op=.. resets=.. why=..", exit 0 ok / 1 defer / 2 unparsable
   circuit_gate; rc=$?; echo "$CG_V last_op=$CG_OP resets=$CG_RESETS why=\"$CG_WHY\""; exit "$rc"; fi
 if [ "${1:-}" = "--selftest" ]; then
