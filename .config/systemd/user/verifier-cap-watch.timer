@@ -1,0 +1,12 @@
+[Unit]
+Description=verifier-cap watch every 2 min (verifier-cap-watch.service; disarms itself at its EXPIRES; not enabled by the repo)
+ConditionHost=carbon
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

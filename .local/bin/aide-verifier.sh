@@ -3,9 +3,9 @@
 #   AGENT: AIDE_VERIFIER_AGENT (default aide; aide|rb|r7, anything else -> exit 2) is the wm-decide --agent of every row (verdict template, GATE-PASS, RETRACT),
 #   the template's agent=verifier:/recorded_by=unit: fields, the bell text prefix ("<agent> EVENT ...", EVENT_SOURCE) and the unit prefix <agent>-verifier-<name>.
 #   The rb/r7 seats run their own claude on carbon too, so ROOM and systemd-run are unchanged; the verdict row still comes from the headless unit's own session (G7).
-#   Below, "aide" in unit/field names means <agent>; the one-at-a-time check looks at every (aide|rb|r7)-verifier-* unit.
+#   Below, "aide" in unit/field names means <agent>; the cap looks at every (aide|rb|r7)-verifier-* unit.
 #   launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<G3 token line>' --suite '<ONE command for wm-verify-run>'
-#          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue]
+#          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue] [--prio 0|1]
 #       LINT (exit 2): name not [a-z0-9-]; head not 40 hex; --gated not d-YYYYMMDD-HHMMSS-<agent>-<4hex>; empty token (or one with " ` $ newline);
 #       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>;
 #       MERGE-GATE LINTS (AVL; each names the merge-gate rule, all failures printed, no bypass flag): G0 the --gated row does not exist; G6 the gated row names no
@@ -20,8 +20,23 @@
 #       Another *-verifier-* unit active (not counting the caller's OWN unit: the final component of the 0:: line of $AIDE_VERIFIER_CGROUP_FILE
 #       (default /proc/self/cgroup, test-only override), when it ends .service; the exclusion is printed with the unit name; a launch run inside the very unit
 #       it would start, <agent>-verifier-<name>.service, exits 2 `lint: launch-inside-target-unit <unit>` before any wait; the v360b hang)
-#       (one at a time) unless --queue (wait, poll AIDE_VERIFIER_POLL_S=20, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6).
-#       Then ROOM (carbon-room.sh 2048 --json, .ok true else exit 3), then systemd-run --user --unit <agent>-verifier-<name> -p MemoryMax=2G.
+#       counts toward the fleet gate's ceiling below (the own unit is excluded from step 3's active count and from step 4's MemoryCurrent sum, and the exclusion is printed).
+#   FLEET GATE (vcap v0.3, ctl 9be3): ONE lock at the FIXED path $HOME/.local/state/verifier-cap/launch.lock for every launcher of rb, r7 and aide. Neither the lock
+#       nor the numbers move with AIDE_VERIFIER_DIR or any seat env; only the selftest (AIDE_VERIFIER_SELFTEST=1) may override AIDE_VERIFIER_LOCK / AIDE_VERIFIER_SLOT_CEIL
+#       / AIDE_VERIFIER_PEAK_MB (integers >= 1, else exit 9) / AIDE_VERIFIER_TOKEN_FILE / AIDE_VERIFIER_LOCK_WAIT_S / AIDE_VERIFIER_TIMEOUT_S. Inside the lock, in order:
+#       1 PRIORITY  every launch takes a ticket $HOME/.local/state/verifier-cap/queue/<prio>-<epoch_ns>-<pid> (prio 0 = --repo j0yen/synthorg|mcphost|wm-build, else 1;
+#         --prio 0|1 overrides) and proceeds only when its ticket sorts first among LIVE tickets (kill -0 pid and /proc/<pid>/cmdline has aide-verifier; dead ones are
+#         removed by whoever sees them). Not head-of-line: exit 11 without --queue, else wait. The ticket goes in the same EXIT trap that releases fd 9.
+#       2 429 BREAKER  TRIPPED iff some $ROOT/*/result.json with api_error_status 429 is newer than the token file (~/.config/environment.d/90-claude-oauth.conf) and no
+#         non-429 result is newer than that newest 429. Half-open: that 429 older than 30 min and 0 active admits exactly ONE probe, recorded in
+#         $HOME/.local/state/verifier-cap/breaker.state keyed by the 429's mtime (a second probe for the same key stays tripped). Tripped: exit 10 without --queue, else wait.
+#         Bells (seat-event.sh) r7 (token owner) and the launching seat (WM_SEAT, else rb), once per trip id each.
+#       3 CEILING  active (aide|rb|r7)-verifier-* units (own unit excluded) must be < SLOT_CEIL (4): exit 2 without --queue, else wait.
+#       4 ROOM     need = max(PEAK_MB, PEAK_MB x (active+1) - SUM_cur) MB, PEAK_MB = 1024 (the per-verifier admission price), SUM_cur = sum of MemoryCurrent of the active
+#         units (their current RSS is already out of MemAvailable, their remaining ramp is not); `carbon-room.sh <need> --json` must exit 0: else exit 3 without --queue, else wait.
+#         MemoryMax=2G per unit stays the kill ceiling, not the price. Then systemd-run (lock fd closed for the unit).
+#       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
+#       must `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than SLOT_CEIL units are active or a unit's MemoryPeak tops PEAK_MB.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
@@ -32,7 +47,7 @@
 # Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
 #      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit) AIDE_VERIFIER_GATE_ROOT AIDE_VERIFIER_CGROUP_FILE (both tests only)
-# Exit: 0 ok / 1 systemd-run failed / 2 lint or usage / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout / 7 gate passed, row not recorded.
+# Exit: 0 ok / 1 systemd-run failed / 2 lint or usage or ceiling reached / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout (queue or lock) / 7 gate passed, row not recorded / 9 bad SLOT_CEIL or PEAK_MB (selftest only) / 10 429 breaker tripped / 11 not head-of-line.
 # Never runs the real claude itself (only the generated launch.sh does, under the unit), never merges, never prints a token (output is redacted).
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
@@ -40,12 +55,25 @@ shopt -u patsub_replacement 2>/dev/null
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 AGENT="${AIDE_VERIFIER_AGENT:-aide}"
 ROOT="${AIDE_VERIFIER_DIR:-$HOME/.local/state/aide-verifier}"
+# the fleet-wide gate: fixed lock path + fixed numbers, independent of ROOT and of every seat env (vcap); the selftest alone may override
+LOCK="$HOME/.local/state/verifier-cap/launch.lock"
+SLOT_CEIL=4
+PEAK_MB=1024
+TOKEN_FILE="$HOME/.config/environment.d/90-claude-oauth.conf"
+LOCK_WAIT_S=600
+CMD_TIMEOUT_S=120
+if [ "${AIDE_VERIFIER_SELFTEST:-}" = 1 ]; then
+  LOCK="${AIDE_VERIFIER_LOCK:-$LOCK}"; LOCK_WAIT_S="${AIDE_VERIFIER_LOCK_WAIT_S:-$LOCK_WAIT_S}"; CMD_TIMEOUT_S="${AIDE_VERIFIER_TIMEOUT_S:-$CMD_TIMEOUT_S}"
+  TOKEN_FILE="${AIDE_VERIFIER_TOKEN_FILE:-$TOKEN_FILE}"
+  if [ -n "${AIDE_VERIFIER_SLOT_CEIL+x}" ]; then SLOT_CEIL="$AIDE_VERIFIER_SLOT_CEIL"; fi
+  if [ -n "${AIDE_VERIFIER_PEAK_MB+x}" ]; then PEAK_MB="$AIDE_VERIFIER_PEAK_MB"; fi
+fi
 ROOM_CMD="${AIDE_VERIFIER_ROOM_CMD:-carbon-room.sh}"
 SD_RUN="${AIDE_VERIFIER_SYSTEMD_RUN:-systemd-run}"
 SYSTEMCTL="${AIDE_VERIFIER_SYSTEMCTL:-systemctl}"
 WMD="${AIDE_VERIFIER_WM_DECIDE:-wm-decide}"
 BELL="${AIDE_VERIFIER_BELL:-seat-event.sh}"
-POLL="${AIDE_VERIFIER_POLL_S:-20}"
+POLL="${AIDE_VERIFIER_POLL_S:-10}"
 UNIT_PATH="${AIDE_VERIFIER_UNIT_PATH:-$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin}"
 
 die() { local rc="$1"; shift; echo "aide-verifier: $*" >&2; exit "$rc"; }
@@ -60,6 +88,16 @@ active_units() {
   "$SYSTEMCTL" --user list-units '*-verifier-*' --state=active,activating,deactivating,reloading --no-legend --plain 2>/dev/null \
     | awk '{print $1}' | grep -E '^(aide|rb|r7)-verifier-.*\.service$'
 }
+# lock_holder: best effort "pid=N cmd=..." of whoever holds $LOCK (fuser, then /proc), for the exit-6 message
+lock_holder() {
+  local p out="" cmd
+  for p in $(fuser "$LOCK" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    cmd="$(cat "/proc/$p/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-120)"
+    out="$out pid=$p cmd=${cmd:-?}"
+  done
+  printf '%s' "${out:- holder unknown}"
+}
 # own_unit: the caller's own systemd unit = the FINAL path component of the 0:: line (else the first line) of the cgroup file, only if it ends .service
 # (a .scope or a sub-cgroup dir = no exclusion; never scans backward, or user@1000.service would be picked). Unreadable file = no exclusion.
 own_unit() {
@@ -70,6 +108,55 @@ own_unit() {
   case "$seg" in *.service) printf '%s\n' "$seg" ;; esac
 }
 meta_get() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n1; }
+
+# ---- the fleet gate helpers (vcap v0.3); all run INSIDE the lock except where noted ----
+RESULT_429_RE='"api_error_status" *: *429([^0-9]|$)'
+# ticket_live <path>: the ticket's pid is alive AND is an aide-verifier process (a recycled pid is not)
+ticket_live() {
+  local pid="${1##*-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'aide-verifier'
+}
+# head_of_line: removes dead tickets, then succeeds iff my ticket sorts first among the live ones
+head_of_line() {
+  local t first=""
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if ticket_live "$t"; then [ -n "$first" ] || first="$t"; else rm -f -- "${QDIR:?}/$t"; fi
+  done < <(ls -1 "$QDIR" 2>/dev/null | LC_ALL=C sort)
+  [ "$first" = "$(basename "$TICKET")" ]
+}
+# breaker_scan: sets B_TRIP (1 = tripped), B_KEY (mtime epoch of the newest 429), B_AGE (seconds since it)
+breaker_scan() {
+  local f newest=""
+  B_TRIP=0; B_KEY=""; B_AGE=0
+  for f in "$ROOT"/*/result.json; do
+    [ -e "$f" ] || continue
+    grep -qE "$RESULT_429_RE" "$f" 2>/dev/null || continue
+    if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then newest="$f"; fi
+  done
+  [ -n "$newest" ] || return 0
+  [ "$newest" -nt "$TOKEN_FILE" ] || return 0   # the token was re-minted after the 429
+  for f in "$ROOT"/*/result.json; do
+    [ -e "$f" ] && [ "$f" -nt "$newest" ] || continue
+    grep -qE "$RESULT_429_RE" "$f" 2>/dev/null || return 0   # a newer non-429 result: the account answers again
+  done
+  B_KEY="$(stat -c %Y "$newest")"; B_AGE=$(( $(date +%s) - B_KEY )); B_TRIP=1
+}
+# bell_once <target> <key> <text>: ring <target> once per trip id (breaker.state "bell:<target> <key>")
+bell_once() {
+  grep -qxF "bell:$1 $2" "$BSTATE" 2>/dev/null && return 0
+  EVENT_SOURCE=aide-verifier "$BELL" "$1" "$3" >/dev/null 2>&1
+  echo "bell:$1 $2" >>"$BSTATE"
+}
+# sum_current_mb <unit...>: sum of MemoryCurrent in MB ("[not set]", empty or the 2^64-1 sentinel = 0)
+sum_current_mb() {
+  local u v sum=0
+  for u in "$@"; do
+    v="$("$SYSTEMCTL" --user show -p MemoryCurrent --value "$u" 2>/dev/null | head -n1)"
+    if [[ "$v" =~ ^[0-9]+$ ]] && [ "${#v}" -le 15 ]; then sum=$((sum + v / 1048576)); fi
+  done
+  echo "$sum"
+}
 
 default_template() {
   cat <<'TPL'
@@ -226,19 +313,19 @@ gate_lint() {
 }
 
 cmd_launch() {
-  [ $# -ge 1 ] || die 2 "usage: launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<line>' --suite '<cmd>' [--clone-url URL] [--notes T] [--expect T] [--queue]"
+  [ $# -ge 1 ] || die 2 "usage: launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<line>' --suite '<cmd>' [--clone-url URL] [--notes T] [--expect T] [--queue] [--prio 0|1]"
   NAME="$1"; shift
-  REPO=""; PR=""; HEAD=""; GATED=""; TOKEN=""; SUITE=""; CLONE_URL=""; NOTES=""; EXPECT=""; QUEUE=0
+  REPO=""; PR=""; HEAD=""; GATED=""; TOKEN=""; SUITE=""; CLONE_URL=""; NOTES=""; EXPECT=""; QUEUE=0; PRIO=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --queue) QUEUE=1; shift; continue ;;
-      --repo|--pr|--head|--gated|--token|--suite|--clone-url|--notes|--expect)
+      --repo|--pr|--head|--gated|--token|--suite|--clone-url|--notes|--expect|--prio)
         [ $# -ge 2 ] || die 2 "$1 needs a value" ;;
       *) die 2 "unknown argument: $1" ;;
     esac
     case "$1" in
       --repo) REPO="$2" ;; --pr) PR="$2" ;; --head) HEAD="$2" ;; --gated) GATED="$2" ;; --token) TOKEN="$2" ;;
-      --suite) SUITE="$2" ;; --clone-url) CLONE_URL="$2" ;; --notes) NOTES="$2" ;; --expect) EXPECT="$2" ;;
+      --suite) SUITE="$2" ;; --clone-url) CLONE_URL="$2" ;; --notes) NOTES="$2" ;; --expect) EXPECT="$2" ;; --prio) PRIO="$2" ;;
     esac
     shift 2
   done
@@ -251,6 +338,7 @@ cmd_launch() {
   [ -n "${TOKEN//[[:space:]]/}" ] || die 2 "lint: --token (the G3 token line) is empty"
   case "$TOKEN" in *'"'*|*'`'*|*'$'*|*$'\n'*) die 2 "lint: --token must not contain \" \` \$ or a newline" ;; esac
   [ -n "${SUITE//[[:space:]]/}" ] || die 2 "lint: --suite is empty"
+  [ -z "$PRIO" ] || [[ "$PRIO" =~ ^[01]$ ]] || die 2 "lint: --prio must be 0 or 1"
   [ -n "$CLONE_URL" ] || CLONE_URL="https://github.com/$REPO.git"
   [ -d "$ROOT/$NAME" ] && [ -e "$ROOT/$NAME/state" ] && die 2 "lint: name '$NAME' already used ($ROOT/$NAME/state exists)"
   DIR="$ROOT/$NAME"
@@ -273,28 +361,67 @@ cmd_launch() {
   fi
   # ---- merge-gate lints (AVL): before the queue, the room check, the verifier dir and systemd-run ----
   gate_lint || refuse 2 "$GATE_ERR"
-  # ---- one at a time ----
+  # ---- the fleet gate (one fixed lock; ticket -> breaker -> ceiling -> room) ----
+  [[ "$SLOT_CEIL" =~ ^[0-9]+$ ]] && [ "$SLOT_CEIL" -ge 1 ] || die 9 "SLOT_CEIL must be an integer >= 1 (got '$SLOT_CEIL')"
+  [[ "$PEAK_MB" =~ ^[0-9]+$ ]] && [ "$PEAK_MB" -ge 1 ] || die 9 "PEAK_MB must be an integer >= 1 (got '$PEAK_MB')"
+  local capdir qprio; capdir="$(dirname "$LOCK")"
+  QDIR="$capdir/queue"; BSTATE="$capdir/breaker.state"
+  mkdir -p "$QDIR" || die 2 "cannot create $QDIR"
   mkdir -p "$ROOT" || die 2 "cannot create $ROOT"
-  exec 9>"$ROOT/.launch.lock"
-  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act
+  qprio="$PRIO"
+  if [ -z "$qprio" ]; then case "$REPO" in j0yen/synthorg|j0yen/mcphost|j0yen/wm-build) qprio=0 ;; *) qprio=1 ;; esac; fi
+  TICKET="$QDIR/$qprio-$(date +%s%N)-$$"
+  : >"$TICKET" || die 2 "cannot create the ticket $TICKET"
+  trap 'rm -f -- "${TICKET:?}"; exec 9>&-; gate_cleanup' EXIT   # the ticket + fd 9 (vcap) AND the gate-lint temp dir (AVL-TRAP) in one EXIT trap
+  trap 'exit 143' TERM HUP; trap 'exit 130' INT
+  exec 9>"$LOCK"
+  local waited=0 maxw="${AIDE_VERIFIER_QUEUE_MAX_S:-3600}" act nact u sum need room rrc wrc wmsg seat probe_key
   while :; do
-    flock -x 9
+    flock -x -w "$LOCK_WAIT_S" 9 || die 6 "could not take $LOCK in ${LOCK_WAIT_S}s; held by:$(lock_holder)"
+    wrc=""; wmsg=""; probe_key=""
     raw="$(active_units)"
     act="$(printf '%s\n' "$raw" | grep -vxF -- "$own" | tr '\n' ' ')"   # AVL-DROPOWN
     if [ -n "$own" ] && [ "$own_noted" != 1 ] && printf '%s\n' "$raw" | grep -qxF -- "$own"; then
-      own_noted=1; echo "aide-verifier: own unit $own excluded from the one-at-a-time wait (cgroup ${AIDE_VERIFIER_CGROUP_FILE:-/proc/self/cgroup})" >&2
+      own_noted=1; echo "aide-verifier: own unit $own excluded from the fleet cap count (cgroup ${AIDE_VERIFIER_CGROUP_FILE:-/proc/self/cgroup})" >&2
     fi
-    [ -z "${act// /}" ] && break
-    if [ "$QUEUE" != 1 ]; then die 2 "another verifier unit is active (${act% }); one at a time (use --queue to wait)"; fi
+    nact="$(printf '%s' "$act" | wc -w)"
+    # 1 priority: only the head of the live ticket line may go
+    if ! head_of_line; then wrc=11; wmsg="not head-of-line: a higher-priority or earlier verifier launch is waiting ($QDIR)"; fi
+    # 2 the 429 breaker
+    if [ -z "$wrc" ]; then
+      breaker_scan
+      if [ "$B_TRIP" = 1 ]; then
+        seat="${WM_SEAT:-rb}"
+        local btxt="aide-verifier: 429 breaker TRIPPED (trip id $B_KEY = mtime of the newest result.json under $ROOT with api_error_status 429, newer than $TOKEN_FILE, no later non-429 result): verifier launches refuse (exit 10) until the token file is re-touched, a non-429 result lands, or the half-open probe (429 older than 30 min, 0 active) passes"
+        bell_once r7 "$B_KEY" "$btxt"
+        [ "$seat" = r7 ] || bell_once "$seat" "$B_KEY" "$btxt"
+        if [ "$B_AGE" -gt 1800 ] && [ "$nact" -eq 0 ] && ! grep -qxF "probe $B_KEY" "$BSTATE" 2>/dev/null; then
+          probe_key="$B_KEY"   # half-open: exactly one probe per trip id, recorded just before systemd-run
+        else
+          wrc=10; wmsg="429 breaker tripped (trip id $B_KEY, age ${B_AGE}s, $nact active)"
+        fi
+      fi
+    fi
+    # 3 the hard ceiling
+    if [ -z "$wrc" ] && [ "$nact" -ge "$SLOT_CEIL" ]; then wrc=2; wmsg="verifier cap reached: $nact of $SLOT_CEIL active (${act% })"; fi
+    # 4 room: running units' remaining ramp to PEAK_MB is priced, their current RSS is already out of MemAvailable
+    if [ -z "$wrc" ]; then
+      # shellcheck disable=SC2086
+      sum="$(sum_current_mb $act)"
+      need=$((PEAK_MB * (nact + 1) - sum)); [ "$need" -ge "$PEAK_MB" ] || need="$PEAK_MB"
+      # shellcheck disable=SC2086
+      room="$(timeout "$CMD_TIMEOUT_S" $ROOM_CMD "$need" --json 2>/dev/null)"; rrc=$?
+      if [ "$rrc" != 0 ] || [ "$(printf '%s' "$room" | jq -r '.ok' 2>/dev/null)" = false ]; then
+        wrc=3; wmsg="no room for ${need} MB ($nact active, Σ MemoryCurrent ${sum} MB, PEAK_MB $PEAK_MB): $(printf '%s' "$room" | tr -d '\n' | cut -c1-200)"
+      fi
+    fi
+    [ -n "$wrc" ] || break
+    if [ "$QUEUE" != 1 ]; then die "$wrc" "$wmsg; use --queue to wait"; fi
     flock -u 9
-    [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s (active: ${act% })"
+    [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s ($wmsg)"
     sleep "$POLL"; waited=$((waited + POLL))
   done
-  # ---- room ----
-  local room
-  # shellcheck disable=SC2086
-  room="$($ROOM_CMD 2048 --json 2>/dev/null)"
-  [ "$(printf '%s' "$room" | jq -r '.ok' 2>/dev/null)" = true ] || die 3 "no room for a 2048 MB verifier: $(printf '%s' "$room" | tr -d '\n' | cut -c1-200)"
+  [ -z "$probe_key" ] || echo "probe $probe_key" >>"$BSTATE"
   # ---- write ----
   local unit="$AGENT-verifier-$NAME" claude="${AIDE_VERIFIER_CLAUDE:-$HOME/.npm-global/bin/claude}" oauth="${AIDE_VERIFIER_OAUTH_CONF:-$HOME/.config/environment.d/90-claude-oauth.conf}"
   mkdir -p "$DIR" || die 2 "cannot create $DIR"
@@ -313,10 +440,11 @@ cmd_launch() {
   chmod 755 "$DIR/launch.sh"
   printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" >"$DIR/meta"
   # ---- start ----
-  if ! "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
+  exec 9>&-   # the lock covers count + room + systemd-run only; the 9>&- above already kept it out of the unit
   echo "$(iso) launched unit=$unit repo=$REPO pr=$PR head=$HEAD gated=$GATED" >>"$DIR/state"
   echo "$unit"
 }
@@ -415,6 +543,12 @@ selftest() {
 #!/bin/bash
 printf '%s\n' "$*" >>"$FAKE_DIR/sdrun.log"
 [ -z "${FAKE_SDRUN_FAIL:-}" ] || { echo "Failed to connect to bus" >&2; exit 1; }
+[ -z "${FAKE_SDRUN_HANG:-}" ] || exec sleep 30
+[ -z "${FAKE_SDRUN_DELAY:-}" ] || sleep "$FAKE_SDRUN_DELAY"
+[ -z "${FAKE_SDRUN_BG:-}" ] || { sleep 20 >/dev/null 2>&1 </dev/null & echo $! >>"$FAKE_DIR/bgpids"; }
+if [ -n "${FAKE_SDRUN_APPEND:-}" ]; then
+  args=("$@"); for i in "${!args[@]}"; do [ "${args[$i]}" = --unit ] && { echo "${args[$((i + 1))]}.service" >>"$FAKE_DIR/active"; break; }; done
+fi
 d="$(dirname "${@: -1}")"
 printf '%s' "${FAKE_RESULT_JSON:-{\"is_error\":false,\"result\":\"ok\"\}}" >"$d/result.json"
 F
@@ -423,6 +557,7 @@ F
 case "$2" in
   list-units) cat "$FAKE_DIR/active" 2>/dev/null ;;
   is-active) if grep -qx "$3.service" "$FAKE_DIR/active" 2>/dev/null; then echo active; else echo inactive; exit 3; fi ;;
+  show) f="$FAKE_DIR/mem/$6"; if [ -r "$f" ]; then cat "$f"; else echo "[not set]"; fi ;;   # --user show -p MemoryCurrent --value <unit>
 esac
 exit 0
 F
@@ -436,7 +571,7 @@ case "$1" in
 esac
 F
   printf '#!/bin/bash\nprintf "%%s|%%s\\n" "${EVENT_SOURCE:-}" "$*" >>"$FAKE_DIR/bell.log"\n' >"$T/bin/fake-bell"
-  printf '#!/bin/bash\nif [ "${FAKE_ROOM:-ok}" = ok ]; then echo "{\\"ok\\":true,\\"room_mb\\":9000}"; else echo "{\\"ok\\":false,\\"room_mb\\":-5}"; exit 1; fi\n' >"$T/bin/fake-room"
+  printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\n[ -z "${FAKE_ROOM_HANG:-}" ] || exec sleep 30\nif [ "${FAKE_ROOM:-ok}" = ok ]; then echo "{\\"ok\\":true,\\"room_mb\\":9000}"; else echo "{\\"ok\\":false,\\"room_mb\\":-5}"; exit 1; fi\n' >"$T/bin/fake-room"
   # gh: a fake on PATH (G1 reads the live head); FAKE_GH_HEAD overrides, FAKE_GH_FAIL fails
   printf '#!/bin/bash\n[ -z "${FAKE_GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }\nprintf "%%s\\n" "${FAKE_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"\n' >"$T/bin/gh"
   # the fake merge-gate tree: a package stub exposing the names the lint imports (tests/aide-verifier-gate-nodrift.test.sh checks the REAL tree has them)
@@ -528,7 +663,8 @@ F
   export HOME="$T/home" FAKE_DIR="$T" AIDE_VERIFIER_DIR="$T/av" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$T/bin/fake-sdrun" \
     AIDE_VERIFIER_SYSTEMCTL="$T/bin/fake-systemctl" AIDE_VERIFIER_WM_DECIDE="$T/bin/fake-wmd" AIDE_VERIFIER_BELL="$T/bin/fake-bell" AIDE_VERIFIER_POLL_S=1 \
     AIDE_VERIFIER_CGROUP_FILE="$T/cgroup-absent"   # the selftest never reads the real /proc/self/cgroup (it may itself run inside a *-verifier-* unit)
-  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT
+  unset AIDE_VERIFIER_TEMPLATE AIDE_VERIFIER_AGENT AIDE_VERIFIER_SLOT_CEIL AIDE_VERIFIER_PEAK_MB AIDE_VERIFIER_TOKEN_FILE AIDE_VERIFIER_LOCK WM_SEAT
+  export AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_SLOT_CEIL=2 AIDE_VERIFIER_QUEUE_MAX_S=30 AIDE_VERIFIER_LOCK_WAIT_S=20   # the selftest bounds every --queue / flock wait (a mutation that lets a case through must FAIL it, never hang); cases that need a different bound set their own; the v0.2 cases below assume a 2-slot ceiling; the v0.3 cases override it per call
   local A=(--repo j0yen/dotfiles --pr 7 --gated "$G" --token 'tests/*.test.sh EXIT=0' --suite 'bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"')
   L() { local nm="$1"; shift; "$SELF" launch "$nm" "$@" 2>&1; }
 
@@ -627,13 +763,13 @@ F
   rm -rf -- "${T:?}/home/wintermute" "${T:?}/live2" "${T:?}/pathbin" "${T:?}/wm_decide" "${T:?}/gen"
   none gl-v8; chk "gate lints never create the verifier dir" $?
 
-  echo "aide-verifier-other.service" >"$T/active"
+  printf 'aide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(L act1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]] && [ ! -e "$T/sdrun.log" ]; chk "another unit active, no --queue -> exit 2, nothing started" $?
-  ( sleep 2; : >"$T/active" ) & local t0=$SECONDS
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [ ! -e "$T/sdrun.log" ]; chk "(b) 2 active, no --queue -> exit 2, nothing started" $?
+  ( sleep 2; echo "aide-verifier-other.service" >"$T/active" ) & local t0=$SECONDS
   out="$(L act2 "${A[@]}" --head "$H" --queue)"; rc=$?; wait
-  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$out" = aide-verifier-act2 ]; chk "--queue waits until the other unit is gone, then launches ($out, $((SECONDS - t0)) s)" $?
-  echo "aide-verifier-other.service" >"$T/active"
+  [ "$rc" = 0 ] && [ $((SECONDS - t0)) -ge 1 ] && [ "$out" = aide-verifier-act2 ]; chk "(b) 2 active, --queue waits until one is gone, then launches ($out, $((SECONDS - t0)) s)" $?
+  printf 'aide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(AIDE_VERIFIER_QUEUE_MAX_S=2 L act3 "${A[@]}" --head "$H" --queue)"; rc=$?
   [ "$rc" = 6 ]; chk "--queue gives up after AIDE_VERIFIER_QUEUE_MAX_S -> exit 6" $?
   out="$(TMPDIR="$td" AIDE_VERIFIER_QUEUE_MAX_S=2 L c2rc6 "${A[@]}" --head "$H" --queue)"; rc=$?
@@ -645,22 +781,181 @@ F
   # C3 (ctl 1:14 + X1-X3): the caller's own unit is not "another" verifier unit
   printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/aide-verifier-s1own.service\n' >"$T/cg-own"
   echo "aide-verifier-s1own.service" >"$T/active"
-  out="$(AIDE_VERIFIER_CGROUP_FILE="$T/cg-own" AIDE_VERIFIER_QUEUE_MAX_S=2 L s1 "${A[@]}" --head "$H" --queue)"; rc=$?
-  [ "$rc" = 0 ] && [[ "$out" == *"own unit aide-verifier-s1own.service excluded"* ]] && grep -q 'own-unit-excluded unit=aide-verifier-s1own.service' "$T/av/s1/state"; chk "gate lint (s1): the own unit is the only active unit, --queue -> launches (rc 0, not 6), the exclusion names the unit on stderr and in the launch state" $?
-  echo "aide-verifier-s1own.service" >"$T/active"; echo "aide-verifier-other.service" >>"$T/active"; rm -f "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_SLOT_CEIL=1 AIDE_VERIFIER_CGROUP_FILE="$T/cg-own" AIDE_VERIFIER_QUEUE_MAX_S=2 L s1 "${A[@]}" --head "$H" --queue)"; rc=$?
+  [ "$rc" = 0 ] && [[ "$out" == *"own unit aide-verifier-s1own.service excluded"* ]] && grep -q 'own-unit-excluded unit=aide-verifier-s1own.service' "$T/av/s1/state"; chk "gate lint (s1): the own unit is the only active unit (ceiling 1), --queue -> launches (rc 0, not 6), the exclusion names the unit on stderr and in the launch state" $?
+  printf 'aide-verifier-s1own.service\naide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"; rm -f "$T/sdrun.log"   # the ceiling is 2 here: own + 2 foreign units = 2 counted
   out="$(AIDE_VERIFIER_CGROUP_FILE="$T/cg-own" L s2 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]] && [[ "$out" == *"aide-verifier-other.service"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (s2): own unit + another verifier unit active, no --queue -> still exit 2 one at a time" $?
-  echo "aide-verifier-other.service" >"$T/active"
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [[ "$out" == *"aide-verifier-other.service"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (s2): own unit + two foreign verifier units active, no --queue -> exit 2, the cap counts only the 2 foreign units (own excluded)" $?
+  printf 'aide-verifier-other.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(L s3 "${A[@]}" --head "$H")"; rc=$?   # AIDE_VERIFIER_CGROUP_FILE points at an absent file here
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (s3): cgroup file absent + only a foreign unit active -> exit 2 as before" $?
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (s3): cgroup file absent + only foreign units active (2 of the ceiling 2) -> exit 2 as before" $?
   printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/aide-verifier-s5own.service/sub\n' >"$T/cg-sub"
-  echo "aide-verifier-s5own.service" >"$T/active"
+  printf 'aide-verifier-s5own.service\nrb-verifier-other.service\n' >"$T/active"
   out="$(AIDE_VERIFIER_CGROUP_FILE="$T/cg-sub" L s5 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]] && [[ "$out" != *"excluded"* ]]; chk "gate lint (s5/X2): a cgroup line whose final component is a sub-cgroup dir (not .service) excludes nothing (no backward scan)" $?
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [[ "$out" != *"excluded"* ]]; chk "gate lint (s5/X2): a cgroup line whose final component is a sub-cgroup dir (not .service) excludes nothing (no backward scan)" $?
   printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/aide-verifier-s4.service\n' >"$T/cg-tgt"
   : >"$T/active"; t0=$SECONDS; rm -f "$T/sdrun.log"
   out="$(AIDE_VERIFIER_CGROUP_FILE="$T/cg-tgt" L s4 "${A[@]}" --head "$H" --queue)"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"lint: launch-inside-target-unit aide-verifier-s4.service"* ]] && [ $((SECONDS - t0)) -lt 2 ] && [ ! -e "$T/sdrun.log" ] && none s4; chk "gate lint (s4/X1): own unit == the unit this launch would start, --queue -> exit 2 launch-inside-target-unit, no wait, names the unit" $?
+  : >"$T/active"
+
+  # ---- vcap: the fleet-wide cap at ONE fixed lock (SLOT_CEIL overridden to 2 for the v0.2 cases) ----
+  rm -f "$T/sdrun.log" "$T/room.log"
+  echo "rb-verifier-other.service" >"$T/active"
+  out="$(L cap1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-cap1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(a) 1 active of 2 -> launches ($out)" $?
+  ask="$(cat "$T/room.log")"; [ "$ask" = 2048 ]; chk "(a) room asked for PEAK_MB 1024 x (1 active + 1) - Σ MemoryCurrent 0 ([not set]) = $ask MB" $?
+  : >"$T/active"; rm -f "$T/room.log"; L cap0 "${A[@]}" --head "$H" >/dev/null
+  ask="$(cat "$T/room.log")"; [ "$ask" = 1024 ]; chk "(a) 0 active -> room asked for PEAK_MB 1024 ($ask)" $?
+  # (c) RACE: 1 active, two --queue launches started together -> exactly one systemd-run until a unit is removed, then the second
+  rm -f "$T/sdrun.log"; echo "aide-verifier-pre1.service" >"$T/active"
+  FAKE_SDRUN_APPEND=1 FAKE_SDRUN_DELAY=1 L race1 "${A[@]}" --head "$H" --queue >"$T/race1.out" 2>&1 & local p1=$!
+  FAKE_SDRUN_APPEND=1 FAKE_SDRUN_DELAY=1 L race2 "${A[@]}" --head "$H" --queue >"$T/race2.out" 2>&1 & local p2=$!
+  sleep 4
+  calls="$(wc -l <"$T/sdrun.log")"; [ "$calls" = 1 ] && [ "$(grep -c . "$T/active")" = 2 ]; chk "(c) RACE: two --queue launches with 1 active -> exactly one systemd-run call while 2 are active ($calls call)" $?
+  grep -v 'pre1' "$T/active" >"$T/active.tmp"; mv "$T/active.tmp" "$T/active"   # the pre-existing unit leaves; the first launcher's own unit stays
+  wait "$p1" "$p2"
+  calls="$(wc -l <"$T/sdrun.log")"; [ "$calls" = 2 ]; chk "(c) RACE: once a unit is gone the second launcher goes ($calls calls)" $?
+  : >"$T/active"
+  # (d) SLOT_CEIL / PEAK_MB 0 or "x" under the selftest -> exit 9 (distinct from busy = 2), nothing started
+  rm -f "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_SLOT_CEIL=0 L capd0 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(d) AIDE_VERIFIER_SLOT_CEIL=0 under the selftest -> exit 9" $?
+  out="$(AIDE_VERIFIER_SLOT_CEIL=x L capdx "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(d) AIDE_VERIFIER_SLOT_CEIL=x under the selftest -> exit 9" $?
+  out="$(AIDE_VERIFIER_PEAK_MB=0 L capp0 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(1) AIDE_VERIFIER_PEAK_MB=0 under the selftest -> exit 9" $?
+  out="$(AIDE_VERIFIER_PEAK_MB=x L cappx "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 9 ] && [ ! -e "$T/sdrun.log" ]; chk "(1) AIDE_VERIFIER_PEAK_MB=x under the selftest -> exit 9" $?
+  printf 'rb-verifier-a.service\nrb-verifier-b.service\n' >"$T/active"
+  out="$(AIDE_VERIFIER_SLOT_CEIL=3 L capd3 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(d) selftest override SLOT_CEIL=3 with 2 active -> launches" $?
+  printf 'rb-verifier-a.service\nrb-verifier-b.service\nr7-verifier-c.service\naide-verifier-d.service\n' >"$T/active"
+  out="$(AIDE_VERIFIER_SELFTEST=0 AIDE_VERIFIER_SLOT_CEIL=9 AIDE_VERIFIER_PEAK_MB=1 L capd9 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"4 of 4"* ]]; chk "(d) without AIDE_VERIFIER_SELFTEST=1 a seat env AIDE_VERIFIER_SLOT_CEIL=9 is ignored: ceiling stays 4 -> exit 2 ($out)" $?
+  : >"$T/active"
+  # (e) the lock is closed right after the launch: a unit-lingering child of systemd-run must not hold it
+  LK="$HOME/.local/state/verifier-cap/launch.lock"
+  FAKE_SDRUN_BG=1 L cape "${A[@]}" --head "$H" >/dev/null
+  [ -s "$T/bgpids" ] && kill -0 "$(head -n1 "$T/bgpids")" 2>/dev/null && timeout 2 flock -n "$LK" true; chk "(e) after a launch whose systemd-run left a child running, flock -n on the lock path succeeds within 2 s" $?
+  while read -r bp; do kill "$bp" 2>/dev/null; done <"$T/bgpids"
+  # (f)+(h) different AIDE_VERIFIER_DIR values contend on ONE fixed lock; a held lock -> exit 6 naming the holder
+  [ -e "$LK" ] && [ ! -e "$T/av/.launch.lock" ]; chk "(f) the lock lives at \$HOME/.local/state/verifier-cap/launch.lock, not under AIDE_VERIFIER_DIR" $?
+  flock -x "$LK" sleep 8 & local hp=$!
+  sleep 0.5
+  rm -f "$T/sdrun.log"
+  out="$(AIDE_VERIFIER_DIR="$T/avA" AIDE_VERIFIER_LOCK_WAIT_S=1 L lka "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 6 ] && [ ! -e "$T/sdrun.log" ]; chk "(f) AIDE_VERIFIER_DIR=avA blocked by the held lock -> exit 6" $?
+  out2="$(AIDE_VERIFIER_DIR="$T/avB" AIDE_VERIFIER_LOCK_WAIT_S=1 L lkb "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 6 ] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/avA/.launch.lock" ] && [ ! -e "$T/avB/.launch.lock" ]; chk "(f) AIDE_VERIFIER_DIR=avB blocked by the SAME lock -> exit 6" $?
+  [[ "$out" == *"could not take $LK"* ]] && [[ "$out" == *"pid="* ]]; chk "(h) lock timeout names the lock path and a holder pid (best effort): ${out:0:150}" $?
+  kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+  # (i) timeouts: a hung room command -> exit 3, a hung systemd-run -> exit 1 (both under AIDE_VERIFIER_TIMEOUT_S, default 120)
+  out="$(FAKE_ROOM_HANG=1 AIDE_VERIFIER_TIMEOUT_S=1 L tmo1 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 3 ]; chk "(i) a hung carbon-room.sh is cut by timeout -> exit 3" $?
+  rm -f "$T/sdrun.log"
+  out="$(FAKE_SDRUN_HANG=1 AIDE_VERIFIER_TIMEOUT_S=1 L tmo2 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 1 ] && grep -q launch-failed "$T/av/tmo2/state"; chk "(i) a hung systemd-run is cut by timeout -> exit 1, state records it" $?
+  grep -qE 'timeout "\$CMD_TIMEOUT_S" "\$SD_RUN"' "$SELF" && grep -q 'timeout "\$CMD_TIMEOUT_S" \$ROOM_CMD' "$SELF" && grep -q '^SLOT_CEIL=4$' "$SELF" && grep -q '^PEAK_MB=1024$' "$SELF"; chk "the script hard-codes SLOT_CEIL=4 and PEAK_MB=1024 and wraps room + systemd-run in timeout" $?
+
+  # ---- vcap v0.3: room-sized admission (2), 429 breaker (3), priority (4), ceiling 4 ----
+  local RR="$(dirname "$SELF")/carbon-room.sh" TK="$HOME/.config/environment.d/90-claude-oauth.conf" QD="$HOME/.local/state/verifier-cap/queue" BS="$HOME/.local/state/verifier-cap/breaker.state"
+  printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\nexec %q "$@"\n' "$RR" >"$T/bin/fake-room-real"; chmod +x "$T/bin/fake-room-real"
+  mi() { printf 'MemTotal:       15467572 kB\nMemFree:         1000000 kB\nMemAvailable:   %d kB\nSwapFree:       2097152 kB\n' $(($1 * 1024)) >"$T/meminfo"; }
+  # R3 <ceiling> cmd...: run cmd with the REAL carbon-room.sh (fake meminfo, via a wrapper that logs the asked need) and SLOT_CEIL=<ceiling>
+  R3() { local ce="$1"; shift; ( export AIDE_VERIFIER_SLOT_CEIL="$ce" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room-real" CARBON_ROOM_HOST=carbon CARBON_ROOM_MEMINFO="$T/meminfo" CARBON_ROOM_STATE="$T/rs.json" CARBON_ROOM_LEDGER="$T/rl.jsonl"; "$@" ); }
+  mem3() { mkdir -p "$T/mem"; local u; for u in a b c; do echo $(($1 * 1048576)) >"$T/mem/$2-verifier-$u.service"; done; }
+  r429() { mkdir -p "$1/$2"; printf '{"is_error":true,"api_error_status":429,"result":"rate limited"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
+  rok() { mkdir -p "$1/$2"; printf '{"is_error":false,"api_error_status":null,"result":"ok"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
+  # (a) MemAvailable 7540, 0 active -> launch, need 1024
+  : >"$T/active"; rm -f "$T/sdrun.log" "$T/room.log"; mi 7540
+  out="$(R3 2 L v3a "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-v3a ] && [ "$(cat "$T/room.log")" = 1024 ]; chk "(7a) MemAvailable 7540, 0 active -> launches, carbon-room asked for need 1024 ($(cat "$T/room.log" 2>/dev/null))" $?
+  # (b) 3 active at 200 MB each, MemAvailable 7540 -> need 3496, 7540-3496-3072 >= 0 -> launch
+  printf 'rb-verifier-a.service\nr7-verifier-b.service\naide-verifier-c.service\n' >"$T/active"; mem3 200 rb; echo $((200 * 1048576)) >"$T/mem/r7-verifier-b.service"; echo $((200 * 1048576)) >"$T/mem/aide-verifier-c.service"
+  : >"$T/room.log"; rm -f "$T/sdrun.log"; mi 7540
+  out="$(R3 4 L v3b "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ "$out" = aide-verifier-v3b ] && [ "$(cat "$T/room.log")" = 3496 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(7b) 3 active at 200 MB, MemAvailable 7540 -> need 1024 x 4 - 600 = $(cat "$T/room.log"), room 7540-3496-3072 >= 0 -> launches" $?
+  # (c) same units, MemAvailable 6500 -> exit 3 without --queue, systemd-run untouched; with --queue it waits until memory returns
+  : >"$T/room.log"; rm -f "$T/sdrun.log"; mi 6500
+  out="$(R3 4 L v3c "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 3 ] && [ ! -e "$T/sdrun.log" ] && [ "$(cat "$T/room.log")" = 3496 ] && [[ "$out" == *"Σ MemoryCurrent 600 MB"* ]]; chk "(7c) same units, MemAvailable 6500 -> exit 3, nothing started ($out)" $?
+  ( sleep 2; mi 7540 ) & local t1=$SECONDS
+  out="$(R3 4 L v3c2 "${A[@]}" --head "$H" --queue)"; rc=$?; wait
+  [ "$rc" = 0 ] && [ $((SECONDS - t1)) -ge 1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(7c) --queue waits for room (lock released), launches once MemAvailable is back ($((SECONDS - t1)) s)" $?
+  # the units' MemoryCurrent "[not set]" counts 0: 2 active, no mem files -> need 1024 x 3
+  printf 'rb-verifier-x.service\nrb-verifier-y.service\n' >"$T/active"; rm -rf "$T/mem"; : >"$T/room.log"; mi 7540
+  R3 4 L v3n "${A[@]}" --head "$H" >/dev/null; [ "$(cat "$T/room.log")" = 3072 ]; chk "(2) MemoryCurrent '[not set]' = 0: 2 active -> need 3072 ($(cat "$T/room.log"))" $?
+  # a unit above PEAK_MB: Σ larger than the running ramp -> need floors at PEAK_MB
+  mkdir -p "$T/mem"; echo $((5000 * 1048576)) >"$T/mem/rb-verifier-x.service"; : >"$T/room.log"
+  R3 4 L v3f "${A[@]}" --head "$H" >/dev/null; [ "$(cat "$T/room.log")" = 1024 ]; chk "(2) need = max(PEAK_MB, ...): one unit at 5000 MB -> floor 1024 ($(cat "$T/room.log"))" $?
+  rm -rf "$T/mem"
+  # (d) 4 active -> wait regardless of memory (ceiling)
+  printf 'rb-verifier-a.service\nrb-verifier-b.service\nr7-verifier-c.service\naide-verifier-d.service\n' >"$T/active"; rm -f "$T/room.log" "$T/sdrun.log"; mi 64000
+  out="$(R3 4 L v3d "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 4 of 4"* ]] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/room.log" ]; chk "(7d) 4 active, MemAvailable 64000 -> exit 2, ceiling reached, room never asked ($out)" $?
+  out="$(R3 4 env AIDE_VERIFIER_QUEUE_MAX_S=2 "$SELF" launch v3d2 "${A[@]}" --head "$H" --queue)"; rc=$?; [ "$rc" = 6 ] && [ ! -e "$T/sdrun.log" ]; chk "(7d) 4 active + --queue waits, gives up after QUEUE_MAX_S -> exit 6" $?
+  : >"$T/active"
+  [ "$(ls -A "$QD" 2>/dev/null | wc -l)" = 0 ]; chk "(4) every exit path removed its ticket: queue dir empty" $?
+
+  # (e) breaker: ROOT is its own dir per case so the launches' own result.json never clear it
+  touch -d '2 hours ago' "$TK"; rm -f "$BS" "$T/bell.log" "$T/sdrun.log"
+  r429 "$T/avb1" old429 '2 minutes ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb1" L v3e1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ ! -e "$T/sdrun.log" ] && [[ "$out" == *"429 breaker tripped"* ]]; chk "(7e) a 429 result newer than the token file -> exit 10, nothing started ($out)" $?
+  [ "$(wc -l <"$T/bell.log")" = 2 ] && grep -q '^aide-verifier|r7 aide-verifier: 429 breaker TRIPPED' "$T/bell.log" && grep -q '^aide-verifier|rb aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) bells: r7 (token owner) and the launching seat rb (WM_SEAT unset), one line each" $?
+  out="$(AIDE_VERIFIER_DIR="$T/avb1" L v3e1b "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 2 ]; chk "(3) the same trip id again: exit 10 and NO second bell" $?
+  rm -f "$T/bell.log"; out="$(WM_SEAT=aide AIDE_VERIFIER_DIR="$T/avb1" L v3e1c "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q '^aide-verifier|aide aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) a different launching seat (WM_SEAT=aide) is belled once for the same trip id (r7 already was)" $?
+  touch "$TK"   # the token is re-minted AFTER the 429
+  out="$(AIDE_VERIFIER_DIR="$T/avb1" L v3e2 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(7e) token file re-touched after the 429 -> launches" $?
+  touch -d '2 hours ago' "$TK"; r429 "$T/avb2" old429 '3 minutes ago'; rok "$T/avb2" newer-ok '1 minute ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb2" L v3e3 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(7e) a non-429 result newer than the 429 -> launches" $?
+  r429 "$T/avb3" a429 '5 minutes ago'; rok "$T/avb3" older-ok '10 minutes ago'; r429 "$T/avb3" b429 '2 minutes ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb3" L v3e4 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 10 ]; chk "(3) ANY 429 counts (scans every result.json): a non-429 older than the newest 429 does not clear it -> exit 10" $?
+  rm -f "$T/bell.log" "$T/sdrun.log"; r429 "$T/avb4" old429 '2 minutes ago'
+  ( sleep 2; touch "$TK" ) & t1=$SECONDS
+  out="$(AIDE_VERIFIER_DIR="$T/avb4" L v3e5 "${A[@]}" --head "$H" --queue)"; rc=$?; wait
+  [ "$rc" = 0 ] && [ $((SECONDS - t1)) -ge 1 ]; chk "(3) tripped + --queue waits with the lock released, launches once the token is re-touched ($((SECONDS - t1)) s)" $?
+  # (f) half-open: 429 31 min old, 0 active -> exactly one probe, the second attempt for the same key stays tripped
+  touch -d '3 hours ago' "$TK"; rm -f "$BS" "$T/bell.log" "$T/sdrun.log"; : >"$T/active"; r429 "$T/avb5" old429 '31 minutes ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb5" L v3f1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ] && grep -qE '^probe [0-9]+$' "$BS"; chk "(7f) 429 31 min old, 0 active -> ONE probe launches and breaker.state records 'probe <429 mtime>' ($(grep '^probe' "$BS" | head -n1))" $?
+  rm -f "$T/avb5/v3f1/result.json"   # the probe died without an answer: the 429 is still the newest word
+  out="$(AIDE_VERIFIER_DIR="$T/avb5" L v3f2 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(7f) a second probe for the same 429 key -> exit 10, no second systemd-run" $?
+  rm -f "$BS" "$T/sdrun.log"; echo "rb-verifier-x.service" >"$T/active"; r429 "$T/avb6" old429 '31 minutes ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb6" L v3f3 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ ! -e "$T/sdrun.log" ] && ! grep -q '^probe' "$BS"; chk "(7f) 429 31 min old but 1 active -> no probe, exit 10" $?
+  rm -f "$BS" "$T/sdrun.log"; : >"$T/active"; r429 "$T/avb7" old429 '10 minutes ago'
+  out="$(AIDE_VERIFIER_DIR="$T/avb7" L v3f4 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ ! -e "$T/sdrun.log" ]; chk "(7f) 429 only 10 min old, 0 active -> not half-open yet, exit 10" $?
+  touch "$TK"; rm -f "$BS"
+
+  # (g) priority: SLOT_CEIL 1 with 1 active; a prio-1 waiter starts first, a prio-0 (j0yen/synthorg) waiter second -> prio-0 launches first
+  rm -f "$T/sdrun.log"; echo "rb-verifier-busy.service" >"$T/active"; mi 64000
+  FAKE_SDRUN_APPEND=1 AIDE_VERIFIER_SLOT_CEIL=1 L v3g1 "${A[@]}" --head "$H" --queue >"$T/g1.out" 2>&1 & local g1=$!
+  sleep 0.4
+  FAKE_SDRUN_APPEND=1 AIDE_VERIFIER_SLOT_CEIL=1 L v3g0 --repo j0yen/synthorg --pr 7 --gated "$GS" --token 'pytest EXIT=0' --suite 'uv run pytest' --head "$H" --queue >"$T/g0.out" 2>&1 & local g0=$!
+  sleep 2; ls "$QD" | cut -d- -f1 | sort | tr '\n' ' ' >"$T/g.prios"
+  [ "$(cat "$T/g.prios")" = "0 1 " ]; chk "(4) two live tickets queued: prio 0 and prio 1 ($(cat "$T/g.prios"))" $?
+  # free the slot while I hold the fleet lock: both waiters then block on flock in start order and wake together when I release it (the prio-1 one first)
+  flock -x "$LK" sleep 3 & local hl=$!; sleep 0.3; : >"$T/active"; wait "$hl"; sleep 3
+  [ "$(wc -l <"$T/sdrun.log")" = 1 ] && grep -q -- '--unit aide-verifier-v3g0 ' "$T/sdrun.log"; chk "(7g) the slot frees: the prio-0 waiter (started second) launched, the prio-1 one did not ($(cut -c1-60 "$T/sdrun.log" | tr '\n' '|'))" $?
+  : >"$T/active"; wait "$g0"; sleep 2; wait "$g1"; rc=$?
+  [ "$(wc -l <"$T/sdrun.log")" = 2 ] && [ "$(sed -n 2p "$T/sdrun.log" | grep -c -- '--unit aide-verifier-v3g1 ')" = 1 ]; chk "(7g) then the prio-1 waiter launches second ($(cut -c1-60 "$T/sdrun.log" | tr '\n' '|'))" $?
+  : >"$T/active"; rm -f "$T/sdrun.log"
+  out="$(L v3p "${A[@]}" --head "$H" --prio 0)"; rc=$?; [ "$rc" = 0 ]; chk "(4) --prio 0 accepted" $?
+  out="$(L v3px "${A[@]}" --head "$H" --prio 2)"; rc=$?; [ "$rc" = 2 ] && [[ "$out" == *"--prio must be 0 or 1"* ]]; chk "(4) --prio 2 -> exit 2" $?
+  # (h) dead-pid ticket reaped; non-queue launch behind a live ticket -> exit 11
+  mkdir -p "$QD"; : >"$QD/0-1-99999999"; rm -f "$T/sdrun.log"
+  out="$(L v3h1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$QD/0-1-99999999" ]; chk "(7h) a dead-pid ticket ahead of mine is reaped, the launch goes" $?
+  ( exec -a aide-verifier-fakeholder sleep 30 ) & local hp2=$!
+  : >"$QD/0-1-$hp2"; rm -f "$T/sdrun.log"
+  out="$(L v3h2 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 11 ] && [ ! -e "$T/sdrun.log" ] && [ -e "$QD/0-1-$hp2" ] && [[ "$out" == *"not head-of-line"* ]]; chk "(7h) non-queue launch behind a LIVE aide-verifier ticket -> exit 11, nothing started, the other ticket stays ($out)" $?
+  kill "$hp2" 2>/dev/null; wait "$hp2" 2>/dev/null; rm -f "$QD/0-1-$hp2"
+  ( exec -a some-other-proc sleep 30 ) & hp2=$!
+  : >"$QD/0-1-$hp2"
+  out="$(L v3h3 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$QD/0-1-$hp2" ]; chk "(7h) a ticket whose pid is alive but not an aide-verifier process (recycled pid) is reaped" $?
+  kill "$hp2" 2>/dev/null; wait "$hp2" 2>/dev/null
+  [ "$(ls -A "$QD" 2>/dev/null | wc -l)" = 0 ]; chk "(4) queue dir empty after every launch (ticket removed in the EXIT trap)" $?
   : >"$T/active"
 
   rm -f "$T/sdrun.log"
@@ -723,12 +1018,12 @@ F
   local V7=d-20261023-063000-r7-1b2c
   out="$(AIDE_VERIFIER_AGENT=bogus L ag0 "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"must be aide, rb or r7"* ]] && [ ! -e "$T/av/ag0" ]; chk "AIDE_VERIFIER_AGENT=bogus -> exit 2, nothing written" $?
-  echo "aide-verifier-other.service" >"$T/active"
+  printf 'aide-verifier-other.service\nr7-verifier-other.service\n' >"$T/active"
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an aide-verifier-* unit blocks an r7 launch" $?
-  echo "rb-verifier-other.service" >"$T/active"
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached"* ]]; chk "the cap spans agents: an aide- and an r7-verifier-* unit block an r7 launch" $?
+  printf 'rb-verifier-other.service\naide-verifier-other.service\n' >"$T/active"
   out="$(L ag1 "${A[@]}" --head "$H")"; rc=$?
-  [ "$rc" = 2 ] && [[ "$out" == *"one at a time"* ]]; chk "one at a time spans agents: an rb-verifier-* unit blocks an aide launch" $?
+  [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached"* ]]; chk "the cap spans agents: an rb- and an aide-verifier-* unit block an aide launch" $?
   : >"$T/active"; rm -f "$T/bell.log" "$T/wmd.log" "$T/sdrun.log"
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?; D="$T/av/ag1"
   [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
@@ -768,5 +1063,5 @@ case "${1:-}" in
   launch) shift; cmd_launch "$@" ;;
   finish) shift; cmd_finish "$@" ;;
   watch) shift; cmd_watch "$@" ;;
-  *) sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,51p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
