@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>]
+# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]
 #   Moves the whole fleet to another Claude account's setup-token from the store (fleet-token-store.sh). NEVER prints a token.
 #   1. refuse (exit 1) when the store lacks <account>; token.json (fleet-dash) already names it -> `no-op: <account> already current`, exit 0
 #      (a missing token.json = unknown = allowed; seed it with `fleet-token-store.sh current <account>`)
@@ -9,6 +9,8 @@
 #      run fleet-token-place.sh <temp>. Place failure (nonzero exit, `placed rc=<n>`, `verify=FAIL`) -> RE-PLACE the previous account's store entry, ALARM, exit 3.
 #   4. success: token.json {account, placed_at, by, trigger, previous, previous_reset_at}; one line in ~/.local/state/fleet-token/rotations.log;
 #      bell ctl rb r7 (seat-event.sh); start seat-tick@ctl/rb/r7 (--no-block: a tick is a oneshot that can run for hours); one wm-decide row (aide, other, carbon).
+#      --blocked-until <epoch|LA date text> (validated up front, bad = exit 64): also blocks the PREVIOUS account until then (fleet-token-lib.sh ft_block: the
+#      429 watcher and the weekly schedule refuse it) and records that time as previous_reset_at. No previous account known = a warning, nothing blocked.
 #      previous_reset_at = the largest quota_wait_until in ctl/rb/r7-tick.json (epoch; null when none): the watcher will not rotate back before it.
 # Daemons and adopted units keep the OLD token until restarted (the bell says so); this script restarts nothing but the three seat ticks.
 # Exit: 0 rotated / no-op, 1 refused, 2 pre-verify failed, 3 place failed (rolled back), 64 usage.
@@ -20,7 +22,7 @@ set +x
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-token-lib.sh"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>]  |  --selftest' >&2; exit 64; }
+usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2; exit 64; }
 
 TMPS=(); OWN_DIR=""
 cleanup() {
@@ -82,7 +84,7 @@ max_reset() {   # the largest quota_wait_until across the three tick.json files 
 }
 
 rotate() {
-  local acct="" by="" trigger="" why="" evid=""
+  local acct="" by="" trigger="" why="" evid="" bu="" buep=""
   acct="${1:-}"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -90,6 +92,7 @@ rotate() {
       --trigger) trigger="${2:-}"; shift ;;
       --why) why="${2:-}"; shift ;;
       --evidence) evid="${2:-}"; shift ;;
+      --blocked-until) bu="${2:-}"; shift ;;
       *) usage ;;
     esac
     shift
@@ -97,6 +100,7 @@ rotate() {
   ft_valid_account "$acct" || usage
   [[ "$by" =~ ^[A-Za-z0-9._@:+-]+$ ]] || usage
   case "$trigger" in 429|schedule|hand) ;; *) usage ;; esac
+  if [ -n "$bu" ]; then buep="$(ft_parse_la_date "$bu")" || { echo "fleet-token-rotate: cannot parse --blocked-until '$bu' as a date" >&2; exit 64; }; fi
 
   [ -f "$FT_STORE/$acct" ] || { echo "fleet-token-rotate: REFUSED: no store entry for '$acct' (fleet-token-store.sh add $acct)" >&2; return 1; }
   mkdir -p "$FT_STATE" "$FT_DASH"
@@ -133,6 +137,11 @@ rotate() {
 
   local ts iso reset rj
   ts="$(ft_now)"; iso="$(ft_iso "$ts")"; reset="$(max_reset)"
+  if [ -n "$buep" ]; then
+    reset="$buep"
+    if [ -n "$prev" ]; then ft_block "$prev" "$buep" "rotate --blocked-until ($trigger, by $by)" || true
+    else echo "fleet-token-rotate: WARN --blocked-until given but no previous account is known: nothing blocked" >&2; fi
+  fi
   local tmp; tmp="$(umask 077; mktemp "$FT_DASH/.token.XXXXXX")"
   jq -n --arg a "$acct" --arg at "$iso" --arg by "$by" --arg t "$trigger" --arg p "$prev" --arg r "$reset" \
     '{account:$a, placed_at:$at, by:$by, trigger:$t, previous:(if $p=="" then null else $p end), previous_reset_at:(if $r=="" then null else ($r|tonumber) end)}' >"$tmp"
@@ -241,6 +250,22 @@ selftest() {
       && [ -z "$(ls -A "$HOME/.cache" | grep fleet-token-tmp)" ] && grep -q 'rotation to acctC done but the wm-decide row FAILED' "$FT_DASH/ctl-events.log" && [ "$(wc -l <"$FT_ROTLOG")" = 2 ]; ft_st_chk "no XDG_RUNTIME_DIR: 0700 dir under ~/.cache, removed after; previous_reset_at null; a failed row ALARMs but the rotation stands" $?
     grep -q 'previous_reset_at=null$' "$FT_ROTLOG"; ft_st_chk "rotations.log records previous_reset_at=null" $?
     ! grep -rqF "$c" "$o" "$e"; ft_st_chk "stdout and stderr of the last run carry no token" $?
+    # 7. --blocked-until blocks the PREVIOUS account (current is acctC here) and records the time as previous_reset_at
+    : >"$FAKE_LOG_DIR/place.log"
+    run acctA --by joe --trigger hand --blocked-until "2026-10-26 21:00"; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .account)" = acctA ] && [ "$(tokj .previous)" = acctC ] && [ "$(tokj .previous_reset_at)" = 1793073600 ] && [ "$(cat "$FT_STATE/blocked-until-acctC")" = 1793073600 ] \
+      && tail -n1 "$FT_ROTLOG" | grep -q 'previous=acctC by=joe trigger=hand previous_reset_at=1793073600$' && grep -q ' account=acctC until=1793073600 .*why=rotate --blocked-until (hand, by joe)$' "$FT_BLOCKLOG"; ft_st_chk "blocked-until: --blocked-until '2026-10-26 21:00' blocks the previous account (acctC) + previous_reset_at=1793073600" $?
+    [ ! -e "$FT_STATE/blocked-until-acctA" ]; ft_st_chk "blocked-until: the NEW account is not blocked" $?
+    : >"$FAKE_LOG_DIR/place.log"
+    run acctB --by joe --trigger hand --blocked-until "Oct 26, 9pm"; rc=$?
+    [ "$rc" = 0 ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = 1793073600 ]; ft_st_chk "blocked-until: the weekly 429 text form 'Oct 26, 9pm' parses to the same epoch" $?
+    : >"$FAKE_LOG_DIR/place.log"
+    run acctC --by joe --trigger hand --blocked-until "next thursday-ish"; rc=$?
+    [ "$rc" = 64 ] && [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctB ] && grep -q 'cannot parse --blocked-until' "$e"; ft_st_chk "blocked-until: an unparseable value is refused up front (64), nothing placed" $?
+    rm -f "$FT_TOKJSON" "$FT_STATE"/blocked-until-*; : >"$FAKE_LOG_DIR/place.log"
+    run acctA --by joe --trigger hand --blocked-until "2026-10-26 21:00"; rc=$?
+    [ "$rc" = 0 ] && grep -q 'no previous account is known: nothing blocked' "$e" && ! ls "$FT_STATE"/blocked-until-* >/dev/null 2>&1; ft_st_chk "blocked-until: no previous account known -> warning, nothing blocked, rotation still done" $?
+    ! grep -rqF "$c" "$o" "$e"; ft_st_chk "stdout and stderr carry no token (blocked-until cases)" $?
     ft_st_done fleet-token-rotate
   ); return $?
 }
