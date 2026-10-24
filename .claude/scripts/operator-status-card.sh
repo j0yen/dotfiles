@@ -67,10 +67,10 @@ render_seats() {
   # per seat: corrected/n over its last 20 own decisions (mixed models), the current-model run when it is under 20 rows, the hold or flag state; then every seat-* / verifier-rate alarm
   if [ ! -r "$fleet_sj" ] || ! jq -e '.decisions.per_agent' "$fleet_sj" >/dev/null 2>&1; then echo "seats: ?"; return; fi
   echo "seats (corrected/n last 20, share):"
-  local name c n share thr flag held exp nc model since status line
-  while IFS=$'\t' read -r name c n share thr flag held exp nc model since status; do
-    line="  $name $c/$n $share"
-    [ "$thr" = true ] && line="$line at threshold"
+  local name c n share thr flag held exp nc model since status jt line
+  while IFS=$'\t' read -r name c n share thr flag held exp nc model since status jt; do
+    # swarm-decide judged_text ("unmeasured (judged k/n)") = fewer than MIN_JUDGED judged rows in the window: print it in place of the share
+    if [ "$jt" != "-" ]; then line="  $name $c/$n $jt"; else line="  $name $c/$n $share"; [ "$thr" = true ] && line="$line at threshold"; fi
     if [ "$status" = unmeasured ] && [ "$nc" != "?" ]; then line="$line ($nc on $model since $(t "$since"), unmeasured until 20)"
     elif [ "$nc" != "?" ] && [ "$model" != "?" ]; then line="$line ($nc on $model since $(t "$since"))"; fi
     if [ "$held" != "-" ]; then line="$line · held until $held"
@@ -79,7 +79,7 @@ render_seats() {
     echo "$line"
   done < <(jq -r --arg seats "$seats" '.decisions.per_agent as $p | ($seats|split(" "))[] | select($p[.] != null) | . as $k | $p[$k] |
     [$k, (.corrected_all // .corrected20 // "?"), (.n20_all // .n20 // "?"), (.share // "n/a"), (.share == 0.25), (.upgrade_flag // "null"), (.held_until // "-"),
-     ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
+     ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?"), (.judged_text // "-")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
   jq -r '(.alarms // []) | map(select((.text // "") | test("^(seat-|verifier-rate)"))) | .[0:6][] | "  " + .text' "$fleet_sj" 2>/dev/null
 }
 render_chain() {
