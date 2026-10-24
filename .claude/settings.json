@@ -24,6 +24,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "opus",
   "hooks": {
     "SessionStart": [
       {
@@ -421,6 +422,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/dream-spawn-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/scripts/spool-hook.sh start",
             "timeout": 5,
             "async": true
@@ -689,6 +695,9 @@
   },
   "modelSettings": {
     "claude-fable-5": {
+      "effortLevel": "high"
+    },
+    "claude-opus-5-5": {
       "effortLevel": "high"
     }
   },
