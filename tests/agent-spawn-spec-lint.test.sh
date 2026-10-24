@@ -10,6 +10,7 @@ stub="$here/tests/fixtures/agent-spawn-spec-lint-qpa-fleetdash.spec.md"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 H="$tmp/home"; mkdir -p "$H" "$tmp/coders"
 pass=0; fail=0
+. "$here/tests/lib/timing.sh"
 ok()  { pass=$((pass + 1)); echo "PASS $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL $1 ${2:-}"; }
 check() { if [ "$2" = 0 ]; then ok "$1"; else bad "$1" "${3:-}"; fi; }
@@ -77,9 +78,10 @@ run Agent "SECRETWORD in prompt, spec $S"
 case "$HOUT$HERR" in *SECRETWORD*) bad "x-prompt-not-echoed" ;; *) ok "x-prompt-not-echoed" ;; esac
 run Agent "Spec $S and $tmp/coders/clean.spec.md"
 denied; check "x-multi-cite-one-offender" $?
-start=$(date +%s%N); run Agent "Implement $S"; ms=$(( ($(date +%s%N) - start) / 1000000 ))
-echo "runtime: ${ms} ms (incl. test harness jq)"
-[ "$ms" -lt 200 ]; check "x-under-200ms" $? "${ms}ms"
+# median-of-3 < 200 ms, every sample < 1000 ms (tests/lib/timing.sh); samples
+# include the test harness jq. The hook keeps no state between calls.
+med_ms 3 run Agent "Implement $S"; trc=$?
+check "x-under-200ms" "$trc" "samples=${MED_SAMPLES[*]} ms median=${MED_MS} ms"
 
 # stanza / lint
 st=$(bash "$hook" --stanza)
