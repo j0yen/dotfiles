@@ -11,6 +11,12 @@
 # BEFORE the merge, once the gate passes, every commit on the PR branch is read (pulls/N/commits): a trailer in any branch commit exits 3 ATTRIBUTION-BRANCH <sha...> with NO merge
 # (the branch owner re-commits clean); an unreadable list fails closed (ATTRIBUTION-UNCHECKED). RB_MERGE_ALLOW_BRANCH_TRAILERS=1 bypasses it (Joe-authorized legacy branches only) with a stderr note.
 # After the merge the merge commit's message is re-read; a hit prints ATTRIBUTION-LANDED <oid> on stderr and exits 3 (the merge already happened; this makes it loud, it does not revert).
+# ADV PRE-CHECK (INTERIM; the real gate is a future G8 in wm_decide, because a hand `gh pr merge` after a merge-gate pass bypasses this script): after the PR is read and BEFORE merge-gate, a PR in
+# j0yen/mcphost or j0yen/synthorg (any PR, brief or not), or any PR whose gated row G cites a brief (what/why/evidence), needs an adversarial-pass row for (G, the verdict's COMMIT): the NEWEST
+# one decides. Refusals exit 4 (exit 3 stays attribution-only) with ONE stderr line `ADV-<REASON> <G> <owner/name>#<pr>` and gh is never asked to merge: ADV-MISSING, ADV-STALE (other COMMIT),
+# ADV-NOT-PASS (newest is FAIL/UNVERIFIED), ADV-NOLOG (the log= file is not a non-empty regular file here), ADV-UNCHECKED (row read failed), ADV-WAIVER-BAD.
+# RB_MERGE_ADV_WAIVE=<d-id> skips it only for a controller-authored kind=other row naming this PR with a future until= (stderr ADV-WAIVED <d-id>). Grammar: .local/lib/adv-grammar.sh (the one copy).
+# The ledger is read from the sqlite file wm-decide writes ($WM_DECIDE_STATE or ~/.local/state/swarm-decide), mode=ro, no time window, by .local/lib/rb-merge-adv-check.py.
 set -euo pipefail
 usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name>" >&2; exit 64; }
 [ $# -eq 3 ] || usage
@@ -21,6 +27,21 @@ WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
 
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
+adv_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
+adv_refuse() { echo "$1 ${2:--} $repo#$pr" >&2; exit "${ADV_EXIT:-4}"; }   # ADV_EXIT=4 from adv-grammar.sh (not sourced yet when the lib itself is missing)
+[ -r "$adv_lib/adv-grammar.sh" ] && [ -r "$adv_lib/rb-merge-adv-check.py" ] || adv_refuse ADV-UNCHECKED -
+. "$adv_lib/adv-grammar.sh"
+adv_out="$(env ADV_PASS_WORD="$ADV_PASS_WORD" ADV_ROW_KIND="$ADV_ROW_KIND" ADV_RE_FMT="$ADV_RE_FMT" ADV_LOG_RE="$ADV_LOG_RE" ADV_COMMIT_RE="$ADV_COMMIT_RE" \
+  ADV_TRIGGER_REPOS="$ADV_TRIGGER_REPOS" ADV_BRIEF_RE="$ADV_BRIEF_RE" ADV_WAIVE_KIND="$ADV_WAIVE_KIND" ADV_WAIVE_AGENT="$ADV_WAIVE_AGENT" \
+  ADV_WAIVE_RE_FMT="$ADV_WAIVE_RE_FMT" ADV_UNTIL_RE="$ADV_UNTIL_RE" \
+  python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite" "$v" "$repo" "$pr" ${RB_MERGE_ADV_WAIVE:+"$RB_MERGE_ADV_WAIVE"} 2>/dev/null)" \
+  || adv_out="REFUSE ADV-UNCHECKED -"
+case "$adv_out" in
+  "OK "*|NOTRIGGER) ;;
+  "WAIVED "*) echo "ADV-WAIVED ${adv_out#WAIVED }" >&2 ;;   # merge-done has no note flag, so the waiver id reaches the terminal/journal only
+  "REFUSE "*) adv_rest="${adv_out#REFUSE }"; adv_refuse "${adv_rest%% *}" "${adv_rest#* }" ;;
+  *) adv_refuse ADV-UNCHECKED - ;;
+esac
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams
 oid="$(printf '%s\n' "$gate_out" | sed -n 's/^PASS .* oid=\([0-9a-f]\{40\}\)$/\1/p')"
 [ -n "$oid" ] || { echo "rb-merge.sh: the gate returned 0 but printed no full 40-hex oid; refusing to merge" >&2; exit 3; }
