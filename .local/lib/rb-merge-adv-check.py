@@ -5,7 +5,8 @@ rb-merge.sh from .local/lib/adv-grammar.sh: this file holds no copy of the gramm
   NOTRIGGER            neither trigger holds; rb-merge.sh goes on to the merge gate
   OK <G> <A-id> <A-ts> <H>   the newest ADV row for (G, V's COMMIT) passes and its log is a non-empty regular file (H = the A row's COMMIT)
   WAIVED <d-id>        a valid controller waiver for this PR
-  REFUSE <TOKEN> <G> [reason]   TOKEN in ADV-MISSING ADV-STALE ADV-NOT-PASS ADV-NOLOG ADV-UNCHECKED ADV-WAIVER-BAD (G = '-' when unknown; reason only on a waiver refusal)
+  REFUSE <TOKEN> <G> [reason]   TOKEN in ADV-MISSING ADV-STALE ADV-NOT-PASS ADV-NOLOG ADV-UNCHECKED ADV-COMMIT-SHORT ADV-WAIVER-BAD (G = '-' when unknown; reason only on a waiver refusal)
+The OK line's H is the ADV row's full 40-hex COMMIT; rb-merge.sh compares it with the PR's live headRefOid (ADV-STALE-HEAD) -- this helper never talks to GitHub.
 Any exception is printed as REFUSE ADV-UNCHECKED (fail closed).
 `--dump-re OWNER/NAME PR` prints the ADV row pattern this helper compiles (for the no-drift test: it must be byte-equal to adv_ere in adv-grammar.sh)."""
 import datetime as dt
@@ -34,12 +35,21 @@ def sub(fmt, repo, pr):
 
 
 def parse_ts(s):
-    """Unparsable -> the minimum, so a bad graded_at is never 'later than' anything; ADV rows check ts is not BAD_TS and fail closed."""
+    """Unparsable -> the minimum; ADV rows check ts is not BAD_TS and fail closed."""
     try:
         t = dt.datetime.fromisoformat(s)
     except (TypeError, ValueError):
         return BAD_TS
     return t if t.tzinfo else t.astimezone()
+
+
+def epoch(s):
+    """An ISO-8601 time as epoch seconds (naive = local), or None if unparsable: grade times are compared NUMERICALLY, never as text."""
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+    return (t if t.tzinfo else t.astimezone()).timestamp()
 
 
 def get(db, rid):
@@ -52,7 +62,8 @@ def waiver_bad(reason):
 
 
 def regrade_of(w):
-    """The waiver row's own Fable grade: the `regrade` JSON column ({"by","verdict",...}, one value per row, written by swarm-decide-regrade). None if absent or not an object."""
+    """The waiver row's own Fable grade: the `regrade` JSON column ({"by","verdict","ts",...}, one value per row, rewritten in place by swarm-decide-regrade; this helper keeps no
+    cache between calls, so a rewrite is seen by the next merge). None if absent, malformed or not an object."""
     try:
         j = json.loads(w.get("regrade") or "null")
     except (TypeError, ValueError):
@@ -61,6 +72,9 @@ def regrade_of(w):
 
 
 def check_waiver(db, wid, repo, pr, env):
+    cols = {c[1] for c in db.execute("PRAGMA table_info(decisions)")}
+    if not {"regrade", "graded_at"} <= cols:
+        raise waiver_bad("old-schema")   # graded_at is only this column probe now: the grade time is the regrade JSON's own ts
     w = get(db, wid)
     if w is None:
         raise waiver_bad("not-found")
@@ -91,7 +105,8 @@ def check_waiver(db, wid, repo, pr, env):
         raise waiver_bad("regrade-agent")
     if rg.get("verdict") != env["ADV_REGRADE_OK"]:
         raise waiver_bad("regrade-not-confirm")
-    if parse_ts(w.get("graded_at")) <= parse_ts(w["ts"]):   # an unparsable graded_at parses to the minimum, so it is never later
+    wts, rts = epoch(w["ts"]), epoch(rg.get("ts"))   # graded_at is the outcome-pass time (later than ts on every regraded row): the grade time is regrade.ts
+    if wts is None or rts is None or not rts > wts:   # missing or unparsable regrade.ts, or not STRICTLY later than the waiver row's ts
         raise waiver_bad("regrade-ts")
     return wid
 
@@ -104,6 +119,8 @@ def verdict_commit(v, g, env):
     longest = max(found, key=len) if found else None
     if longest is None or any(not longest.startswith(c) for c in found):
         raise Refuse("ADV-UNCHECKED", g["id"])   # no COMMIT, or conflicting COMMIT= values
+    if len(longest) != 40:
+        raise Refuse("ADV-COMMIT-SHORT", g["id"])   # a prefix could match an ADV row at another tip that shares it: only a full 40-hex binds
     return longest
 
 

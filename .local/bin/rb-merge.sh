@@ -14,9 +14,9 @@
 # ADV PRE-CHECK (INTERIM; the real gate is a future G8 in wm_decide, because a hand `gh pr merge` after a merge-gate pass bypasses this script): after the PR is read and BEFORE merge-gate, a PR in
 # j0yen/mcphost or j0yen/synthorg (any PR, brief or not), or any PR whose gated row G cites a brief (what/why/evidence), needs an adversarial-pass row for (G, the verdict's COMMIT): the NEWEST
 # one decides. Refusals exit 4 (exit 3 stays attribution-only) with ONE stderr line `ADV-<REASON> <G> <owner/name>#<pr>` and gh is never asked to merge: ADV-MISSING, ADV-STALE (other COMMIT),
-# ADV-NOT-PASS (newest is FAIL/UNVERIFIED), ADV-NOLOG (the log= file is not a non-empty regular file here), ADV-UNCHECKED (row read failed), ADV-WAIVER-BAD.
-# RB_MERGE_ADV_WAIVE=<d-id> skips it only for a controller-authored (agent=controller, via=seat-tick) kind=other row naming this PR with a future until= AND its own `regrade` column = fable-regrader CONFIRM with graded_at later than the row's ts (stderr ADV-WAIVED <d-id>; a refusal adds an `ADV-REASON <why>` line).
-# A triggered pass prints `ADV-OK <A-id> <A-ts> <H> <owner/name>#<pr>` on stderr before the gate; an ADV row counts only with ledger via=verifier. Grammar: .local/lib/adv-grammar.sh (the one copy).
+# ADV-NOT-PASS (newest is FAIL/UNVERIFIED), ADV-NOLOG (the log= file is not a non-empty regular file here), ADV-UNCHECKED (row read failed), ADV-COMMIT-SHORT (V's COMMIT is not a full 40-hex), ADV-STALE-HEAD (the ADV row's COMMIT, or the gate's oid, is not the PR's live headRefOid), ADV-WAIVER-BAD.
+# RB_MERGE_ADV_WAIVE=<d-id> skips it only for a controller-authored (agent=controller, via=seat-tick) kind=other row naming this PR with a future until= AND its own `regrade` column = fable-regrader CONFIRM with regrade.ts strictly later than the row's ts (stderr ADV-WAIVED <d-id>; a refusal adds an `ADV-REASON <why>` line).
+# A triggered pass reads the PR's headRefOid ONCE (after the ledger read), needs it byte-equal to the ADV row's 40-hex COMMIT, prints `ADV-OK <A-id> <A-ts> <that oid> <owner/name>#<pr>` on stderr before the gate, and the gate's oid must equal it too (the merge pins --match-head-commit to that one value; the oid is pinned at check time, a push after the merge call cannot be seen); an ADV row counts only with ledger via=verifier. Grammar: .local/lib/adv-grammar.sh (the one copy).
 # The ledger is read from the sqlite file wm-decide writes ($WM_DECIDE_STATE or ~/.local/state/swarm-decide), mode=ro, no time window, by .local/lib/rb-merge-adv-check.py.
 set -euo pipefail
 usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name>" >&2; exit 64; }
@@ -37,7 +37,11 @@ adv_out="$(env "${adv_env[@]}" python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM
   || adv_out="REFUSE ADV-UNCHECKED -"
 case "$adv_out" in
   NOTRIGGER) ;;
-  "OK "*) read -r _ adv_g adv_aid adv_ats adv_h <<<"$adv_out"; echo "ADV-OK $adv_aid $adv_ats $adv_h $repo#$pr" >&2 ;;   # the merge log can be re-checked against the ledger row
+  "OK "*) read -r _ adv_g adv_aid adv_ats adv_h <<<"$adv_out"
+    adv_head="$("$GH" pr view "$pr" --repo "$repo" --json headRefOid -q .headRefOid 2>/dev/null)" || adv_head=""   # the ONE head read, after the ledger read; reused for the compare, the marker and the merge pin
+    [[ "$adv_head" =~ ^[0-9a-f]{40}$ ]] || adv_refuse ADV-UNCHECKED "$adv_g"
+    [ "$adv_h" = "$adv_head" ] || adv_refuse ADV-STALE-HEAD "$adv_g"   # the ADV row vouches for another tip than the PR head now
+    echo "ADV-OK $adv_aid $adv_ats $adv_head $repo#$pr" >&2 ;;   # the merge log can be re-checked against the ledger row
   "WAIVED "*) echo "ADV-WAIVED ${adv_out#WAIVED }" >&2 ;;   # merge-done has no note flag, so the waiver id reaches the terminal/journal only
   "REFUSE "*) read -r _ adv_tok adv_g adv_why <<<"$adv_out"; adv_refuse "$adv_tok" "$adv_g" "${adv_why:-}" ;;
   *) adv_refuse ADV-UNCHECKED - ;;
@@ -45,6 +49,7 @@ esac
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams
 oid="$(printf '%s\n' "$gate_out" | sed -n 's/^PASS .* oid=\([0-9a-f]\{40\}\)$/\1/p')"
 [ -n "$oid" ] || { echo "rb-merge.sh: the gate returned 0 but printed no full 40-hex oid; refusing to merge" >&2; exit 3; }
+[ -z "${adv_head:-}" ] || [ "$oid" = "$adv_head" ] || adv_refuse ADV-STALE-HEAD "${adv_g:--}"   # the gate passed another oid than the ADV-checked head: one value for the check and the merge
 printf '%s\n' "$gate_out"
 if [ "${RB_MERGE_ALLOW_BRANCH_TRAILERS:-}" = 1 ]; then
   echo "rb-merge.sh: RB_MERGE_ALLOW_BRANCH_TRAILERS=1 -- the PRE-merge branch-commit attribution check is SKIPPED" >&2

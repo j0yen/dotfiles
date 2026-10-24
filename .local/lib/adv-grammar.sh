@@ -17,14 +17,15 @@ ADV_ROW_KIND='verdict'
 ADV_RE_FMT="^(${ADV_PASS_WORD}|${ADV_FAIL_WORD}|${ADV_UNVERIFIED_WORD}) @REPO@#@PR@ COMMIT=[0-9a-f]{40} agent=verifier:[^ ]+ scope=adversarial log=/[^ :]+(:| |$)"
 ADV_ROW_VIA=verifier                              # the ledger `via` an ADV row must carry (aide-verifier.sh files its rows --via verifier)
 ADV_LOG_RE='scope=adversarial log=(/[^ :]+)'
-ADV_COMMIT_RE='COMMIT=([0-9a-f]{12,40})'        # case-insensitive; V's COMMIT may be a >= 12-hex prefix (the merge gate's own minimum)
+ADV_COMMIT_RE='COMMIT=([0-9a-f]{12,40})'        # case-insensitive; V's COMMIT is READ at >= 12 hex but only a full 40-hex binds (a shorter one refuses ADV-COMMIT-SHORT)
 # Trigger (i): every PR in these repos needs an ADV pass (fail-closed, brief or not). Trigger (ii): the gated row G's what/why/evidence matches ADV_BRIEF_RE (case-insensitive), any repo.
 ADV_TRIGGER_REPOS='j0yen/mcphost j0yen/synthorg'
 ADV_BRIEF_RE='briefs?[/=:]'
 # Waiver: RB_MERGE_ADV_WAIVE=<d-id> of a row of kind ADV_WAIVE_KIND recorded BY ADV_WAIVE_AGENT (the ledger `agent` column the recorder sets from --agent; ctl rows carry
 # agent=controller, never ctl; an agent= token typed inside `what` never counts) with ledger `via` == ADV_WAIVE_VIA (the controller's seat-tick sweep), whose what holds
 # ADV-WAIVE <owner/name>#<pr> for THIS PR and a future until=<ISO-8601 with a time part>, AND whose Fable grade says CONFIRM. The grade lives in the waiver row itself (one value per row,
-# written by swarm-decide-regrade): its `regrade` JSON column must have by == ADV_REGRADER_AGENT and verdict == ADV_REGRADE_OK, and its `graded_at` column must be later than the row's ts.
+# rewritten in place by swarm-decide-regrade): its `regrade` JSON column must have by == ADV_REGRADER_AGENT, verdict == ADV_REGRADE_OK and a `ts` STRICTLY later (epoch compare) than the row's ts;
+# `graded_at` is the outcome-pass time (later than ts on every real regraded row), so it is only a column probe: a ledger without `regrade` or `graded_at` refuses (reason old-schema).
 ADV_WAIVE_KIND='other'
 ADV_WAIVE_AGENT='controller'
 ADV_WAIVE_VIA='seat-tick'

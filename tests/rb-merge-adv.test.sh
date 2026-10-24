@@ -18,7 +18,8 @@ ok()  { n=$((n+1)); echo "ok - rb-merge-adv: $1"; }
 bad() { n=$((n+1)); echo "NOT OK - rb-merge-adv: $1"; fail=1; }
 check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3: got '$1', want '$2'"; fi; }
 
-OID=a1b2c3d4e5f60123456789abcdef0123456789ab
+OID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # = the default COMMIT of the fixture rows: the PR head the ADV rows vouch for
+HB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
@@ -31,8 +32,12 @@ cat > "$tmp/gh" <<'S'
 #!/usr/bin/env bash
 printf 'gh [GATE_OK=%s] %s\n' "${WM_DECIDE_GATE_OK:-}" "$*" >> "$STUB_LOG/calls"
 case "$1 $2" in
+  "pr merge") mh=""; prev=""; for a in "$@"; do [ "$prev" = "--match-head-commit" ] && mh="$a"; prev="$a"; done
+    [ "$mh" = "$STUB_HEAD" ] || { echo "gh: head commit does not match --match-head-commit" >&2; exit 1; }   # like GitHub: a merge pinned to a stale oid is refused
+    exit 0 ;;
   "pr view") case "$*" in
       *mergeCommit*) echo "b1b2c3d4e5f60123456789abcdef0123456789ab" ;;
+      *headRefOid*) echo "$STUB_HEAD" ;;
       *) printf '{"title":"Fix the thing","body":"line one"}\n' ;;
     esac; exit 0 ;;
   "api repos/"*"/pulls/"*"/commits")
@@ -43,7 +48,7 @@ esac
 exit 0
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
-export STUB_LOG="$tmp" STUB_OID="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
+export STUB_LOG="$tmp" STUB_OID="$OID" STUB_HEAD="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
 PASSLOG="$tmp/adv-pass.log"; echo "adversarial verifier output" > "$PASSLOG"
 EMPTYLOG="$tmp/adv-empty.log"; : > "$EMPTYLOG"
 ABSENTLOG="$tmp/adv-absent.log"
@@ -51,13 +56,14 @@ PASSW='ADV-PASS {repo}#{pr} COMMIT={commit} agent=verifier:v434-adv scope=advers
 FAILW='ADV-FAIL {repo}#{pr} COMMIT={commit} agent=verifier:v434-adv scope=adversarial log='"$PASSLOG"': item 3 not met'
 UNVW='ADV-UNVERIFIED {repo}#{pr} COMMIT={commit} agent=verifier:v434-adv scope=adversarial log='"$PASSLOG"': could not run'
 adv() { printf '{"role":"adv","what":%s%s}' "$(jq -Rn --arg w "$1" '$w')" "${2:+,$2}"; }   # adv WHAT [extra json members]
+rawj() { jq -Rn --arg r "$1" '$r'; }   # a JSON string literal holding TEXT verbatim (for a malformed-JSON column value)
 wv()  { printf '{"role":"waiver","what":%s%s}' "$(jq -Rn --arg w "$1" '$w')" "${2:+,$2}"; }
 
 # case NAME REPO PR ROWS_JSON_ARRAY [brief_in-json] [brief_tok] -> runs rb-merge.sh against a fresh ledger; sets rc, err, ids (G V rows...); fresh calls log
 case_run() {
   local name=$1 repo=$2 pr=$3 rows=$4 bin=${5:-[]} btok=${6:-} st="$tmp/st-$1"
   mkdir -p "$st"
-  ids="$(python3 -I "$fx/mkledger.py" "$st" "{\"repo\":\"$repo\",\"pr\":$pr,\"suffix\":\"$(( ++caseno ))\",\"rows\":$rows,\"brief_in\":$bin,\"brief_tok\":\"$btok\"}")" || { bad "$name: ledger fixture failed"; return 1; }
+  ids="$(python3 -I "$fx/mkledger.py" "$st" "{\"repo\":\"$repo\",\"pr\":$pr,\"suffix\":\"$(( ++caseno ))\"${CASE_COMMIT:+,\"commit\":\"$CASE_COMMIT\"},\"rows\":$rows,\"brief_in\":$bin,\"brief_tok\":\"$btok\"}")" || { bad "$name: ledger fixture failed"; return 1; }
   G="${ids%% *}"; rest="${ids#* }"; V="${rest%% *}"; rowids=(${rest#* })
   : > "$tmp/calls"
   WM_DECIDE_STATE="$st" bash "$wrap" "$V" "$pr" "$repo" >"$tmp/out" 2>"$tmp/err"; rc=$?
@@ -172,12 +178,61 @@ waive_case k13b $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"ESCALATE"}')" bad:
 waive_case k13c $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"DISAGREE"}')" bad:regrade-not-confirm "(k13c) a waiver whose regrade is DISAGREE is refused"
 waive_case k14 $REPO $PR "$(wv "$WOK" '"regrade":{"by":"controller"}')" bad:regrade-agent "(k14) a CONFIRM regrade by a non-regrader agent (controller) is refused"
 waive_case k14b $REPO $PR "$(wv "$WOK" '"regrade":{"by":"r7"}')" bad:regrade-agent "(k14b) a CONFIRM regrade by r7 is refused"
-waive_case k15 $REPO $PR "$(wv "$WOK" '"graded_at":"2026-10-24T10:00:00-07:00"')" bad:regrade-ts "(k15) a CONFIRM graded BEFORE the waiver row (graded_at earlier than ts) is refused"
-waive_case k15b $REPO $PR "$(wv "$WOK" '"graded_at":"not-a-time"')" bad:regrade-ts "(k15b) a CONFIRM with an unparsable graded_at is refused"
-waive_case k15c $REPO $PR "$(wv "$WOK" '"graded_at":null')" bad:regrade-ts "(k15c) a CONFIRM with no graded_at is refused"
+waive_case k1b $REPO $PR "$(wv "$WOK" '"regrade":{"ts":"2026-10-24T11:30:00-08:00"}')" ok "(k1b) a regrade.ts later by epoch in another offset (19:30Z > 18:01Z) is accepted"
+waive_case k1c $REPO $PR "$(wv "$WOK" '"graded_at":"2026-10-24T10:00:00-07:00"')" ok "(k1c) graded_at is not the comparator: a graded_at earlier than ts with a later regrade.ts is accepted"
+waive_case k15 $REPO $PR "$(wv "$WOK" '"regrade":{"ts":"2026-10-24T10:00:00-07:00"}')" bad:regrade-ts "(k15) a CONFIRM whose regrade.ts is EARLIER than the waiver row's ts is refused"
+waive_case k15e $REPO $PR "$(wv "$WOK" '"min":1,"regrade":{"ts":"2026-10-24T11:01:00-07:00"}')" bad:regrade-ts "(k15e) a CONFIRM whose regrade.ts EQUALS the waiver row's ts is refused (strictly later)"
+waive_case k15f $REPO $PR "$(wv "$WOK" '"min":1,"regrade":{"ts":"2026-10-24T18:01:00+00:00"}')" bad:regrade-ts "(k15f) the same instant written in another offset is equal by epoch: refused (a text compare would call it later)"
+waive_case k15g $REPO $PR "$(wv "$WOK" '"min":1,"regrade":{"ts":"2026-10-24T11:30:00+05:00"}')" bad:regrade-ts "(k15g) a regrade.ts that sorts later as text but is earlier by epoch (06:30Z < 18:01Z) is refused"
+waive_case k15b $REPO $PR "$(wv "$WOK" '"regrade":{"ts":"not-a-time"}')" bad:regrade-ts "(k15b) a CONFIRM with an unparsable regrade.ts is refused"
+waive_case k15c $REPO $PR "$(wv "$WOK" '"regrade_del":["ts"]')" bad:regrade-ts "(k15c) a CONFIRM with no regrade.ts is refused"
+waive_case k15d $REPO $PR "$(wv "$WOK" '"regrade":{"ts":5}')" bad:regrade-ts "(k15d) a CONFIRM whose regrade.ts is not a string is refused"
+waive_case k17 $REPO $PR "$(wv "$WOK" '"regrade":'"$(rawj '{"by": "fable-regrader", "verdict": "CONFIRM", "ts": "2026-10-24T12:00:00-07:00"')")" bad:no-regrade "(k17) X1: a MALFORMED-JSON regrade is refused (ADV-WAIVER-BAD)"
+waive_case k18 $REPO $PR "$(wv "$WOK" '"regrade":""')" bad:no-regrade "(k18) X1: an empty-string regrade is refused"
+waive_case k19 $REPO $PR "$(wv "$WOK" '"regrade":["fable-regrader","CONFIRM"]')" bad:no-regrade "(k19) X1: a JSON-list regrade is refused"
+waive_case k20 $REPO $PR "$(wv "$WOK" '"regrade_del":["by"]')" bad:regrade-agent "(k20) X1: a regrade object missing by is refused"
+waive_case k21 $REPO $PR "$(wv "$WOK" '"regrade_del":["verdict"]')" bad:regrade-not-confirm "(k21) X1: a regrade object missing verdict is refused"
+
+# X2: the helper keeps no state between calls -- the regrade is rewritten IN PLACE on one row and the NEWEST value decides at the next merge
+RGJ() { printf '{"by": "%s", "verdict": "%s", "ts": "%s"}' "$1" "$2" "$3"; }
+waive_run() {   # waive_run NAME WID -> rc / counts of one rb-merge call on the ledger st-NAME
+  : > "$tmp/calls"; RB_MERGE_ADV_WAIVE="$2" WM_DECIDE_STATE="$tmp/st-$1" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?
+}
+overwrite_case() {   # overwrite_case NAME FIRST_JSON SECOND_JSON WANT1(ok|bad) WANT2(ok|bad) MSG -- first_verdict starts as FIRST (the stale value an "ignore later rewrites" bug would read)
+  case_run "$1" $REPO $PR "[$(wv "$WOK" '"regrade":'"$(rawj "$2")"',"first_verdict":'"$(rawj "$2")")]"
+  local wid=${rowids[0]} w1 w2
+  waive_run "$1" "$wid"; [ $rc = 0 ] && w1=ok || w1=bad
+  python3 -I -c 'import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute("UPDATE decisions SET regrade=? WHERE id=?",(sys.argv[2],sys.argv[3]));d.commit()' "$tmp/st-$1/decisions.sqlite" "$3" "$wid"
+  waive_run "$1" "$wid"; [ $rc = 0 ] && w2=ok || w2=bad
+  check "$w1:$w2" "$4:$5" "$6"
+}
+overwrite_case x2a "$(RGJ fable-regrader CONFIRM 2026-10-24T12:00:00-07:00)" "$(RGJ fable-regrader CORRECT 2026-10-24T12:30:00-07:00)" ok bad "(x2a) X2: the regrade is rewritten CONFIRM -> CORRECT between two merges: the second is refused"
+overwrite_case x2b "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" "$(RGJ fable-regrader CONFIRM 2026-10-24T12:30:00-07:00)" bad ok "(x2b) X2: CORRECT -> CONFIRM (later grade time, by=fable-regrader): the second is accepted"
+overwrite_case x2c "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" '{"verdict": "CONFIRM", "ts": "2026-10-24T12:30:00-07:00"}' bad bad "(x2c) X2: CORRECT -> CONFIRM with by missing: still refused"
+overwrite_case x2d "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" "$(RGJ r7 CONFIRM 2026-10-24T12:30:00-07:00)" bad bad "(x2d) X2: CORRECT -> CONFIRM by another agent (r7): still refused"
 waive_case k16 $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"CORRECT","by":"r7"}')" bad:regrade-agent "(k16) a CORRECT from a non-regrader is refused (agent checked first)"
 case_run k10 $REPO $PR '[]'; : > "$tmp/calls"; RB_MERGE_ADV_WAIVE=d-20261024-000000-r7-ffff WM_DECIDE_STATE="$tmp/st-k10" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc:$(merged):$(grep -cx "ADV-WAIVER-BAD - $REPO#$PR" "$tmp/err")" "4:0:1" "(k10) a waiver id that is not in the ledger is refused"
+
+# X3: the ADV row binds the PR's LIVE head (headRefOid, read once after the ledger read), byte-equal, and the gate's oid must be that head
+case_run x3a $REPO $PR "[$(adv "$PASSW")]"; check "$(grep -c 'headRefOid' "$tmp/calls"):$(grep -c -- "--match-head-commit $OID " "$tmp/calls")" "1:1" "(x3a) the one head read, and the merge is pinned --match-head-commit to that same oid"
+STUB_HEAD=$HB STUB_OID=$HB case_run x3b $REPO $PR "[$(adv "$PASSW")]"; refused "(x3b) the PR head moved on (the fake gh answers another headRefOid; the gate agrees with it): ADV-STALE-HEAD before the gate" ADV-STALE-HEAD
+STUB_OID=$HB case_run x3c $REPO $PR "[$(adv "$PASSW")]"
+check "$rc:$(merged):$(gated):$(grep -cx "ADV-STALE-HEAD $G $REPO#$PR" "$tmp/err")" "4:0:1:1" "(x3c) the ADV row matches the head but the gate passed another oid: ADV-STALE-HEAD, no merge"
+CASE_COMMIT=aaaaaaaaaaaa STUB_HEAD=aaaaaaaaaaaacccccccccccccccccccccccccccc STUB_OID=aaaaaaaaaaaacccccccccccccccccccccccccccc case_run x3d $REPO $PR "[$(adv "$PASSW" '"commit":"aaaaaaaaaaaacccccccccccccccccccccccccccc"')]"
+refused "(x3d) V names a 12-hex COMMIT and the ADV row sits at ANOTHER tip sharing that prefix: ADV-COMMIT-SHORT (was ADV-OK + merge)" ADV-COMMIT-SHORT
+CASE_COMMIT=aaaaaaaaaaaa case_run x3e $REPO $PR "[$(adv "$PASSW" '"commit":"'$OID'"')]"; refused "(x3e) a 12-hex V COMMIT is refused even when the ADV row is the head: ADV-COMMIT-SHORT" ADV-COMMIT-SHORT
+case_run x3f $REPO $PR "[$(adv "$PASSW")]"; passed "(x3f) a matching full 40-hex COMMIT passes"
+check "$(grep -c '^ADV-OK ' "$tmp/err"):$(grep -c "^ADV-OK .* $OID $REPO#$PR\$" "$tmp/err")" "1:1" "(x3f) the ADV-OK marker prints the one head oid"
+# the fake gh refuses a merge pinned to a stale oid (so --match-head-commit is what protects the squash): a non-ADV PR whose head moved between the gate and the merge
+STUB_HEAD=$HB case_run x3g j0yen/swarm-decide 7 '[]'
+check "$rc:$(merged):$(grep -c '^wmd merge-done' "$tmp/calls")" "1:1:0" "(x3g) the merge carries --match-head-commit <gate oid>: a moved head makes gh refuse it, so no merge-done"
+# old-schema ledgers refuse (never a traceback): a waiver check needs the regrade and graded_at columns
+for col in regrade graded_at; do
+  case_run "os-$col" $REPO $PR "[$(wv "$WOK")]"; python3 -I -c 'import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute("ALTER TABLE decisions DROP COLUMN "+sys.argv[2]);d.commit()' "$tmp/st-os-$col/decisions.sqlite" "$col"
+  : > "$tmp/calls"; RB_MERGE_ADV_WAIVE="${rowids[0]}" WM_DECIDE_STATE="$tmp/st-os-$col" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?
+  check "$rc:$(merged):$(grep -cx "ADV-WAIVER-BAD - $REPO#$PR" "$tmp/err"):$(grep -cx 'ADV-REASON old-schema' "$tmp/err"):$(grep -c Traceback "$tmp/err")" "4:0:1:1:0" "(os) a ledger without the $col column: ADV-WAIVER-BAD + ADV-REASON old-schema, exit 4, no traceback"
+done
 
 # (l) a dotfiles PR (non-trigger repo) whose G cites a brief: each placement triggers the rule
 DF=j0yen/dotfiles

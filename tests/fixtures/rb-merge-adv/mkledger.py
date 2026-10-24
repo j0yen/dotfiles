@@ -53,11 +53,23 @@ for a in spec.get("rows", []):
         out.append(copy(REAL_V, rid("a%d" % n), what=what, ts=ts, gates=gates, kind=a.get("kind", "verdict"), via=a.get("via", REAL_V["via"]), agent=a.get("agent", REAL_V["agent"])))
     else:   # waiver: a copy of the real kind=other row G, kind / agent / what are the knobs
         what = a["what"].format(repo=repo, pr=pr)
-        # the waiver's grade: the real row G's own `regrade` JSON ({"by": "fable-regrader", "verdict": "CONFIRM", ...}) and graded_at column, with graded_at moved after the
-        # waiver row's ts; "regrade": null = ungraded, {..} = fields overridden; "graded_at" overrides the column
+        # the waiver's grade: the real row G's own `regrade` JSON ({"by": "fable-regrader", "verdict": "CONFIRM", ..., "ts": <grade time>}) with its ts moved after the waiver row's ts.
+        # "regrade": null = ungraded; {..} = members overridden; a JSON string = that raw text verbatim (malformed JSON, ""); a list = that list; "regrade_del": [..] removes members.
+        # graded_at stays the outcome-pass column (only a probe now); "graded_at" overrides it; "first_verdict" overrides the first-verdict column.
         rg = a.get("regrade", {})
-        regrade = None if rg is None else json.dumps(dict(json.loads(REAL_G["regrade"]), **rg))
-        out.append(copy(REAL_G, rid("w%d" % n), what=what, ts=ts, kind=a.get("kind", "other"), agent=a.get("agent", "controller"), via=a.get("via", "seat-tick"), regrade=regrade, graded_at=a.get("graded_at", "2026-10-24T12:00:00-07:00")))
+        if rg is None:
+            regrade = None
+        elif isinstance(rg, str):
+            regrade = rg
+        elif isinstance(rg, list):
+            regrade = json.dumps(rg)
+        else:
+            j = dict(dict(json.loads(REAL_G["regrade"]), ts="2026-10-24T12:00:00-07:00"), **rg)
+            for k in a.get("regrade_del", []):
+                j.pop(k, None)
+            regrade = json.dumps(j)
+        out.append(copy(REAL_G, rid("w%d" % n), what=what, ts=ts, kind=a.get("kind", "other"), agent=a.get("agent", "controller"), via=a.get("via", "seat-tick"), regrade=regrade,
+                        graded_at=a.get("graded_at", "2026-10-24T12:00:00-07:00"), first_verdict=a.get("first_verdict", REAL_G["first_verdict"])))
 os.makedirs(state, exist_ok=True)
 db = sqlite3.connect(os.path.join(state, "decisions.sqlite"))
 ddl = open(os.path.join(HERE, "decisions.ddl.sql")).read()
