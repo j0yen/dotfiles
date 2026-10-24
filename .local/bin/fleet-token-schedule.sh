@@ -3,6 +3,7 @@
 # Rotates to the ONE account named in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/schedule (first non-comment line) with `--trigger schedule`.
 #   already current (token.json names it)  -> `no-op: <account> already current`, exit 0
 #   schedule file missing/empty, or the store lacks the account -> ALARM (ctl-events.log), exit 1
+#   the account is BLOCKED (blocked-until-<account> in the future, see fleet-token-lib.sh ft_block) -> ALARM `... skipped: blocked until <iso>`, nothing rotated, exit 1
 #   otherwise -> exec fleet-token-rotate.sh <account> --by fleet-token-schedule --trigger schedule (its exit code is ours)
 # Env: FLEET_TOKEN_ROTATE_CMD (default the sibling fleet-token-rotate.sh) and everything fleet-token-rotate.sh reads.
 set -euo pipefail
@@ -13,7 +14,7 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 schedule() {
-  local acct="" line cur
+  local acct="" line cur blocked
   if [ -r "$FT_CFG/schedule" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       acct="$(printf '%s' "${line%%#*}" | tr -d '[:space:]')"
@@ -27,6 +28,10 @@ schedule() {
   if [ -n "$cur" ] && [ "$cur" = "$acct" ]; then echo "no-op: $acct already current"; return 0; fi
   if [ ! -f "$FT_STORE/$acct" ]; then
     ft_alarm "weekly rotation to '$acct' NOT done: no store entry (fleet-token-store.sh add $acct); current stays '${cur:-unknown}'"; return 1
+  fi
+  blocked="$(ft_block_reason "$acct" "$(ft_now)")"
+  if [ -n "$blocked" ]; then
+    ft_alarm "weekly rotation to '$acct' skipped: $blocked; current stays '${cur:-unknown}'"; return 1
   fi
   exec ${FLEET_TOKEN_ROTATE_CMD:-"$(dirname "$SELF")/fleet-token-rotate.sh"} "$acct" --by fleet-token-schedule --trigger schedule
 }
@@ -66,6 +71,23 @@ selftest() {
     ft_st_store acctBad "$c-bad"; printf 'acctBad\n' >"$FT_CFG/schedule"
     runs; rc=$?
     [ "$rc" = 2 ] && [ "$(tokj .account)" = acctB ]; ft_st_chk "pre-verify failure: exit 2 passed through, token.json unchanged" $?
+    # 7. blocked-until: a scheduled account inside its block is skipped (ALARM, exit 1, nothing placed); an expired or garbled block is ignored
+    printf 'acctA\n' >"$FT_CFG/schedule"; : >"$FT_DASH/ctl-events.log"; : >"$FAKE_LOG_DIR/place.log"
+    ft_block acctA "$((NOW + 3600))" "weekly limit resets $(ft_la_iso "$((NOW + 3600))")"
+    runs; rc=$?
+    [ "$rc" = 1 ] && [ ! -s "$FAKE_LOG_DIR/place.log" ] && [ "$(tokj .account)" = acctB ] && grep -q "weekly rotation to 'acctA' skipped: blocked until $(ft_la_iso "$((NOW + 3600))")" "$FT_DASH/ctl-events.log"; ft_st_chk "schedule-blocked: scheduled account blocked -> ALARM 'skipped: blocked until <iso>', exit 1, nothing placed, token.json unchanged" $?
+    export FLEET_TOKEN_NOW_EPOCH=$((NOW + 7200))
+    runs; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .account)" = acctA ] && [ "$(wc -l <"$FAKE_LOG_DIR/place.log")" = 1 ]; ft_st_chk "schedule-expired: the block is in the past -> rotates to acctA" $?
+    export FLEET_TOKEN_NOW_EPOCH=$NOW
+    printf 'acctB\n' >"$FT_CFG/schedule"; printf 'garbage\n' >"$FT_STATE/blocked-until-acctB"; : >"$FAKE_LOG_DIR/place.log"
+    runs; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .account)" = acctB ]; ft_st_chk "schedule-garbled: an unparseable blocked-until file is ignored (old behaviour) -> rotates" $?
+    ft_unblock acctA; ft_block acctB "$((NOW + 3600))" "x"; printf 'acctA\n' >"$FT_CFG/schedule"; : >"$FT_DASH/ctl-events.log"
+    runs; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .account)" = acctA ]; ft_st_chk "schedule-other: a block on a DIFFERENT account does not stop the scheduled rotation" $?
+    printf 'acctB\n' >"$FT_CFG/schedule"; runs; rc=$?
+    [ "$rc" = 1 ] && [ "$(tokj .account)" = acctA ]; ft_st_chk "schedule-blocked again: rotating onto the blocked acctB is refused" $?
     ! grep -rqF "$c" "$o" "$e"; ft_st_chk "stdout/stderr carry no token" $?
     ft_st_done fleet-token-schedule
   ); return $?
