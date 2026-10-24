@@ -8,6 +8,11 @@
 #   rm <account>            remove an entry (shredded)
 #   current <account>       bootstrap: write ~/.cache/fleet-dash/token.json {account, placed_at:null, by:"hand", trigger:"seed"}
 #                           ONLY when it does not exist (it names the account the fleet already runs on; rotate treats a missing file as unknown)
+#   block <account> <when> [why...]   refuse <account> for rotation (watcher + weekly schedule) until <when>: an America/Los_Angeles date ("2026-10-26 21:00",
+#                           "Oct 26, 9pm", "3:30pm") or an epoch; must be in the future. Writes $FT_STATE/blocked-until-<account> + blocks.log. Prints the
+#                           stored time as 2026-10-26T21:00-07:00. No store entry needed.
+#   unblock <account>       drop the block (logged)
+#   blocked                 `<account> <iso> (<why>)` per ACTIVE block
 #   --selftest              throwaway HOME, canary token, fakes; no real store, no real token
 # Exit: 0 ok, 1 not found / failed, 64 usage or refusal.
 set -euo pipefail
@@ -15,7 +20,7 @@ set +x
 # shellcheck source=../lib/fleet-token-lib.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-token-lib.sh"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-usage() { echo 'usage: fleet-token-store.sh add <account> [--tty] (token on stdin) | list | check | rm <account> | current <account> | --selftest' >&2; exit 64; }
+usage() { echo 'usage: fleet-token-store.sh add <account> [--tty] (token on stdin) | list | check | rm <account> | current <account> | block <account> <when> [why] | unblock <account> | blocked | --selftest' >&2; exit 64; }
 
 cmd_add() {
   local acct="${1:-}" tty=0 tok raw tmp n
@@ -90,6 +95,34 @@ cmd_current() {
   echo "seeded token.json: account $acct"
 }
 
+cmd_block() {
+  local acct="${1:-}" when="${2:-}" why ep now
+  ft_valid_account "$acct" || { echo "fleet-token-store: bad or missing account name" >&2; exit 64; }
+  [ -n "$when" ] || { echo "fleet-token-store: block needs a time (America/Los_Angeles date or epoch)" >&2; exit 64; }
+  shift 2; why="${*:-hand}"
+  ep="$(ft_parse_la_date "$when")" || { echo "fleet-token-store: REFUSED: cannot parse '$when' as a date" >&2; exit 64; }
+  now="$(ft_now)"
+  [ "$ep" -gt "$now" ] || { echo "fleet-token-store: REFUSED: $(ft_la_iso "$ep") is not in the future" >&2; exit 64; }
+  ft_block "$acct" "$ep" "$why"
+  echo "blocked: $acct until $(ft_la_iso "$ep")"
+}
+
+cmd_unblock() {
+  local acct="${1:-}"
+  ft_valid_account "$acct" || { echo "fleet-token-store: bad or missing account name" >&2; exit 64; }
+  ft_unblock "$acct"
+  echo "unblocked: $acct"
+}
+
+cmd_blocked() {
+  local f a r now; now="$(ft_now)"
+  for f in "$FT_STATE"/blocked-until-*; do
+    [ -f "$f" ] || continue
+    a="${f##*/blocked-until-}"; r="$(ft_block_reason "$a" "$now")"
+    [ -z "$r" ] || printf '%s %s\n' "$a" "$r"
+  done
+}
+
 selftest() {
   local T out rc c=sk-ant-oat01-canary-tok-7f3e9a; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
   ( set +e; ft_st_env "$T"; FT_ST_T="$T"
@@ -143,6 +176,25 @@ selftest() {
     [ "$rc" = 0 ] && [ ! -e "$FT_STORE/jyen.tech" ]; ft_st_chk "rm removes the entry" $?
     run rm jyen.tech; rc=$?
     [ "$rc" = 1 ]; ft_st_chk "rm of a missing entry: exit 1" $?
+    # 6. block / unblock / blocked (fake clock 1790000000 = Mon 2026-09-21 07:13 PDT)
+    export FLEET_TOKEN_NOW_EPOCH=1790000000
+    run block jyen.tech "2026-10-26 21:00" weekly limit; rc=$?
+    [ "$rc" = 0 ] && grep -qx 'blocked: jyen.tech until 2026-10-26T21:00-07:00' "$o" && [ "$(cat "$FT_STATE/blocked-until-jyen.tech")" = 1793073600 ] \
+      && grep -q ' account=jyen.tech until=1793073600 until_iso=2026-10-26T21:00-07:00 why=weekly limit$' "$FT_BLOCKLOG"; ft_st_chk "block <acct> '2026-10-26 21:00': epoch file + blocks.log line + printed ISO carries the offset" $?
+    run blocked; [ "$(cat "$o")" = "jyen.tech blocked until 2026-10-26T21:00-07:00 (weekly limit)" ]; ft_st_chk "blocked lists the active block with its reason" $?
+    run block jyen.pm "Oct 26, 9pm"; [ "$(cat "$FT_STATE/blocked-until-jyen.pm")" = 1793073600 ]; ft_st_chk "block with the weekly 429 text form 'Oct 26, 9pm' -> same epoch" $?
+    run block jyen.pm "3:30pm"; [ "$(cat "$FT_STATE/blocked-until-jyen.pm")" = 1790029800 ]; ft_st_chk "block with the session form '3:30pm' -> today 3:30 PM LA" $?
+    run block jyen.pm "not a date"; rc=$?
+    [ "$rc" = 64 ] && grep -q 'REFUSED' "$e" && [ "$(cat "$FT_STATE/blocked-until-jyen.pm")" = 1790029800 ]; ft_st_chk "unparseable time: refused (64), existing block untouched" $?
+    run block jyen.pm "2026-09-01 10:00"; rc=$?
+    [ "$rc" = 64 ] && grep -q 'not in the future' "$e"; ft_st_chk "a time in the past: refused (64)" $?
+    run block '../evil' "2026-10-26 21:00"; rc=$?
+    [ "$rc" = 64 ] && [ ! -e "$FT_STATE/blocked-until-../evil" ]; ft_st_chk "path-shaped account: refused" $?
+    export FLEET_TOKEN_NOW_EPOCH=1793073601
+    run blocked; [ ! -s "$o" ]; ft_st_chk "blocked: an expired block is not listed" $?
+    export FLEET_TOKEN_NOW_EPOCH=1790000000
+    run unblock jyen.tech; rc=$?
+    [ "$rc" = 0 ] && [ ! -e "$FT_STATE/blocked-until-jyen.tech" ] && grep -q 'account=jyen.tech until=cleared' "$FT_BLOCKLOG"; ft_st_chk "unblock removes the file and logs it" $?
     ft_st_done fleet-token-store
   ) ; return $?
 }
@@ -157,5 +209,8 @@ case "$sub" in
   check) cmd_check ;;
   rm) cmd_rm "$@" ;;
   current) cmd_current "$@" ;;
+  block) cmd_block "$@" ;;
+  unblock) cmd_unblock "$@" ;;
+  blocked) cmd_blocked ;;
   *) usage ;;
 esac
