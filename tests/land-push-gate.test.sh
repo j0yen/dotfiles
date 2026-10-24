@@ -67,6 +67,20 @@ t "the chained form from an unmarked session passes" pass 'rb-land-push.sh --con
 t "refspec-less 'git push' is refused via the unparsed-target path" unparsed "git push" $RB
 t "'git push origin HEAD' is refused via the unparsed-target path" unparsed "git push origin HEAD" $RB
 t "'git push --force-with-lease origin HEAD' is refused via the unparsed-target path" unparsed "git push --force-with-lease origin HEAD" $RB
+# rlp1c: ssh-wrapped pushes (the sanctioned path for a RedBaron worktree is `rb-land-push.sh --host redbaron`, never `ssh <h> ...`); each case under WM_SEAT=rb and again under RB_CODER_ID
+ID=d-20261024-000000-controller-abcd
+for who in "$RB" RB_CODER_ID=x; do
+  t "[$who] ssh with cd && git push is refused" block 'ssh redbaron "cd /mnt/data/wt/x && git push origin HEAD:wm-build/x"' $who
+  t "[$who] ssh with git -C ... push is refused" block "ssh redbaron 'git -C /mnt/data/wt/x push origin HEAD:wm-build/x'" $who
+  t "[$who] ssh with an unquoted git -C push --dry-run is refused" block 'ssh redbaron git -C /mnt/data/wt/x push --dry-run origin HEAD:wm-build/gate-probe' $who
+  t "[$who] bash -c push is refused" block 'bash -c "git push origin HEAD:wm-build/x"' $who
+  t "[$who] ssh bash -s with the push in a heredoc body is refused" block $'ssh redbaron bash -s <<\'EOF\'\ngit -C /mnt/data/wt/x push origin HEAD:refs/heads/wm-build/x\nEOF' $who
+  t "[$who] remote invocation of rb-land-push.sh over ssh stays refused" block "ssh redbaron '~/.local/bin/rb-land-push.sh --confirm $ID --repo /x --branch wm-build/x'" $who
+  t "[$who] ssh with cd; git push origin HEAD:refs/heads/... is refused" block "ssh redbaron 'cd /mnt/data/wt/x; git push origin HEAD:refs/heads/wm-build/x'" $who
+  t "[$who] rb-land-push.sh --host chained with && true is refused" block "rb-land-push.sh --confirm $ID --host redbaron --repo /x --branch wm-build/x && true" $who
+  t "[$who] rb-land-push.sh --host redbaron --repo --branch as ONE simple command passes" pass "rb-land-push.sh --confirm $ID --host redbaron --repo /mnt/data/wt/x --branch wm-build/x" $who
+  t "[$who] rb-land-push.sh --host redbaron --check as ONE simple command passes" pass "rb-land-push.sh --confirm $ID --host redbaron --repo /mnt/data/wt/x --branch wm-build/x --check" $who
+done
 payload "$R" Read | env WM_SEAT=rb bash "$hook" >/dev/null 2>&1; n=$((n+1)); [ $? = 0 ] && echo "ok - a non-Bash tool passes" || { echo "NOT OK - non-Bash tool"; fail=1; }
 # registered in the settings.json Bash PreToolUse list
 n=$((n+1)); jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[].command] | any(endswith("/.claude/hooks/land-push-gate.sh"))' "$here/.claude/settings.json" >/dev/null && echo "ok - land-push-gate.sh is registered under PreToolUse/Bash in .claude/settings.json" || { echo "NOT OK - hook not registered"; fail=1; }

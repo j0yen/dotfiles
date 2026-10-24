@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/rb-land-push.test.sh -- .local/bin/rb-land-push.sh: a land-branch push needs a LIVE controller CONFIRM row that names HEAD (commit or tree 8-hex, whole token);
 # every refusal prints exactly one `REFUSED <reason>` line, exits 2, and leaves the origin ref unchanged; a valid row pushes (fast-forward only) and logs pushing -> pushed.
-# Throwaway HOME + a temp sqlite built from the decisions schema (id/ts/agent/kind/what/regrade columns) + a bare origin and a clone. No network, no ssh, never the live db.
+# Throwaway HOME + a temp sqlite built from the decisions schema (id/ts/agent/kind/what/regrade columns) + a bare origin and a clone. No network, never the live db.
+# Remote mode (--host) runs over a FAKE ssh first on PATH (strips `-o BatchMode=yes <h>`, runs the rest as bash -c "$*" like a remote shell); the real ssh is never reached.
 # Plain bash, run from the repo root:  bash tests/rb-land-push.test.sh
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,8 +16,18 @@ mkdir -p "$HOME"; g=(git -c user.name=t -c user.email=t@t)
 # the schema line from `sqlite3 decisions.sqlite '.schema decisions'` (columns the wrapper reads)
 sqlite3 "$WM_DECISIONS_DB" "create table decisions (id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, what TEXT NOT NULL, regrade TEXT);"
 git init -q --bare -b main "$T/origin.git"; git clone -q "$T/origin.git" "$T/wt" 2>/dev/null
-( cd "$T/wt" && echo a > f && "${g[@]}" add f && "${g[@]}" commit -qm a && git push -q origin HEAD:refs/heads/main && git push -q origin HEAD:refs/heads/wm-build/x && echo b >> f && "${g[@]}" commit -qam b )
+( cd "$T/wt" && echo a > f && "${g[@]}" add f && "${g[@]}" commit -qm a && git push -q origin HEAD:refs/heads/main && git push -q origin HEAD:refs/heads/wm-build/x && git checkout -q -b wm-build/x && echo b >> f && "${g[@]}" commit -qam b )
 HEAD_SHA=$(git -C "$T/wt" rev-parse HEAD); H8=${HEAD_SHA:0:8}; TREE=$(git -C "$T/wt" rev-parse 'HEAD^{tree}'); T8=${TREE:0:8}
+mkdir -p "$T/bin"; : > "$T/ssh.log"; export FAKE_SSH_LOG="$T/ssh.log"
+cat > "$T/bin/ssh" <<'EOS'
+#!/usr/bin/env bash
+[ -n "${FAKE_SSH_RC:-}" ] && exit "$FAKE_SSH_RC"
+[ "${1:-}" = -o ] && [ "${2:-}" = BatchMode=yes ] || exit 97
+echo call >> "$FAKE_SSH_LOG"; shift 3
+exec bash -c "$*"
+EOS
+chmod +x "$T/bin/ssh"; export PATH="$T/bin:$PATH"; [ "$(command -v ssh)" = "$T/bin/ssh" ] || { echo "abort: fake ssh not first on PATH"; exit 1; }
+XA=(); REPO="$T/wt"
 B=wm-build/x; ID=d-20261024-100000-controller-abcd; TS=2026-10-24T10:00:00-07:00
 row() { sqlite3 "$WM_DECISIONS_DB" "insert into decisions values ('$1','$2','$3','$4','$5',${6:-NULL});"; }
 clear() { sqlite3 "$WM_DECISIONS_DB" "delete from decisions;"; }
@@ -24,7 +35,7 @@ tip() { git -C "$T/origin.git" rev-parse "refs/heads/$1" 2>/dev/null || echo non
 # refused <name> <reason> <id> [branch]: one REFUSED line, rc 2, origin ref unchanged
 refused() {
   local name=$1 want=$2 id=$3 br=${4:-$B} b a out rc
-  b=$(tip "$br"); out=$(bash "$wrap" --confirm "$id" --repo "$T/wt" --branch "$br" 2>&1); rc=$?; a=$(tip "$br")
+  b=$(tip "$br"); out=$(bash "$wrap" --confirm "$id" --repo "$REPO" --branch "$br" ${XA[@]+"${XA[@]}"} 2>&1); rc=$?; a=$(tip "$br")
   if [ $rc = 2 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 1 ] && [[ "$out" == "REFUSED $want"* ]] && [ "$b" = "$a" ]; then ok "$name -> REFUSED $want, origin ref unchanged"; else bad "$name: rc=$rc out='$out' ref $b -> $a (want REFUSED $want)"; fi
 }
 clear;                                                                                  refused "no row" no-row "$ID"
@@ -81,6 +92,48 @@ bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" >/dev/null 2>&1 && [ "
 # the db is opened read-only: sha256 of the db file is unchanged by a push run
 s1=$(sha256sum "$WM_DECISIONS_DB" | cut -d' ' -f1); bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" >/dev/null 2>&1; s2=$(sha256sum "$WM_DECISIONS_DB" | cut -d' ' -f1)
 [ "$s1" = "$s2" ] && ok "decisions db unchanged by a run" || bad "decisions db changed"
+# the push is the captured sha, never HEAD (TOCTOU), never a bare branch name
+pl=$(sed -n '/^run_push() {/,/^selftest() {/p' "$wrap" | grep -E 'push -q origin' | grep -vE '^\s*#')
+[[ "$pl" == *'origin $head:refs/heads/'* ]] && [[ "$pl" != *HEAD:* ]] && [ "$(printf '%s\n' "$pl" | wc -l)" = 1 ] && ok "push refspec is <sha>:refs/heads/<branch>, not HEAD" || bad "push refspec is not the captured sha: $pl"
+# --- branch binding: the repo must be ON --branch unless the row names it as a whole word
+git -C "$T/wt" worktree add -q --detach "$T/wtd" HEAD
+git -C "$T/origin.git" update-ref refs/heads/wm-build/y "$(git -C "$T/wt" rev-parse HEAD~1)"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8";                                             refused "repo on wm-build/x, --branch wm-build/y, row does not name y" branch-mismatch "$ID" wm-build/y
+REPO="$T/wtd";                                                                                          refused "detached HEAD, branch not named in the row" branch-mismatch "$ID"; REPO="$T/wt"
+clear; row "$ID" $TS controller verdict "CONFIRM wm-build/y tree $T8"
+out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch wm-build/y 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(tip wm-build/y)" = "$HEAD_SHA" ] && ok "a row naming the branch as a whole word overrides the binding -> pushed" || bad "named-branch push failed: rc=$rc out=$out"
+git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"
+# --- remote mode (--host) over the fake ssh; db checks stay local, git runs through ssh
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"; : > "$T/ssh.log"; : > "$RB_LAND_PUSH_LOG"
+out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && ok "remote: happy push through the fake ssh reaches the bare origin" || bad "remote push failed: rc=$rc out=$out"
+[ "$(wc -l < "$T/ssh.log")" = 2 ] && ok "remote: exactly two ssh round trips (checks, push)" || bad "remote: ssh calls = $(wc -l < "$T/ssh.log")"
+[[ "$out" == *" pushed $ID confirm_ts=$TS agent=rb-test $B "*"..$H8 host=redbaron" ]] && grep -q ' pushing .* host=redbaron$' "$RB_LAND_PUSH_LOG" && ok "remote: log lines carry host=redbaron" || bad "remote log line wrong: $out"
+git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"
+XA=(--host 'x;y');                                                                                      refused "remote: --host 'x;y'" bad-host "$ID"
+XA=(--host '');                                                                                         refused "remote: --host '' (empty)" bad-host "$ID"
+XA=(--host evil);                                                                                       refused "remote: a host outside RB_LAND_PUSH_HOSTS" host-not-allowed "$ID"
+out=$(RB_LAND_PUSH_HOSTS="evil redbaron" bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host evil 2>&1); rc=$?
+[[ "$out" != "REFUSED host-not-allowed"* ]] && ok "remote: RB_LAND_PUSH_HOSTS extends the allowlist" || bad "allowlist env ignored: $out"
+git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"
+XA=(--host redbaron); REPO="$T/w t";                                                                    refused "remote: repo path with a space" bad-repo "$ID"
+REPO="$T/w;t";                                                                                          refused "remote: repo path with a ;" bad-repo "$ID"
+REPO='relative/path';                                                                                   refused "remote: relative repo path" bad-repo "$ID"
+REPO="$T/wt"
+git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/other" rev-parse HEAD)";                 refused "remote: non-fast-forward over the fake ssh" non-ff "$ID"
+git -C "$T/origin.git" update-ref refs/heads/$B "$(git -C "$T/wt" rev-parse HEAD~1)"
+lb=$(git ls-remote "$T/origin.git"); out=$(FAKE_SSH_RC=255 bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1); rc=$?; la=$(git ls-remote "$T/origin.git")
+[ $rc = 2 ] && [[ "$out" == "REFUSED ssh-failed rc=255"* ]] && [ "$lb" = "$la" ] && ok "remote: ssh rc 255 -> REFUSED ssh-failed rc=255; git ls-remote on the origin identical before/after" || bad "ssh-failed: rc=$rc out=$out"
+XA=(--host redbaron); REPO="$T/wtd";                                                                    refused "remote: detached HEAD not named -> branch-mismatch" branch-mismatch "$ID"; REPO="$T/wt"
+# --- --check: runs checks 0-4 + ls-remote, prints CHECK-OK, never pushes, never logs
+: > "$RB_LAND_PUSH_LOG"; lb=$(git ls-remote "$T/origin.git")
+out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron --check 2>&1); rc=$?; la=$(git ls-remote "$T/origin.git")
+[ $rc = 0 ] && [ "$out" = "CHECK-OK sha=$H8 host=redbaron" ] && [ "$lb" = "$la" ] && [ ! -s "$RB_LAND_PUSH_LOG" ] && ok "--check --host: CHECK-OK sha=<8> host=redbaron, origin unchanged, nothing logged" || bad "--check: rc=$rc out=$out"
+out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --check 2>&1); rc=$?
+[ $rc = 0 ] && [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "--check without --host (local): CHECK-OK ... host=local" || bad "local --check: rc=$rc out=$out"
+XA=(--host redbaron --check);                                                                           refused "--check still refuses (branch-mismatch)" branch-mismatch "$ID" wm-build/y
+XA=(); clear
 # no force anywhere in the push path
 grep -nE -- '--force|--force-with-lease|push .*\+' "$wrap" | grep -vE '^[0-9]+:\s*#' | grep -q . && bad "wrapper source contains a force push" || ok "no --force / --force-with-lease / + refspec in the push path"
 # selftest
