@@ -35,6 +35,10 @@ chk "429 watch EXPIRES parses" "e=\$(sed -nE 's/^EXPIRES=\"([^\"]+)\"\$/\\1/p' '
 for u in fleet-token-429-watch.service fleet-token-429-watch.timer fleet-token-schedule.service fleet-token-schedule.timer; do
   chk "$u: ConditionHost=carbon" "grep -qx 'ConditionHost=carbon' '$units/$u'"
 done
+# blocked-until: the watcher and the weekly schedule read the SAME block file (one state dir, one helper)
+chk "429 watch skip_reason and the schedule both consult ft_block_reason" "grep -q 'ft_block_reason' '$bin/fleet-token-429-watch.sh' && grep -q 'ft_block_reason' '$bin/fleet-token-schedule.sh'"
+chk "no fleet-token unit or script overrides FLEET_TOKEN_STATE_DIR (watcher + schedule share \$FT_STATE on carbon)" "! grep -n 'FLEET_TOKEN_STATE_DIR' '$units'/fleet-token-*.service '$units'/fleet-token-*.timer | grep -q . && ! grep -n 'FLEET_TOKEN_STATE_DIR=' '$bin'/fleet-token-429-watch.sh '$bin'/fleet-token-schedule.sh '$bin'/fleet-token-store.sh '$bin'/fleet-token-rotate.sh | grep -q ."
+chk "one date parser: no script outside the lib calls date -d on a reset text" "! grep -n 'date -d \"\$.*resets' '$bin'/fleet-token-{429-watch,schedule,store,rotate}.sh | grep -q ."
 chk "429 watch timer: every 2 min" "grep -qx 'OnUnitActiveSec=2min' '$units/fleet-token-429-watch.timer'"
 chk "schedule timer: Fri 14:05 America/Los_Angeles, Persistent=true" "grep -qx 'OnCalendar=Fri 14:05 America/Los_Angeles' '$units/fleet-token-schedule.timer' && grep -qx 'Persistent=true' '$units/fleet-token-schedule.timer'"
 chk "the repo enables nothing (no timers.target symlink, no systemctl enable)" "! grep -rn -E 'systemctl[^|]* enable' '$bin'/fleet-token-*.sh | grep -q ."

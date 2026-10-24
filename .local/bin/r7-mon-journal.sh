@@ -38,6 +38,25 @@ RJ='$HOME/.local/state/wm-build/journal.jsonl'
 PARSER="$HERE/r7-journal-parse.py"
 REQUIRED_PATTERNS=('"op":"tick"' '"table":"alarms"' '"table":"runs"' '"op":"update"')
 
+stall_age() {   # af51 (row 37ea): minutes since the newest coder session JSONL for slug $1 on the build host; "none" if no session dir/file
+  local d; d=".claude/projects/$(printf %s "/home/jsy/.local/state/wm-build/wt/$1" | sed 's/[^A-Za-z0-9]/-/g')"
+  ${R7_STALL_SH:-ssh $R7_SSH_OPTS $R7_HOST} "cd ~ && f=\$(ls -t $d/*.jsonl 2>/dev/null | head -1); if [ -n \"\$f\" ]; then echo \$(( (\$(date +%s) - \$(stat -c %Y \"\$f\")) / 60 )); else echo none; fi" 2>/dev/null || echo unread
+}
+stall_note() {  # INNER LIVENESS: the daemon stall alarm reads progress.jsonl; the coder JSONL mtime is the truth
+  local a; a=$(stall_age "$1")
+  case "$a" in none|unread|'') echo "coder_jsonl=$a (no live coder session read)";;
+    *) if [ "$a" -lt 15 ]; then echo "coder_jsonl_age=${a}m LIVE: NOT a stall"; else echo "coder_jsonl_age=${a}m STALLED: redrive from inner"; fi;; esac
+}
+stall_selftest() {
+  local t f=0 o; t=$(mktemp -d); mkdir -p "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug"
+  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *none* ]] || f=1
+  touch "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug/a.jsonl"
+  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *LIVE* ]] || f=1
+  touch -d '-30 min' "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug/a.jsonl"
+  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *STALLED* ]] || f=1
+  rm -rf "$t"; [ $f = 0 ] && echo "STALL-NOTE SELFTEST OK (none/LIVE/STALLED)" || { echo "STALL-NOTE SELFTEST FAIL"; return 1; }
+}
+
 parse_loop() {   # stdin: parser output (CAND/HB lines); stdout: bells. wp_gate runs on every HB (30 s) so an expired premise stops the wake.
   local tag what run vals
   set -f
@@ -45,7 +64,8 @@ parse_loop() {   # stdin: parser output (CAND/HB lines); stdout: bells. wp_gate 
     case "$tag" in
       HB) r7_hb "$NAME"
           if r7_gate >/dev/null 2>&1; then unset R7_BELL_DRY_GATE; else R7_BELL_DRY_GATE=1; fi ;;
-      CAND) R7_BELL_DRY=${R7_BELL_DRY:-${R7_BELL_DRY_GATE:-}} r7_bell "$NAME" "$run" "$what" "$vals" ;;
+      CAND) if [[ $what == alarm-opened && $vals == *channel=stall* ]]; then vals="$vals $(stall_note "$run")"; fi
+            R7_BELL_DRY=${R7_BELL_DRY:-${R7_BELL_DRY_GATE:-}} r7_bell "$NAME" "$run" "$what" "$vals" ;;
     esac
   done
 }
@@ -89,7 +109,7 @@ selftest() {
 }
 
 r7_wp_arm r7-mon-journal "$R7_PREMISE_TEXT" "ssh $R7_SSH_OPTS $R7_HOST 'test -s $RJ'"
-if [ "${1:-}" = --selftest ]; then selftest; rc=$?; r7_wp_line || rc=1; exit $rc; fi
+if [ "${1:-}" = --selftest ]; then selftest; rc=$?; stall_selftest || rc=1; r7_wp_line || rc=1; exit $rc; fi
 R7_HB_NAME=$NAME; export R7_HB_NAME
 r7_hb "$NAME"
 r7_hb_ticker "$NAME"

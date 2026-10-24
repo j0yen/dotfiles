@@ -47,6 +47,10 @@ HOST="${GRAND_LOOP_DEMAND_HOST:-hub}"
 LOG="${GRAND_LOOP_DEMAND_LOG:-$HOME/brain/journal/grand-loop-demand.log}"
 MD_CACHE="${GRAND_LOOP_DEMAND_MD_CACHE:-$HOME/.config/grand-loop-demand/mcphost-deploy-bin}"
 MD_REPO="${GRAND_LOOP_DEMAND_MD_REPO:-$HOME/repos/mcphost-deploy}"
+# Runtime budget handed to `mcphost-deploy measure --budget-seconds`. It must stay
+# < TimeoutStartSec (5400) of grand-loop-demand.service minus a 300 s margin, so
+# measure exits 5 on its own before systemd kills the unit.
+MEASURE_BUDGET_S=4800
 LEDGER_REL="grand-loop/demand/ledger.jsonl"
 RUNS_REL="grand-loop/demand/runs"
 BUS_TOPIC="wm.grandloop.demand"
@@ -163,10 +167,10 @@ cmd_run() {
   local measure_rc=0
   case "$mode" in
     bin)
-      "$val" measure --host "$HOST" --out "$out_dir_abs" --allow-unvalidated >"$measure_out" 2>"$measure_err" || measure_rc=$?
+      "$val" measure --host "$HOST" --out "$out_dir_abs" --allow-unvalidated --budget-seconds "$MEASURE_BUDGET_S" >"$measure_out" 2>"$measure_err" || measure_rc=$?
       ;;
     uvrun)
-      ( cd "$val" && uv run mcphost-deploy measure --host "$HOST" --out "$out_dir_abs" --allow-unvalidated ) >"$measure_out" 2>"$measure_err" || measure_rc=$?
+      ( cd "$val" && uv run mcphost-deploy measure --host "$HOST" --out "$out_dir_abs" --allow-unvalidated --budget-seconds "$MEASURE_BUDGET_S" ) >"$measure_out" 2>"$measure_err" || measure_rc=$?
       ;;
     *)
       echo "mcphost-deploy not resolvable (checked PATH and $val)" > "$measure_err"

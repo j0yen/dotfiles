@@ -3,6 +3,8 @@
 # (premise + expiry in the unit Description/RuntimeMaxSec). Rings the seat when the turn ends.
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
+# gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
+# spawn-hold 76, spec-lint 73, STEP 0 75.
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests).
 set -uo pipefail
 nocargo=0; args=(); for a in "$@"; do if [ "$a" = --no-cargo ]; then nocargo=1; else args+=("$a"); fi; done
@@ -13,14 +15,25 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SE
 cd "$HOME"
 # empty-prompt gate (rb 10-23 12:5x AM: a failed sed left clp2.prompt at 0 bytes and the unit started anyway).
 [ "$(wc -c < "$pf" 2>/dev/null || echo 0)" -ge 200 ] || { echo "REFUSED empty-prompt $pf" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED empty-prompt" || true; exit 74; }
+# pair-lint gate (rb 10-23, ctl 11:46 v347r: `wm-decide record --target redbaron --pr wm-build#347` is refused, the verifier stopped): exit 77.
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/rb-prompt-lint.sh"
+if ! pl_msg=$(rb_prompt_pair_lint "$pf" 2>&1 >/dev/null); then
+  pl_txt=$(sed -n "$(printf '%s\n' "$pl_msg" | head -n 1 | sed -n 's/^line \([0-9]*\):.*/\1/p')p" "$pf" | cut -c1-160)
+  echo "REFUSED pair-lint $pf: $(printf '%s\n' "$pl_msg" | head -n 1) | text: $pl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED pair-lint: $pl_txt" || true; exit 77
+fi
 # spawn-hold gate (CSH, replaces the interim freeze-file gate of row 2041): EVERY spawn asks rb-spawn-hold.sh
 # whether a daemon redrive on redbaron is memory-refused; HOLD -> exit 76 + report + seat-event. The only exemption is
 # --no-cargo (a prompt that never runs cargo on redbaron); it is logged in the seat-event and as `exempt` in spawn-hold.json.
 # --no-flag: a spawn must not write/remove the HAND-YIELD flag (the 2-min timer owns it).
 if [ "$nocargo" = 1 ]; then hold_out=$("$hold_bin" --no-flag --probe-only --exempt "$n" $hold_extra 2>&1); rc_h=0; else hold_out=$("$hold_bin" --no-flag $hold_extra 2>&1); rc_h=$?; fi
-hold_out=$(printf '%s\n' "$hold_out" | head -n 1)
+hold_all=$hold_out; hold_out=$(printf '%s\n' "$hold_out" | head -n 1)
 if [ "$nocargo" = 1 ]; then EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n EXEMPT spawn-hold --no-cargo ($hold_out)" || true
-elif [ "$rc_h" = 76 ]; then echo "REFUSED spawn-hold: $hold_out" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED spawn-hold" || true; exit 76; fi
+elif [ "$rc_h" = 76 ]; then echo "REFUSED spawn-hold: $hold_out" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED spawn-hold" || true; exit 76
+# shu (ctl 12:27): the gate fails CLOSED. Any rc but 0/76 (126/127 = hold_bin missing or not executable, a crash) refuses too; the report
+# quotes the first line starting HOLD|OK|REFUSED, else the first non-empty line (bash's own 126/127 message).
+elif [ "$rc_h" != 0 ]; then
+  why=$(printf '%s\n' "$hold_all" | grep -m1 -E '^(HOLD|OK|REFUSED)'); [ -n "$why" ] || why=$(printf '%s\n' "$hold_all" | grep -m1 .)
+  echo "REFUSED spawn-hold rc=$rc_h: $why" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED spawn-hold rc=$rc_h" || true; exit 76; fi
 # spec-lint gate (rb 10-23, Fable QPA-v4 process fix, row 9ea3): every *.spec.md the prompt cites must pass spec-lint.sh.
 for sp in $(grep -oE '[~/A-Za-z0-9_.-]+\.spec\.md' "$pf" | sed "s|^~|$HOME|" | sort -u); do
   [ -f "$sp" ] || continue
