@@ -49,7 +49,10 @@ exit "${STUB_GH_RC:-0}"
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
 export STUB_LOG="$tmp" STUB_OID="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
-V=d-20261022-140000-rb-abcd
+# the ADV pre-check (merge-gate-adv) reads a ledger before the gate: a captured-real-row ledger for a non-trigger repo with no brief (tests/fixtures/rb-merge-adv/mkledger.py), so it passes through
+export WM_DECIDE_STATE="$tmp/state"
+ids="$(python3 -I "$here/tests/fixtures/rb-merge-adv/mkledger.py" "$WM_DECIDE_STATE" '{"repo":"j0yen/swarm-decide","pr":7}')" || { echo "NOT OK - rb-merge: ledger fixture"; exit 1; }
+V="$(printf '%s' "$ids" | cut -d' ' -f2)"
 
 : > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; rc=$?
 check "$rc" "0" "a passing gate merges"

@@ -114,5 +114,8 @@ out=$(vl fail1); rc=$?
 grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$script" && pass "script carries the anchored attribution regex" || bad "anchored attribution regex missing"
 grep -q 'merge-gate' "$script" && pass "script calls merge-gate" || bad "merge-gate missing"
 grep -qF -- '--agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates' "$script" && pass "prompt template records the verdict row shape" || bad "verdict row shape missing"
+# merge-gate-adv: the MERGE-OK row says what it covers (suite + attribution only); an ADV-PASS row is a different row (adv-grammar.sh)
+grep -qF -- 'agent=verifier:{{AGENT}}-verifier-{{NAME}} scope=suite recorded_by=unit:{{AGENT}}-verifier-{{NAME}}' "$script" && pass "prompt template's verdict --what carries scope=suite after the agent=verifier: token" || bad "scope=suite missing from the verdict --what"
+grep -qF -- '--what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:' "$script" && pass "MERGE-OK is not renamed (the template --what still opens with it)" || bad "the MERGE-OK template --what changed"
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail
