@@ -7,7 +7,7 @@
 # spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 78.
 # fable-verdict 78 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
 # covered, BY SHA256 OF ITS BYTES, by the newest decisions row carrying `sha256:<hex>` in its evidence, which must be kind=verdict, model fable, final
-# verdict AGREE|AGREE-WITH-EDITS|CONFIRM (.local/lib/rb-fable-gate.py); a prompt citing no spec needs a `Hatch: d-<id>` NO-SPEC-SPAWN decision row. This gate
+# verdict AGREE|AGREE-WITH-EDITS (.local/lib/rb-fable-gate.py); a prompt citing no spec needs a `Hatch: d-<id>` NO-SPEC-SPAWN decision row. This gate
 # checks the row; the 30-min Fable regrader checks the row's provenance (evidence names the Fable spawn: agent/task id or transcript path:line).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests), RB_DECISIONS_DB (default
 # ~/.local/state/swarm-decide/decisions.sqlite, opened read-only; tests use a fixture).

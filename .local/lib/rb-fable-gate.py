@@ -2,7 +2,7 @@
 """rb-fable-gate.py - the Fable-verdict gate for rb-run-coder.sh (exit 78). Run as `python3 -I rb-fable-gate.py MODE ARG DB`.
 
   spec  SPEC DB   pass iff the NEWEST decisions row whose evidence holds `sha256:<hex of SPEC>` is kind=verdict, model contains `fable`,
-                  final verdict in {AGREE, AGREE-WITH-EDITS, CONFIRM} (final = regrade JSON `verdict` when present, else the first word of `what`),
+                  final verdict in {AGREE, AGREE-WITH-EDITS} (final = regrade JSON `verdict` when present, else the first word of `what`),
                   and the spec's stem (fvg.spec.md -> fvg) appears in that row's what/evidence. stdout `OK <id>` rc 0, else the reason rc 1.
   hatch PROMPT DB pass iff PROMPT carries `Hatch: d-<id>` naming a kind=decision row, `what` starting NO-SPEC-SPAWN, evidence holding
                   `sha256:<hex of PROMPT with the Hatch line(s) removed>`, id timestamp <= 24 h old. stdout the row id rc 0, else `hatch-<why>` rc 1.
@@ -14,7 +14,7 @@ db-locked, db-unreadable. RB_FABLE_GATE_TIMEOUT (seconds, default 5) is the sqli
 import hashlib, json, os, re, sqlite3, sys, time
 from datetime import datetime
 
-PASS_WORDS = {"AGREE", "AGREE-WITH-EDITS", "CONFIRM"}
+PASS_WORDS = {"AGREE", "AGREE-WITH-EDITS"}
 COLS = {"id", "ts", "kind", "model", "what", "evidence", "regrade"}
 ID_TS = re.compile(r"^d-(\d{8})-(\d{6})-")
 HATCH = re.compile(rb"^Hatch: (d-\d{8}-\d{6}-[A-Za-z0-9-]+)[ \t\r]*$")

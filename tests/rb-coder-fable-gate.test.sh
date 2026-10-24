@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rb-coder-fable-gate.test.sh - fvg: rb-run-coder.sh refuses (exit 78) a spawn unless every cited *.spec.md is covered, by sha256 of its bytes,
-# by the newest decisions row = kind verdict + model fable + final verdict AGREE|AGREE-WITH-EDITS|CONFIRM + the spec's stem; a prompt citing no spec
+# by the newest decisions row = kind verdict + model fable + final verdict AGREE|AGREE-WITH-EDITS + the spec's stem; a prompt citing no spec
 # needs a valid `Hatch:` row. Every case asserts the exit code AND the report reason, that the claude stub marker is absent on a refusal (the gate
 # precedes the spawn), and that the fixture DB bytes are unchanged (read-only). HOME, the fixture DB, the stubs and the lock helper live under a
 # mktemp -d root this test created; the real decisions DB is never opened.
@@ -84,8 +84,8 @@ mkdb $R/a.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS zed spec' "$EV")]"
 case_ "(a1) fable verdict AGREE-WITH-EDITS + sha + stem" 0 - $R/a.db "$P"
 mkdb $R/a2.db "[$(row $ID1 verdict fable 'AGREE zed' "$EV")]"
 case_ "(a2) model string 'fable'" 0 - $R/a2.db "$P"
-mkdb $R/a3.db "[$(row $ID1 verdict Claude-FABLE-5-1 'CONFIRM zed' "$EV")]"
-case_ "(a3) model string mixed case, CONFIRM" 0 - $R/a3.db "$P"
+mkdb $R/a3.db "[$(row $ID1 verdict Claude-FABLE-5-1 'AGREE zed' "$EV")]"
+case_ "(a3) model string mixed case, AGREE" 0 - $R/a3.db "$P"
 PT=$(prompt_spec '~/.cache/rb-seat/coders/zed.spec.md')
 case_ "(a4) spec cited as ~/.cache/rb-seat/coders/zed.spec.md under the fixture HOME" 0 - $R/a.db "$PT"
 mkdb $R/aw.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS zed spec' "$EV")]" wal
@@ -122,7 +122,7 @@ case_ "(d3) what=AGREE, regrade verdict DISAGREE -> verdict-DISAGREE" 78 "verdic
 mkdb $R/d4.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"by":"fable-regrader","result":"RESOLVED"}')]"
 case_ "(d4) regrade JSON without a verdict key falls back to what (AGREE passes)" 0 - $R/d4.db "$P"
 mkdb $R/d5.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"CONFIRM"}')]"
-case_ "(d5) regrade verdict CONFIRM passes" 0 - $R/d5.db "$P"
+case_ "(d5) regrade verdict CONFIRM -> verdict-CONFIRM" 78 "verdict-CONFIRM $ID1" $R/d5.db "$P"
 mkdb $R/d6.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"ESCALATE"}')]"
 case_ "(d6) regrade verdict ESCALATE -> verdict-ESCALATE" 78 "verdict-ESCALATE $ID1" $R/d6.db "$P"
 mkdb $R/d7.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{not json')]"
