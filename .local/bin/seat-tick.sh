@@ -13,23 +13,29 @@
 # EVENTS (10-22): every prompt (TICK/SWEEP/EVENT/ASK) ends its first line with events_new=<k> and, when k>0, carries `EVENTS since <last prompt time>:` + the new
 # <seat>-events.log lines (oldest first, max 40, then `... +N more`). events_offset (bytes) in <seat>-tick.json advances only on exit 0. At turn end (exit 0) a
 # <seat>.wake file or unread events chain ONE more EVENT turn in the same process (exec; env SEAT_TICK_CHAINED=1 forbids a second chain, chained=1 in the state).
-# QUOTA-WAIT (10-22): a turn that exits non-zero AND whose output tail matches `hit your (session|usage|weekly) limit` or `resets H[:MM]am|pm` is the plan's usage limit, not a
-# failure nobody can act on (10-22 5:58-7:00 PM: six SEAT-TICK FAILED bells, one per 20-min tick). The tick parses the reset time (the tz in the parens, else America/Los_Angeles; today, or
-# tomorrow when already past) into quota_wait_until (epoch; null when it does not parse), sets last_skip_reason=quota-wait:<iso|unknown>, does NOT count a skip, prints
-# `seat-tick: <seat> quota-wait until <time> (session limit)` and exits 0 (the unit does not fail, no bell). While now < quota_wait_until every tick/event/ask exits 0 right after the
+# QUOTA-WAIT (10-22): a turn that exits non-zero AND whose output tail matches `hit your (session|usage|weekly) limit` or carries a reset text the shared parser reads is the plan's usage limit, not a
+# failure nobody can act on (10-22 5:58-7:00 PM: six SEAT-TICK FAILED bells, one per 20-min tick). 10-23: the reset text goes through fleet-token-lib.sh ft_parse_la_date (the ONE parser, weekly
+# "resets Oct 26, 9pm" and session "resets 7:10pm"; ALWAYS America/Los_Angeles, a tz in parens is ignored; seat-tick has no reset regex of its own, tests/seat-tick-weekly-quota.test.sh pins that)
+# into quota_wait_until (epoch; no cap on its length, a weekly wait is days), quota_kind (weekly | session | unknown; the "hit your <kind> limit" word, else a wait <= 24 h = session, further out = weekly),
+# and sets last_skip_reason=quota-wait:<iso|unknown>, does NOT count a skip, prints
+# `seat-tick: <seat> quota-wait until <time> (session limit) kind=session` and exits 0 (the unit does not fail, no bell). While now < quota_wait_until every tick/event/ask exits 0 right after the
 # lock ("quota-wait in effect until <time>"), claude not launched, events_offset and the unread events untouched (the first turn after the wait delivers them; an ASK is QUEUED, see ASK-QUEUE).
 # COVERED STAMP (10-22): a lock-covered tick (below) leaves last_exit/last_duration_s at the last real turn's values (the running turn is not over), so it also stamps last_covered_at (ISO local, like last_tick.iso) and last_covered_by (`<kind>:<pid>`); null until the first covered tick.
 # The first exit-0 turn clears quota_wait_until and the reason. A real exit 1 with no limit line stays a failure.
 # QUOTA-ACCOUNT (10-23, fleet-token rotation): when it records quota_wait_until it also records quota_account = the `account` in $FLEET_DASH_DIR/token.json (null when that file is absent).
 # A wait recorded under another account is not the current account's wait: whenever token.json exists with an account != quota_account (null counts as different), the wait is IGNORED
-# (treated as expired; the turn runs and the keys clear). A missing or unreadable token.json ignores nothing. fleet-token-429-watch.sh reads the same two keys.
+# (treated as expired; the turn runs and the keys clear: quota_wait_until, quota_kind, quota_account, quota_parse_*). A missing or unreadable token.json ignores nothing. fleet-token-429-watch.sh reads
+# quota_wait_until + quota_account and blocks THAT account. After a rotation fleet-token-rotate.sh starts the seat units; seat-tick is a Type=oneshot unit, so the next tick is a fresh process that sources
+# $OAUTH_ENV (the placed token) before every claude launch: no restart is needed for the next tick (a turn already running keeps the old token until it ends; stop it by unit name, never pkill).
+# QUOTA-PARSE-FAILED (10-23): limit text present but ft_parse_la_date gives no date -> the old fallback stays (quota_wait_until null, reason quota-wait:unknown, the next tick retries) AND
+# quota_parse_failed=true + quota_parse_text (the limit line, first 120 chars) are written, plus one `ALARM fleet-token:` line in ctl-events.log (ft_alarm). Both clear at the next exit-0 turn or a rotation.
 # MAX-TURNS (10-23; 10-22 12:00 AM -> 10-23 11:20 AM the rb/r7 seats' own Opus turns were 121M weighted tokens + 141M in-session subagents vs 22M for the PRD coders; a tick turn had no bound:
 # median 19-21 assistant messages, p90 71-136, max 1857): seats.tsv column 8 `max_turns` (integer >= 1, or `-` = no cap; a 7-column row = no cap) appends `--max-turns <N>` to the claude argv of EVERY
 # turn kind (TICK/SWEEP/EVENT/ASK), after `--model <m>` and before the lean/--settings block. MEASURED (claude 2.1.293, `claude -p --max-turns 1`): a capped turn prints `Error: Reached max turns (<N>)` on stdout
 # (no trailing newline, stderr empty) and exits 1 (`--output-format json`: subtype=error_max_turns, terminal_reason=max_turns, is_error=true). That is a NORMAL turn end here: when rc != 0 and the LAST non-empty
 # line of the turn log is exactly that marker, the turn is recorded as exit 0 (events_offset advances, no SEAT-TICK FAILED bell, last_skip_reason untouched, queued asks stay consumed, the exit-0 EVENT chain still runs),
 # max_turns_hits (count, kept across runs) increments in <seat>-tick.json, and stderr says `seat-tick: <seat> max-turns <N> reached`. Any other non-zero exit is unchanged.
-# State keys: max_turns_hits last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account.
+# State keys: max_turns_hits last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account quota_kind quota_parse_failed quota_parse_text.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
 # LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead, then is QUEUED (exit 0), never dropped.
@@ -74,6 +80,8 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 HERE="$(dirname "$SELF")"
 WRITER="$HERE/fleet-status-write.sh"
 . "$HERE/seat-lean.sh"   # LEAN_ENV_VARS + LEAN_FLAGS: ONE source with seat-relaunch.sh (10-22)
+. "$HERE/../lib/fleet-token-lib.sh"   # ft_parse_la_date + ft_limit_line/ft_limit_word + ft_alarm: the ONE limit-text parser (10-23); seat-tick keeps no reset regex of its own
+ft_paths
 ALARM_AT=3
 JSONL_DIR="$HOME/.claude/projects/-home-jsy"   # session JSONLs of the seats (cwd $HOME); the override is honoured only in selftest mode
 [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_JSONL_DIR:-}" ] && JSONL_DIR="$SEAT_JSONL_DIR"
@@ -226,25 +234,21 @@ stop_hook_alarm() {
     printf '%s | stop-hook | %s\n' "$ts" "$evl" >>"$EVF"
   } 7>>"$DASH/$SEAT-events.lock"
 }
-# quota_hit <log>: 0 if the tail of a failed turn's output is a usage-limit line (claude -p prints only its final message, so 2 KB is the whole line)
-quota_hit() { tail -c 2048 "$1" 2>/dev/null | grep -Eiq 'hit your (session|usage|weekly) limit|resets[[:space:]]+[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m'; }
-# quota_kind <log>: session | usage | weekly (the word in "hit your <kind> limit"; session when only a reset time was found)
-quota_kind() { local k; k="$(tail -c 2048 "$1" 2>/dev/null | grep -Eio 'hit your (session|usage|weekly) limit' | tail -n1 | awk '{print tolower($3)}')"; echo "${k:-session}"; }
-# quota_reset <log> <now_epoch>: prints the reset epoch (next occurrence of "resets H[:MM]am|pm" after now, in the tz named in the parens else America/Los_Angeles); returns 1 if absent or unparseable
-quota_reset() {
-  local txt h m ap tz="America/Los_Angeles" day cand
-  txt="$(tail -c 2048 "$1" 2>/dev/null | grep -Eio 'resets[[:space:]]+[0-9]{1,2}(:[0-9]{2})?[[:space:]]*[ap]m([[:space:]]*\([A-Za-z_]+/[A-Za-z_+-]+\))?' | tail -n1)"
-  [[ "$txt" =~ [Rr][Ee][Ss][Ee][Tt][Ss][[:space:]]+([0-9]{1,2})(:([0-9]{2}))?[[:space:]]*([AaPp])[Mm] ]] || return 1
-  h=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[3]:-00})); ap="${BASH_REMATCH[4]}"
-  [ "$h" -ge 1 ] && [ "$h" -le 12 ] && [ "$m" -le 59 ] || return 1
-  [[ "$txt" =~ \(([A-Za-z_]+/[A-Za-z_+-]+)\) ]] && [ -e "/usr/share/zoneinfo/${BASH_REMATCH[1]}" ] && tz="${BASH_REMATCH[1]}"
-  day="$(TZ="$tz" date -d "@$2" +%F 2>/dev/null)" || return 1
-  cand="$(TZ="$tz" date -d "$day $h:$m ${ap}m" +%s 2>/dev/null)" || return 1
-  if [ "$cand" -le "$2" ]; then
-    day="$(TZ="$tz" date -d "$day + 1 day" +%F 2>/dev/null)" || return 1
-    cand="$(TZ="$tz" date -d "$day $h:$m ${ap}m" +%s 2>/dev/null)" || return 1
-  fi
-  [[ "$cand" =~ ^[0-9]+$ ]] && echo "$cand"
+# quota_hit <log> <now_epoch>: 0 if the tail of a failed turn's output is a plan-limit line: the "hit your ... limit" phrase, or a line ft_parse_la_date reads as a date
+# (claude -p prints only its final message, so 2 KB is the whole line)
+quota_hit() { [ -n "$(ft_limit_word "$1")" ] && return 0; local l; l="$(ft_limit_line "$1")"; [ -n "$l" ] && ft_parse_la_date "$l" "$2" >/dev/null 2>&1; }
+# quota_word <log>: session | usage | weekly (the word in "hit your <word> limit"; session when the phrase is absent), the label on stderr
+quota_word() { local k; k="$(ft_limit_word "$1")"; echo "${k:-session}"; }
+# quota_reset <log> <now_epoch>: prints the reset epoch of the limit text through the shared ft_parse_la_date (weekly "resets Oct 26, 9pm", session "resets 7:10pm"; ALWAYS
+# America/Los_Angeles, the tz in parens is ignored by the lib); returns 1 when the text has no date
+quota_reset() { local l; l="$(ft_limit_line "$1")"; [ -n "$l" ] && ft_parse_la_date "$l" "$2"; }
+# quota_kind <log> <reset_epoch|""> <now_epoch>: weekly | session | unknown. The phrase decides ("hit your weekly limit"); "usage" or no phrase falls back to the wait
+# (a parsed reset <= 24 h away is a session window, further out is weekly); no phrase and no reset = unknown
+quota_kind() {
+  local w; w="$(ft_limit_word "$1")"
+  case "$w" in weekly|session) echo "$w"; return ;; esac
+  [[ "$2" =~ ^[0-9]+$ ]] || { echo unknown; return; }
+  if [ $(( $2 - $3 )) -le 86400 ]; then echo session; else echo weekly; fi
 }
 
 # ---- pending-ask queue (see ASK-QUEUE in the header). Globals set in main: ASKQ ASKLOCK EVJ EVF WAKE DASH SEAT ASK_TEXT ASK_ONE (the ask text on one line) ----
@@ -1114,10 +1118,12 @@ S_reason="$(sget '.last_skip_reason // ""')"; S_seen="$(sget '.approvals_seen //
 S_dur="$(sget '.last_duration_s // null')"; S_kind="$(sget '.last_prompt_kind // ""')"; S_gsince="$(sget '.guard_since // 0')"
 S_qw="$(sget '.quota_wait_until // empty')"; [[ "$S_qw" =~ ^[0-9]+$ ]] || S_qw=""
 S_qa="$(sget '.quota_account // empty')"
+S_qk="$(sget '.quota_kind // empty')"; S_qpf="$(sget '.quota_parse_failed // false')"; [ "$S_qpf" = true ] || S_qpf=false; S_qpt="$(sget '.quota_parse_text // empty')"
 S_mth="$(sget '.max_turns_hits // 0')"; [[ "$S_mth" =~ ^[0-9]+$ ]] || S_mth=0
 # fleet-token (10-23): token.json names the account in use; a quota wait recorded under another account is stale (the rotation changed who is limited)
 tok_account() { [ -r "$DASH/token.json" ] && jq -r '.account // empty' "$DASH/token.json" 2>/dev/null || true; }
-if [ -n "$S_qw" ]; then _cur_acct="$(tok_account)"; if [ -n "$_cur_acct" ] && [ "$_cur_acct" != "$S_qa" ]; then S_qw=""; S_qa=""; fi; fi
+# (10-23) a rotation clears the whole limit record (wait, kind, account, parse failure) at the NEXT tick: the oneshot unit re-reads the placed token from $OAUTH_ENV every turn (below), so that tick runs on the new account
+if [ -n "$S_qw$S_qk" ] || [ "$S_qpf" = true ]; then _cur_acct="$(tok_account)"; if [ -n "$_cur_acct" ] && [ "$_cur_acct" != "$S_qa" ]; then S_qw=""; S_qa=""; S_qk=""; S_qpf=false; S_qpt=""; fi; fi
 S_bounces="$(sget '.stop_hook_bounces // null')"; [[ "$S_bounces" =~ ^[0-9]+$ ]] || S_bounces=null; S_shbefore="$(sget '.stop_hook_lines_before // null')"; [[ "$S_shbefore" =~ ^[0-9]+$ ]] || S_shbefore=null
 S_covat="$(sget '.last_covered_at // empty')"; S_covby="$(sget '.last_covered_by // empty')"
 S_evoff="$(sget '.events_offset // 0')"; S_lastprompt="$(sget '.last_prompt // 0')"; S_evnew="$(sget '.events_new // 0')"; S_chained="${SEAT_TICK_CHAINED:-0}"
@@ -1128,12 +1134,12 @@ save() {   # reads the S_* variables
   local tmp; tmp="$(mktemp "$DASH/.$SEAT-tick.XXXXXX")" || return 1
   jq -n --arg seat "$SEAT" --arg iso "$iso" --argjson ep "$now" --argjson ls "$S_last_sent" --argjson sk "$S_skipped" --arg why "$S_reason" \
         --argjson sn "$S_sends" --argjson as "$S_seen" --argjson ex "$S_exit" --argjson du "$S_dur" --arg kind "$S_kind" --arg sf "$SFILE" --argjson gs "$S_gsince" \
-        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --arg qa "$S_qa" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" --argjson mth "$S_mth" \
+        --argjson eo "$S_evoff" --argjson lp "$S_lastprompt" --argjson en "$S_evnew" --argjson ch "$S_chained" --argjson qw "${S_qw:-null}" --arg qa "$S_qa" --arg qk "$S_qk" --argjson qpf "$S_qpf" --arg qpt "$S_qpt" --argjson ap "$(asks_count)" --argjson shb "$S_bounces" --argjson shl "$S_shbefore" --arg cva "$S_covat" --arg cvb "$S_covby" --argjson mth "$S_mth" \
     '{seat:$seat, asks_pending:$ap, max_turns_hits:$mth, stop_hook_bounces:$shb, stop_hook_lines_before:$shl, last_covered_at:(if $cva=="" then null else $cva end), last_covered_by:(if $cvb=="" then null else $cvb end), last_tick:{iso:$iso,epoch:$ep}, last_sent:$ls, ticks_skipped:$sk, last_skip_reason:(if $why=="" then null else $why end),
       sends_total:$sn, last_exit:$ex, last_duration_s:$du, last_prompt_kind:(if $kind=="" then null else $kind end),
       status_file:(if $sf=="" then null else $sf end), approvals_seen:$as,
       guard_since:(if ($why|startswith("guard:")) and $gs>0 then $gs else null end),
-      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch, quota_wait_until:$qw, quota_account:(if $qa=="" then null else $qa end)}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+      events_offset:$eo, last_prompt:(if $lp>0 then $lp else null end), events_new:$en, chained:$ch, quota_wait_until:$qw, quota_account:(if $qa=="" then null else $qa end), quota_kind:(if $qk=="" then null else $qk end), quota_parse_failed:$qpf, quota_parse_text:(if $qpt=="" then null else $qpt end)}' >"$tmp" && mv -f "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
 }
 
 # a. the lock serializes ticks and asks: two processes never share the session. A tick gives up fast; an ask must land.
@@ -1309,15 +1315,21 @@ S_exit="$rc"; S_dur=$((end - start))
 sh_after="$(stop_hook_lines "$SID")"
 if [[ "$S_shbefore" =~ ^[0-9]+$ ]]; then S_bounces=$(( sh_after - S_shbefore )); [ "$S_bounces" -ge 0 ] || S_bounces=0; else S_bounces=0; fi   # a rewritten/compacted file can shrink the count: never negative
 [ "$S_bounces" -gt 0 ] && stop_hook_alarm "$S_bounces"
-if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; S_qa=""; fi
+if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; S_qa=""; S_qk=""; S_qpf=false; S_qpt=""; fi
 # quota-wait: a failed turn whose output is the usage-limit line is not a failure anyone can act on. Not a skip (ticks_skipped untouched), events/approvals/lastprompt
 # not advanced, exit 0 so the unit does not fail (no OnFailure bell); a2 then holds the next ticks until the reset. An unparseable reset leaves quota_wait_until null.
-if [ "$rc" != 0 ] && quota_hit "$LOG"; then
-  S_qw=""; S_qa=""; qw_iso="unknown"; qw_txt="unknown"
-  if qw_ep="$(quota_reset "$LOG" "$(qw_now)")"; then S_qw="$qw_ep"; S_qa="$(tok_account)"; qw_iso="$(date -d "@$qw_ep" -Iseconds)"; qw_txt="$(date -d "@$qw_ep" '+%-I:%M %p %Z')"; fi
+if [ "$rc" != 0 ] && quota_hit "$LOG" "$(qw_now)"; then
+  qw_now_ep="$(qw_now)"; S_qw=""; S_qa="$(tok_account)"; S_qk=""; S_qpf=false; S_qpt=""; qw_iso="unknown"; qw_txt="unknown"
+  if qw_ep="$(quota_reset "$LOG" "$qw_now_ep")"; then
+    S_qw="$qw_ep"; qw_iso="$(date -d "@$qw_ep" -Iseconds)"; qw_txt="$(date -d "@$qw_ep" '+%-I:%M %p %Z')"
+  else   # limit text without a date the shared parser reads: keep the old fallback (no wait, the next tick tries again), flag it, ALARM (ctl-events.log, the fleet-token ALARM channel)
+    S_qpf=true; S_qpt="$(ft_limit_line "$LOG" | tr '\r\n\t' '   ' | LC_ALL=C.UTF-8 sed -E 's/[[:space:]]+$//; s/^(.{0,120}).*/\1/')"   # 120 CHARACTERS (cut -c counts bytes; the "·" is 2)
+    ft_alarm "seat $SEAT limit text did not parse (quota_parse_failed, no wait recorded, the next tick retries): ${S_qpt}"
+  fi
+  S_qk="$(quota_kind "$LOG" "$S_qw" "$qw_now_ep")"
   S_reason="quota-wait:$qw_iso"
   save && TURN_DONE=1
-  echo "seat-tick: $SEAT quota-wait until $qw_txt ($(quota_kind "$LOG") limit)" >&2
+  echo "seat-tick: $SEAT quota-wait until $qw_txt ($(quota_word "$LOG") limit) kind=$S_qk" >&2
   exit 0
 fi
 save && TURN_DONE=1

@@ -120,7 +120,7 @@ watch() {
   fi
   store_age_check
 
-  local cur s qw qa limited=() minreset="" anywait=0
+  local cur s qw qa limited=() minreset="" anywait=0 limacct=""
   cur="$(ft_current)"
   for s in $FT_SEATS; do
     qw="$(jq -r '.quota_wait_until // empty' "$FT_DASH/$s-tick.json" 2>/dev/null || true)"
@@ -128,7 +128,8 @@ watch() {
     anywait=1
     qa="$(jq -r '.quota_account // empty' "$FT_DASH/$s-tick.json" 2>/dev/null || true)"
     [ -n "$cur" ] && [ "$qa" = "$cur" ] || continue
-    limited+=("$s"); if [ -z "$minreset" ] || [ "$qw" -lt "$minreset" ]; then minreset="$qw"; fi
+    limited+=("$s"); limacct="$qa"   # the account the seat was running when limited (quota_account), == $cur by the test above
+    if [ -z "$minreset" ] || [ "$qw" -lt "$minreset" ]; then minreset="$qw"; fi
   done
   if [ -z "$cur" ]; then
     [ "$anywait" = 0 ] || { stamp_ok no-current "$ALARM_EVERY" && ft_alarm "a seat is quota-waiting but $FT_TOKJSON is missing, so the account in use is unknown: run fleet-token-store.sh current <account>"; }
@@ -157,8 +158,8 @@ watch() {
   local pr bwhy="429 on ${limited[*]} (seat-tick quota_wait_until)"
   pr="$(probe_reset)"
   if [ -n "$pr" ] && { [ -z "$maxreset" ] || [ "$pr" -gt "$maxreset" ]; }; then maxreset="$pr"; bwhy="429 on ${limited[*]} (reset text in the probe's limit message)"; fi
-  if [ -n "$maxreset" ] && ft_block "$cur" "$maxreset" "$bwhy" keep-later; then
-    wlog "blocked $cur until $(ft_la_iso "$(ft_blocked_until "$cur")")"
+  if [ -n "$maxreset" ] && ft_block "$limacct" "$maxreset" "$bwhy" keep-later; then
+    wlog "blocked $limacct until $(ft_la_iso "$(ft_blocked_until "$limacct")")"
   fi
 
   local ring=() line name i start=0 order=() cand="" why="" skipped=""
@@ -322,6 +323,9 @@ EOF2
     [ "$(tokj .account)" = acctB ]; ft_st_chk "block-garbled: an unparseable blocked-until file is ignored (old behaviour) -> acctB" $?
     reset; seats 7200 9000 -; runw
     [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 9000))" ] && grep -q " account=acctA until=$((NOW + 9000)) .* why=429 on ctl rb (seat-tick quota_wait_until)\$" "$FT_BLOCKLOG"; ft_st_chk "block-on-429: the account that hit the limit (acctA) is blocked until the latest limited seat's reset, then rotated away from" $?
+    # no cap on a long wait: a weekly wait (here 9 days = 777600 s, longer than the 8-day figure the brief asked to rule out) is counted, blocked in full and rotated away from (no max-wait clamp in this script)
+    reset; seats 777600 777600 -; runw
+    [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 777600))" ]; ft_st_chk "long-wait: two seats waiting 9 days on acctA -> acctA blocked until the full 9 days (no cap), rotated to acctB" $?
     reset; seats 7200 7200 -; ft_st_store acctB "$c-bad"; runw
     [ "$(tokj .account)" = acctA ] && [ -z "$(fl place)" ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 7200))" ]; ft_st_chk "block-kept-on-rotate-fail: pre-verify of the candidate fails, no rotation, acctA's block STAYS" $?
     ft_st_store acctB "$c-2"
