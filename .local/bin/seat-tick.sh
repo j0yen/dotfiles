@@ -38,7 +38,8 @@
 # State keys: max_turns_hits last_covered_at last_covered_by stop_hook_bounces stop_hook_lines_before asks_pending (count at the save) seat last_tick last_sent ticks_skipped last_skip_reason sends_total last_exit last_duration_s last_prompt_kind status_file approvals_seen guard_since events_offset last_prompt events_new chained quota_wait_until quota_account quota_kind quota_parse_failed quota_parse_text.
 # Order: flock (serializes ticks and asks per seat) -> guard (exit 4 if the interactive seat still holds the session; never kills
 # anything) -> compose prompt -> model row (exit 3) -> [ctl tick only: fleet-status-write.sh --open, after every precondition] -> claude -p under `timeout` (95 % of timeout_sec).
-# LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 1800 s instead, then is QUEUED (exit 0), never dropped.
+# LOCK: a tick that cannot lock within 60 s exits 5 and counts a skip (3 in a row = ALARM line); an ASK waits up to 20 s instead (was 1800 s until 10-24), then is QUEUED (exit 0), never dropped;
+# the running turn gets the queue at its next tool call or at its Stop (.claude/hooks/seat-ask-inject.sh, five-whys 10-24: rb waited on a CONFIRM queued behind its own turn).
 # ASK-QUEUE (10-22 8:40 PM; rb's tick held the lock past 1800 s and four rulings died "lock busy after 1800s, kind=ask" exit 5): an ASK that cannot take the lock within its wait, or that
 # arrives during quota-wait, is appended as one JSON record {ts, from (EVENT_SOURCE else "ask"), text} to <seat>-asks.pending (0600, under <seat>-asks.lock), an
 # `ASK-QUEUED <seat> <ts>: <first 120 chars>` line goes into <seat>-events.log (source ask-queue; written directly, seat-event.sh is not called), <seat>.wake is touched (the running turn
@@ -73,7 +74,7 @@ APPROVALS="${APPROVALS_FILE:-$HOME/.claude/state/approvals.log}"
 CLAUDE_BIN="${SEAT_CLAUDE_BIN:-$HOME/.npm-global/bin/claude}"
 OAUTH_ENV="${SEAT_OAUTH_ENV:-$HOME/.config/environment.d/90-claude-oauth.conf}"
 LOCK_WAIT="${SEAT_LOCK_WAIT:-60}"
-ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-1800}"
+ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-20}"
 UNIT_DIR="${SEAT_UNIT_DIR:-$HOME/.config/systemd/user}"
 CTL_SETTINGS="${SEAT_CTL_SETTINGS:-$HOME/.config/claude-seat/ctl-settings.json}"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -556,7 +557,7 @@ FAKE
   SEAT_LOCK_WAIT=1 SEAT_ASK_LOCK_WAIT=15 FAKE_SLEEP=0 "$SELF" rb --ask "must land" >"$T/ow" 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q '^ARGV:.*ASK .*seat=rb events_new=0: must land' "$T/ow"; chk "ASK with the same lock held waits (SEAT_ASK_LOCK_WAIT=15) and lands: exit 0" $?
   wait "$pw" 2>/dev/null
-  grep -q 'LOCK_WAIT="${SEAT_LOCK_WAIT:-60}"' "$SELF" && grep -q 'ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-1800}"' "$SELF"; chk "defaults: tick lock wait 60 s, ask lock wait 1800 s" $?
+  grep -q 'LOCK_WAIT="${SEAT_LOCK_WAIT:-60}"' "$SELF" && grep -q 'ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-20}"' "$SELF"; chk "defaults: tick lock wait 60 s, ask lock wait 1800 s" $?
 
   # 13. timeout_sec column is the per-turn ceiling (95 %): row tmo has 4 s -> cap 3 s
   local t0; t0=$(date +%s)

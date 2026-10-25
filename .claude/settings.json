@@ -391,6 +391,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Notification": [
@@ -638,6 +648,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/config-reload-check.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
             "timeout": 10
           }
         ]

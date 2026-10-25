@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # seat-ask.sh <seat> "<text>": fast path to an operator seat. Starts one ASK turn as a transient user unit;
-# seat-tick.sh's flock serializes it behind a running tick and waits up to 1800 s; an ask that still cannot lock (or arrives during quota-wait) is QUEUED in
+# seat-tick.sh's flock serializes it behind a running tick and waits up to 20 s (seat-ask-inject.sh hands the queue to the running turn); an ask that still cannot lock (or arrives during quota-wait) is QUEUED in
 # <seat>-asks.pending and exits 0, so the unit's exit 0 means accepted-or-queued, never dropped. Prints the unit name (stdout).
 # SEAT_ASK_DRY=1 (or CTL_ASK_DRY=1) prints the command only. A guard refusal (unit exit 4) or missing goal line (6) within 5 s prints `ASK REFUSED <seat>: <last line>` on stderr and exits that code.
 # TIME STAMP (row d335): the text is prefixed by the helper with `<source> <H:MM AM/PM>: ` (source = $EVENT_SOURCE, else $WM_SEAT, else the caller's comm); a typed
