@@ -19,7 +19,14 @@ want "what would"   "what would have to be true for one-url onboarding" wwhtbt
 want "plain why"    "why is the build slow?" none
 want "plain status" "STATUS" none
 want "typed skill"  "/5whysandrhyme five whys on X" none
-[ "$(wc -l <"$T/log.jsonl")" = 7 ] && echo "ok 7 fires logged" || { echo "FAIL log lines $(wc -l <"$T/log.jsonl")"; fail=1; }
+N=$'\n'
+NOTE="<system-reminder>${N}agent done${N}</system-reminder>${N}<task-notification>${N}result: five whys complete${N}</task-notification>"
+before=$(wc -l <"$T/log.jsonl")
+want "notice only"  "$NOTE" none
+want "xsession"     "<cross-session-message from=\"r7\">${N}what would have to be true${N}</cross-session-message>" none
+[ "$(wc -l <"$T/log.jsonl")" = "$before" ] && echo "ok no log for injected" || { echo "FAIL injected logged"; fail=1; }
+want "notice+joe"   "${NOTE}${N}do a root cause" 5whysandrhyme
+[ "$(wc -l <"$T/log.jsonl")" = 8 ] && echo "ok 8 fires logged" || { echo "FAIL log lines $(wc -l <"$T/log.jsonl")"; fail=1; }
 jq -e '.hooks.UserPromptSubmit[] | .hooks[] | select(.command|endswith("analysis-skill-router.sh"))' "$S" >/dev/null \
   && echo "ok wired" || { echo "FAIL not wired"; fail=1; }
 exit $fail
