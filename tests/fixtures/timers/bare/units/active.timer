@@ -1,0 +1,6 @@
+# a comment
+; another
+[Unit]
+OnBootSec=1min
+[Timer]
+OnActiveSec = 10s

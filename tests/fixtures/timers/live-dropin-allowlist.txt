@@ -1,0 +1,26 @@
+# Live ~/.config/systemd/user/*.d/*.conf files that are NOT symlinks into dotfiles and are allowed to stay local (checked by tests/user-timers-start-trigger.test.sh part c).
+# One path relative to ~/.config/systemd/user per line. Do NOT list a *.timer.d drop-in here: a timer drop-in is the thing that wiped OnBootSec on 10-24,
+# so it must be tracked in dotfiles (see .config/systemd/user/seat-tick@.timer.d and swarm-decide-regrade.timer.d).
+agorabus.service.d/boot-telemetry.conf
+graphical-session.target.d/override.conf
+nats-leaf.service.d/ubuntu-path.conf
+r7-cap-governor.service.d/v15-restart.conf
+roundtable.service.d/produce.conf
+token-ledger.service.d/ssh-timeout.conf
+wm-audio.service.d/10-agorabus-dep.conf
+wm-audio.service.d/20-restart-always.conf
+wm-audio.service.d/boot-telemetry.conf
+wm-brain.service.d/boot-telemetry.conf
+wm-busbridge.service.d/restart-always.conf
+wm-dialog.service.d/20-restart-always.conf
+wm-dialog.service.d/boot-telemetry.conf
+wmd-init.service.d/override.conf
+wmd.service.d/20-restart-always.conf
+wmd.service.d/gpu-endpoint.conf
+wm-stt.service.d/20-restart-always.conf
+wm-stt.service.d/boot-telemetry.conf
+wm-tts.service.d/20-restart-always.conf
+wm-tts.service.d/boot-telemetry.conf
+xdg-desktop-portal.service.d/override.conf
+# symlink into the build skill's own tree (not dotfiles)
+claude-build.service.d/defer.conf

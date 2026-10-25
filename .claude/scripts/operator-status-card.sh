@@ -82,6 +82,12 @@ render_seats() {
      ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?"), (.judged_text // "-")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
   jq -r '(.alarms // []) | map(select((.text // "") | test("^(seat-|verifier-rate)"))) | .[0:6][] | "  " + .text' "$fleet_sj" 2>/dev/null
 }
+render_timers() {
+  # fleet-dash status.json `timers_stalled` (user timers with no NEXT / stale LAST / inactive, all three hosts; five-whys 2026-10-24): ok, the stalled list, or ? when the field is absent
+  if [ ! -r "$fleet_sj" ] || ! jq -e 'has("timers_stalled")' "$fleet_sj" >/dev/null 2>&1; then echo "timers: ?"; return; fi
+  if jq -e '.timers_stalled | length == 0' "$fleet_sj" >/dev/null 2>&1; then echo "timers: ok"; return; fi
+  jq -r '.timers_stalled | "timers: STALLED " + (length|tostring) + " (" + ([.[0:6][] | "\(.host) \(.unit) \(.reason)"] | join(", ")) + ")"' "$fleet_sj" 2>/dev/null | cut -c1-400 || echo "timers: ?"
+}
 render_chain() {
   if ! src_ok chain; then echo "chain: not on this host ($(j '.chain.host // empty' | grep . || echo "$chain_host"))"; return; fi
   echo "chain: $(j '.chain|"\(.chain_run_id) \(.link) \(.status)"') at $(t "$(j '.chain.ts')")"
@@ -109,13 +115,13 @@ render_config() {
 
 if [ "$mode" = section ]; then
   case "$section" in
-    runs|queue|seats|chain|siblings|daemon|config) "render_$section" ;;
+    runs|queue|seats|timers|chain|siblings|daemon|config) "render_$section" ;;
     *) echo "operator card: unknown section '$section'" ;;
   esac
   exit 0
 fi
 
 echo "operator card ($(j '.host // "?"'))"
-render_runs; render_queue; render_decisions; render_seats; render_chain; render_siblings; render_daemon; render_config
+render_runs; render_queue; render_decisions; render_seats; render_timers; render_chain; render_siblings; render_daemon; render_config
 echo "status.json generated ${age}s ago"
 exit 0

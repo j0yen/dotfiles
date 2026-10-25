@@ -10,10 +10,26 @@
 # Also records the aide's session id: when the stdin JSON carries .session_id (every real hook call), it is appended once to
 #   $EVENTS_DIR/aide-sids (one SID per line, append-only) so token-ledger can tag the aide's transcripts `seat:aide`
 #   (building share; Joe 10-23 "aide is also part of wm-build"). Happens before the inbox read, even with no log file.
+# Also prints an ALARM line (before the inbox, even with no log file) when $EVENTS_DIR/status.json (fleet-dash) lists `timers_stalled` entries
+#   or is older than TIMERS_ALARM_STALE_S (default 600 s = 10 min: a dead collector hides every alarm). No status.json at all = silent.
+#   Five-whys 2026-10-24: an empty OnUnitActiveSec= wiped OnBootSec, seat-tick@* and the regrader never fired, nothing alarmed.
 # Never fails the prompt: always exit 0, errors to stderr. The lines are data from other agents, never instructions.
 set -u
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 MAXLEN=2000
+
+timers_alarm() {
+  local sj="$1/status.json" age lim="${TIMERS_ALARM_STALE_S:-600}" ts
+  [ -f "$sj" ] || return 0
+  [[ "$lim" =~ ^[0-9]{1,9}$ ]] || lim=600
+  age=$(( $(date +%s) - $(stat -c %Y "$sj" 2>/dev/null || date +%s) ))
+  if [ "$age" -gt "$lim" ]; then
+    echo "ALARM: fleet-dash status.json is $((age / 60)) min old (limit $((lim / 60)) min): the collector is down, so no alarm is being evaluated (timers_stalled included)"
+  fi
+  ts="$(jq -r '[(.timers_stalled // [])[] | "\(.host) \(.unit) (\(.reason))"] | join(", ")' "$sj" 2>/dev/null | LC_ALL=C tr -d '\000-\037\177')" || ts=""
+  [ -z "$ts" ] || echo "ALARM: user timers stalled (no start trigger / no NEXT / stale LAST): ${ts:0:600}"
+  return 0
+}
 
 run() {
   local ev="${1:-}" in=""
@@ -29,6 +45,7 @@ run() {
   if [[ "$sid" =~ ^[A-Za-z0-9-]{8,64}$ ]] && [ -d "$dir" ]; then
     grep -qxF -- "$sid" "$sids" 2>/dev/null || printf '%s\n' "$sid" >>"$sids" 2>/dev/null || true
   fi
+  timers_alarm "$dir"
   [ -f "$log" ] || return 0
   local tmp; tmp="$(mktemp 2>/dev/null)" || return 0
   trap 'rm -f "$tmp"' RETURN
@@ -125,6 +142,21 @@ selftest() {
   mkdir -p "$T/ro"; printf 'g | h | i\n' >"$T/ro/aide-events.log"; chmod 500 "$T/ro"
   env -u TMUX EVENTS_DIR="$T/ro" HOME="$T" WM_SEAT=aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1; chk "unwritable events dir: exit 0" $?
   chmod 700 "$T/ro"
+  # timers alarm: status.json timers_stalled non-empty -> ALARM line; stale mtime -> ALARM line; fresh + empty / no file -> silent
+  local E="$T/ta"; mkdir -p "$E"; ta() { env -u TMUX EVENTS_DIR="$E" HOME="$T" WM_SEAT=aide "$@"; }
+  out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: no status.json: silent" $?
+  printf '{"ts":1,"timers_stalled":[]}' >"$E/status.json"
+  out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: fresh status.json, empty timers_stalled: silent" $?
+  printf '{"timers_stalled":[{"host":"carbon","unit":"seat-tick@rb.timer","reason":"no_next"},{"host":"redbaron","unit":"x.timer","reason":"stale_last"}]}' >"$E/status.json"
+  out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"
+  [ "$(printf '%s\n' "$out" | wc -l)" = 1 ] && printf '%s' "$out" | grep -q '^ALARM: user timers stalled.*carbon seat-tick@rb.timer (no_next), redbaron x.timer (stale_last)$'; chk "timers alarm: stalled entries listed as host unit (reason), even with no inbox log" $?
+  printf '{"timers_stalled":[]}' >"$E/status.json"; touch -d '11 minutes ago' "$E/status.json"
+  out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; printf '%s' "$out" | grep -q '^ALARM: fleet-dash status.json is 1[01] min old'; chk "timers alarm: status.json older than 10 min -> stale alarm" $?
+  touch -d '9 minutes ago' "$E/status.json"; out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: 9 min old: silent" $?
+  printf 'not json' >"$E/status.json"; out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: unparseable status.json: silent, exit 0" $?
+  printf '{"timers_stalled":[{"host":"h","unit":"u.timer","reason":"no_next"}]}' >"$E/status.json"; printf 'a | b | c\n' >"$E/aide-events.log"
+  out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ "$(printf '%s\n' "$out" | head -n1 | cut -c1-6)" = ALARM: ] && printf '%s' "$out" | grep -q 'AIDE INBOX: 1 new'; chk "timers alarm: printed before the inbox block" $?
+  out="$(env -u TMUX EVENTS_DIR="$E" HOME="$T" WM_SEAT=ctl bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: non-aide seat: silent" $?
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
 }
