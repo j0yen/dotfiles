@@ -12,6 +12,8 @@
 #   Stop cap (ctl 3ea0, 10-21 stop-hook loop class): one turn blocks at most STOP_BLOCK_MAX (default 2) Stops. The first Stop of a turn
 #   (stop_hook_active false) resets <seat>-inject-stop.<sid>; once the count reaches the cap, later Stops pass and the asks stay queued
 #   for the next turn, so a seat that gets asks every turn still ends this one.
+#   Reset: seat-tick.sh removes <seat>-inject-stop.<sid> before each turn (another Stop hook, e.g. a /goal judge, may block first, so this
+#   hook's first sighting can already carry stop_hook_active=true). Each Stop block adds a `Stop hook` line, so seat-tick's stop_hook_bounces counts it.
 #   Each delivery appends `<iso> | ask-inject | ASK-INJECTED <seat> n=<N> event=<E>` to <seat>-events.log.
 # Bounds: at most INJECT_MAX_BYTES (default 24000) of records per delivery; the rest stays queued for the next tool call. Each text cut at 4000 chars.
 # Env: FLEET_DASH_DIR (default ~/.cache/fleet-dash) SEATS_TABLE INJECT_MAX_BYTES. `--selftest` runs the cases in a throwaway dir.
@@ -20,7 +22,7 @@ set -u
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 
 deliver() {   # deliver <stdin json>
-  local in="$1" sid aid ev seat dash q lock c n=0 max recs body sha cnt=0 smax cf
+  local in="$1" sid aid ev seat dash q lock c="" n=0 max recs body sha cnt=0 smax cf
   command -v jq >/dev/null 2>&1 || return 0
   sid="$(jq -r '.session_id // empty' <<<"$in" 2>/dev/null)" || return 0
   aid="$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)"
@@ -39,15 +41,18 @@ deliver() {   # deliver <stdin json>
   fi
   [ -s "$q" ] || return 0
   max="${INJECT_MAX_BYTES:-24000}"; [[ "$max" =~ ^[0-9]{3,7}$ ]] || max=24000
-  c="$q.consumed-$(date +%s)-inject"; while [ -e "$c" ]; do n=$((n + 1)); c="$q.consumed-$(date +%s)-inject-$n"; done
   {
     flock -w 5 6 || exit 0
     [ -s "$q" ] || exit 0
+    # name the consumed file under the lock, so two parallel hooks never pick (and truncate) the same name (Fable 10-24)
+    c="$q.consumed-$(date +%s)-inject"; while [ -e "$c" ]; do n=$((n + 1)); c="$q.consumed-$(date +%s)-inject-$n"; done
+    : >"$c"
     # whole lines only: take lines while the running total stays <= max (always at least one line)
     awk -v max="$max" '{ t += length($0) + 1; if (NR > 1 && t > max) { print > "/dev/stderr"; next } print }' "$q" >"$c" 2>"$q.rest" \
       && mv -f "$q.rest" "$q" && chmod 600 "$c" "$q" 2>/dev/null
     [ -s "$q" ] || rm -f "$q"
   } 6>>"$lock" || return 0
+  [ -n "$c" ] || return 0
   [ -s "$c" ] || { rm -f "$c"; return 0; }
   recs="$(grep -c . "$c")"
   body="$(jq -r 'select(type=="object") | "- [\(.ts // "?")] from \(.from // "ask"): \((.text // "") | tostring | .[0:4000])"' "$c" 2>/dev/null)"

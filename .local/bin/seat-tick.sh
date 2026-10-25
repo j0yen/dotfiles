@@ -1285,6 +1285,7 @@ TURN_DONE=0; TURN_RC=""
 # stale "guard:pid ..." + guard_since for the whole of a turn that had started clean). ticks_skipped still resets only at an exit-0 end.
 case "$S_reason" in guard:*|no-goal-line|no-model|lock-covered:*|quota-wait:*) S_reason=""; S_gsince=0 ;; esac   # quota-wait: the wait is over (a2 let this turn through); quota_wait_until itself clears at an exit-0 end
 S_shbefore="$(stop_hook_lines "$SID")"   # before the turn: a /goal judge bounce adds `Stop hook` lines to the session file
+rm -f "$DASH/$SEAT-inject-stop.$SID" 2>/dev/null   # new turn: seat-ask-inject.sh Stop-block count starts at 0 (Fable 10-24: another Stop hook blocking first would leave a stale count)
 pre_ok=1; save || { pre_ok=0; echo "seat-tick: WARN pre-turn state save failed" >&2; }
 trap on_exit EXIT
 LEAN_ARGV=(); MT_ARGV=()
