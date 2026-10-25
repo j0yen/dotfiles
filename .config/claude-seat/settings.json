@@ -8,5 +8,10 @@
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
   },
   "autoCompactEnabled": true,
-  "autoCompactWindow": "auto"
+  "autoCompactWindow": "auto",
+  "permissions": {
+    "deny": [
+      "ScheduleWakeup"
+    ]
+  }
 }
