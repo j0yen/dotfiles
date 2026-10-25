@@ -27,6 +27,12 @@ call 9000 1000 Agent '{"subagent_type":"coder-opus"}' | denied && ok "coder-opus
 [ -z "$(call 9000 1000 Agent '{"subagent_type":"verifier"}')" ] && ok "verifier Agent with budget left allowed" || bad "verifier Agent wrongly denied"
 call 1500 1000 Agent '{"subagent_type":"verifier"}' | denied && ok "Agent 500 s before the deadline denied (within 600 s)" || bad "Agent near deadline not denied"
 call 9000 1000 Bash '{"command":"timeout 99999 sleep 1"}' | denied && ok "Bash 'timeout 99999' denied" || bad "timeout 99999 not denied"
+[ -z "$(call 9000 1000 Bash '{"command":"echo \"timeout 99999\""}')" ] && ok "quoted echo \"timeout 99999\" allowed (not command position)" || bad "quoted timeout wrongly denied"
+[ -z "$(call 9000 1000 Bash '{"command":"grep -r timeout 3600 ."}')" ] && ok "'grep timeout 3600' allowed" || bad "grep timeout wrongly denied"
+call 9000 1000 Bash '{"command":"cd x && timeout 99999 cmd"}' | denied && ok "'&& timeout 99999 cmd' denied" || bad "&& timeout not denied"
+call 9000 1000 Bash '{"command":"sudo timeout 99999 cmd"}' | denied && ok "'sudo timeout 99999 cmd' denied" || bad "sudo timeout not denied"
+call 9000 1000 Bash '{"command":"env FOO=1 timeout 99999 cmd"}' | denied && ok "'env FOO=1 timeout 99999 cmd' denied" || bad "env timeout not denied"
+call 9000 1000 Bash '{"command":"a | (timeout 99999 cmd)"}' | denied && ok "'( timeout 99999' denied" || bad "paren timeout not denied"
 [ -z "$(call 9000 1000 Bash '{"command":"timeout 30 ls"}')" ] && ok "Bash 'timeout 30' allowed" || bad "timeout 30 wrongly denied"
 r="$(call 5000 5000 Read '{"file_path":"/x"}')"
 printf '%s' "$r" | denied && [[ "$r" == *"turn budget spent: print STATUS and end"* ]] && ok "any tool at the deadline denied with the STATUS message" || bad "tool at deadline"
@@ -39,6 +45,10 @@ n="$(jq -r '[.hooks.PreToolUse[]?.hooks[]? | select(.command|test("seat-turn-bud
 [ "$n" = 1 ] && ok "seat-turn-budget.sh registered once under hooks.PreToolUse" || bad "hook registered $n times (want 1)"
 jq -e '.permissions.deny | index("ScheduleWakeup") != null and index("Monitor") != null' "$SET" >/dev/null && ok "seat settings deny ScheduleWakeup and Monitor" || bad "seat settings deny list"
 jq -e '.permissions.deny | index("ScheduleWakeup") != null' "$CTLSET" >/dev/null && ok "ctl-settings.json denies ScheduleWakeup" || bad "ctl-settings deny"
+jq -e . "$CTLSET" >/dev/null && ok "ctl-settings.json parses" || bad "ctl-settings parses"
+n="$(jq -r '[.hooks.PreToolUse[]?.hooks[]? | select(.command|test("seat-turn-budget[.]sh$"))] | length' "$CTLSET")"
+[ "$n" = 1 ] && ok "ctl-settings registers seat-turn-budget.sh once under hooks.PreToolUse" || bad "ctl hook registered $n times (want 1)"
+[ "$(jq -c '.hooks.PreToolUse' "$CTLSET")" = "$(jq -c '.hooks.PreToolUse' "$SET")" ] && ok "ctl hook entry identical to settings.json's" || bad "ctl hook entry differs"
 
 # ---- seat-ask: OnFailure on the transient unit; the template exists --------------------------------
 [ -f "$here/.config/systemd/user/seat-tick-failed@.service" ] && ok "seat-tick-failed@.service template exists" || bad "template missing"
@@ -81,12 +91,23 @@ dv="$(sed -n 's/^deadline=\([0-9]*\) .*/\1/p' "$tmp/o7" | head -1)"
 evsz="$(stat -c %s "$D/tst-events.log")"
 FAKE_EXIT=124 tick >"$tmp/o124" 2>"$tmp/e124"; rc=$?
 [ "$rc" = 124 ] && ok "exit 124 propagates (the unit still fails -> OnFailure)" || bad "rc=$rc"
-[ ! -s "$D/tst-asks.pending" ] && ok "124: asks NOT restored (queue empty)" || bad "124 restored asks: $(wc -l <"$D/tst-asks.pending")"
+# 124 #1: the 2 carried asks stay queued with carried:1 (the turn may never have read them), nothing dead-lettered
+[ "$(wc -l <"$D/tst-asks.pending")" = 2 ] && [ "$(jq -s '[.[].carried]|unique' -c "$D/tst-asks.pending")" = "[1]" ] && [ ! -s "$D/tst-asks.dead" ] && ok "124 #1: 2 asks re-queued with carried:1, asks.dead empty" || bad "124 #1 carry: $(cat "$D/tst-asks.pending" "$D/tst-asks.dead" 2>&1 | head -c 300)"
 [ "$(js .events_offset)" = "$evsz" ] && ok "124: events cursor advanced to the prompt's events ($evsz)" || bad "124 cursor $(js .events_offset) != $evsz"
 [ "$(js .cap_kills)" = 1 ] && [ "$(js .cap_s)" = 3420 ] && [ "$(js .last_exit)" = 124 ] && [ "$(js .last_cap_kill)" != null ] && ok "124: cap_kills=1 cap_s=3420 last_exit=124 last_cap_kill set" || bad "124 state: $(jq -c '[.cap_kills,.cap_s,.last_exit,.last_cap_kill]' "$D/tst-tick.json")"
 grep -q 'CAP-KILL #1' "$tmp/e124" && ok "124: CAP-KILL line logged" || bad "no CAP-KILL line"
-FAKE_EXIT=124 tick >/dev/null 2>&1; [ "$(js .cap_kills)" = 2 ] && ok "second 124: cap_kills=2" || bad "cap_kills=$(js .cap_kills)"
+# 124 #2: the same 2 asks carried a second time move to tst-asks.dead, one ALARM per ask in the events log
+FAKE_EXIT=124 tick >"$tmp/o124b" 2>"$tmp/e124b"
+[ "$(js .cap_kills)" = 2 ] && ok "second 124: cap_kills=2" || bad "cap_kills=$(js .cap_kills)"
+[ ! -s "$D/tst-asks.pending" ] && [ "$(wc -l <"$D/tst-asks.dead")" = 2 ] && [ "$(jq -s '[.[].carried]|unique' -c "$D/tst-asks.dead")" = "[2]" ] && ok "124 #2: both asks moved to tst-asks.dead with carried:2, queue empty" || bad "124 #2 dead: pending=$(wc -l <"$D/tst-asks.pending") dead=$(cat "$D/tst-asks.dead" 2>&1 | head -c 300)"
+[ "$(grep -c ' | asks-dead | ALARM asks-dead seat=tst n=[12]$' "$D/tst-events.log")" = 2 ] && grep -q 'ALARM asks-dead seat=tst n=2' "$D/tst-events.log" && ok "124 #2: 2 'ALARM asks-dead seat=tst n=<k>' lines in tst-events.log" || bad "asks-dead ALARM lines: $(grep asks-dead "$D/tst-events.log")"
 FAKE_EXIT=0 tick >/dev/null 2>&1; [ "$(js .cap_kills)" = 0 ] && [ "$(js .cap_s)" = 3420 ] && ok "exit 0 resets cap_kills to 0" || bad "reset: $(js .cap_kills)"
+# 137 (SIGKILL after timeout -k) = CAP-KILL with the same carried-ask handling
+rm -f "$D/tst-asks.dead"; seed
+FAKE_EXIT=137 tick >"$tmp/o137" 2>"$tmp/e137"; rc=$?
+[ "$rc" = 137 ] && [ "$(js .cap_kills)" = 1 ] && [ "$(js .cap_s)" = 3420 ] && [ "$(js .last_exit)" = 137 ] && [ "$(js .last_cap_kill)" != null ] && grep -q 'CAP-KILL #1' "$tmp/e137" && ok "137: counted as CAP-KILL (cap_kills=1, last_cap_kill set, CAP-KILL line)" || bad "137 state rc=$rc: $(jq -c '[.cap_kills,.cap_s,.last_exit,.last_cap_kill]' "$D/tst-tick.json")"
+[ "$(jq -s '[.[].carried]|unique' -c "$D/tst-asks.pending")" = "[1]" ] && ok "137: carried asks re-queued with carried:1" || bad "137 asks: $(cat "$D/tst-asks.pending")"
+FAKE_EXIT=137 tick >/dev/null 2>&1; [ "$(wc -l <"$D/tst-asks.dead")" = 2 ] && ok "second 137: asks dead-lettered" || bad "137 dead: $(wc -l <"$D/tst-asks.dead" 2>&1)"
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit "$fail"

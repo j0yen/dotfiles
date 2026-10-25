@@ -26,12 +26,12 @@ decide() {   # decide <input-json> -> prints a deny JSON or nothing
       cmd="$(jq -r '.tool_input.command // empty' <<<"$in" 2>/dev/null)"
       tmo_ms="$(jq -r '.tool_input.timeout // empty' <<<"$in" 2>/dev/null)"
       if [[ "$tmo_ms" =~ ^[0-9]+$ ]] && [ $(( tmo_ms / 1000 )) -gt "$rem" ]; then deny "Bash timeout $(( tmo_ms / 1000 ))s exceeds the ${rem}s left in this turn's budget"; return 0; fi
-      # explicit `timeout [opts] N[smhd]` in the command text (the coreutils form)
+      # explicit `timeout [opts] N[smhd]` at COMMAND POSITION (start, or after ; && || | ( , optionally after sudo/env/VAR=x): a quoted `echo "timeout 3600"` is not a call
       while read -r n u; do
         [ -n "$n" ] || continue
         case "$u" in m) secs=$(( n * 60 )) ;; h) secs=$(( n * 3600 )) ;; d) secs=$(( n * 86400 )) ;; *) secs="$n" ;; esac
         if [ "$secs" -gt "$rem" ]; then deny "Bash 'timeout $n$u' exceeds the ${rem}s left in this turn's budget"; return 0; fi
-      done < <(grep -oE '(^|[;&|(]|[[:space:]])timeout([[:space:]]+-[-A-Za-z]+(=[^[:space:]]+)?([[:space:]]+[0-9]+[smhd]?)?)*[[:space:]]+[0-9]+[smhd]?' <<<"$cmd" 2>/dev/null \
+      done < <(grep -oE '(^|[;&|(])[[:space:]]*((sudo|env)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*timeout([[:space:]]+-[-A-Za-z]+(=[^[:space:]]+)?([[:space:]]+[0-9]+[smhd]?)?)*[[:space:]]+[0-9]+[smhd]?' <<<"$cmd" 2>/dev/null \
                  | sed -E 's/.*[[:space:]]([0-9]+)([smhd]?)$/\1 \2/') ;;
   esac
   return 0
@@ -52,6 +52,8 @@ if [ "${1:-}" = "--selftest" ]; then
   decide "$(mk Bash '{"command":"echo hi; timeout -k 5 2h make"}')" | grep -q deny; chk "Bash timeout -k 5 2h deny" $?
   decide "$(mk Bash '{"command":"ls","timeout":5000000}')" | grep -q deny; chk "Bash tool timeout field 5000000 ms deny" $?
   [ -z "$(decide "$(mk Bash '{"command":"timeout 60 ls"}')")" ]; chk "Bash timeout 60 allow" $?
+  [ -z "$(decide "$(mk Bash '{"command":"echo \"timeout 99999\""}')")" ]; chk "quoted timeout 99999 allow" $?
+  decide "$(mk Bash '{"command":"sudo timeout 99999 cmd"}')" | grep -q deny; chk "sudo timeout 99999 deny" $?
   SEAT_TURN_NOW=5000 decide "$(mk Read '{}')" | grep -q 'turn budget spent: print STATUS and end'; chk "any tool at the deadline deny" $?
   SEAT_TURN_NOW=6000 decide "$(mk Bash '{"command":"ls"}')" | grep -q 'turn budget spent'; chk "any tool past the deadline deny" $?
   [ "$fail" = 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"; exit "$fail"

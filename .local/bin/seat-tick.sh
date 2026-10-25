@@ -299,6 +299,36 @@ asks_restore() {
   ASK_CONSUMED=""
 }
 
+# asks_capkill: the turn that carried ASK_CONSUMED was cap-killed (rc 124/137). Each carried record gets carried:n+1; a record carried a second time moves to <seat>-asks.dead
+# (appended, 0600) with one `ALARM asks-dead seat=<seat> n=<k>` line in <seat>-events.log (k = records in the dead file after the move); the rest go back at the head of the queue.
+asks_capkill() {
+  [ -n "${ASK_CONSUMED:-}" ] && [ -e "$ASK_CONSUMED" ] || return 0
+  local DEAD="$DASH/$SEAT-asks.dead" keep="$ASKQ.keep.$$" dead="$ASKQ.dead.$$" line c k=0 ts evl nq=0 nd=0
+  : >"$keep"; : >"$dead"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    c="$(jq -r 'if type=="object" then (.carried // 0) else 0 end' <<<"$line" 2>/dev/null)"; [[ "$c" =~ ^[0-9]+$ ]] || c=0
+    c=$(( c + 1 ))
+    if [ "$c" -ge 2 ]; then { jq -c --argjson c "$c" '.carried=$c' <<<"$line" 2>/dev/null || printf '%s\n' "$line"; } >>"$dead"; nd=$(( nd + 1 ))
+    else { jq -c --argjson c "$c" '.carried=$c' <<<"$line" 2>/dev/null || printf '%s\n' "$line"; } >>"$keep"; nq=$(( nq + 1 )); fi
+  done <"$ASK_CONSUMED"
+  { flock 6
+    { cat -- "$keep"; cat -- "$ASKQ" 2>/dev/null; true; } >"$ASKQ.rest" && mv -f "$ASKQ.rest" "$ASKQ" && chmod 600 "$ASKQ" && rm -f "$ASK_CONSUMED"
+  } 6>>"$ASKLOCK"
+  if [ "$nd" -gt 0 ]; then
+    ( umask 077; touch "$DEAD" ); chmod 600 "$DEAD"
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >>"$DEAD"; k="$(grep -c . "$DEAD")"; ts="$(date -Iseconds)"
+      evl="ALARM asks-dead seat=$SEAT n=$k"
+      echo "$evl" >&2
+      { flock 7; [ -e "$EVF" ] || ( umask 077; : >"$EVF" ); chmod 600 "$EVF"; printf '%s | asks-dead | %s\n' "$ts" "$evl" >>"$EVF"; } 7>>"$DASH/$SEAT-events.lock"
+    done <"$dead"
+  fi
+  rm -f "$keep" "$dead"
+  echo "seat-tick: $SEAT cap-kill: $nq carried ask(s) re-queued (carried+1), $nd dead-lettered" >&2
+  ASK_CONSUMED=""
+}
+
 # ---- selftest -------------------------------------------------------------------------------------
 ST_T=""; ST_PIDS=""
 st_cleanup() { local p; for p in $ST_PIDS; do kill "$p" 2>/dev/null; done; [ -n "$ST_T" ] && [ -z "${SELFTEST_KEEP:-}" ] && rm -rf "$ST_T"; [ -n "${SELFTEST_KEEP:-}" ] && echo "kept $ST_T"; }
@@ -1331,8 +1361,10 @@ if [ -n "$MT_N" ]; then S_mth=$(( S_mth + 1 )); echo "seat-tick: $SEAT max-turns
 TURN_RC="$rc"
 # exit 124 = the cap kill: the turn read the whole prompt (asks + events) for the full cap, so its asks are NOT restored and the events cursor advances below (a restore + kept cursor
 # re-delivered the same pile every hour: asks 6 -> 40, events 4 -> 397, five-whys 2026-10-24 r7-cap-killed-turn-minutes). Counted in cap_kills / cap_s for fleet-dash.
-CAPKILL=0; [ "$rc" = 124 ] && CAPKILL=1
-[ "$rc" = 0 ] || [ "$CAPKILL" = 1 ] || asks_restore   # a failed (or quota-limited) turn never answered the queued asks it carried
+# 137 = SIGKILL after `timeout -k 30` (the turn ignored SIGTERM): same accounting. Carried asks are not restored verbatim: asks_capkill bumps carried:n+1 and dead-letters a second carry.
+CAPKILL=0; { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && CAPKILL=1
+if [ "$CAPKILL" = 1 ]; then asks_capkill
+elif [ "$rc" != 0 ]; then asks_restore; fi   # a failed (or quota-limited) turn never answered the queued asks it carried
 end="$(date +%s)"
 echo "seat-tick: $SEAT $KIND exit=$rc duration=$((end - start))s"
 
@@ -1344,7 +1376,7 @@ if [[ "$S_shbefore" =~ ^[0-9]+$ ]]; then S_bounces=$(( sh_after - S_shbefore ));
 [ "$S_bounces" -gt 0 ] && stop_hook_alarm "$S_bounces"
 if [ "$CAPKILL" = 1 ]; then
   S_ck=$(( S_ck + 1 )); S_cs="$CAP"; S_lck="$iso"; S_evoff="$NEW_EVOFF"
-  echo "seat-tick: $SEAT CAP-KILL #$S_ck: $KIND turn killed at cap=${CAP}s (exit 124); asks not restored, events cursor advanced to $S_evoff" >&2
+  echo "seat-tick: $SEAT CAP-KILL #$S_ck: $KIND turn killed at cap=${CAP}s (exit $rc); asks carried+1 (2nd carry -> asks.dead), events cursor advanced to $S_evoff" >&2
 elif [ "$rc" = 0 ]; then S_ck=0; fi   # cap_kills counts consecutive 124s; an exit-0 end zeroes it
 if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; S_qa=""; S_qk=""; S_qpf=false; S_qpt=""; fi
 # quota-wait: a failed turn whose output is the usage-limit line is not a failure anyone can act on. Not a skip (ticks_skipped untouched), events/approvals/lastprompt
