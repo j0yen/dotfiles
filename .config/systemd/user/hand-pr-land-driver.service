@@ -12,5 +12,5 @@ Environment=PATH=%h/.npm-global/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/
 # fleet token for gh auth (never printed by the script); a missing file is not an error
 EnvironmentFile=-%h/.config/environment.d/*.conf
 ExecStart=%h/.local/bin/hand-pr-land-driver.sh
-# a launch waits on the verifier-cap lock; one tick never outlives the next
-TimeoutStartSec=540
+# a launch waits on the verifier-cap lock; the script budgets each tick (HPLD_TICK_BUDGET_S 1500) under this ceiling (rb-merge 900 s, launch 600 s)
+TimeoutStartSec=1800
