@@ -4,6 +4,7 @@
 
 - i-have-adhd shape via plugin + marker `~/.claude/.adhd-always-on` on every node. Prose: memory/feedback_prose_rules.md.
 - Times 12-hour local from `date`, never estimated. Numbers in memory are verbatim Joe quotes.
+- Call `fleet-token-429-watch` the QUOTA WATCHER in anything Joe reads (Joe 10-24 10:1x PM "refer to 429 watcher as quota watcher for clarity"); the unit name stays.
 - STATUS (Joe 10-22 1:4x PM "when I ask for STATUS, I am referring to what you (the active session) is working on") = this session's current task, its state and next step, nothing else. The fleet sweep report is a different thing, asked for as FLEET STATUS: it leads with what goal.md § Stage names, then PRD queue, open runs, prod versions, where each operator loop runs, long-land table, per-seat correction rates. Plain counts only: no PRDs/hour, no P(H).
 
 # Hosts
