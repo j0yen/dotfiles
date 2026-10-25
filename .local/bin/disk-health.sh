@@ -34,7 +34,9 @@
 #   real run asks for a password), so the rule spells out every device path. Re-render when a disk is added. A sudo'd run that still says
 #   "interactive authentication is required" is classified needs-sudo, not error.
 #
-# ENV  DISK_HEALTH_JOURNAL_FILE / DISK_HEALTH_NOW / DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR (test seams), DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
+#   expected_mounts_configured: true when .config/disk-health/expected-mounts.json has this host's key (host -> [mountpoints]); each expected mountpoint
+#        absent from /proc/self/mounts is a missing_devices {mount, reason:"not-mounted"}. false (file missing/unparseable, host key absent) = nothing was checked: consumers show YELLOW, never green.
+# ENV  DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_JOURNAL_FILE / DISK_HEALTH_NOW / DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR (test seams), DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
 
 OUT=${DISK_HEALTH_OUT:-$HOME/.cache/fleet-dash/disk-health.json}
@@ -287,6 +289,36 @@ def kernel_io(errors):
     return None
 
 
+def this_host():
+    return os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0]
+
+
+def mounted_points():
+    """-> set of mountpoints from /proc/self/mounts (DISK_HEALTH_MOUNTS_FILE is the test seam); None when unreadable."""
+    try:
+        txt = open(os.environ.get("DISK_HEALTH_MOUNTS_FILE") or "/proc/self/mounts").read()
+    except OSError:
+        return None
+    return {ln.split()[1].replace("\\040", " ") for ln in txt.splitlines() if len(ln.split()) > 1}
+
+
+def expected_mounts(errors):
+    """-> (configured, [{mount, reason:'not-mounted'}]). DISK_HEALTH_EXPECTED_FILE (default: .config/disk-health/expected-mounts.json beside the
+    dotfiles, resolved by the wrapper) maps host -> mountpoints. A missing/unparseable file or an absent host key is configured=False (never a pass);
+    a host key with [] is configured with nothing to check."""
+    path = os.environ.get("DISK_HEALTH_EXPECTED_FILE")
+    try:
+        mp = json.load(open(path))[this_host()]
+        if not isinstance(mp, list) or not all(isinstance(m, str) for m in mp):
+            raise ValueError("bad shape")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False, []
+    live = mounted_points()
+    if live is None and mp:
+        errors.append("mounts-unreadable")
+    return True, [{"mount": m, "reason": "not-mounted"} for m in mp if live is None or m not in live]
+
+
 def missing_devices(errors):
     """-> [{uuid, mount}] for /etc/fstab UUID= entries (noauto excluded) with no /dev/disk/by-uuid link: an expected drive that is gone.
     DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR are the test seams. An unreadable fstab or by-uuid dir adds 'fstab-unreadable' and yields []."""
@@ -363,14 +395,16 @@ def collect():
             errors.append("needs-sudo")
     rows = [smart_device(d, prefix, ok, errors) for d in devs]
     k = kernel_io(errors) or {"since_boot": None, "last": [], "usb_resets": None, "unfiltered": False, "h6": None, "h24": None, "last_age_s": None}
-    missing = missing_devices(errors)
+    configured, missing = expected_mounts(errors)
+    have = {m["mount"] for m in missing}
+    missing += [m for m in missing_devices(errors) if m["mount"] not in have]
     inode, byts, mounts = df_max(errors)
     errors = list(dict.fromkeys(errors))
-    return {"host": os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0],
+    return {"host": this_host(),
             "ts": now, "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
             "devices": rows, "kernel_io_errors_since_boot": k["since_boot"], "kernel_io_errors_6h": k["h6"], "kernel_io_errors_24h": k["h24"],
             "kernel_io_last_error_age_s": k["last_age_s"], "kernel_window_unfiltered": k["unfiltered"], "kernel_io_last": k["last"],
-            "usb_resets_since_boot": k["usb_resets"], "missing_devices": missing,
+            "usb_resets_since_boot": k["usb_resets"], "missing_devices": missing, "expected_mounts_configured": configured,
             "max_inode_pct": inode, "max_bytes_pct": byts,
             "mounts": mounts, "max_bytes_level": bytes_level(byts["pct"]) if byts else "ok", "errors": errors}
 
@@ -708,4 +742,8 @@ case "${1:-}" in
 esac
 
 command -v python3 >/dev/null 2>&1 || { echo "disk-health: python3 missing" >&2; exit 1; }
+if [ -z "${DISK_HEALTH_EXPECTED_FILE:-}" ]; then # sandbox PATHs may lack readlink/dirname: bash-only fallback
+  me=${BASH_SOURCE[0]}; me=$(readlink -f "$me" 2>/dev/null || printf '%s' "$me")
+  export DISK_HEALTH_EXPECTED_FILE=${me%/*}/../../.config/disk-health/expected-mounts.json
+fi
 exec python3 -I -c "$PY" "$OUT" "${1:-}"
