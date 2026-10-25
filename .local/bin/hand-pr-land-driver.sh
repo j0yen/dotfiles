@@ -20,7 +20,9 @@
 # NEVER: merge without a gate PASS (rb-merge.sh is the only merge path), force, touch a hold, kill by pattern, print a token.
 #   --dry-run   print the planned actions (PLAN lines), change nothing (no lock, no row, no launch, no ring, no ROOM call)
 #   --selftest  pure-function checks (GATED grammar, keys, owner map, suite shape); tests/hand-pr-land-driver.test.sh runs the stubbed end-to-end cases
-# Env (tests): HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD
+# Env (tests): HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD HPLD_TICK_BUDGET_S
+# Per-tick budget (HPLD_TICK_BUDGET_S, default 1500 s; the unit allows 1800): a long call (launch 600 s, finish 600 s, merge 900 s) is skipped with a `deferred` log line when elapsed + its timeout > budget.
+# Draft PRs (isDraft) are skipped with one observe row per head. A `Depends-on: #N` line in the PR body (same repo) lets launch proceed but holds the merge, one observe row per head, while #N is OPEN.
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 STATE_DIR="${HPLD_STATE_DIR:-$HOME/.local/state/hand-pr-land-driver}"
@@ -56,6 +58,8 @@ SINCE = os.environ.get("HPLD_SINCE", "7d")
 REPOS = os.environ.get("HPLD_REPOS", "j0yen/synthorg j0yen/mcphost j0yen/wm-build").split()
 PM_WINDOW_H = float(os.environ.get("HPLD_POSTMERGE_WINDOW_H", "3"))
 PM_WAIT_S = 15 * 60
+BUDGET_S = float(os.environ.get("HPLD_TICK_BUDGET_S", "1500"))
+T0 = time.monotonic()
 MAX_LAUNCHES, MAX_LAUNCH_FAILS = 2, 3
 AGENT, VIA = "coder:hand-pr-land-driver", "hand-pr-land-driver"
 SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; cargo repos never do
@@ -275,7 +279,7 @@ def verdict_id_of_unit(u):
 
 
 for repo in REPOS:
-    rc, out, err = sh([GH, "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,headRefOid,headRefName"], 120)
+    rc, out, err = sh([GH, "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,headRefOid,headRefName,isDraft,body"], 120)
     if rc != 0:
         log("hand-pr-land-driver: gh pr list %s failed rc=%d: %s" % (repo, rc, err.strip()[:200]))
         continue
@@ -287,6 +291,12 @@ for repo in REPOS:
         if not grows:
             continue
         g = grows[-1]
+        tag = "%s#%d" % (repo, pr)
+        if pr_o.get("isDraft"):
+            k = "draft:%s:%s" % (tag, live[:12])
+            if k not in hp_keys:
+                actions.append({"act": "observe-draft", "repo": repo, "pr": pr, "head": live, "tag": tag, "key": k, "msg": "draft PR; skipped (no launch, merge or ring)"})
+            continue
         gc = gated_commit(g["what"], repo, pr)
         tier = "full" if re.search(r"(?i)(?<![A-Za-z0-9])(?:TIER|SUITE)=full\b", g["what"]) else "fast"
         owner = owner_seat(g.get("agent"))
@@ -323,6 +333,19 @@ for repo in REPOS:
         if vs:
             v = vs[-1]
             if "merge:%s" % v["id"] not in hp_keys:
+                deps = []
+                for dl in re.findall(r"(?im)^[ \t>*-]*Depends-on:(.*)$", pr_o.get("body") or ""):
+                    deps += [int(x) for x in re.findall(r"(?<![A-Za-z0-9_/])#(\d+)", dl) if int(x) != pr]
+                opendeps = []
+                for d in sorted(set(deps)):
+                    rc2, o2, _ = sh([GH, "pr", "view", str(d), "--repo", repo, "--json", "state", "-q", ".state"], 60)
+                    if rc2 != 0 or o2.strip() == "OPEN":   # fail closed: an unreadable dep holds too
+                        opendeps.append("#%d(%s)" % (d, o2.strip() or "unknown"))
+                if opendeps:
+                    k = "depwait:%s:%s" % (tag, live[:12])
+                    if k not in hp_keys:
+                        actions.append(dict(base, act="observe-depwait", key=k, msg="merge held: Depends-on still open: %s" % " ".join(opendeps)))
+                    continue
                 actions.append(dict(base, act="merge", key="merge:%s" % v["id"], verdict=v["id"]))
             continue
         # (a) verify the live head
@@ -343,7 +366,7 @@ for repo in REPOS:
             continue
         n = launches + 1
         name = "hpl-%s-%d-%s-%d" % (short(repo), pr, live[:7], n)
-        actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), name=name, tier=tier,
+        actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), ckey="capdefer:%s%d" % (pfx, int(now() // 3600)), name=name, tier=tier,
                             suite=suite_for(repo, tier, own_tests(repo, pr))))
 
 # (d) post-merge suite ring
@@ -422,9 +445,13 @@ def one_line(s, n=300):
 
 for a in actions:
     act = a["act"]
-    if act.startswith("ring-"):
+    if act.startswith("observe-"):
+        record(act, a, a["msg"])
+    elif act.startswith("ring-"):
         if record(act, a, "seat=%s %s" % (a["owner"], a["msg"][:300])):   # row first: a failed ring never repeats
             ring(a, a["owner"])
+    elif act in ("launch", "finish", "merge") and (time.monotonic() - T0) + {"launch": 600, "finish": 600, "merge": 900}[act] > BUDGET_S:
+        log("DEFERRED %s %s: tick budget %ds (elapsed %ds + %s timeout)" % (act, a["tag"], BUDGET_S, time.monotonic() - T0, {"launch": 600, "finish": 600, "merge": 900}[act]))
     elif act == "launch":
         room_rc, room_o, room_e = sh([ROOM, "1024", "--reserve-MB", "3072"], 60)
         if room_rc != 0:
@@ -439,8 +466,10 @@ for a in actions:
         if rc_ == 0:
             log("LAUNCH %s %s" % (a["tag"], a["name"]))
             record("launch", a, "name=%s tier=%s gated=%s" % (a["name"], a["tier"], a["gated"]))
-        elif rc_ in (3, 10, 11, 6) or (rc_ == 2 and re.search(r"(?i)ceiling|slot", txt)):
+        elif rc_ in (3, 10, 11, 6) or (rc_ == 2 and re.search(r"(?i)cap reached|ceiling|slot", txt)):
             log("LAUNCH DEFERRED %s rc=%d (transient): %s" % (a["tag"], rc_, one_line(txt)))
+            if rc_ == 2 and a["ckey"] not in hp_keys:   # at most one observe row per head per hour; never counts toward launchfail / stuck
+                record("launch-deferred", a, "rc=2 %s" % one_line(txt, 200), key=a["ckey"])
         else:
             log("LAUNCH FAILED %s rc=%d: %s" % (a["tag"], rc_, one_line(txt)))
             record("launchfail", a, "rc=%d %s" % (rc_, one_line(txt)), key=a["fkey"])

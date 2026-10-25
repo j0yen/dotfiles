@@ -34,6 +34,7 @@ E
 echo "gh $*" >>"$T/calls.log"
 case "$1 $2" in
   "pr list") f="$T/prs-$(echo "$4" | tr / -).json"; [ -f "$f" ] && cat "$f" || echo '[]' ;;
+  "pr view") cat "$T/state-$3" 2>/dev/null || { echo "no such pr" >&2; exit 1; } ;;
   "api repos/"*) echo tests/foo_test.py ;;
   *) echo "stub gh: unexpected $*" >&2; exit 9 ;;
 esac
@@ -77,7 +78,13 @@ f, i, ts, ag, kd, w, g = sys.argv[1:8]
 r = json.load(open(f)); r.append({"id": i, "ts": ts, "agent": ag, "kind": kd, "what": w, "gates": g or None}); json.dump(r, open(f, "w"))
 E
 }
-pr() { echo "[{\"number\":$2,\"headRefOid\":\"$3\",\"headRefName\":\"${4:-hand/x}\"}]" >"$T/prs-$(echo "$1" | tr / -).json"; }
+pr() {   # pr <repo> <num> <head> [branch] [isDraft true|false] [body]
+  python3 - "$T/prs-$(echo "$1" | tr / -).json" "$2" "$3" "${4:-hand/x}" "${5:-false}" "${6:-}" <<'PYE'
+import json, sys
+f, n, h, b, d, body = sys.argv[1:7]
+json.dump([{"number": int(n), "headRefOid": h, "headRefName": b, "isDraft": d == "true", "body": body}], open(f, "w"))
+PYE
+}
 unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
   mkdir -p "$T/vdir/$1"; printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=pytest EXIT=0\nagent=aide\n' "$REPO" "$2" "$3" "$4" >"$T/vdir/$1/meta"
   [ -n "${5:-}" ] && printf '{"result":"verdict row %s\\nLOG: /x.log"}' "$5" >"$T/vdir/$1/result.json"
@@ -182,6 +189,48 @@ cleanup
 # ---- the lock: a held lock makes the tick exit without acting
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; mkdir -p "$T/state"
 ( exec 8>"$T/state/tick.lock"; flock -n 8; tick; ) ; [ "$(n '^verifier')" = 1 ] && bad "tick ran under a held lock" || pass "lock: a tick under a held lock does nothing"
+cleanup
+
+# ---- defect 1: `verifier cap reached` (rc 2) is transient: no launchfail, no ring-stuck, one observe row per head per hour
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+cat >"$T/bin/aide-verifier.sh" <<'E'
+#!/usr/bin/env bash
+# supports --timeout
+echo "verifier $*" >>"$T/calls.log"; echo "verifier cap reached: 4 of 4 active" >&2; exit 2
+E
+chmod +x "$T/bin/aide-verifier.sh"; tick; tick; tick; tick
+[ "$(n '^verifier launch')" = 4 ] && ! grep -q 'LAUNCHFAIL\|RING-STUCK' "$T/records.log" && [ "$(grep -c 'HPLD LAUNCH-DEFERRED' "$T/records.log")" = 1 ] && [ "$(n '^seat-ask')" = 0 ] && grep -q 'LAUNCH DEFERRED.*transient' "$T/out" && pass "cap reached: retried every tick, no launchfail/stuck, one observe row per hour, no ring" || bad "cap reached ($(cat "$T/records.log"))"
+cleanup
+# a non-transient rc 2 still counts as a launch failure
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+printf '#!/usr/bin/env bash\n# --timeout\necho "verifier $*" >>"$T/calls.log"; echo "bad args" >&2; exit 2\n' >"$T/bin/aide-verifier.sh"; tick
+grep -q 'HPLD LAUNCHFAIL' "$T/records.log" && pass "a non-cap rc 2 is still a launchfail" || bad "launchfail lost"
+cleanup
+
+# ---- defect 2: tick budget skips a long call with a deferred line, no row, no call
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; HPLD_TICK_BUDGET_S=100 tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^room')" = 0 ] && [ ! -s "$T/records.log" ] && grep -q 'DEFERRED launch .*tick budget 100s' "$T/out" && pass "budget: launch (600 s) deferred when budget 100 s, no call, no row" || bad "budget launch ($(cat "$T/out"))"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict "MERGE-OK $REPO#41 COMMIT=$H1" g1; pr $REPO 41 $H1; HPLD_TICK_BUDGET_S=800 tick
+[ "$(n '^rb-merge')" = 0 ] && grep -q 'DEFERRED merge' "$T/out" && pass "budget: merge (900 s) deferred when budget 800 s" || bad "budget merge"
+tick; [ "$(n '^rb-merge')" = 1 ] && pass "budget: default (1500 s) lets the merge run next tick" || bad "budget default"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; unitdir u1 41 $H1 g1 d-20261024-231015-aide-6865; HPLD_TICK_BUDGET_S=500 tick
+[ "$(n '^verifier finish')" = 0 ] && grep -q 'DEFERRED finish' "$T/out" && pass "budget: finish deferred when budget 500 s" || bad "budget finish"
+cleanup
+
+# ---- defect 3: draft PR skipped, one observe row per head
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict "MERGE-OK $REPO#41 COMMIT=$H1" g1; pr $REPO 41 $H1 hand/x true; tick; tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^rb-merge')" = 0 ] && [ "$(n '^seat-ask')" = 0 ] && [ "$(grep -c 'HPLD OBSERVE-DRAFT' "$T/records.log")" = 1 ] && pass "draft PR: no launch/merge/ring, one observe row across two ticks" || bad "draft ($(cat "$T/records.log"))"
+cleanup
+# Depends-on: launch allowed; merge held while the dep is OPEN, released once MERGED
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1 hand/x false $'Summary\nDepends-on: #40\n'; tick
+[ "$(n '^verifier launch')" = 1 ] && pass "Depends-on: launch is still allowed" || bad "depends launch"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict "MERGE-OK $REPO#41 COMMIT=$H1" g1; pr $REPO 41 $H1 hand/x false $'Depends-on: #40, #39\n'; echo OPEN >"$T/state-40"; echo MERGED >"$T/state-39"; tick; tick
+[ "$(n '^rb-merge')" = 0 ] && [ "$(n '^seat-ask')" = 0 ] && [ "$(grep -c 'HPLD OBSERVE-DEPWAIT' "$T/records.log")" = 1 ] && grep -q '#40(OPEN)' "$T/records.log" && ! grep -q '#39' "$T/records.log" && pass "Depends-on open dep: merge held, no ring, one observe row per head" || bad "depends open ($(cat "$T/records.log"))"
+echo MERGED >"$T/state-40"; tick
+[ "$(n '^rb-merge v1 41')" = 1 ] && pass "Depends-on all merged: merge proceeds" || bad "depends merged"
 cleanup
 
 bash "$DRV" --selftest >/dev/null && pass "--selftest" || bad "--selftest"
