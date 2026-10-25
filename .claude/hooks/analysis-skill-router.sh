@@ -10,6 +10,9 @@
 # ordinary questions and teaches the model to ignore it):
 #   five whys / 5 whys / rhyme check / and rhyme / post-mortem / root cause → /5whysandrhyme
 #   wwhtbt / wwit / what would have to be true                              → /wwhtbt
+# Only Joe's own typed words count: <system-reminder>, <task-notification> and
+# <cross-session-message> blocks (harness notices, agent results, other seats)
+# are stripped first; a prompt with nothing left exits silently, no log line.
 # A prompt that already starts with the slash command is left alone. Each fire
 # is logged to ${ANALYSIS_ROUTER_LOG:-~/.claude/state/analysis-router.jsonl}
 # so the hit rate can be counted. analysis-page-gate.sh is the hard stop; this
@@ -24,6 +27,10 @@ INPUT=$(cat) || exit 0
 PROMPT=$(printf '%s' "$INPUT" | "$JQ" -r '.prompt // empty' 2>/dev/null) || exit 0
 [ -n "$PROMPT" ] || exit 0
 SESSION_ID=$(printf '%s' "$INPUT" | "$JQ" -r '.session_id // empty' 2>/dev/null) || SESSION_ID=""
+
+command -v perl >/dev/null 2>&1 || exit 0
+PROMPT=$(printf '%s' "$PROMPT" | perl -0777 -pe 's{<(system-reminder|task-notification|cross-session-message)\b[^>]*>.*?</\1>}{}gs') || exit 0
+case "$PROMPT" in *[![:space:]]*) ;; *) exit 0 ;; esac
 
 if printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*/(5whysandrhyme|wwhtbt)([[:space:]]|$)'; then
     exit 0
