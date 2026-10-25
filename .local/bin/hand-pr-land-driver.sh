@@ -9,16 +9,18 @@
 #   (b) a verifier unit for that head is finished  -> lint its verdict through the LIVE gate code (mergegate.check, read-only), then `aide-verifier.sh finish`
 #   (c) a MERGE-OK verdict row whose COMMIT prefixes the live head (not voided by a CORRECT* row) -> `rb-merge.sh <verdict> <pr> <repo>` (gate, trailer check, squash merge)
 #   (a) no current verdict, no active verifier unit for the PR -> ROOM check (carbon-room.sh 1024 --reserve-MB 3072), then `aide-verifier.sh launch` (fast CI tier by default;
-#       `TIER=full` in the GATED row -> full pytest + --timeout 5400). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
+#       `TIER=full` or `SUITE=full` in the GATED row -> full pytest + --timeout 5400). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
 # and, once per merged PR (merge-events.jsonl pr-merged, last HPLD_POSTMERGE_WINDOW_H h):
 #   (d) merged >= 15 min ago, no r7 `START` row naming the PR since the merge -> `seat-ask.sh r7 '<repo>#<pr> merged <sha>; run post-merge suite'` ONCE.
 # Every action writes a ledger row (kind=observe, what `HPLD <ACTION> <repo>#<pr> k=<key> ...`). The wm-decide agent enum has no `hand-pr-land-driver`, so the row's agent is
 # `coder:hand-pr-land-driver` (the enum's per-job pattern) and via=hand-pr-land-driver. The `k=<key>` token is the idempotency key: a key already in the ledger is never acted on again;
 # rings write their row BEFORE the ring. A flock keeps two ticks from overlapping. Launch refusals that are transient (ROOM no, ceiling, 429 breaker, not head-of-line) write no row and retry next tick.
+# WATCHER RULE (CLAUDE.md): PREMISE = wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout; EXPIRES = HPLD_EXPIRES (default 2026-11-08 12:00 local).
+# Each tick checks expiry, then premise, BEFORE reading anything: expired or premise failed = ONE ring to ctl (marker file in the state dir), exit 0, no action.
 # NEVER: merge without a gate PASS (rb-merge.sh is the only merge path), force, touch a hold, kill by pattern, print a token.
 #   --dry-run   print the planned actions (PLAN lines), change nothing (no lock, no row, no launch, no ring, no ROOM call)
 #   --selftest  pure-function checks (GATED grammar, keys, owner map, suite shape); tests/hand-pr-land-driver.test.sh runs the stubbed end-to-end cases
-# Env (tests): HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H
+# Env (tests): HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 STATE_DIR="${HPLD_STATE_DIR:-$HOME/.local/state/hand-pr-land-driver}"
@@ -142,6 +144,68 @@ def selftest():
 if MODE == "selftest":
     sys.exit(selftest())
 
+# ---------------------------------------------------------------- WATCHER RULE: expiry, then premise, before any read
+EXPIRES = os.environ.get("HPLD_EXPIRES", "2026-11-08 12:00")
+STATE_DIR = os.environ.get("HPLD_STATE_DIR", os.path.join(HOME, ".local/state/hand-pr-land-driver"))
+
+
+def disarm(kind, why, key):
+    """One ring to ctl per key (marker file), a best-effort ledger row, exit 0 with no action."""
+    msg = "hand-pr-land-driver %s: %s; the driver took no action" % (kind, why)
+    if MODE == "dry":
+        log("PLAN %s %s" % (kind, why))
+        sys.exit(0)
+    marker = os.path.join(STATE_DIR, "rang-" + re.sub(r"[^A-Za-z0-9._-]", "_", key))
+    if os.path.exists(marker):
+        log("hand-pr-land-driver: %s (already rang ctl)" % why)
+        sys.exit(0)
+    try:
+        open(marker, "w").write(msg + "\n")
+    except OSError:
+        pass
+    sh([WMD, "record", "--agent", AGENT, "--via", VIA, "--kind", "observe", "--what", "HPLD %s %s k=%s" % (kind.upper(), "-", key),
+        "--why", "watcher rule: premise + expiry", "--evidence", msg[:300], "--reverse-text", "none (observation row)"], 60)
+    rc_, _, _ = sh([SEATASK, "ctl", msg], 120)
+    log("RING ctl rc=%d: %s" % (rc_, msg))
+    sys.exit(0)
+
+
+try:
+    expired = now() >= dt.datetime.strptime(EXPIRES, "%Y-%m-%d %H:%M").timestamp()
+except ValueError:
+    expired = True   # an unreadable expiry fails closed
+if expired:
+    disarm("expired", "EXPIRES %s has passed" % EXPIRES, "expired:" + EXPIRES)
+
+
+def premise_missing():
+    miss = []
+    imp = os.environ.get("HPLD_PREMISE_IMPORT_CMD")
+    if imp:
+        ok = sh(shlex.split(imp), 60)[0] == 0
+    else:
+        w = sh(["bash", "-c", "command -v " + shlex.quote(WMD)], 10)[1].strip()
+        root = os.path.dirname(os.path.dirname(os.path.realpath(w))) if w else ""
+        ok = bool(root) and sh(["python3", "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import wm_decide.mergegate", root], 60)[0] == 0
+    if not ok:
+        miss.append("wm-decide not importable")
+    rbm = sh(["bash", "-c", "command -v " + shlex.quote(RBMERGE)], 10)[1].strip()
+    if not rbm:
+        miss.append("rb-merge.sh missing")
+    av = sh(["bash", "-c", "command -v " + shlex.quote(VERIFIER)], 10)[1].strip()
+    try:
+        has_to = bool(av) and "--timeout" in open(os.path.realpath(av), errors="replace").read()
+    except OSError:
+        has_to = False
+    if not has_to:
+        miss.append("aide-verifier.sh lacks --timeout")
+    return miss
+
+
+_miss = premise_missing()
+if _miss:
+    disarm("premise-failed", "; ".join(_miss), "premise:" + ",".join(m.split()[0] for m in _miss))
+
 # ---------------------------------------------------------------- read side (read-only; also runs in --dry-run)
 rc, out, err = sh([WMD, "list", "--since", SINCE, "--json"], 300)
 if rc != 0:
@@ -224,7 +288,7 @@ for repo in REPOS:
             continue
         g = grows[-1]
         gc = gated_commit(g["what"], repo, pr)
-        tier = "full" if re.search(r"(?i)(?<![A-Za-z0-9])TIER=full\b", g["what"]) else "fast"
+        tier = "full" if re.search(r"(?i)(?<![A-Za-z0-9])(?:TIER|SUITE)=full\b", g["what"]) else "fast"
         owner = owner_seat(g.get("agent"))
         tag = "%s#%d" % (repo, pr)
         base = {"repo": repo, "pr": pr, "head": live, "gated": g["id"], "owner": owner, "tag": tag}

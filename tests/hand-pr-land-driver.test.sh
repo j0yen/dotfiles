@@ -40,6 +40,7 @@ esac
 E
   cat >"$T/bin/aide-verifier.sh" <<'E'
 #!/usr/bin/env bash
+# supports --timeout (premise grep)
 echo "verifier $*" >>"$T/calls.log"
 if [ "$1" = launch ]; then mkdir -p "$T/vdir/$2"; shift 2; while [ $# -gt 0 ]; do case "$1" in --repo) r=$2 ;; --pr) p=$2 ;; --head) h=$2 ;; --gated) g=$2 ;; esac; shift; done; printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\nagent=aide\n' "$r" "$p" "$h" "$g" >"$T/vdir/$(ls -t "$T/vdir" | head -1)/meta"; set -- launch "$(ls -t "$T/vdir" | head -1)"; touch "$T/active/aide-verifier-$2.service"; echo "aide-verifier-$2"; fi
 exit "${VERIFIER_RC:-0}"
@@ -84,7 +85,7 @@ unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
 tick() {   # tick [--dry-run]  (stdout kept in $T/out)
   T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
-  HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" bash "$DRV" "$@" >"$T/out" 2>&1; }
+  HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD="${PREMISE_CMD:-true}" bash "$DRV" "$@" >"$T/out" 2>&1; }
 n() { grep -c "$1" "$T/calls.log"; }   # count of calls matching
 cleanup() { rm -rf "$T"; }
 export T
@@ -154,6 +155,23 @@ cleanup
 # a daemon land (wm-build/ branch) is not a hand PR
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1 wm-build/run-9; tick
 [ "$(n '^verifier')" = 0 ] && pass "daemon-land branch (wm-build/*) is skipped" || bad "daemon branch acted"
+cleanup
+
+# ---- WATCHER RULE: expiry and premise
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; HPLD_EXPIRES="2000-01-01 00:00" tick; HPLD_EXPIRES="2000-01-01 00:00" tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^wm-decide list')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "expired: no action, one ring to ctl across two ticks" || bad "expired ($(cat "$T/calls.log"))"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; PREMISE_CMD=false tick; PREMISE_CMD=false tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^rb-merge')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && [ "$(n '^wm-decide list')" = 0 ] && pass "premise (wm-decide import) fails: no action, one ring to ctl" || bad "premise import"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; rm "$T/bin/rb-merge.sh"; tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && pass "premise (rb-merge.sh missing): no action, ring" || bad "premise rb-merge"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; printf '#!/usr/bin/env bash\nexit 0\n' >"$T/bin/aide-verifier.sh"; tick
+[ "$(n '^seat-ask ctl')" = 1 ] && [ "$(n '^wm-decide list')" = 0 ] && pass "premise (verifier without --timeout): no action, ring" || bad "premise timeout"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1 SUITE=full"; pr $REPO 41 $H1; tick
+grep '^verifier launch' "$T/calls.log" | grep -q -- '--timeout 5400' && pass "SUITE=full is accepted like TIER=full" || bad "SUITE=full"
 cleanup
 
 # ---- dry-run changes nothing

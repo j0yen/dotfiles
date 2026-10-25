@@ -3,6 +3,9 @@ Description=hand-pr-land-driver: walk open hand PRs (synthorg/mcphost/wm-build) 
 # carbon only: the file installs everywhere (install.sh links the whole tree), the unit runs on carbon. Shipped DISABLED: the verifier enables the timer after review.
 ConditionHost=carbon
 
+# PREMISE=wm-decide importable (wm_decide.mergegate); rb-merge.sh present; aide-verifier.sh supports --timeout. The script checks it every tick and rings ctl once if it fails.
+# EXPIRES=2026-11-08 12:00 (local; HPLD_EXPIRES overrides). Past it every tick rings ctl once ("expired") and does nothing: renew by editing the default in the script via a reviewed PR.
+
 [Service]
 Type=oneshot
 Environment=PATH=%h/.npm-global/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
