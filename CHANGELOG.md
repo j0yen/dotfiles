@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-24 — repo-suite (minor)
+
+`.local/bin/repo-suite.sh TREE LABEL OUTDIR` runs a repo's `tests/*.test.sh`
+(or `tests/*.sh` for vibecode-kit) in a bwrap sandbox with its own HOME, exit-99
+stubs for systemctl/gh/ssh/wm-build/wm-decide/synthorg/agorabus/tmux, a 4-test
+skip list, 300 s per test and a 1200 s wall cap. `repo-suite-poll.sh` (timer
+`repo-suite.timer`, carbon only, every 10 min after the last run, nice/idle IO,
+ROOM-gated) collects unseen shas for j0yen/dotfiles and j0yen/vibecode-kit
+(main plus open same-repo PR heads), runs one suite per sha in a throwaway
+worktree under `~/.local/state/repo-suite/wt/`, logs to
+`~/.local/state/repo-suite/logs/<repo>-<sha>.log` and posts the
+`carbon/repo-suite` commit status (`<sha7> exit=<n> log=<path>`).
+`~/.cache/fleet-dash/repo-suite.json` carries `{repo: {sha, state, age_s, pass,
+fail, ts, unseen, unseen_oldest_s}}`. Both scripts have a hermetic `--selftest`;
+`tests/repo-suite.test.sh` runs them.
+
 ## 2026-10-11 — dotfiles-config-edit-reload-check (patch)
 
 `.claude/hooks/config-reload-check.sh` (PostToolUse `Edit|Write|MultiEdit|Bash`)
