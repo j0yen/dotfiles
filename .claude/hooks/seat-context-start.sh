@@ -27,8 +27,18 @@ aide_card() {  # <= 8 lines; every source optional; never fails
     if [ -n "$ts" ] && [ -n "$tt" ]; then echo "ctl tick: $ts/$tt from ~/.cache/fleet-dash/ctl-tick.json"; else echo "ctl tick: unreadable ~/.cache/fleet-dash/ctl-tick.json"; fi
   else echo "ctl tick: no tick state"; fi
 }
+# Start-trigger check (five-whys 2026-10-24: an empty OnUnitActiveSec= wiped OnBootSec, seat ticks and the regrader never fired after a reboot, nothing alarmed):
+# every enabled user timer on carbon + redbaron + ryzen7 must show a start trigger. Prints NOTHING when healthy; a FAIL/SKIP line per problem otherwise.
+# Never fails the hook; bounded by timeout; silent when the helper is absent (a host without this dotfiles revision).
+timers_check() {
+  local h="$HOME/.local/bin/timers-start-trigger-live.sh" out
+  [ -x "$h" ] || return 0
+  out="$(timeout "${TIMERS_CHECK_TIMEOUT:-35}" "$h" --failures-only --hosts "${TIMERS_CHECK_HOSTS:-carbon redbaron ryzen7}" 2>/dev/null)" || true
+  [ -z "$out" ] || { echo "=== TIMERS: user timer(s) without a start trigger (cannot fire after a reboot; fix the drop-in, tests/user-timers-start-trigger.test.sh) ==="; printf '%s\n' "$out" | cut -c1-200; }
+  return 0
+}
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; exit 0 ;; *) sess="" ;; esac
+case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; timers_check; exit 0 ;; *) sess="" ;; esac
 if [ -z "$sess" ]; then
   [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
@@ -50,3 +60,4 @@ if [ -x "$HOME/.local/bin/goal-lint.sh" ] && [ -r "$goal" ]; then
 fi
 echo "=== wiki/playbooks/fleet-operations.md ==="
 if [ -r "$play" ]; then cat "$play"; else echo "playbook missing at $play"; fi
+timers_check
