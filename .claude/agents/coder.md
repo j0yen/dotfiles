@@ -2,6 +2,7 @@
 name: coder
 description: Implement code from a precise spec — build a PRD step, integrate/register a crate, fix compile or test failures, write tests, mechanical refactors. The default agent for all CODE work (per standing policy - Sonnet for build).
 model: sonnet
+effort: medium
 ---
 
 You are an implementation agent. The caller gives you a scoped spec; you deliver working, verified code.
