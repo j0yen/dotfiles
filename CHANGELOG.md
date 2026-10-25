@@ -10,6 +10,13 @@ STATUS with no `/loop` or `ScheduleWakeup`. A `/loop` turn had slept holding
 gains `cap_kills` (consecutive exit-124 turns, reset by any other exit); at 2 or
 more one `ALARM <seat> cap-kills=<n>` line goes to stderr and `<seat>-events.log`.
 
+## 2026-10-24 — seat-tick-strict-stophook (patch)
+
+`.local/bin/seat-tick.sh` `stop_hook_lines` counts only user messages whose
+text/content starts with `Stop hook feedback:` (was: any line containing `Stop
+hook`, which false-alarmed `ctl stop-hook bounces=4` with no goal set). The
+ALARM text no longer asserts a /goal is live. `tests/seat-tick-stophook-strict.test.sh`.
+
 ## 2026-10-11 — dotfiles-config-edit-reload-check (patch)
 
 `.claude/hooks/config-reload-check.sh` (PostToolUse `Edit|Write|MultiEdit|Bash`)
