@@ -12,7 +12,7 @@ S="$here/.claude/settings.json"; H="$here/.claude/hooks/seat-ask-inject.sh"
 bash -n "$H" && ok "bash -n seat-ask-inject.sh" || bad "bash -n seat-ask-inject.sh"
 [ -x "$H" ] && ok "seat-ask-inject.sh executable" || bad "seat-ask-inject.sh not executable"
 out="$(env -u WM_SEAT HOME="$tmp" bash "$H" --selftest 2>&1)"; rc=$?
-[ "$rc" = 0 ] && printf '%s\n' "$out" | tail -n1 | grep -qE '^selftest: [0-9]+ PASS 0 FAIL$' && [ "$(printf '%s\n' "$out" | grep -c '^PASS')" -ge 16 ] \
+[ "$rc" = 0 ] && printf '%s\n' "$out" | tail -n1 | grep -qE '^selftest: [0-9]+ PASS 0 FAIL$' && [ "$(printf '%s\n' "$out" | grep -c '^PASS')" -ge 18 ] \
   && ok "seat-ask-inject.sh --selftest ($(printf '%s\n' "$out" | grep -c '^PASS') checks)" || { bad "seat-ask-inject.sh --selftest"; printf '%s\n' "$out" | grep '^FAIL'; }
 
 jq -e . "$S" >/dev/null && ok "settings.json parses" || { bad "settings.json parses"; exit 1; }
