@@ -1,0 +1,13 @@
+[Unit]
+Description=hand-pr-land-driver: walk open hand PRs (synthorg/mcphost/wm-build) GATED -> verify -> gate -> rb-merge -> post-merge ring (five-whys 2026-10-24-wo16-3of7 mechanism 1)
+# carbon only: the file installs everywhere (install.sh links the whole tree), the unit runs on carbon. Shipped DISABLED: the verifier enables the timer after review.
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+# fleet token for gh auth (never printed by the script); a missing file is not an error
+EnvironmentFile=-%h/.config/environment.d/*.conf
+ExecStart=%h/.local/bin/hand-pr-land-driver.sh
+# a launch waits on the verifier-cap lock; one tick never outlives the next
+TimeoutStartSec=540
