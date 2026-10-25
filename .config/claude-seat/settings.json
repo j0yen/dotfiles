@@ -8,5 +8,24 @@
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
   },
   "autoCompactEnabled": true,
-  "autoCompactWindow": "auto"
+  "autoCompactWindow": "auto",
+  "permissions": {
+    "deny": [
+      "ScheduleWakeup",
+      "Monitor"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-turn-budget.sh"
+          }
+        ]
+      }
+    ]
+  }
 }

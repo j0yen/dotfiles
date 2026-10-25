@@ -6,6 +6,7 @@
 # TIME STAMP (row d335): the text is prefixed by the helper with `<source> <H:MM AM/PM>: ` (source = $EVENT_SOURCE, else $WM_SEAT, else the caller's comm); a typed
 # leading label (`rb 6:1x AM:`, `r7 2:19 AM re ctl 2:1x regrade:`) is replaced by the real clock, the `re ...` part kept (rules in .local/lib/seat-time-stamp.sh).
 # Counters stamped / typed_label_replaced go to $EVENTS_DIR/<seat>-events.json (EVENTS_DIR, else FLEET_DASH_DIR, else ~/.cache/fleet-dash). `seat-ask.sh --selftest` runs the dry-run checks.
+# The transient unit carries OnFailure=seat-tick-failed@<seat>.service (template: .config/systemd/user/seat-tick-failed@.service), so an ask turn that fails (exit 124 cap kill) raises the SEAT-TICK FAILED event like a tick does (five-whys 2026-10-24: 24 ask-unit kills were silent).
 # SEAT_ASK_TICK_BIN overrides the seat-tick.sh path (selftest fake only). Seats come from ~/.claude/state/seats.tsv (SEATS_TABLE overrides).
 set -u
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -52,7 +53,7 @@ if ( umask 077; mkdir -p "$dir" ) 2>/dev/null; then
   { flock 7; seat_stamp_bump "$dir/$seat-events.json" stamped; [ "$typed" = 1 ] && seat_stamp_bump "$dir/$seat-events.json" typed_label_replaced; } 7>>"$dir/$seat-events.lock" 2>/dev/null
 fi
 unit="seat-ask-$seat-$(date +%s)-$$"
-cmd=(systemd-run --user --collect --unit "$unit" -p "WorkingDirectory=$HOME" "${SEAT_ASK_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$seat" --ask "$text")
+cmd=(systemd-run --user --collect --unit "$unit" -p "OnFailure=seat-tick-failed@$seat.service" -p "WorkingDirectory=$HOME" "${SEAT_ASK_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$seat" --ask "$text")
 if [ "${SEAT_ASK_DRY:-${CTL_ASK_DRY:-}}" = 1 ]; then echo "${cmd[*]}"; exit 0; fi
 "${cmd[@]}" >/dev/null 2>&1 || { echo "seat-ask: systemd-run failed" >&2; exit 1; }
 # A refused ASK must not look like success: wait up to 5 s for the transient unit to exit. --collect unloads the unit, so the exit status
