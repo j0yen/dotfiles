@@ -154,7 +154,7 @@ jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.comm
 jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command | contains("mcphost-stamp-gate.sh")) | .command] | .[0] | startswith("sh -c '"'"'[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec ") and endswith("; exit 0'"'"'")' "$S" >/dev/null \
   && ok "registration is fail-open when the hook file is not linked" || bad "registration lacks the [ -x ] guard"
 guard=$(jq -r '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command | contains("mcphost-stamp-gate.sh")) | .command] | .[0]' "$S")
-ghome=$(mktemp -d "$tmp/ghome.XXXX"); rc=0; printf '%s' "$(jq -cn --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')" | env HOME="$ghome" sh -c "$guard" >/dev/null 2>&1 || rc=$?
+ghome=$(mktemp -d "$tmp/ghome.XXXX"); rc=0; env HOME="$ghome" sh -c "$guard" <<<"$(jq -cn --arg c "$c" '{tool_name:"Bash",tool_input:{command:$c}}')" >/dev/null 2>&1 || rc=$? # stdin by here-string: the guard exits 0 without reading, and a piped printf would die of SIGPIPE (rc=141)
 [ "$rc" = 0 ] && ok "missing hook file: guard exits 0" || bad "missing hook file: guard rc=$rc"
 
 # --- part A: premise-sandbox.sh ----------------------------------------------------------------------------------
