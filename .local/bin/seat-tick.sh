@@ -557,7 +557,7 @@ FAKE
   SEAT_LOCK_WAIT=1 SEAT_ASK_LOCK_WAIT=15 FAKE_SLEEP=0 "$SELF" rb --ask "must land" >"$T/ow" 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q '^ARGV:.*ASK .*seat=rb events_new=0: must land' "$T/ow"; chk "ASK with the same lock held waits (SEAT_ASK_LOCK_WAIT=15) and lands: exit 0" $?
   wait "$pw" 2>/dev/null
-  grep -q 'LOCK_WAIT="${SEAT_LOCK_WAIT:-60}"' "$SELF" && grep -q 'ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-20}"' "$SELF"; chk "defaults: tick lock wait 60 s, ask lock wait 1800 s" $?
+  grep -q 'LOCK_WAIT="${SEAT_LOCK_WAIT:-60}"' "$SELF" && grep -q 'ASK_LOCK_WAIT="${SEAT_ASK_LOCK_WAIT:-20}"' "$SELF"; chk "defaults: tick lock wait 60 s, ask lock wait 20 s" $?
 
   # 13. timeout_sec column is the per-turn ceiling (95 %): row tmo has 4 s -> cap 3 s
   local t0; t0=$(date +%s)
