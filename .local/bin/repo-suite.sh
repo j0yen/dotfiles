@@ -10,7 +10,7 @@
 # Budget: PERTEST seconds per test (300, measured: the slowest passing test is 125 s), WALLCAP seconds for the whole run (1200); a test
 # past either is RED, never skipped. SKIPN = the four tests that need a live seat/tmux and cannot run in a sandbox (v84 list).
 # Exit: 0 all green, 1 any red, 2 refused (no bwrap / bwrap unusable: a sandbox that cannot be built never certifies a tree).
-# Inside the sandbox REPO_SUITE_RUNNING=1 is set; a nested bwrap is impossible there (no user namespaces), so a test of this script skips its bwrap half.
+# Inside the sandbox REPO_SUITE_RUNNING=1 is set; a nested bwrap is impossible there (no user namespaces), so a test of this script skips its bwrap half. The same skip applies when bwrap is unusable (a sandbox hosting this selftest from outside, e.g. the v84 runner).
 set -u
 PERTEST=${PERTEST:-300}; WALLCAP=${WALLCAP:-1200}
 SKIPN=${REPO_SUITE_SKIP-'aide-inbox
@@ -84,7 +84,7 @@ selftest() {
   if [ -n "${REPO_SUITE_RUNNING:-}" ]; then
     echo "SKIP: bwrap half (running inside the repo-suite sandbox: no nested user namespaces)"
   elif ! bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp true 2>/dev/null; then
-    echo "FAIL: bwrap is unusable here, so the runner cannot run at all"; fail=$((fail+1))
+    echo "SKIP: bwrap half (bwrap unusable here, e.g. inside another bwrap: no nested user namespaces; the runner itself refuses with exit 2 in that case)"
   else
     local tr=$T/tree; mkdir -p "$tr/tests"
     printf '#!/bin/bash\necho ok\n' > "$tr/tests/green.test.sh"
