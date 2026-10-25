@@ -29,7 +29,7 @@
 | Find/read/describe | scout | haiku |
 | Run a command/MCP call, return raw result | runner | haiku |
 | Parse logs/output, classify failures | triage | haiku |
-| Implement/fix code from a spec | coder | sonnet |
+| Implement/fix code from a spec | coder | sonnet, medium effort (Joe 10-24 "change coder agents to use Sonnet Medium" ⚙ agents/coder.md `effort: medium` + rb-run-coder.sh `--effort medium` + tests/coder-sonnet-medium.test.sh) |
 | Verify a claim or that a build landed | verifier | sonnet |
 
 - SEAT MODELS: rb/r7 = Opus 5.5, controller = Opus 5.5 for its sweep loop with Fable kept for one-turn re-grades (Joe 10-23 11:3x AM "yes"; was Fable 10-22), aide = Opus 5.5 with Fable one-turn review spawns for plans + decisions (Joe 10-23 12:0x PM "run this session in opus"; relaunch `claude --model claude-opus-5-5 --resume <sid>`); carbon aide = Opus 5.5, spawning Fable one-turn reviews for plans and decisions (Joe 10-23 approvals #18) (⚙ ~/.claude/state/controller-model-required + model-mismatch hook); one model per session; changes only on Joe's word; holds + expiry in ⚙ ~/.config/wm-decide/seat-model-hold.json; state/quotes: memory/feedback_operator_seats_opus_20261016.md. The main loop plans, synthesizes, converses and runs seat ops through agents; no probes (hook `probe-gate.sh`; the carbon aide is EXEMPT, Joe 10-22 4:3x PM "yes, exempt the aide" ⚙ probe-gate.sh § 1b on `WM_SEAT=aide` only + dotfiles tests/probe-gate-aide-exempt.test.sh). Every spawn passes `model:`; opus/fable allowed; a haiku ESCALATE gets one sonnet re-dispatch.
