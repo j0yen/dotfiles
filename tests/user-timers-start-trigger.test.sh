@@ -156,9 +156,30 @@ printf '%s\n' "$real" | grep -q '^swarm-decide-regrade\.timer PASS'; chk "(a) sw
 [ -f "$root/.config/systemd/user/seat-tick@.timer.d/50-drain-brake.conf" ] && [ -f "$root/.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf" ]; chk "(a) both timer drop-ins are tracked in dotfiles" $?
 
 # ---------- (c) live drop-ins are symlinks into dotfiles or allowlisted ----------
+# allowlist_live <allowlist> -> prints the live (unexpired) entry paths, one per line. W6: the EXPIRES is machine-read, never prose.
+#   `path`                                  permanent entry (refused for a *.timer.d path: that must carry an EXPIRES)
+#   `path # EXPIRES YYYY-MM-DD HH:MM note`  entry dropped once the clock passes it (local time); an unparseable EXPIRES drops it too (fail closed)
+# The clock is injected: TIMERS_NOW (epoch seconds), else `date +%s`, read once per call.
+allowlist_live() {
+  local al="$1" now line path rest ts exp
+  now="${TIMERS_NOW:-$(date +%s)}"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    path="${line%%[[:space:]]#*}"; path="${path%"${path##*[![:space:]]}"}"
+    rest=""; case "$line" in *[[:space:]]#*) rest="${line#*[[:space:]]#}" ;; esac
+    if [[ $rest =~ EXPIRES[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})[[:space:]]+([0-9]{2}:[0-9]{2}) ]]; then
+      ts="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"; exp="$(date -d "$ts" +%s 2>/dev/null)" || continue
+      [ -n "$exp" ] && [ "$now" -lt "$exp" ] && printf '%s\n' "$path"
+    else
+      case "$path" in *.timer.d/*) continue ;; esac
+      printf '%s\n' "$path"
+    fi
+  done < "$al" 2>/dev/null
+}
 # live_dropins <home> <allowlist> -> prints one `PASS|FAIL <relpath> <why>` per file; rc 1 on any FAIL
 live_dropins() {
-  local h="$1" al="$2" d f rel tgt rc=0
+  local h="$1" al="$2" d f rel tgt rc=0 live_al
+  live_al="$(allowlist_live "$al")"   # captured, not piped: pipefail + grep -q SIGPIPE would fail every lookup
   d="$h/.config/systemd/user"; [ -d "$d" ] || { echo "SKIP no $d"; return 0; }
   for f in "$d"/*.d/*.conf; do
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -169,7 +190,7 @@ live_dropins() {
         "$root"/*|*/dotfiles/*) [ -e "$tgt" ] && { echo "PASS $rel symlink into dotfiles"; continue; }; echo "FAIL $rel dangling symlink into dotfiles ($(readlink "$f"))"; rc=1; continue ;;
       esac
     fi
-    if grep -qxF -- "$rel" "$al" 2>/dev/null; then echo "PASS $rel allowlisted"; else
+    if grep -qxF -- "$rel" <<<"$live_al"; then echo "PASS $rel allowlisted"; else
       echo "FAIL $rel is $( [ -L "$f" ] && echo "a symlink outside dotfiles" || echo "a regular file"): track it in dotfiles (.config/systemd/user/$rel) or add it to tests/fixtures/timers/live-dropin-allowlist.txt"; rc=1
     fi
   done
@@ -190,6 +211,22 @@ out="$(live_dropins "$H" "$T/al.txt")"; rc=$?
 rm "$U/a.timer.d/60-dangling.conf"; mkdir -p "$T/elsewhere"; echo '[Timer]' >"$T/elsewhere/z.conf"; ln -s "$T/elsewhere/z.conf" "$U/a.timer.d/70-foreign.conf"
 out="$(live_dropins "$H" "$T/al.txt")"; rc=$?
 [ "$rc" = 1 ] && printf '%s' "$out" | grep -q '^FAIL a.timer.d/70-foreign.conf is a symlink outside dotfiles'; chk "(c) fixture: a symlink to somewhere other than dotfiles FAILS" $?
+# W6 fixtures: EXPIRES is machine-read with an injected clock (TIMERS_NOW)
+rm -f -- "${U:?}/a.timer.d/70-foreign.conf"
+mkdir -p "$U/seat-tick@.timer.d"; printf '[Timer]\n' >"$U/seat-tick@.timer.d/60-quota-stretch.conf"
+printf 'b.service.d/x.conf\nseat-tick@.timer.d/60-quota-stretch.conf # EXPIRES 2026-10-26 21:10 aide QUOTA STRETCH\n' >"$T/al-exp.txt"
+now_in="$(date -d '2026-10-26 21:09' +%s)"; now_out="$(date -d '2026-10-26 21:10' +%s)"
+out="$(TIMERS_NOW=$now_in live_dropins "$H" "$T/al-exp.txt")"; rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q '^PASS seat-tick@.timer.d/60-quota-stretch.conf allowlisted'; chk "(c) W6 fixture: a timer drop-in with an unexpired EXPIRES (21:09) PASSES" $?
+out="$(TIMERS_NOW=$now_out live_dropins "$H" "$T/al-exp.txt")"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q '^FAIL seat-tick@.timer.d/60-quota-stretch.conf is a regular file'; chk "(c) W6 fixture: the same entry at its EXPIRES (21:10) is DROPPED and the drop-in FAILS" $?
+printf 'seat-tick@.timer.d/60-quota-stretch.conf\n' >"$T/al-noexp.txt"
+out="$(TIMERS_NOW=$now_in live_dropins "$H" "$T/al-noexp.txt")"; rc=$?
+[ "$rc" = 1 ]; chk "(c) W6 fixture: a *.timer.d entry with no EXPIRES is refused" $?
+printf 'seat-tick@.timer.d/60-quota-stretch.conf # EXPIRES soon\n' >"$T/al-bad.txt"
+out="$(TIMERS_NOW=$now_in live_dropins "$H" "$T/al-bad.txt")"; rc=$?
+[ "$rc" = 1 ]; chk "(c) W6 fixture: an unparseable EXPIRES drops the entry (fail closed)" $?
+rm -f -- "${U:?}/seat-tick@.timer.d/60-quota-stretch.conf"
 # the real live dir
 lh="${TIMERS_LIVE_HOME:-$HOME}"
 if [ -d "$lh/.config/systemd/user" ]; then

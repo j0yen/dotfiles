@@ -64,7 +64,7 @@ export PATH=$HOME/.cargo/bin:$HOME/.local/bin:$PATH
 case "${1:-}" in --selftest) ;; *)  # E4 host guard: this watcher drives RedBaron's wm-build only; anywhere else it does nothing (and --circuit-gate is NOT an ok)
   [ "$(hostname -s 2>/dev/null)" = redbaron ] || { echo "WRONG-HOST rb-reprice-watch runs on redbaron only (this host: $(hostname -s 2>/dev/null))"; [ "${1:-}" = "--circuit-gate" ] && exit 2; exit 0; };; esac
 WP_LIB=${WP_LIB:-$HOME/.local/lib/watcher-premise.sh}
-if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; fi   # no lib = every fleet write disarmed
+if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; watcher_skip() { return 0; }; watcher_run_end() { return 0; }; watcher_skip_streak() { echo 0; }; watcher_skip_alarm() { :; }; fi   # no lib = every fleet write disarmed
 export WP_OWNER=rb
 export WP_DECIDE_BIN=${WP_DECIDE_BIN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/rb-reprice-watch-decide.sh}   # E6: wm-decide capped at `timeout 10` so a hung record cannot stall a pause
 DB=${RW_DB:-$HOME/.local/state/wm-build/state.db}
@@ -385,7 +385,7 @@ wpause(){ # $1 run id, $2 trigger text -> `wm-build run pause <id> --cause "<tri
   if [ -n "$pa" ]; then ledger_add "$id" "$pa" "$exp" "$cause" 0; log "LEDGER-ADD run=$id paused_at=$pa expires=$exp"
   else log "LEDGER-ADD-DEFER run=$id (paused_at unreadable); the next pass adopts it as unledgered"; fi; }
 status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,overdue}, redrive_defer{count_24h,last_ts,last_op}, premise{verdict,expires}
-  local now open=0 old= over=0 e x r p d c n lt lo v wk tmp; now=$(now_s)
+  local now open=0 old= over=0 e x r p d c n lt lo v wk tmp sk sa sr; now=$(now_s)
   if [ -s "$LEDGER" ]; then
     while IFS=$'\t' read -r r p e d x; do [ -n "$r" ] || continue; open=$((open+1)); n=$(epoch_of "$e"); case "$n" in ''|*[!0-9]*) continue;; esac
       if [ -z "$old" ] || [ "$n" -lt "$old" ]; then old=$n; fi
@@ -397,10 +397,11 @@ status_write(){ # W3: tmp + rename every pass. pause_ledger{open,oldest_expires,
     awk -F'\t' -v m=$((now-86400)) '$1>=m' "$DEFERLOG" > "$DEFERLOG.tmp.$$" && mv -f -- "$DEFERLOG.tmp.$$" "$DEFERLOG"
     c=$(wc -l < "$DEFERLOG"); if [ "$c" -gt 0 ]; then lt=$(tail -n 1 "$DEFERLOG" | cut -f1); lo=$(tail -n 1 "$DEFERLOG" | cut -f2); fi
   fi
+  sk=$(watcher_skip_streak 2>/dev/null); sa=$(watcher_skip_alarm 2>/dev/null); case "$sk" in ''|*[!0-9]*) sk=0;; esac; sr=; [ "$sk" -gt 0 ] && sr=$(cut -d' ' -f2- "$(_wsk_file)" 2>/dev/null | head -n1)   # tsd3 W4: the consecutive-skip streak (lib state file) goes into the status.json the fleet-dash collector ingests
   wk=0; if expired; then if [ "${WP_DEFECT:-}" = expired ]; then v=expired; else v=disarmed; fi; wk=$open; else v=armed; fi   # RWH3 E2: wp_disarmed_ledger = open ledger rows while the gate is down
   mkdir -p "$(dirname "$STATUS")"; tmp="$STATUS.tmp.$$"
-  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" --argjson wk "$wk" \
-    '{watcher:"rb-reprice-watch", ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}, wp_disarmed_ledger:$wk}' > "$tmp" \
+  jq -n --arg ts "$(iso_at "$now")" --argjson open "$open" --arg old "${old:+$(iso_at "$old")}" --argjson over "$over" --argjson cnt "$c" --arg lt "${lt:+$(iso_at "$lt")}" --arg lo "$lo" --arg v "$v" --arg ex "$EXPIRES" --argjson wk "$wk" --argjson sk "$sk" --arg sr "$sr" --arg sa "$sa" \
+    '{watcher:"rb-reprice-watch", skip_streak:$sk, skip_reason:(if $sr=="" then null else $sr end), alarm:(if $sa=="" then null else $sa end), ts:$ts, pause_ledger:{open:$open, oldest_expires:(if $old=="" then null else $old end), overdue:$over}, redrive_defer:{count_24h:$cnt, last_ts:(if $lt=="" then null else $lt end), last_op:(if $lo=="" then null else $lo end)}, premise:{verdict:$v, expires:$ex}, wp_disarmed_ledger:$wk}' > "$tmp" \
     && mv -f -- "$tmp" "$STATUS" || log "status.json write failed ($STATUS)"; }
 release_refused(){ # $1 run $2 paused_at $3 ext $4 why. (d): extend +30 min up to EXT_MAX times, then PAUSE-OVERDUE once (ext -> EXT_MAX+1) and keep re-checking every pass
   local now x=$3; now=$(now_s)
@@ -847,6 +848,13 @@ FAKEWB
   ledger_pass; [ ! -s "$FAKE_CALLS" ] && [ "$(led 7 | cut -f5)" = 1 ] && grep -q 'REDRIVE-DEFER circuit=quota last_op=circuit-skip' "$LOG" && [ "$(jq -r .redrive_defer.count_24h "$STATUS")" = 1 ] && [ "$(jq -r .redrive_defer.last_op "$STATUS")" = circuit-skip ] || { wfail "I1 open circuit on the ledger path [$(cat "$LOG")] calls=[$(cat "$FAKE_CALLS")]"; return 1; }
   wreset; sim_expire; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0-60)))" c 0   # premise expired: no write, status says expired
   ledger_pass; [ ! -s "$FAKE_CALLS" ] && [ "$(jq -r .premise.verdict "$STATUS")" = expired ] && [ "$(jq -r .premise.expires "$STATUS")" = 2026-11-21 ] || { wfail "X1 expired premise wrote or status wrong"; return 1; }
+  # SK1 (tsd3 F3/W4/W5): 20 skips -> status.json carries skip_streak 20 + alarm; watcher_run_end resets both
+  sk_i=0; export WATCHER_STATE_DIR="$t/skipstate"; mkdir -p "$WATCHER_STATE_DIR"; unset WATCHER_SKIP_MAX; sk_out=
+  while [ "$sk_i" -lt 20 ]; do sk_out=$(watcher_skip "premise-gone-test"); sk_i=$((sk_i+1)); done
+  [ "$sk_out" = "alarm: skip-streak rb-reprice-watch 20 premise-gone-test" ] || { wfail "SK1 20th skip did not emit alarm [$sk_out]"; return 1; }
+  status_write; [ "$(jq -r .skip_streak "$STATUS")" = 20 ] && [ "$(jq -r .skip_reason "$STATUS")" = premise-gone-test ] && [ "$(jq -r .alarm "$STATUS")" = "skip-streak rb-reprice-watch 20 premise-gone-test" ] || { wfail "SK1 status skip_streak/alarm wrong [$(cat "$STATUS")]"; return 1; }
+  watcher_run_end; status_write; [ "$(jq -r .skip_streak "$STATUS")" = 0 ] && [ "$(jq -r .alarm "$STATUS")" = null ] || { wfail "SK1 run_end did not reset [$(cat "$STATUS")]"; return 1; }
+  unset WATCHER_STATE_DIR
   wreset; sqlite3 "$DB" "insert into runs(id,slug,ended,stage,paused_at) values(7,'s1',NULL,'inner','$P1')"; ledger_add 7 "$P1" "$(iso_at $((NOW0+600)))" c 0; ledger_pass   # S1: status shape (tmp+rename leaves no tmp file)
   [ "$(jq -r '.pause_ledger.open' "$STATUS")" = 1 ] && [ "$(jq -r '.pause_ledger.oldest_expires' "$STATUS")" = "$(iso_at $((NOW0+600)))" ] && [ "$(jq -r '.pause_ledger.overdue' "$STATUS")" = 0 ] && [ "$(jq -r '.redrive_defer.last_ts' "$STATUS")" = null ] \
     && [ "$(jq -r '.premise.verdict' "$STATUS")" = armed ] && [ "$(ls "$t/sw" | wc -l)" = 1 ] || { wfail "S1 status shape [$(cat "$STATUS")] ls=[$(ls "$t/sw")]"; return 1; }
@@ -941,7 +949,7 @@ FAKEWB
   ledger_pass   # (vi-b) armed: no bell, wp_disarmed_ledger=0
   [ "$(cnt 'WP-DISARMED-LEDGER-NONEMPTY' "$LOG")" = 0 ] && [ "$(jq -r .wp_disarmed_ledger "$STATUS")" = 0 ] || { wfail "(vi-b) armed gate must not bell; log=[$(cat "$LOG")]"; return 1; }
   sim_arm
-  rm -rf "$t"; echo "W1 G1-G6 ok W2 E1-E9 E4b I1 X1 S1 ok W4 V1-V17 ok RWH H1-H5 ok RWH3 i ii iii v vi ok"; }
+  rm -rf "$t"; echo "W1 G1-G6 ok W2 E1-E9 E4b I1 X1 S1 ok W4 V1-V17 ok RWH H1-H5 ok RWH3 i ii iii v vi ok SK1 ok"; }
 if [ "${1:-}" = "--circuit-gate" ]; then  # read-only W1 gate for wip-redrive.sh and the seat: prints "<ok|defer|unparsable> last_op=.. resets=.. why=..", exit 0 ok / 1 defer / 2 unparsable
   circuit_gate; rc=$?; echo "$CG_V last_op=$CG_OP resets=$CG_RESETS why=\"$CG_WHY\""; exit "$rc"; fi
 if [ "${1:-}" = "--selftest" ]; then
@@ -984,8 +992,9 @@ while :; do
   if expired; then  # RWH3: wp_gate down (premise GONE, past EXPIRES, no lib): no trigger is evaluated, no fleet write runs; the ledger pass keeps status.json and the E2 bell alive
     [ -z "$T4R_RUN" ] || t4r_note_expired
     [ "$DISARM_SEEN" = "${WP_VERDICT:-}/${WP_DEFECT:-}" ] || { log "PREMISE DISARMED (verdict=${WP_VERDICT:-none} defect=${WP_DEFECT:--} expires=$EXPIRES): fleet writes disarmed, watcher idle; re-arm = new PREMISE/EXPIRES + DECISION row"; DISARM_SEEN="${WP_VERDICT:-}/${WP_DEFECT:-}"; }
+    sk_out=$(watcher_skip "premise-${WP_VERDICT:-none}-${WP_DEFECT:--}"); [ -z "$sk_out" ] || log "$sk_out"   # tsd3 F3/W5: a disarmed pass is a SKIP run; 20 in a row -> `alarm: skip-streak ...` here and in status.json
     ledger_pass; status_write; if [ "${WP_DEFECT:-}" = expired ]; then sleep 3600; else sleep 60; fi; continue; fi
-  DISARM_SEEN=
+  DISARM_SEEN=; watcher_run_end   # an armed pass is a non-skip run: the streak resets
   [ -n "$hi" ] && { revert "T1 priced_peak_kb>7.5GiB run/kb=$hi"; STEP0=$(sqlite3 "$DB" "select max(id) from steps"); log "T1 re-armed step0=$STEP0"; }
   if [ "$(ev max)" != "$MAX0" ] || [ "$(ev oom_kill)" != "$OOM0" ]; then revert "T3 app.slice memory.events max $MAX0->$(ev max) oom_kill $OOM0->$(ev oom_kill) (five-whys due)"; exit 0; fi
   # 9:22 AM 10-20: EVERY run's driver unit is named wm-build-inner<id>-a whatever its stage, so the unit glob counted a land + 2 gates
