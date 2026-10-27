@@ -114,5 +114,13 @@ out=$(vl fail1); rc=$?
 grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$script" && pass "script carries the anchored attribution regex" || bad "anchored attribution regex missing"
 grep -q 'merge-gate' "$script" && pass "script calls merge-gate" || bad "merge-gate missing"
 grep -qF -- '--agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates' "$script" && pass "prompt template records the verdict row shape" || bad "verdict row shape missing"
+# V1-V3 evidence-bundle contract (swarm-decide verdict write-time checks): one bundle, verbatim quotes, disclosed scope, no FAIL-row artifact reuse, follow-ups
+grep -qF -- '--attach {{DIR}}/bundle.log' "$script" && pass "template attaches ONE bundle" || bad "template does not attach the bundle"
+grep -qF -- '--quote "<verbatim line 1>"' "$script" && pass "template passes --quote lines" || bad "template has no --quote"
+grep -qF -- 'grep -cF' "$script" && pass "template proves each quote with grep -F before recording" || bad "template has no quote proof"
+grep -qF -- 'Never `tail -N`' "$script" && pass "template forbids tailing the evidence" || bad "template allows tailing"
+grep -qF -- 'scope=full' "$script" && grep -qF -- 'an undisclosed subset is a correction' "$script" && pass "template requires a scope statement" || bad "template has no scope rule"
+grep -qF -- 'NEVER attach an artifact (same sha256) that is on a FAIL/BLOCK row' "$script" && pass "template forbids FAIL-row artifact reuse" || bad "template lacks the reuse rule"
+grep -qF -- 'follow-up=<id>' "$script" && pass "template cites controller follow-ups" || bad "template lacks follow-ups"
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail
