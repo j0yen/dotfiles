@@ -1,0 +1,8 @@
+[Unit]
+Description=M9 seat floor probe: one row per compaction boundary of each operator seat (seat-floor.tsv + seat-floor.json)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/seat-floor-probe.sh
+TimeoutStartSec=120
+Nice=10
