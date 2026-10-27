@@ -47,6 +47,36 @@ row "$ID" $TS controller verdict "confirm tree $T8";                            
 row "$ID" $TS controller verdict "NO: CONFIRM tree $T8";                                refused "what does not START with CONFIRM" not-confirm "$ID"; clear
 row "$ID" $TS controller verdict "CONFIRM the patch sha 36f357d0 only";                 refused "sha not named" sha-not-named "$ID"; clear
 row "$ID" $TS controller verdict "CONFIRM tree ${T8}9 and ${H8}a";                      refused "an 8-hex prefix of a longer hex run is not a name" sha-not-named "$ID"; clear
+# LPLX: any 8-to-40 hex prefix of the commit or tree sha, as a whole lowercase token, names HEAD (and "Do NOT push"/"superseded" read the same way)
+# checkok <name> <id>: --check prints exactly CHECK-OK sha=<8> host=local, rc 0
+checkok() {
+  local out rc; out=$(bash "$wrap" --confirm "$2" --repo "$REPO" --branch "$B" --check 2>&1); rc=$?
+  if [ $rc = 0 ] && [ "$out" = "CHECK-OK sha=$H8 host=local" ]; then ok "$1 -> CHECK-OK"; else bad "$1: rc=$rc out='$out'"; fi
+}
+other_hex() { [ "$1" = 0 ] && echo 1 || echo 0; }   # a hex digit different from $1
+P12=${TREE:0:12}; C12=${HEAD_SHA:0:12}; D1=$(other_hex "${TREE:8:1}"); D2=$(other_hex "${TREE:12:1}")
+LATER=d-20261024-101000-controller-1111; LATER_TS=2026-10-24T10:10:00-07:00
+clear; row "$ID" $TS controller verdict "CONFIRM commit $C12";                                  checkok "lplx (a) 12-hex commit prefix" "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM commit $HEAD_SHA";                             checkok "lplx (b) full 40-hex commit" "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $P12";                                    checkok "lplx (c) 12-hex tree prefix" "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${TREE:0:7} commit ${HEAD_SHA:0:7}";      refused "lplx (d) 7-hex" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${T8}${D1}${TREE:9:3}";                   refused "lplx (e) 12 hex whose 9th diverges" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${P12}${D2}f";                            refused "lplx (f) 12-hex prefix followed by more diverging hex" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
+row $LATER $LATER_TS controller verdict "Do NOT push $P12";                                     refused "lplx (g) later Do NOT push naming a 12-hex prefix" do-not-push "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
+row $LATER $LATER_TS controller verdict "CONFIRM $B $C12";                                      checkok "lplx (h) later CONFIRM naming branch + 12-hex HEAD prefix is not superseded" "$ID"
+TU=${TREE^^}; un=12; while [ "${TU:0:$un}" = "${TREE:0:$un}" ] && [ $un -lt 40 ]; do un=$((un+1)); done   # shortest prefix >= 12 that has a letter, so upper-casing changes it
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${TU:0:$un}";                         refused "lplx (i) uppercase ${un}-hex prefix (no case folding)" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${TREE}0";                                refused "lplx (j) 41-hex token" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
+row $LATER $LATER_TS controller verdict "CONFIRM $B 0badc0de1234";                              refused "lplx (k) later CONFIRM naming branch + 12-hex of a different commit" superseded "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM abc${T8} only";                                refused "lplx (l) 8-hex embedded after hex" sha-not-named "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree ${P12}-wip";                              checkok "lplx (l2) non-hex suffix is a token boundary" "$ID"
+clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
+row d-20261024-100500-controller-2222 2026-10-24T10:05:00-07:00 controller verdict "CONFIRM $B $HEAD_SHA"
+row $LATER $LATER_TS controller verdict "Do NOT push $H8";                                      refused "lplx (m) 40-hex CONFIRM then Do NOT push 8-hex: length never ranks verdicts" do-not-push "$ID"
+clear
 row "$ID" $TS controller verdict "CONFIRM tree $T8"
 row d-20261024-101000-controller-1111 2026-10-24T10:10:00-07:00 controller verdict "WITHDRAWN confirm abcd"; refused "withdrawn by a later row naming the 4-hex suffix" withdrawn "$ID"
 clear; row "$ID" $TS controller verdict "CONFIRM tree $T8"
