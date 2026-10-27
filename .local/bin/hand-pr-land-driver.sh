@@ -117,7 +117,7 @@ def suite_for(repo, tier, own_tests):
     if own_tests:
         own = " && uv run pytest -q -p no:cacheprovider " + " ".join(shlex.quote(t) for t in own_tests)
     sel = "" if tier == "full" else ' -m "not flaky and not slow"'
-    return "%s%s && uv run pytest -q -p no:cacheprovider%s -n 4" % (pre, own, sel)
+    return "%s%s && uv run pytest -q -p no:cacheprovider%s -n 2" % (pre, own, sel)
 
 
 def short(repo):
@@ -140,6 +140,7 @@ def selftest():
     chk("owner map", owner_seat("rb") == "rb" and owner_seat("controller") == "ctl" and owner_seat("aide") == "r7")
     chk("fast suite carries the marker filter, full does not", '-m "not flaky and not slow"' in suite_for("j0yen/synthorg", "fast", []) and "-m " not in suite_for("j0yen/synthorg", "full", []))
     chk("own tests quoted", "tests/a_test.py" in suite_for("j0yen/synthorg", "fast", ["tests/a_test.py"]))
+    chk("verifier pytest runs 2 xdist workers, never 4", suite_for("j0yen/synthorg", "fast", []).endswith("-n 2") and suite_for("j0yen/synthorg", "full", ["t.py"]).endswith("-n 2") and "-n 4" not in suite_for("j0yen/synthorg", "full", []))
     chk("unit name charset", re.fullmatch(r"[a-z0-9-]+", "hpl-%s-%d-%s-%d" % (short("j0yen/synthorg"), 4, "abcdef0", 1)) is not None)
     print("SELFTEST " + ("FAIL" if bad else "PASS"))
     return 1 if bad else 0
