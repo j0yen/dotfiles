@@ -1,0 +1,10 @@
+[Unit]
+Description=carbon build-process sampler every minute (carbon)
+
+[Timer]
+# both lines: an empty OnUnitActiveSec= drop-in wipes OnBootSec (10-24 timer blackout trap), so the pair stays together
+OnBootSec=2min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

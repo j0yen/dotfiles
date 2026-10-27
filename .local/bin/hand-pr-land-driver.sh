@@ -63,6 +63,12 @@ T0 = time.monotonic()
 MAX_LAUNCHES, MAX_LAUNCH_FAILS = 2, 3
 AGENT, VIA = "coder:hand-pr-land-driver", "hand-pr-land-driver"
 SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; cargo repos never do
+try:   # carbon-no-build (Joe 10-27, approvals #47): carbon runs no suites; a GATED row that needs one rings r7 once per head
+    ON_CARBON = subprocess.run(["hostname", "-s"], capture_output=True, text=True, timeout=10).stdout.strip() == "carbon"
+except Exception:
+    ON_CARBON = False
+if ON_CARBON:
+    SUITE_REPOS = set()
 HEX40 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
 COMMIT_RE = re.compile(r"COMMIT=([0-9a-fA-F]{7,40})")
 KEY_RE = re.compile(r" k=(\S+)")
@@ -355,6 +361,11 @@ for repo in REPOS:
         if any("finishlint:%s" % u["name"] in hp_keys for u in head_units):
             continue   # the lint refusal already rang the owner; a hand look decides, no relaunch
         gate_failed = any("FAIL" in (u["finished"] or "") for u in head_units)
+        if ON_CARBON:
+            k = "carbonsuite:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-carbonsuite", key=k, owner="r7", msg="%s: GATED head %s needs a suite and carbon runs none (CLAUDE.md CARBON); r7: run it on ryzen7 or redbaron" % (tag, live[:12])))
+            continue
         if repo not in SUITE_REPOS:
             k = "nosuite:%s" % pfx
             if k not in hp_keys:
