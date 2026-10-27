@@ -8,7 +8,7 @@
 #   AIDE_INBOX_HOSTNAME (else PROBE_GATE_HOSTNAME) overrides the hostname for tests.
 # Event name: $1, else .hook_event_name of the stdin JSON; only UserPromptSubmit / SessionStart (or none: manual run) act.
 # Also records the aide's session id: when the stdin JSON carries .session_id (every real hook call), it is appended once to
-#   $EVENTS_DIR/aide-sids (one SID per line, append-only) so token-ledger can tag the aide's transcripts `seat:aide`
+#   $EVENTS_DIR/aide-sids (one line per SID `<sid> <lane> since=<epoch>`, append-only, deduped on the first field) so token-ledger can tag the aide's transcripts `seat:aide`
 #   (building share; Joe 10-23 "aide is also part of wm-build"). Happens before the inbox read, even with no log file.
 # Also prints an ALARM line (before the inbox, even with no log file) when $EVENTS_DIR/status.json (fleet-dash) lists `timers_stalled` entries
 #   or is older than TIMERS_ALARM_STALE_S (default 600 s = 10 min: a dead collector hides every alarm). No status.json at all = silent.
@@ -42,9 +42,16 @@ run() {
   [ "${WM_SEAT:-}" = aide ] || return 0
   local dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
   local log="$dir/aide-events.log" cur="$dir/aide-events.cursor" sids="$dir/aide-sids" sid
+  # lanes (aide-lanes 10-27): WM_AIDE_LANE unset/main = the paths above, byte-for-byte; a lane L reads its own addressed log + cursor
+  # (seat-event.sh aide:L) and never opens the main cursor.
+  local lane="${WM_AIDE_LANE:-main}" hdr='=== AIDE INBOX:' lock="$dir/aide-events.cursor.lock"
+  [[ "$lane" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || lane=main
+  if [ "$lane" != main ]; then
+    log="$dir/aide-$lane-events.log" cur="$dir/aide-$lane-events.cursor" lock="$cur.lock" hdr="=== AIDE INBOX (lane $lane):"
+  fi
   sid="$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null)" || sid=""
   if [[ "$sid" =~ ^[A-Za-z0-9-]{8,64}$ ]] && [ -d "$dir" ]; then
-    grep -qxF -- "$sid" "$sids" 2>/dev/null || printf '%s\n' "$sid" >>"$sids" 2>/dev/null || true
+    awk -v s="$sid" '$1==s{f=1} END{exit !f}' "$sids" 2>/dev/null || printf '%s %s since=%s\n' "$sid" "$lane" "$(date +%s)" >>"$sids" 2>/dev/null || true
   fi
   timers_alarm "$dir"
   [ -f "$log" ] || return 0
@@ -68,7 +75,7 @@ run() {
     head -c "$consumed" "$tmp" | LC_ALL=C tr -d '\000-\010\013-\037\177' >"$tmp.body"
     local lines; lines="$(grep -c '' "$tmp.body")"
     if [ "$lines" -gt 0 ]; then
-      echo "=== AIDE INBOX: $lines new line(s) (seat-event.sh aide \"<text>\") ==="
+      echo "$hdr $lines new line(s) (seat-event.sh $([ "$lane" = main ] && echo aide || echo "aide:$lane") \"<text>\") ==="
       while IFS= read -r l || [ -n "$l" ]; do
         if [ "${#l}" -gt "$MAXLEN" ]; then printf '%s…\n' "${l:0:$MAXLEN}"; else printf '%s\n' "$l"; fi
       done <"$tmp.body"
@@ -77,7 +84,7 @@ run() {
     fi
     rm -f "$tmp.body"
     printf '%s\n' "$((off + consumed))" >"$cur"
-  } 8>>"$dir/aide-events.cursor.lock"
+  } 8>>"$lock"
   return 0
 }
 
@@ -106,7 +113,7 @@ selftest() {
   printf '{"hook_event_name":"SessionStart","session_id":"sid-aaaa-0002"}' | aide bash "$SELF" >/dev/null 2>&1
   printf '{"hook_event_name":"PreToolUse","session_id":"sid-aaaa-0003"}' | aide bash "$SELF" >/dev/null 2>&1
   printf '{"hook_event_name":"UserPromptSubmit","session_id":"bad sid; rm -rf"}' | aide bash "$SELF" >/dev/null 2>&1
-  [ "$(paste -sd, "$D/aide-sids" 2>/dev/null)" = "sid-aaaa-0001,sid-aaaa-0002" ]; chk "aide-sids: each session id once, SessionStart too, non-acting event and malformed id skipped (got: $(paste -sd, "$D/aide-sids" 2>/dev/null))" $?
+  [ "$(awk '{print $1}' "$D/aide-sids" 2>/dev/null | paste -sd,)" = "sid-aaaa-0001,sid-aaaa-0002" ]; chk "aide-sids: each session id once, SessionStart too, non-acting event and malformed id skipped (got: $(awk '{print $1}' "$D/aide-sids" 2>/dev/null | paste -sd,))" $?
   printf 'x | y | z\n' >>"$L"; out="$(printf '{"hook_event_name":"PreToolUse"}' | aide bash "$SELF" 2>&1)"
   [ -z "$out" ] && [ "$(cat "$C")" != "$(stat -c %s "$L")" ]; chk "other event name (stdin JSON): silent and cursor NOT advanced" $?
   aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1
@@ -158,6 +165,14 @@ selftest() {
   printf '{"timers_stalled":[{"host":"h","unit":"u.timer","reason":"no_next"}]}' >"$E/status.json"; printf 'a | b | c\n' >"$E/aide-events.log"
   out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ "$(printf '%s\n' "$out" | head -n1 | cut -c1-6)" = ALARM: ] && printf '%s' "$out" | grep -q 'AIDE INBOX: 1 new'; chk "timers alarm: printed before the inbox block" $?
   out="$(env -u TMUX EVENTS_DIR="$E" HOME="$T" WM_SEAT=ctl bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: non-aide seat: silent" $?
+  # lanes: a lane reads only its own addressed log/cursor and leaves the main cursor alone; sid line carries the lane
+  local LD="$T/lane"; mkdir -p "$LD"; printf 'm | rb | main only\n' >"$LD/aide-events.log"; printf 'b | pc | lane only\n' >"$LD/aide-build-events.log"
+  out="$(printf '{"session_id":"sid-lane-0001"}' | env -u TMUX EVENTS_DIR="$LD" HOME="$T" WM_SEAT=aide WM_AIDE_LANE=build bash "$SELF" SessionStart 2>&1)"
+  printf '%s\n' "$out" | head -n1 | grep -q '^=== AIDE INBOX (lane build): 1 new' && printf '%s' "$out" | grep -q 'lane only' && ! printf '%s' "$out" | grep -q 'main only' \
+    && [ ! -e "$LD/aide-events.cursor" ] && [ "$(cat "$LD/aide-build-events.cursor")" = "$(stat -c %s "$LD/aide-build-events.log")" ] \
+    && grep -q '^sid-lane-0001 build since=[0-9]*$' "$LD/aide-sids"; chk "lane build: own log + cursor, main cursor never created, sid line carries lane" $?
+  out="$(env -u TMUX EVENTS_DIR="$LD" HOME="$T" WM_SEAT=aide WM_AIDE_LANE='bad lane' bash "$SELF" SessionStart </dev/null 2>&1)"
+  printf '%s\n' "$out" | head -n1 | grep -q '^=== AIDE INBOX: 1 new' && printf '%s' "$out" | grep -q 'main only'; chk "invalid lane name falls back to main" $?
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
 }
