@@ -536,11 +536,12 @@ if [ -n "$t_perrole" ] && [ "$t_denom" -gt 0 ] 2>/dev/null; then
   fi
   # aide lanes: one entry per lane seen today (role seat:aide = main, seat:aide:<lane>), share of the same denominator as build_share
   lane_tsv="$(awk -F';' -v den="$t_denom" '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="seat:aide") print "main\t" a[2] "\t" int(a[2]*100/den); else if(a[1] ~ /^seat:aide:/){l=a[1]; sub(/^seat:aide:/,"",l); print l "\t" a[2] "\t" int(a[2]*100/den)}}}' <<<"$t_perrole" | sort | awk -F'\t' '$1=="main"{m=$0; next} {r=r $0 "\n"} END{if(m!="") print m; printf "%s", r}')"
-  if [ -n "$lane_tsv" ]; then
+  # only when a NON-main lane has tokens today: a main-only day keeps origin/main's summary + build-share.json byte for byte
+  if [ -n "$lane_tsv" ] && [ -n "$(awk -F'\t' '$1!="main"' <<<"$lane_tsv")" ]; then
     lane_x="${AIDE_LANE_ALARM_PCT:-50}"; [[ "$lane_x" =~ ^[0-9]{1,3}$ ]] || lane_x=50
     summary="$summary · aide $(awk -F'\t' '{printf "%s%s=%s%%", (NR>1?" ":""), $1, $3}' <<<"$lane_tsv")"
     while IFS=$'\t' read -r l_name l_tok l_pct; do
-      [ "$l_pct" -gt "$lane_x" ] && lane_alarms="${lane_alarms}${lane_alarms:+$'\n'}ALARM aide_lane ${l_name} ${l_pct}% > ${lane_x}% — one lane is eating the day"
+      [ "$l_name" != main ] && [ "$l_pct" -gt "$lane_x" ] && lane_alarms="${lane_alarms}${lane_alarms:+$'\n'}ALARM aide_lane ${l_name} ${l_pct}% > ${lane_x}% — one lane is eating the day"
     done <<<"$lane_tsv"
     lanes_json="$(jq -Rn '[inputs | split("\t") | {(.[0]): {tokens: (.[1]|tonumber), pct: (.[2]|tonumber)}}] | add' <<<"$lane_tsv")"
   fi
@@ -560,8 +561,9 @@ jq -n --arg date "$today_date" --argjson share "$bs_json_share" \
       --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" --arg roles "$BUILD_ROLES_RE" \
       --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" --argjson lanes "${lanes_json:-{\}}" '
   {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total, build_roles_re: $roles,
-   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles, aide_lanes: $lanes,
-   per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
+   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles}
+  + (if ($lanes | length) > 0 then {aide_lanes: $lanes} else {} end)
+  + {per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
   > "$tmp_bs" && mv -- "$tmp_bs" "$BUILD_SHARE_JSON"
 
 exit 0

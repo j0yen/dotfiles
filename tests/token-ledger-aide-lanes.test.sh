@@ -35,15 +35,40 @@ assert_eq "$(jq -r '.build_roles_re' "$bs")" '^(coder|inner|seat:(ctl|rb|r7|aide
 assert_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane build 62% > 50% — one lane is eating the day" "default X=50: build lane 62% alarms"
 assert_not_contains "$(cat "$state/today-summary.txt")" "aide_lane main" "default X=50: main 37% does not alarm"
 run 10
-assert_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane main 37% > 10%" "AIDE_LANE_ALARM_PCT=10: alarm for main"
+assert_not_contains "$(cat "$state/today-summary.txt")" "aide_lane main" "AIDE_LANE_ALARM_PCT=10: main never alarms (matches fleet-dash)"
 assert_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane build 62% > 10%" "AIDE_LANE_ALARM_PCT=10: alarm for build"
 run 90
 assert_not_contains "$(cat "$state/today-summary.txt")" "aide_lane" "AIDE_LANE_ALARM_PCT=90: no lane alarm"
-# no lane column at all (bare main sids only): no suffix, no alarm, empty aide_lanes
-rm -rf "$state"/* "$jsonl"/*; printf 'sid-mainbare\n' >"$TOKEN_LEDGER_AIDE_SIDS"
+# no non-main lane (bare main sids only): no suffix, no alarm, no aide_lanes field, and byte-identical to origin/main's token-ledger
+rm -rf "$state"/* "$jsonl"/*; printf 'sid-mainbare\nsid-mainsince main since=%s\n' "$T0" >"$TOKEN_LEDGER_AIDE_SIDS"
 usr $D/sid-mainbare.jsonl 2026-09-12T07:00:00Z; rec $D/sid-mainbare.jsonl m1 2026-09-12T09:00:00Z 20000000
+usr $D/sid-mainsince.jsonl 2026-09-12T07:00:00Z; rec $D/sid-mainsince.jsonl m2 2026-09-12T09:00:00Z 70000000
 run 50
-assert_eq "$(ledger_field 2026-09-12 12)" "seat:aide=20000000" "bare sid keeps today's role seat:aide"
-assert_contains "$(head -n1 "$state/today-summary.txt")" " · aide main=100%" "main-only day: a single main entry"
-assert_eq "$(jq -c '.aide_lanes' "$state/build-share.json")" '{"main":{"tokens":20000000,"pct":100}}' "main-only aide_lanes"
+assert_eq "$(ledger_field 2026-09-12 12)" "seat:aide=90000000" "bare + main-since sids keep today's role seat:aide"
+assert_not_contains "$(cat "$state/today-summary.txt")" "aide" "main-only day: no aide suffix"
+assert_not_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane" "main-only day (main 100%): no lane alarm"
+assert_eq "$(jq -r 'has("aide_lanes")' "$state/build-share.json")" "false" "main-only day: no aide_lanes field"
+cp "$state/today-summary.txt" "$work/new-summary.txt"; cp "$state/build-share.json" "$work/new-bs.json"
+git -C "$here/.." show origin/main:.local/bin/token-ledger >"$work/token-ledger.origin" 2>/dev/null || git -C "$here/.." show main:.local/bin/token-ledger >"$work/token-ledger.origin"
+chmod +x "$work/token-ledger.origin"
+rm -f "$state"/today-summary.txt "$state"/build-share.json
+env AIDE_LANE_ALARM_PCT=50 "$work/token-ledger.origin" >/dev/null 2>&1
+cmp -s "$work/new-summary.txt" "$state/today-summary.txt"; assert_eq "$?" "0" "main-only day: today-summary.txt byte-identical to origin/main's token-ledger"
+# build_roles_re is the one intended difference (the new regex admits aide:<lane> roles; counting is identical with no lane rows): compare with it dropped
+cmp -s <(jq -S 'del(.build_roles_re)' "$work/new-bs.json") <(jq -S 'del(.build_roles_re)' "$state/build-share.json"); assert_eq "$?" "0" "main-only day: build-share.json identical to origin/main's token-ledger except build_roles_re"
+# build lane at 60 %: alarms aide_lane build (main 40 % does not)
+rm -rf "$state"/* "$jsonl"/*; printf 'sid-m\nsid-b build since=%s\n' "$T0" >"$TOKEN_LEDGER_AIDE_SIDS"
+usr $D/sid-m.jsonl 2026-09-12T07:00:00Z; rec $D/sid-m.jsonl a1 2026-09-12T09:00:00Z 40000000
+usr $D/sid-b.jsonl 2026-09-12T07:00:00Z; rec $D/sid-b.jsonl a2 2026-09-12T09:00:00Z 60000000
+run 50
+assert_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane build 60% > 50%" "build 60%: alarms aide_lane build"
+assert_not_contains "$(cat "$state/today-summary.txt")" "aide_lane main" "build 60%: main never alarms"
+# main at 90 % + build at 10 %: no alarm (main exempt, build under X)
+rm -rf "$state"/* "$jsonl"/*
+usr $D/sid-m.jsonl 2026-09-12T07:00:00Z; rec $D/sid-m.jsonl a1 2026-09-12T09:00:00Z 90000000
+usr $D/sid-b.jsonl 2026-09-12T07:00:00Z; rec $D/sid-b.jsonl a2 2026-09-12T09:00:00Z 10000000
+run 50
+assert_contains "$(head -n1 "$state/today-summary.txt")" " · aide main=90% build=10%" "main 90 + build 10: suffix lists both lanes"
+assert_not_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane" "main 90 + build 10: no lane alarm"
+assert_eq "$(jq -c '.aide_lanes' "$state/build-share.json")" '{"main":{"tokens":90000000,"pct":90},"build":{"tokens":10000000,"pct":10}}' "aide_lanes includes main so shares add up"
 exit $fail

@@ -97,7 +97,7 @@ DIR="${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}/claims"
 lane="${WM_AIDE_LANE:-main}"; [[ "$lane" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || lane=main
 now=$(date +%s)
 cget() { c_lane=""; c_sid=""; c_exp=0; [ -f "$DIR/$1" ] || return 1
-  c_lane=$(sed -n 's/^lane=//p' "$DIR/$1" | head -n1); c_sid=$(sed -n 's/^sid=//p' "$DIR/$1" | head -n1); c_exp=$(sed -n 's/^expires=//p' "$DIR/$1" | head -n1)
+  c_lane=$(sed -n 's/^lane=//p' "$DIR/$1" 2>/dev/null | head -n1); c_sid=$(sed -n 's/^sid=//p' "$DIR/$1" 2>/dev/null | head -n1); c_exp=$(sed -n 's/^expires=//p' "$DIR/$1" 2>/dev/null | head -n1)
   [[ "$c_exp" =~ ^[0-9]+$ ]] || c_exp=0; return 0; }
 # pass 1: any foreign live claim denies the whole command, before anything is taken
 while IFS= read -r o; do
