@@ -3,7 +3,7 @@
 # Scope: acts ONLY when WM_SEAT=aide; every other process exits 0 with no output. Inert until a claim file exists: ${FLEET_DASH_DIR:-~/.cache/fleet-dash}/claims/ is
 # created by the first `aide-claim.sh take` or the first claim-on-act below.
 # Rule: for every PR object the command acts on, read claims/<repo>#<pr> (lines lane= sid= expires=<epoch>):
-#   - held by ANOTHER lane and unexpired -> deny, exit 2: `aide-claim-gate: <repo>#<pr> claimed by lane <lane> (sid ..., expires <time>); aide-claim.sh show <repo>#<pr>`
+#   - held by ANOTHER lane and unexpired -> deny, exit 2: `aide-claim-gate: <repo>#<pr> claimed by lane <lane> (sid ..., expires <time>); aide-claim.sh show <repo>#<pr>; ... release <repo>#<pr> --force` (steal, logged)
 #   - no live claim -> TAKE it for the own lane (claim-on-act, ttl 2 h, same format as aide-claim.sh take) and exit 0
 #   - own lane's claim -> exit 0 (ttl not extended)
 #   own lane = ${WM_AIDE_LANE:-main}. repo = the basename of owner/repo (claims are keyed `<repo>#<pr>`).
@@ -103,7 +103,7 @@ cget() { c_lane=""; c_sid=""; c_exp=0; [ -f "$DIR/$1" ] || return 1
 while IFS= read -r o; do
   [ -n "$o" ] || continue
   if cget "$o" && [ "$c_exp" -gt "$now" ] && [ "$c_lane" != "$lane" ]; then
-    echo "aide-claim-gate: $o claimed by lane $c_lane (sid ${c_sid:--}, expires $(date -d "@$c_exp" '+%-I:%M %p')); aide-claim.sh show $o" >&2
+    echo "aide-claim-gate: $o claimed by lane $c_lane (sid ${c_sid:--}, expires $(date -d "@$c_exp" '+%-I:%M %p')); aide-claim.sh show $o; to release or take it over (logged): aide-claim.sh release $o --force" >&2
     exit 2
   fi
 done <<<"$objs"

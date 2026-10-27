@@ -59,4 +59,13 @@ env WM_AIDE_LANE=build bash "$C" release 'dotfiles#7' >/dev/null; [ ! -e "$CL/do
 env bash "$C" show 'dotfiles#7' >/dev/null; [ $? = 1 ] && ok "show with no claim: exit 1" || bad "show none"
 env bash "$C" take 'bad object' >/dev/null 2>&1; [ $? = 64 ] && ok "bad object: exit 64" || bad "bad obj"
 env WM_AIDE_LANE=build bash "$C" take 'task:docs' >/dev/null && [ -e "$CL/task:docs" ] && ok "task:<slug> object accepted" || bad "task obj"
+# deny message names an exact release/override command; --force steals and logs
+G_ENV="$B"; rm -rf "$CL"; claim 'dotfiles#127' main $FUT; gate 'gh pr merge 127 --repo j0yen/dotfiles'
+grep -q 'aide-claim.sh release dotfiles#127 --force' "$T/err" && ok "deny message names the release --force command" || bad "deny msg lacks override: $(cat "$T/err")"
+env WM_AIDE_LANE=build bash "$C" release 'dotfiles#127' >/dev/null 2>"$T/err"; rc=$?; grep -q 'release dotfiles#127 --force' "$T/err" && [ $rc = 3 ] && ok "refused release names --force" || bad "release hint rc=$rc"
+env WM_AIDE_LANE=build CLAUDE_SESSION_ID=thief bash "$C" release 'dotfiles#127' --force >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && [ ! -e "$CL/dotfiles#127" ] && grep -q 'release dotfiles#127 by lane=build sid=thief from lane=main sid=sid-holder' "$FLEET_DASH_DIR/claim-steals.log" && ok "release --force clears a live foreign claim and logs the thief" || bad "force release rc=$rc"
+claim 'dotfiles#128' main $FUT; env WM_AIDE_LANE=build CLAUDE_SESSION_ID=thief bash "$C" take 'dotfiles#128' --force >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && grep -q '^lane=build$' "$CL/dotfiles#128" && grep -q 'steal dotfiles#128 by lane=build' "$FLEET_DASH_DIR/claim-steals.log" && ok "take --force steals and logs" || bad "force take rc=$rc"
+gate 'gh pr merge 128 --repo j0yen/dotfiles'; [ $rc = 0 ] && ok "gate passes for the thief lane after steal" || bad "post-steal rc=$rc"
 exit $fail
