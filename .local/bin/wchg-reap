@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""wchg-reap - bound the carbon watchman: watch-del idle/scratch/gone wchg roots, LRU-cap the rest.
+
+Roots come from `watchman --no-spawn watch-list` (never starts the daemon). A root's last use = newest mtime of the wchg
+state.json files (${XDG_CACHE_HOME:-~/.cache}/wchg/*/state.json) whose `watch` == root. Rules:
+  always:   dir gone, root is $HOME or /, root under $HOME/tmp/ $HOME/.cache/ $HOME/.local/state/ /tmp/
+  owned only (has wchg state): idle > --idle-min (default 360), then LRU cap --max-roots (default 12)
+  never:    a root whose newest state mtime is < 2 min old; an unowned root by idle/LRU
+Prints: wchg-reap roots=<before>-><after> removed=<n> unowned=<n> inotify=<used>/<max>
+Usage: wchg-reap [--idle-min N] [--max-roots N] [--dry-run]
+"""
+import argparse, glob, json, os, subprocess, sys, shutil, time
+
+RACE_GUARD_S = 120
+
+
+def wm(*args):
+    return subprocess.run(["watchman", "--no-spawn", *args], capture_output=True, text=True, timeout=60)
+
+
+def inotify(wm_pid):
+    mx = "?"
+    try:
+        mx = open("/proc/sys/fs/inotify/max_user_watches").read().strip()
+    except OSError:
+        pass
+    try:
+        used = 0
+        for fd in glob.glob("/proc/%s/fdinfo/*" % wm_pid):
+            try:
+                with open(fd) as f:
+                    used += sum(1 for ln in f if ln.startswith("inotify wd:"))
+            except OSError:
+                pass
+        if not glob.glob("/proc/%s/fdinfo/*" % wm_pid):
+            return "?/" + mx
+        return "%d/%s" % (used, mx)
+    except Exception:
+        return "?/" + mx
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--idle-min", type=float, default=360)
+    ap.add_argument("--max-roots", type=int, default=12)
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+
+    if shutil.which("watchman") is None:
+        print("wchg-reap: watchman not running")
+        return 0
+    try:
+        r = wm("watch-list")
+        roots = json.loads(r.stdout).get("roots", []) if r.returncode == 0 else None
+    except Exception:
+        roots = None
+    if roots is None:
+        print("wchg-reap: watchman not running")
+        return 0
+
+    home = os.path.realpath(os.path.expanduser("~"))
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
+    scratch = [home + "/tmp/", home + "/.cache/", home + "/.local/state/", "/tmp/"]
+    now = time.time()
+
+    # state dirs by root
+    owned = {}  # root -> [(mtime, dir)]
+    for sj in glob.glob(os.path.join(cache, "wchg", "*", "state.json")):
+        try:
+            w = json.load(open(sj)).get("watch")
+            mt = os.path.getmtime(sj)
+        except Exception:
+            continue
+        if w:
+            owned.setdefault(w, []).append((mt, os.path.dirname(sj)))
+
+    remove, keep, protect = {}, [], set()
+    unowned = 0
+    for root in roots:
+        st = owned.get(root)
+        newest = max((m for m, _ in st), default=None) if st else None
+        if not st:
+            unowned += 1
+        reason = None
+        if newest is not None and now - newest < RACE_GUARD_S:
+            keep.append((newest, root))
+            protect.add(root)
+            continue
+        rr = os.path.realpath(root) if os.path.exists(root) else root
+        if not os.path.isdir(root):
+            reason = "gone"
+        elif rr == home or root.rstrip("/") == home or root == "/":
+            reason = "home-or-/"
+        elif any((root.rstrip("/") + "/").startswith(p) for p in scratch):
+            reason = "scratch"
+        elif newest is not None and now - newest > a.idle_min * 60:
+            reason = "idle"
+        if reason:
+            remove[root] = reason
+        else:
+            keep.append((newest, root))
+
+    # LRU cap over owned survivors (unowned are never LRU-removed but count toward the total)
+    over = len(keep) - a.max_roots
+    if over > 0:
+        cand = sorted((k for k in keep if k[0] is not None and k[1] not in protect), key=lambda k: k[0])
+        for _, root in cand[:over]:
+            remove[root] = "lru"
+        keep = [k for k in keep if k[1] not in remove]
+
+    pid = ""
+    try:
+        pid = str(json.loads(wm("get-pid").stdout).get("pid", ""))
+    except Exception:
+        pass
+
+    for root, why in remove.items():
+        if a.dry_run:
+            print("would remove %s (%s)" % (root, why))
+            continue
+        wm("watch-del", root)
+        for _, d in owned.get(root, []):
+            shutil.rmtree(d, ignore_errors=True)
+
+    after = len(roots) if a.dry_run else len(roots) - len(remove)
+    print("wchg-reap roots=%d->%d removed=%d unowned=%d inotify=%s"
+          % (len(roots), after, 0 if a.dry_run else len(remove), unowned, inotify(pid) if pid else "?/?"))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print("wchg-reap: error %s" % e)
+        sys.exit(0)
