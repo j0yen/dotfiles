@@ -4,15 +4,24 @@
 # imports (`aide-verifier.sh --gate-names`) exists there, gen/merge-gate.json has a repo_tokens object, and the real g3_missing/_agent_token keep the contract the
 # lint relies on; and (W4) every repo_tokens key has the owner/name form the L-KIND regex expects, and the one GATED/COMMIT grammar constant
 # (`aide-verifier.sh --gate-grammar`) accepts `GATED <key>#53 COMMIT=<40 hex>` for each key and rejects #5, a 41-hex COMMIT and a prefix-glued GATED.
-# Read-only (python -I -B, no row written). wm-decide absent = FAIL (no skip). Run with PATH intact (HOME may be a throwaway): bash tests/aide-verifier-gate-nodrift.test.sh
+# Read-only (python -I -B, no row written). wm-decide absent and AIDE_VERIFIER_GATE_ROOT unset = explicit SKIP (exit 0). Run with PATH intact (HOME may be a throwaway): bash tests/aide-verifier-gate-nodrift.test.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../.local/bin/aide-verifier.sh"
 fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
-wmd=$(command -v wm-decide) || { bad "wm-decide is not on PATH (no skip: the lint cannot resolve its gate root)"; echo FAILED; exit 1; }
-root=$(dirname "$(dirname "$(readlink -f "$wmd")")")
+# The live merge-gate tree is a real host install (swarm-decide), not part of this repo. Resolve it as the lint does: AIDE_VERIFIER_GATE_ROOT, else the tree of wm-decide
+# on PATH. Where neither exists (RedBaron, CI, a throwaway HOME) the precondition cannot be faked without making the guard tautological, so this is an explicit SKIP
+# (exit 0), never a silent pass; a host that has wm-decide still runs every assertion below and an absent mergegate.py/merge-gate.json there is still a FAIL.
+if [ -n "${AIDE_VERIFIER_GATE_ROOT:-}" ]; then
+  root="$AIDE_VERIFIER_GATE_ROOT"
+elif wmd=$(command -v wm-decide); then
+  root=$(dirname "$(dirname "$(readlink -f "$wmd")")")
+else
+  echo "SKIP: wm-decide is not on PATH and AIDE_VERIFIER_GATE_ROOT is unset; the live merge-gate tree is a host install that cannot be faked (set AIDE_VERIFIER_GATE_ROOT=<swarm-decide checkout> to run)"
+  exit 0
+fi
 [ -f "$root/wm_decide/mergegate.py" ] && pass "live root $root has wm_decide/mergegate.py" || bad "live root $root has no wm_decide/mergegate.py"
 [ -f "$root/gen/merge-gate.json" ] && pass "live root has gen/merge-gate.json" || bad "live root has no gen/merge-gate.json"
 names=$(bash "$script" --gate-names)
