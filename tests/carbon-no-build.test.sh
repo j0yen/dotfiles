@@ -88,6 +88,11 @@ dB "tmux send-keys -t x 'pytest -x' Enter"
 dB 'tmux new-session -d -s s "cargo build"'
 dB 'tmux new-window "make test"'
 dB 'echo hi; for f in tests/*.test.sh; do echo $f; done'
+# claude -p / --print = a headless coder turn (rb-run-coder.sh now launches it on redbaron)
+dB 'claude -p x'
+dB 'claude --print x'
+dB 'systemd-run --user /bin/bash -c "claude -p < f"'
+dB 'timeout 600 nohup claude --dangerously-skip-permissions -p < f'
 
 # ---- 2. Bash allowed
 aB "ssh redbaron 'cargo test'"
@@ -112,6 +117,10 @@ aB 'cargo --version'
 aB 'tmux send-keys -t rb "hello there" Enter'
 aB 'bash -c "echo pytest"'
 aB 'ls ~/.cargo/bin'
+aB "ssh redbaron 'claude -p x'"
+aB 'rb-run-coder.sh n f'
+aB 'claude --version'
+aB 'echo claude -p x'
 
 # ---- 3. Edit / Write / MultiEdit / NotebookEdit
 allow_case "Edit of a memory file" "$(editj Edit "$HOME/.claude/projects/p/memory/m.md")"
