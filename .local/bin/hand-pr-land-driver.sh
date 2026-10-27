@@ -9,7 +9,8 @@
 #   (b) a verifier unit for that head is finished  -> lint its verdict through the LIVE gate code (mergegate.check, read-only), then `aide-verifier.sh finish`
 #   (c) a MERGE-OK verdict row whose COMMIT prefixes the live head (not voided by a CORRECT* row) -> `rb-merge.sh <verdict> <pr> <repo>` (gate, trailer check, squash merge)
 #   (a) no current verdict, no active verifier unit for the PR -> ROOM check (carbon-room.sh 1024 --reserve-MB 3072), then `aide-verifier.sh launch` (fast CI tier by default;
-#       `TIER=full` or `SUITE=full` in the GATED row -> full pytest + --timeout 5400). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
+#       `TIER=full` or `SUITE=full` in the GATED row -> full pytest + --timeout 5400; a PR that touches the repo's test-registry source set (SRC_SET) or whose file list is unreadable is
+#       ALWAYS full, whatever the GATED row says: five-whys 2026-10-27-synthorg-441 mechanism 3). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
 # and, once per merged PR (merge-events.jsonl pr-merged, last HPLD_POSTMERGE_WINDOW_H h):
 #   (d) merged >= 15 min ago, no r7 `START` row naming the PR since the merge -> `seat-ask.sh r7 '<repo>#<pr> merged <sha>; run post-merge suite'` ONCE.
 # Every action writes a ledger row (kind=observe, what `HPLD <ACTION> <repo>#<pr> k=<key> ...`). The wm-decide agent enum has no `hand-pr-land-driver`, so the row's agent is
@@ -20,7 +21,8 @@
 # NEVER: merge without a gate PASS (rb-merge.sh is the only merge path), force, touch a hold, kill by pattern, print a token.
 #   --dry-run   print the planned actions (PLAN lines), change nothing (no lock, no row, no launch, no ring, no ROOM call)
 #   --selftest  pure-function checks (GATED grammar, keys, owner map, suite shape); tests/hand-pr-land-driver.test.sh runs the stubbed end-to-end cases
-# Env (tests): HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD HPLD_TICK_BUDGET_S
+# The tier choice is logged on the HPLD LAUNCH row: `tier=<fast|full> tier_reason=<gated|registry:<file>|files-unknown|default> files=<n> [srcset_drift=1]`.
+# Env (tests): HPLD_MERGE_GATE HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD HPLD_TICK_BUDGET_S
 # Per-tick budget (HPLD_TICK_BUDGET_S, default 1500 s; the unit allows 1800): a long call (launch 600 s, finish 600 s, merge 900 s) is skipped with a `deferred` log line when elapsed + its timeout > budget.
 # Draft PRs (isDraft) are skipped with one observe row per head. A `Depends-on: #N` line in the PR body (same repo) lets launch proceed but holds the merge, one observe row per head, while #N is OPEN.
 set -u
@@ -41,7 +43,7 @@ fi
 export HPLD_MODE="$MODE"
 exec python3 -I -c "$(sed -n '/^#PY-BEGIN$/,/^#PY-END$/p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed '1d;$d')"
 #PY-BEGIN
-import datetime as dt, json, os, re, shlex, subprocess, sys, time
+import datetime as dt, fnmatch, json, os, re, shlex, subprocess, sys, time
 
 MODE = os.environ["HPLD_MODE"]
 HOME = os.path.expanduser("~")
@@ -66,6 +68,10 @@ SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; car
 HEX40 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
 COMMIT_RE = re.compile(r"COMMIT=([0-9a-fA-F]{7,40})")
 KEY_RE = re.compile(r" k=(\S+)")
+# The test-registry source set per repo: a PR touching any of these changes what the fast tier would deselect, so it verifies at the full tier.
+# fnmatch's `*` also crosses `/`, so `tests/*_support.py` matches nested paths on purpose (over-inclusive = safe: it only ever forces the stronger tier).
+# The live swarm-decide contract gen/merge-gate.json key `required_source_set` is the source of truth; the runtime set is the UNION of it and this constant.
+SRC_SET = {"j0yen/synthorg": ["tests/flaky.yaml", "tests/durations.json", "tests/conftest.py", "pyproject.toml", "tests/*_support.py"]}
 SEAT_OF = {"rb": "rb", "r7": "r7", "controller": "ctl", "ctl": "ctl"}   # anything else (aide, joe, coder:*) -> r7, the hand-PR consumer
 
 
@@ -120,6 +126,52 @@ def suite_for(repo, tier, own_tests):
     return "%s%s && uv run pytest -q -p no:cacheprovider%s -n 2" % (pre, own, sel)
 
 
+def contract_path():
+    """The live merge-gate contract: HPLD_MERGE_GATE, else <root of the wm-decide on PATH>/gen/merge-gate.json (never a checkout)."""
+    if os.environ.get("HPLD_MERGE_GATE"):
+        return os.environ["HPLD_MERGE_GATE"]
+    w = sh(["bash", "-c", "command -v " + shlex.quote(WMD)], 10)[1].strip()
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(w))), "gen", "merge-gate.json") if w else ""
+
+
+def load_contract_sets(path):
+    """(dict repo -> [patterns] | None when the key is absent, note). A malformed file or key falls back to the constant alone: never a crash."""
+    if not path or not os.path.exists(path):
+        return None, "absent"
+    try:
+        d = json.load(open(path)).get("required_source_set")
+    except (OSError, ValueError, AttributeError):
+        return None, "malformed"
+    if d is None:
+        return None, "absent"
+    if not isinstance(d, dict) or not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in d.values()):
+        return None, "malformed"
+    return d, "ok"
+
+
+def source_set(repo, contract):
+    """(union of constant and contract patterns, drift) - drift = both exist and differ."""
+    const = list(SRC_SET.get(repo, []))
+    c = (contract or {}).get(repo)
+    if c is None:
+        return const, False
+    return const + [x for x in c if x not in const], set(c) != set(const)
+
+
+def decide_tier(repo, gated_full, files_rc, files, srcset):
+    """(tier, reason). The registry rule beats the GATED row; an unreadable (rc != 0) or empty file list is `files-unknown` (full on synthorg, fail safe)."""
+    unknown = files_rc != 0 or not files
+    if not unknown:
+        for f in files:
+            if any(fnmatch.fnmatchcase(f, pat) for pat in srcset):
+                return "full", "registry:" + f
+    if gated_full:
+        return "full", "gated"
+    if unknown:
+        return ("full" if repo == "j0yen/synthorg" else "fast"), "files-unknown"
+    return "fast", "default"
+
+
 def short(repo):
     return {"j0yen/synthorg": "syn", "j0yen/mcphost": "mcp", "j0yen/wm-build": "wmb"}.get(repo, re.sub(r"[^a-z0-9]", "", repo.split("/")[-1].lower())[:4])
 
@@ -141,6 +193,17 @@ def selftest():
     chk("fast suite carries the marker filter, full does not", '-m "not flaky and not slow"' in suite_for("j0yen/synthorg", "fast", []) and "-m " not in suite_for("j0yen/synthorg", "full", []))
     chk("own tests quoted", "tests/a_test.py" in suite_for("j0yen/synthorg", "fast", ["tests/a_test.py"]))
     chk("verifier pytest runs 2 xdist workers, never 4", suite_for("j0yen/synthorg", "fast", []).endswith("-n 2") and suite_for("j0yen/synthorg", "full", ["t.py"]).endswith("-n 2") and "-n 4" not in suite_for("j0yen/synthorg", "full", []))
+    ss = SRC_SET["j0yen/synthorg"]
+    S = "j0yen/synthorg"
+    chk("registry file forces full over a GATED row without TIER", decide_tier(S, False, 0, ["src/x.py", "tests/flaky.yaml"], ss) == ("full", "registry:tests/flaky.yaml"))
+    chk("registry file beats an explicit fast GATED row", decide_tier(S, False, 0, ["pyproject.toml"], ss) == ("full", "registry:pyproject.toml"))
+    chk("src-only PR is fast/default", decide_tier(S, False, 0, ["src/x.py"], ss) == ("fast", "default"))
+    chk("GATED TIER=full is full/gated", decide_tier(S, True, 0, ["src/x.py"], ss) == ("full", "gated"))
+    chk("gh failure on synthorg is full/files-unknown", decide_tier(S, False, 1, [], ss) == ("full", "files-unknown"))
+    chk("exit-0 empty file list is files-unknown", decide_tier(S, False, 0, [], ss) == ("full", "files-unknown"))
+    chk("non-synthorg gh failure keeps the default tier, reason files-unknown", decide_tier("j0yen/mcphost", False, 1, [], []) == ("fast", "files-unknown"))
+    chk("tests/*_support.py matches, nested too", decide_tier(S, False, 0, ["tests/foo_support.py"], ss)[1] == "registry:tests/foo_support.py" and decide_tier(S, False, 0, ["tests/a/b_support.py"], ss)[0] == "full")
+    chk("union of contract and constant; drift flagged", source_set(S, {S: ["x.yaml"]}) == (ss + ["x.yaml"], True) and source_set(S, {S: list(ss)})[1] is False and source_set(S, None)[1] is False)
     chk("unit name charset", re.fullmatch(r"[a-z0-9-]+", "hpl-%s-%d-%s-%d" % (short("j0yen/synthorg"), 4, "abcdef0", 1)) is not None)
     print("SELFTEST " + ("FAIL" if bad else "PASS"))
     return 1 if bad else 0
@@ -259,14 +322,28 @@ def verifier_units():
 
 
 units = verifier_units()
+CONTRACT, CONTRACT_NOTE = load_contract_sets(contract_path())
+if CONTRACT_NOTE == "malformed":
+    log("hand-pr-land-driver: merge-gate contract malformed; using the built-in registry source set only")
+DRIFT = {r: source_set(r, CONTRACT)[1] for r in SRC_SET}
 actions = []   # planned, in order; ONE per PR
 
 
-def own_tests(repo, pr):
-    rc_, o_, _ = sh([GH, "api", "repos/%s/pulls/%s/files" % (repo, pr), "--paginate", "-q", '.[] | select(.status != "removed") | .filename'], 120)
+def pr_files(repo, pr):
+    """(gh rc, every file the PR touches incl. removed, the PR's own tests that still exist). One gh call; a non-zero rc is the caller's `files-unknown`."""
+    rc_, o_, _ = sh([GH, "api", "repos/%s/pulls/%s/files" % (repo, pr), "--paginate", "-q", r'.[] | "\(.status)\t\(.filename)"'], 120)
     if rc_ != 0:
-        return []
-    return [f for f in o_.split() if re.fullmatch(r"tests/[A-Za-z0-9_./-]+\.py", f)][:10]
+        return rc_, [], []
+    files, tests = [], []
+    for ln in o_.splitlines():
+        st, _, f = ln.rpartition("\t")   # a line without a tab is a bare filename
+        f = f.strip()
+        if not f:
+            continue
+        files.append(f)
+        if st != "removed" and re.fullmatch(r"tests/[A-Za-z0-9_./-]+\.py", f):
+            tests.append(f)
+    return rc_, files, tests[:10]
 
 
 def verdict_id_of_unit(u):
@@ -367,8 +444,20 @@ for repo in REPOS:
             continue
         n = launches + 1
         name = "hpl-%s-%d-%s-%d" % (short(repo), pr, live[:7], n)
-        actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), ckey="capdefer:%s%d" % (pfx, int(now() // 3600)), name=name, tier=tier,
-                            suite=suite_for(repo, tier, own_tests(repo, pr))))
+        f_rc, f_all, f_tests = pr_files(repo, pr)
+        tier, reason = decide_tier(repo, tier == "full", f_rc, f_all, source_set(repo, CONTRACT)[0])
+        if reason == "files-unknown":
+            log("hand-pr-land-driver: %s file list unreadable or empty (gh rc=%d); tier=%s" % (tag, f_rc, tier))
+        actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), ckey="capdefer:%s%d" % (pfx, int(now() // 3600)),
+                            rkey="roomring:" + pfx, name=name, tier=tier, reason=reason, nfiles=len(f_all), drift=DRIFT.get(repo, False),
+                            suite=suite_for(repo, tier, f_tests)))
+
+# source-set drift between the live contract and the built-in constant: ring aide once a day (dotfiles tests do not run when swarm-decide merges)
+for _r, _d in sorted(DRIFT.items()):
+    _k = "srcset-drift:" + time.strftime("%Y-%m-%d", time.localtime(now()))
+    if _d and _k not in hp_keys:
+        actions.append({"act": "ring-drift", "repo": _r, "pr": 0, "head": "", "owner": "aide", "tag": "srcset:" + _r, "key": _k,
+                        "msg": "hand-pr-land-driver: the live merge-gate contract required_source_set for %s differs from the driver's built-in SRC_SET; the driver uses the union; update SRC_SET" % _r})
 
 # (d) post-merge suite ring
 try:
@@ -397,7 +486,7 @@ if MODE == "dry":
     if not actions:
         log("PLAN none")
     for a in actions:
-        extra = {x: a[x] for x in ("unit", "verdict", "name", "tier", "msg") if x in a}
+        extra = {x: a[x] for x in ("unit", "verdict", "name", "tier", "reason", "nfiles", "msg") if x in a}
         if a["act"] == "launch":
             extra["suite"] = a["suite"]
             extra["room"] = "would run: %s 1024 --reserve-MB 3072" % ROOM
@@ -457,6 +546,20 @@ for a in actions:
         room_rc, room_o, room_e = sh([ROOM, "1024", "--reserve-MB", "3072"], 60)
         if room_rc != 0:
             log("ROOM NO %s (carbon-room rc=%d): no launch this tick" % (a["tag"], room_rc))
+            if a["reason"].startswith("registry:"):   # a forced-full launch starved by ROOM > 30 min rings the owner once per head
+                mark = os.path.join(STATE_DIR, "roomdefer-" + re.sub(r"[^A-Za-z0-9._-]", "_", a["rkey"]))
+                try:
+                    since = float(open(mark).read().strip())
+                except (OSError, ValueError):
+                    since = None
+                    try:
+                        open(mark, "w").write("%d\n" % now())
+                    except OSError:
+                        pass
+                if since is not None and now() - since > 1800 and a["rkey"] not in hp_keys:
+                    a["msg"] = "%s: forced-full verification (%s) has waited %d min for ROOM; free carbon memory or verify by hand" % (a["tag"], a["reason"], (now() - since) / 60)
+                    if record("room-ring", a, "seat=%s %s" % (a["owner"], a["msg"][:300]), key=a["rkey"]):
+                        ring(a, a["owner"])
             continue
         argv = [VERIFIER, "launch", a["name"], "--repo", a["repo"], "--pr", str(a["pr"]), "--head", a["head"], "--gated", a["gated"],
                 "--token", os.environ.get("HPLD_TOKEN") or "pytest EXIT=0", "--suite", a["suite"]]
@@ -465,8 +568,8 @@ for a in actions:
         rc_, o_, e_ = sh(argv, 600)
         txt = (o_ + e_)
         if rc_ == 0:
-            log("LAUNCH %s %s" % (a["tag"], a["name"]))
-            record("launch", a, "name=%s tier=%s gated=%s" % (a["name"], a["tier"], a["gated"]))
+            log("LAUNCH %s %s tier=%s tier_reason=%s" % (a["tag"], a["name"], a["tier"], a["reason"]))
+            record("launch", a, "name=%s tier=%s tier_reason=%s files=%d gated=%s%s" % (a["name"], a["tier"], a["reason"], a["nfiles"], a["gated"], " srcset_drift=1" if a["drift"] else ""))
         elif rc_ in (3, 10, 11, 6) or (rc_ == 2 and re.search(r"(?i)cap reached|ceiling|slot", txt)):
             log("LAUNCH DEFERRED %s rc=%d (transient): %s" % (a["tag"], rc_, one_line(txt)))
             if rc_ == 2 and a["ckey"] not in hp_keys:   # at most one observe row per head per hour; never counts toward launchfail / stuck
