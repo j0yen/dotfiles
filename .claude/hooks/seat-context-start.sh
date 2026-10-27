@@ -46,6 +46,47 @@ fi
 case "$sess" in rb|r7|ctl) ;; *) exit 0 ;; esac
 goal="$HOME/Notes/wiki/goal.md"
 play="$HOME/Notes/wiki/playbooks/fleet-operations.md"
+# M9 stage 1 (decisions/2026-10-27-m9-seat-floor-cut-wwhtbt.md, mechanism 1; OFF unless seat_floor_stage_on 1, i.e. SEAT_FLOOR_STAGE>=1 or floor-stage.json .stage>=1):
+# on SessionStart `compact` and `resume` an operator seat (a seats.tsv row with tick_min > 0; the set is the file, never a list here) gets § Stage + goal-lint + two
+# pointer lines (playbook path, handoff path) <= 4096 B, never the playbook body, and NO ssh: the start-trigger check reads status.json `timers_no_start_trigger`
+# instead of `timers-start-trigger-live.sh --hosts` (35 s of ssh, the reason the hook was cancelled at its 5 s timeout on most resume ticks). The timeout is untouched.
+# `resume` prints only a one-line hash note when § Stage is unchanged since this seat's last tick (state: ~/.cache/claude-seat/<seat>.stage-hash). `startup`/`clear`/no source = the full payload below.
+if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.local/bin/seat-lean.sh"
+  role=$(awk -F'\t' -v s="$sess" '!/^#/ && $1==s && ($4+0)>0 {print $2; exit}' "$HOME/.claude/state/seats.tsv" 2>/dev/null)
+  src=""
+  if [ -n "$role" ] && seat_floor_stage_on 1 && [ ! -t 0 ]; then   # stdin is read only when the stage is on: OFF = today's behavior exactly
+    src=$(timeout 1 cat 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  fi
+  if [ "$src" = compact ] || [ "$src" = resume ]; then
+    stage_txt=""; [ -r "$goal" ] && stage_txt=$(awk '/^## Stage/{p=1} p&&/^## /&&!/^## Stage/{exit} p' "$goal" | head -c 3000)   # 3000 B keeps goal-lint + pointers inside the 4096 B cap
+    h=$(printf '%s' "$stage_txt" | sha256sum | cut -c1-12); hf="$HOME/.cache/claude-seat/$sess.stage-hash"
+    if [ "$src" = resume ] && [ "$(cat "$hf" 2>/dev/null)" = "$h" ]; then
+      echo "=== goal.md § Stage unchanged since this seat's last tick (hash $h); playbook ~/Notes/wiki/playbooks/fleet-operations.md · handoff ~/.claude/projects/-home-jsy/memory/handoff-$role-*.md ==="
+      exit 0
+    fi
+    mkdir -p "${hf%/*}" 2>/dev/null; printf '%s\n' "$h" >"$hf" 2>/dev/null
+    {
+      echo "=== goal.md § Stage (seat $sess, $src; read goal.md after a ff-only pull before acting on it) ==="
+      if [ -n "$stage_txt" ]; then printf '%s\n' "$stage_txt"; else echo "goal.md missing at $goal"; fi
+      if [ -x "$HOME/.local/bin/goal-lint.sh" ] && [ -r "$goal" ]; then
+        echo "=== goal-lint ==="
+        timeout 2 "$HOME/.local/bin/goal-lint.sh" "$goal" 2>&1 | sed 's/^\(goal-lint: \)\{0,1\}/goal-lint: /' || true
+      fi
+      ho=$(ls -t "$HOME/.claude/projects/-home-jsy/memory"/handoff-"$role"-*.md 2>/dev/null | head -n1)
+      echo "=== pointers (not injected on $src; read the section you need before acting) ==="
+      echo "playbook: $play"
+      echo "handoff: ${ho:-$HOME/.claude/projects/-home-jsy/memory/handoff-$role-*.md (none found)}"
+      sj="$HOME/.cache/fleet-dash/status.json"
+      if [ -r "$sj" ] && [ $(( $(date +%s) - $(stat -c %Y "$sj" 2>/dev/null || echo 0) )) -le 300 ]; then
+        tl=$(timeout 1 jq -r '(.timers_no_start_trigger // []) | .[0:6][] | if type=="string" then . else "FAIL \(.host) \(.unit) \(.reason // "no start trigger")" end' "$sj" 2>/dev/null | cut -c1-160)
+        [ -z "$tl" ] || { echo "=== TIMERS: user timer(s) without a start trigger (status.json timers_no_start_trigger) ==="; printf '%s\n' "$tl"; }
+      fi
+    } | head -c 4096
+    exit 0
+  fi
+fi
 echo "=== goal.md § Stage (seat $sess; read goal.md after a ff-only pull before acting on it) ==="
 if [ -r "$goal" ]; then
   awk '/^## Stage/{p=1} p&&/^## /&&!/^## Stage/{exit} p' "$goal"

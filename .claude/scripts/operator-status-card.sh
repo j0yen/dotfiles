@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# operator-status-card.sh [--json | --section runs|queue|chain|siblings|daemon|config]
+# operator-status-card.sh [--json | --section runs|queue|seats|timers|floor|chain|siblings|daemon|config]
 # SessionStart banner (PRD dotfiles-operator-status-card R3/R6): renders the
 # generated status.json as a <= 25-line card, regenerating it when older than
 # 60 s. Fail-open: always exits 0.
@@ -88,6 +88,13 @@ render_timers() {
   if jq -e '.timers_stalled | length == 0' "$fleet_sj" >/dev/null 2>&1; then echo "timers: ok"; return; fi
   jq -r '.timers_stalled | "timers: STALLED " + (length|tostring) + " (" + ([.[0:6][] | "\(.host) \(.unit) \(.reason)"] | join(", ")) + ")"' "$fleet_sj" 2>/dev/null | cut -c1-400 || echo "timers: ?"
 }
+render_floor() {
+  # M9 seat floor (seat-floor-probe.sh -> seat-floor.json): post-compaction context floor p50 of the last 5 boundaries per seat + SessionStart hook cancellations in 24 h;
+  # prints nothing until the probe has run (a host without the probe keeps today's card).
+  local ff="${OPERATOR_SEAT_FLOOR:-$HOME/.cache/fleet-dash/seat-floor/seat-floor.json}"
+  [ -r "$ff" ] && jq -e '.seats | length > 0' "$ff" >/dev/null 2>&1 || return 0
+  jq -r '"floor (p50 last 5): " + ([.seats | to_entries[] | "\(.key) \(if .value.floor_p50 == null then "?" else ((.value.floor_p50 / 1000 * 10 | round) / 10 | tostring) + "K" end)\(if (.value.compact_hook_cancelled_24h // 0) > 0 then " (" + (.value.compact_hook_cancelled_24h | tostring) + " hook cancels 24h)" else "" end)"] | join(" · ")) + " · stage " + ((.stage // 0) | tostring)' "$ff" 2>/dev/null | cut -c1-240
+}
 render_chain() {
   if ! src_ok chain; then echo "chain: not on this host ($(j '.chain.host // empty' | grep . || echo "$chain_host"))"; return; fi
   echo "chain: $(j '.chain|"\(.chain_run_id) \(.link) \(.status)"') at $(t "$(j '.chain.ts')")"
@@ -115,13 +122,13 @@ render_config() {
 
 if [ "$mode" = section ]; then
   case "$section" in
-    runs|queue|seats|timers|chain|siblings|daemon|config) "render_$section" ;;
+    runs|queue|seats|timers|floor|chain|siblings|daemon|config) "render_$section" ;;
     *) echo "operator card: unknown section '$section'" ;;
   esac
   exit 0
 fi
 
 echo "operator card ($(j '.host // "?"'))"
-render_runs; render_queue; render_decisions; render_seats; render_timers; render_chain; render_siblings; render_daemon; render_config
+render_runs; render_queue; render_decisions; render_seats; render_timers; render_floor; render_chain; render_siblings; render_daemon; render_config
 echo "status.json generated ${age}s ago"
 exit 0
