@@ -1,0 +1,8 @@
+[Unit]
+Description=land-red-hold: cordon a red-CI land that names no failing test, post the CI failure names to the seat (fw-1058 mechanism 8, interim; expires 2026-10-29)
+
+[Service]
+Type=oneshot
+MemoryMax=512M
+RuntimeMaxSec=600
+ExecStart=/usr/bin/bash -lc %h/.local/bin/land-red-hold.sh
