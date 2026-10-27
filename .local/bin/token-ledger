@@ -32,7 +32,8 @@
 #                        review|re-grade|regrade|verdict|DECISION -> review;
 #                        else scout (all case-insensitive)
 #         seat:<name>    top-level file whose SID is column 3 of $SEATS_TABLE
-#         seat:aide      top-level file whose SID is a line of $AIDE_SIDS_FILE
+#         seat:aide      top-level file whose SID is a line of $AIDE_SIDS_FILE; a line `<sid> <lane> since=<epoch>` with a lane other than main tags it
+#                        seat:aide:<lane> for rows stamped at/after since (earlier rows keep their no-sids-line role; aide-lanes 10-27)
 #                        (TOKEN_LEDGER_AIDE_SIDS, default ~/.cache/fleet-dash/aide-sids;
 #                        appended by .claude/hooks/aide-inbox.sh at every aide
 #                        prompt; a seats.tsv row for the same SID wins)
@@ -91,7 +92,7 @@ SUMMARY_TXT="$STATE_DIR/today-summary.txt"
 BUILD_SHARE_JSON="$STATE_DIR/build-share.json"
 AIDE_SIDS_FILE="${TOKEN_LEDGER_AIDE_SIDS:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}/aide-sids}"
 # roles whose weighted tokens count as building (ERE, matched whole by the awk below); everything else is management
-BUILD_ROLES_RE='^(coder|inner|seat:(ctl|rb|r7|aide))$'
+BUILD_ROLES_RE='^(coder|inner|seat:(ctl|rb|r7|aide(:[A-Za-z0-9._-]+)?))$'
 BUILD_ROLES_LABEL='coder+inner+seats'
 # roles left out of both sides of build_share (Joe 10-23 "exclude it"); their tokens are shown separately
 EXCLUDE_ROLES_RE='^interactive$'
@@ -164,6 +165,7 @@ status_for() {
 
 # ---- role (per JSONL file; see header) -------------------------------------
 declare -A SEAT_BY_SID=()
+declare -A SINCE_BY_SID=()   # aide lane sids only: launch epoch from the aide-sids `since=` field (rows before it keep their prior role)
 load_seats() {
   [ -r "$SEATS_TABLE" ] || return 0
   local s_seat s_sid _role _r
@@ -174,11 +176,17 @@ load_seats() {
 }
 load_aide_sids() {
   [ -r "$AIDE_SIDS_FILE" ] || return 0
-  local a_sid
-  while IFS= read -r a_sid || [ -n "$a_sid" ]; do
-    a_sid="${a_sid%%[[:space:]]*}"
+  # lines: `<sid>` (bare, = main) or `<sid> <lane> since=<epoch>` (aide-inbox.sh); a lane other than main tags the sid `aide:<lane>`
+  local a_sid a_line a_lane a_since a_f2 a_f3 _rest
+  while IFS= read -r a_line || [ -n "$a_line" ]; do
+    read -r a_sid a_f2 a_f3 _rest <<<"$a_line"
     case "$a_sid" in ''|'#'*) continue ;; esac
-    [ -n "${SEAT_BY_SID[$a_sid]:-}" ] || SEAT_BY_SID["$a_sid"]="aide"
+    a_lane=main; a_since=0
+    [[ "$a_f2" =~ ^[A-Za-z0-9_-]{1,32}$ ]] && a_lane="$a_f2"
+    [[ "$a_f3" =~ ^since=([0-9]{1,12})$ ]] && a_since="${BASH_REMATCH[1]}"
+    [ -n "${SEAT_BY_SID[$a_sid]:-}" ] && continue
+    if [ "$a_lane" = main ]; then SEAT_BY_SID["$a_sid"]="aide"
+    else SEAT_BY_SID["$a_sid"]="aide:$a_lane"; SINCE_BY_SID["$a_sid"]="$a_since"; fi
   done < "$AIDE_SIDS_FILE"
 }
 
@@ -219,6 +227,15 @@ file_role() {
   echo "${r:-interactive}"
 }
 
+# file_role_prior FILE -> the role a top-level file would have WITHOUT its aide-sids line (text rule, else interactive):
+# what rows of an aide-lane sid stamped before its `since=` keep (a plain session resumed as a lane never charges its earlier turns to the lane).
+file_role_prior() {
+  local text r
+  text="$(head -n 60 -- "$1" 2>/dev/null | jq -r "$JQ_FIRST_TEXT" 2>/dev/null | head -n1)"
+  r="$(role_from_text "$text" top)"
+  echo "${r:-interactive}"
+}
+
 # gather_raw SINCE -> this host's own raw (non-deduped) records as NDJSON,
 # tagged host=$LOCAL_HOST. The mtime prefilter only skips whole files that
 # could not possibly hold anything in range; the real per-record window
@@ -229,11 +246,15 @@ gather_raw() {
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
   load_seats
   load_aide_sids
-  local f role
+  local f role sidf since prior
   while IFS= read -r -d '' f; do
     role="$(file_role "$f")"
-    jq -c --arg host "$LOCAL_HOST" --arg role "$role" \
-      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role:\$role}" -- "$f" 2>/dev/null
+    since=0; prior="$role"; sidf="$(basename -- "$f" .jsonl)"
+    if [[ "$role" == seat:aide:* ]] && [[ "$f" != */subagents/* ]] && [ "${SINCE_BY_SID[$sidf]:-0}" -gt 0 ] 2>/dev/null; then
+      since="${SINCE_BY_SID[$sidf]}"; prior="$(file_role_prior "$f")"
+    fi
+    jq -c --arg host "$LOCAL_HOST" --arg role "$role" --arg prior "$prior" --argjson since "$since" \
+      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role: (if \$since > 0 and ((.ts | sub(\"\\\\.[0-9]+\"; \"\") | try fromdateiso8601 catch \$since) < \$since) then \$prior else \$role end)}" -- "$f" 2>/dev/null
   done < <(find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null)
 }
 
@@ -497,6 +518,7 @@ summary="TOKENS yesterday ${yesterday_date}: ${y_weighted} ${y_status} · today 
 # (older row without per_role) is "n/a" and never alarms. ----------------
 t_perrole="$(get_field "$today_date" 12 "")"
 bs_alarm=""
+lane_alarms=""; lanes_json="{}"
 bs_json_share="null"
 t_excl=0
 t_denom="${t_weighted:-0}"
@@ -512,6 +534,16 @@ if [ -n "$t_perrole" ] && [ "$t_denom" -gt 0 ] 2>/dev/null; then
   if [ "$bs_pct" -lt 50 ] && [ "$t_denom" -gt 50000000 ]; then
     bs_alarm="ALARM build_share ${bs_pct}% < 50% — building is ${BUILD_ROLES_LABEL} (ctl/rb/r7/aide); the rest is management"
   fi
+  # aide lanes: one entry per lane seen today (role seat:aide = main, seat:aide:<lane>), share of the same denominator as build_share
+  lane_tsv="$(awk -F';' -v den="$t_denom" '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="seat:aide") print "main\t" a[2] "\t" int(a[2]*100/den); else if(a[1] ~ /^seat:aide:/){l=a[1]; sub(/^seat:aide:/,"",l); print l "\t" a[2] "\t" int(a[2]*100/den)}}}' <<<"$t_perrole" | sort | awk -F'\t' '$1=="main"{m=$0; next} {r=r $0 "\n"} END{if(m!="") print m; printf "%s", r}')"
+  if [ -n "$lane_tsv" ]; then
+    lane_x="${AIDE_LANE_ALARM_PCT:-50}"; [[ "$lane_x" =~ ^[0-9]{1,3}$ ]] || lane_x=50
+    summary="$summary · aide $(awk -F'\t' '{printf "%s%s=%s%%", (NR>1?" ":""), $1, $3}' <<<"$lane_tsv")"
+    while IFS=$'\t' read -r l_name l_tok l_pct; do
+      [ "$l_pct" -gt "$lane_x" ] && lane_alarms="${lane_alarms}${lane_alarms:+$'\n'}ALARM aide_lane ${l_name} ${l_pct}% > ${lane_x}% — one lane is eating the day"
+    done <<<"$lane_tsv"
+    lanes_json="$(jq -Rn '[inputs | split("\t") | {(.[0]): {tokens: (.[1]|tonumber), pct: (.[2]|tonumber)}}] | add' <<<"$lane_tsv")"
+  fi
 else
   t_build=0
   t_excl=0
@@ -520,15 +552,15 @@ else
 fi
 
 tmp_summary="$STATE_DIR/.today-summary.txt.tmp.$$"
-{ printf '%s\n' "$summary"; [ -n "$bs_alarm" ] && printf '%s\n' "$bs_alarm"; } > "$tmp_summary"
+{ printf '%s\n' "$summary"; [ -n "$bs_alarm" ] && printf '%s\n' "$bs_alarm"; [ -n "$lane_alarms" ] && printf '%s\n' "$lane_alarms"; true; } > "$tmp_summary"
 mv -- "$tmp_summary" "$SUMMARY_TXT"
 
 tmp_bs="$STATE_DIR/.build-share.json.tmp.$$"
 jq -n --arg date "$today_date" --argjson share "$bs_json_share" \
       --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" --arg roles "$BUILD_ROLES_RE" \
-      --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" '
+      --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" --argjson lanes "${lanes_json:-{\}}" '
   {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total, build_roles_re: $roles,
-   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles,
+   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles, aide_lanes: $lanes,
    per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
   > "$tmp_bs" && mv -- "$tmp_bs" "$BUILD_SHARE_JSON"
 
