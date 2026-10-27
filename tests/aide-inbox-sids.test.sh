@@ -16,7 +16,7 @@ for ev in SessionStart UserPromptSubmit; do
   sid="test-sid-$ev-12345678"
   j="{\"session_id\":\"$sid\",\"hook_event_name\":\"$ev\"}"
   run "$ev" "$j" >/dev/null; run "$ev" "$j" >/dev/null
-  n="$(grep -cxF -- "$sid" "$d/aide-sids" 2>/dev/null)"
+  n="$(awk -v s="$sid" '$1==s' "$d/aide-sids" 2>/dev/null | wc -l)"
   [ "$n" = 1 ] && ok "\$1=$ev: sid recorded exactly once" || bad "\$1=$ev: sid count $n (want 1)"
 done
 [ "$(wc -l <"$d/aide-sids")" = 2 ] && ok "two distinct sids, two lines" || bad "aide-sids line count"

@@ -11,6 +11,7 @@ aide_card() {  # <= 8 lines; every source optional; never fails
   [ "$(timeout 5 systemctl --user is-enabled seat-tick@ctl.timer 2>/dev/null)" = enabled ] && tmr=enabled
   lt=$(timeout 5 jq -r '.last_tick.epoch // empty' "$fd/ctl-tick.json" 2>/dev/null); [ -n "$lt" ] && lt=$(date -d "@$lt" '+%-I:%M %p' 2>/dev/null); [ -n "$lt" ] || lt=none
   echo "=== AIDE CARD (carbon, this session is Joe's channel) ==="
+  [ "${WM_AIDE_LANE:-main}" = main ] || echo "lane: $WM_AIDE_LANE"   # aide-lanes: non-main lanes only, main's card stays byte-for-byte
   echo "role: aide · controller: unit seat-tick@ctl (timer: $tmr, last tick: $lt) · approvals: ~/.claude/state/approvals.log (writer: approve.sh \"<quote>\" \"<re>\")"
   last=$(timeout 5 "$HOME/.local/bin/approve.sh" --last 2 2>/dev/null | cut -c1-200)
   if [ -n "$last" ] && [ "$last" != none ]; then

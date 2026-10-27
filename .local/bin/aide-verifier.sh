@@ -402,6 +402,7 @@ cmd_launch() {
       breaker_scan
       if [ "$B_TRIP" = 1 ]; then
         seat="${WM_SEAT:-rb}"
+        [ "$seat" = aide ] && [ -n "${WM_AIDE_LANE:-}" ] && [ "$WM_AIDE_LANE" != main ] && seat="aide:$WM_AIDE_LANE"   # a lane-launched verifier bells its lane (aide-lanes 10-27)
         local btxt="aide-verifier: 429 breaker TRIPPED (trip id $B_KEY = mtime of the newest result.json under $ROOT with api_error_status 429, newer than $TOKEN_FILE, no later non-429 result): verifier launches refuse (exit 10) until the token file is re-touched, a non-429 result lands, or the half-open probe (429 older than 30 min, 0 active) passes"
         bell_once r7 "$B_KEY" "$btxt"
         [ "$seat" = r7 ] || bell_once "$seat" "$B_KEY" "$btxt"
@@ -915,6 +916,10 @@ F
   [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 2 ]; chk "(3) the same trip id again: exit 10 and NO second bell" $?
   rm -f "$T/bell.log"; out="$(WM_SEAT=aide AIDE_VERIFIER_DIR="$T/avb1" L v3e1c "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q '^aide-verifier|aide aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) a different launching seat (WM_SEAT=aide) is belled once for the same trip id (r7 already was)" $?
+  rm -f "$T/bell.log"; out="$(WM_SEAT=aide WM_AIDE_LANE=build AIDE_VERIFIER_DIR="$T/avb1" L v3e1d "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q '^aide-verifier|aide:build aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) lane launch (WM_SEAT=aide WM_AIDE_LANE=build) bells aide:build once, never main aide" $?
+  rm -f "$T/bell.log" "$BS"; out="$(WM_SEAT=aide WM_AIDE_LANE=main AIDE_VERIFIER_DIR="$T/avb1" L v3e1e "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 2 ] && ! grep -q 'aide:main' "$T/bell.log" && grep -q '^aide-verifier|aide aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) WM_AIDE_LANE=main bells aide exactly as before" $?
   touch "$TK"   # the token is re-minted AFTER the 429
   out="$(AIDE_VERIFIER_DIR="$T/avb1" L v3e2 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(7e) token file re-touched after the 429 -> launches" $?
   touch -d '2 hours ago' "$TK"; r429 "$T/avb2" old429 '3 minutes ago'; rok "$T/avb2" newer-ok '1 minute ago'
