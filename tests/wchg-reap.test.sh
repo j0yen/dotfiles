@@ -61,7 +61,7 @@ has_root() { python3 -c 'import json,sys;sys.exit(0 if sys.argv[2] in json.load(
 has_state() { [ -d "$XDG_CACHE_HOME/wchg/$(printf '%s' "$1" | sha1sum | cut -c1-16)" ]; }
 H=3600
 
-bash -n "$reap" 2>/dev/null || python3 -m py_compile "$reap" || bad "syntax"
+python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$reap" || bad "syntax"
 [ -x "$reap" ] && pass "reap executable" || bad "reap not executable"
 
 # 1. removal rules + fresh keep + unowned survive
