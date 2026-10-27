@@ -233,6 +233,61 @@ echo MERGED >"$T/state-40"; tick
 [ "$(n '^rb-merge v1 41')" = 1 ] && pass "Depends-on all merged: merge proceeds" || bad "depends merged"
 cleanup
 
+# ---- vguard: a load-guard skip is retryable, never stuck, never merged
+fin() {   # fin <unit> <text>: write the finished file of a unit dir
+  printf '%s\n' "$2" >"$T/vdir/$1/finished"
+}
+GSFIN='2026-10-27T01:00:00-07:00 GUARD-SKIP rc=12 d-v1 tmo'
+# (1) GUARD-SKIP newest unit, nothing active -> relaunch as attempt 2 + one guardskip observe row
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+row l1 300 coder:hand-pr-land-driver observe "HPLD LAUNCH $REPO#41 k=launch:$REPO#41:${H1:0:12}:1 name=hpl-synthorg-41-aaaaaaa-1"
+unitdir hpl-synthorg-41-aaaaaaa-1 41 $H1 g1; fin hpl-synthorg-41-aaaaaaa-1 "$GSFIN"
+tick
+L=$(grep '^verifier launch' "$T/calls.log")
+[ "$(n '^verifier launch')" = 1 ] && [[ "$L" == *hpl-syn-41-aaaaaaa-2* ]] && grep -q "HPLD GUARD-SKIP .*k=guardskip:hpl-synthorg-41-aaaaaaa-1" "$T/records.log" && pass "vguard: GUARD-SKIP newest unit -> relaunch as attempt 2 + one guardskip observe row" || bad "vguard relaunch ($L; $(cat "$T/records.log"))"
+cleanup
+# (2) GUARD-SKIP + a running unit -> no launch, no row
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+unitdir hpl-synthorg-41-aaaaaaa-1 41 $H1 g1; fin hpl-synthorg-41-aaaaaaa-1 "$GSFIN"
+unitdir hpl-synthorg-41-aaaaaaa-2 41 $H1 g1; touch "$T/active/aide-verifier-hpl-synthorg-41-aaaaaaa-2.service"
+tick
+[ "$(n '^verifier launch')" = 0 ] && [ ! -s "$T/records.log" ] && pass "vguard: GUARD-SKIP + a running unit -> no launch, no row" || bad "vguard running ($(cat "$T/records.log"))"
+cleanup
+# (3) at MAX_LAUNCHES after guard skips -> ring-stuck keyed guardskip-cap, text says LOAD
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+for i in 1 2; do row l$i 300 coder:hand-pr-land-driver observe "HPLD LAUNCH $REPO#41 k=launch:$REPO#41:${H1:0:12}:$i name=x$i"; unitdir hpl-synthorg-41-aaaaaaa-$i 41 $H1 g1; fin hpl-synthorg-41-aaaaaaa-$i "$GSFIN"; done
+tick; tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(grep -c 'HPLD RING-STUCK .*k=guardskip-cap:' "$T/records.log")" = 1 ] && grep -q 'cause is host LOAD, not code' "$T/records.log" && [ "$(n '^seat-ask r7')" = 1 ] && ! grep -q 'k=stuck:' "$T/records.log" && pass "vguard: at MAX_LAUNCHES -> one ring-stuck keyed guardskip-cap, text says LOAD, not code" || bad "vguard cap ($(cat "$T/records.log"))"
+cleanup
+# (4) launch rc 13 is transient: no row, attempt count unchanged, retried every tick
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+cat >"$T/bin/aide-verifier.sh" <<'E'
+#!/usr/bin/env bash
+# supports --timeout
+echo "verifier $*" >>"$T/calls.log"; echo "aide-verifier: load 9.5 + 0 running >= MAX_LOAD 5" >&2; exit 13
+E
+chmod +x "$T/bin/aide-verifier.sh"; tick; tick; tick; tick
+[ "$(n '^verifier launch')" = 4 ] && [ ! -s "$T/records.log" ] && [ "$(n '^seat-ask')" = 0 ] && grep -q 'LAUNCH DEFERRED.*rc=13' "$T/out" && pass "vguard: launch rc 13 -> transient, no row, no ring, retried each tick" || bad "vguard rc13 ($(cat "$T/records.log"))"
+# the attempt count is unchanged: the very next launch is still attempt 1
+grep '^verifier launch' "$T/calls.log" | grep -q 'hpl-syn-41-aaaaaaa-1 ' && ! grep '^verifier launch' "$T/calls.log" | grep -q 'aaaaaaa-2' && pass "vguard: rc 13 -> attempt count unchanged (every try is attempt 1)" || bad "vguard rc13 attempts ($(grep '^verifier launch' "$T/calls.log" | head -2))"
+cleanup
+# (5) a retracted verdict (what CORRECT-RETRACT ..., gates = verdict id) is void: no merge, re-verify
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict "MERGE-OK $REPO#41 COMMIT=$H1 agent=verifier:x" g1
+row c1 400 aide verdict "CORRECT-RETRACT v1: GUARD-SKIP 1 test(s) SKIPPED by the load guard (first: t.py:1)" v1; pr $REPO 41 $H1
+unitdir u1 41 $H1 g1; fin u1 "$GSFIN"; tick
+[ "$(n '^rb-merge')" = 0 ] && pass "vguard: retracted verdict (CORRECT-RETRACT, gates=verdict) -> no merge" || bad "vguard retracted merged"
+cleanup
+# (6) belt and braces: an UNretracted MERGE-OK whose head's newest finished unit is GUARD-SKIP is never merged
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict "MERGE-OK $REPO#41 COMMIT=$H1 agent=verifier:x" g1; pr $REPO 41 $H1
+unitdir u1 41 $H1 g1; fin u1 "$GSFIN"; tick
+[ "$(n '^rb-merge')" = 0 ] && pass "vguard: newest finished unit GUARD-SKIP -> driver refuses to merge even without a retraction row" || bad "vguard belt merged"
+cleanup
+# (7) RETRACT-FAILED (has FAIL) -> ring-stuck, no relaunch
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
+unitdir u1 41 $H1 g1; fin u1 '2026-10-27T01:00:00-07:00 GUARD-SKIP rc=12 RETRACT-FAILED d-v1 tmo'; tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(grep -c 'HPLD RING-STUCK' "$T/records.log")" = 1 ] && pass "vguard: RETRACT-FAILED finished -> ring-stuck, no relaunch" || bad "vguard retract-failed ($(cat "$T/records.log"))"
+cleanup
+
 bash "$DRV" --selftest >/dev/null && pass "--selftest" || bad "--selftest"
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit "$fail"

@@ -86,8 +86,9 @@ def g3_missing(tokens, atts, commit):
     return [t for t in tokens if not (t.endswith(" EXIT=0") and any(t[:-7] in (a["trailer"].get("CMD") or "") for a in atts))], None
 F
 chmod +x "$vc"/bin/*
+printf '0.10 0.10 0.10 1/1 1\n' >"$vc/loadavg"
 vl() { local nm="$1"; shift; HOME="$vc/home" FAKE_DIR="$vc" AIDE_VERIFIER_DIR="$vc/av" AIDE_VERIFIER_ROOM_CMD="$vc/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$vc/bin/fake-sdrun" \
-  AIDE_VERIFIER_SYSTEMCTL="$vc/bin/fake-systemctl" AIDE_VERIFIER_BELL="$vc/bin/fake-bell" AIDE_VERIFIER_WM_DECIDE="$vc/bin/fake-wmd" AIDE_VERIFIER_GATE_ROOT="$vc/gate" PATH="$vc/bin:$PATH" AIDE_VERIFIER_CGROUP_FILE="$vc/cgroup-absent" AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_SLOT_CEIL=2 AIDE_VERIFIER_POLL_S=1 \
+  AIDE_VERIFIER_SYSTEMCTL="$vc/bin/fake-systemctl" AIDE_VERIFIER_BELL="$vc/bin/fake-bell" AIDE_VERIFIER_WM_DECIDE="$vc/bin/fake-wmd" AIDE_VERIFIER_GATE_ROOT="$vc/gate" PATH="$vc/bin:$PATH" AIDE_VERIFIER_CGROUP_FILE="$vc/cgroup-absent" AIDE_VERIFIER_LOADAVG_FILE="${AIDE_VERIFIER_LOADAVG_FILE:-$vc/loadavg}" AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_SLOT_CEIL=2 AIDE_VERIFIER_POLL_S=1 \
   bash "$script" launch "$nm" --repo j0yen/dotfiles --pr 7 --gated "$VG" --token 'tests/*.test.sh EXIT=0' --suite 'bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"' \
   --head 0123456789abcdef0123456789abcdef01234567 "$@" 2>&1; }
 # stub self-check: the state filter is exact-token (activating is not deactivating)
@@ -110,6 +111,123 @@ printf 'rb-verifier-a.service active\nr7-verifier-f1.service failed\naide-verifi
 out=$(vl fail1); rc=$?
 [ "$rc" = 0 ] && [ "$(wc -l <"$vc/sdrun.log")" = 1 ] && [ "$(cat "$vc/room.log")" = 2048 ] \
   && pass "vcap4 (2) 1 active + 2 failed at ceiling 2 -> launches, room asked 2048 MB" || bad "vcap4 (2) failed units counted (rc=$rc room=$(cat "$vc/room.log" 2>/dev/null): $out)"
+
+# ---- vguard: a verdict whose log shows tests SKIPPED by the load guard is retracted before merge-gate (finish rc 12); launch refuses a loaded host (rc 13) ----
+fx="$here/fixtures/vguard-443-tail.log"
+fg=$th/fg; mkdir -p "$fg/bin" "$fg/av" "$fg/home" "$fg/gate/gen" "$fg/gate/wm_decide"
+printf '{"repo_tokens": {}}\n' >"$fg/gate/gen/merge-gate.json"
+cat >"$fg/bin/fake-wmd" <<'F'
+#!/bin/bash
+echo "$*" >>"$FAKE_DIR/wmd.log"
+case "$1" in
+  list) cat "$FAKE_DIR/rows.json" ;;
+  record) [ -e "$FAKE_DIR/record.fail" ] && { echo "refused: stub" >&2; exit 2; }; echo d-20261027-000000-aide-ffff ;;
+  merge-gate) echo "PASS stub gate"; exit 0 ;;
+esac
+F
+printf '#!/bin/bash\necho "$*" >>"$FAKE_DIR/bell.log"\n' >"$fg/bin/fake-bell"; chmod +x "$fg/bin"/*
+GV=d-20261027-041958-aide-c01a; GG=d-20261027-040000-aide-0001
+fin() {  # fin <name> <logfile> [verdict what]: runs finish on a fresh unit dir whose result.json names $GV and the log; stdout+stderr in $fg/out, rc returned
+  local nm=$1 lg=$2 vw="${3:-MERGE-OK j0yen/synthorg#443 COMMIT=c01a5f98efd103c833032b11a3b99346b2d9e9fe agent=verifier:aide-verifier-$1}"
+  mkdir -p "$fg/av/$nm"; printf 'repo=j0yen/synthorg\npr=443\nhead=c01a5f98efd103c833032b11a3b99346b2d9e9fe\ngated=%s\nagent=aide\ntimeout_s=2400\n' "$GG" >"$fg/av/$nm/meta"
+  jq -n --arg r "head ok
+LOG: $lg
+VERDICT: $GV" '{is_error:false,result:$r}' >"$fg/av/$nm/result.json"
+  jq -n --arg id "$GV" --arg w "$vw" '[{id:$id,agent:"aide",kind:"verdict",what:$w}]' >"$fg/rows.json"
+  : >"$fg/wmd.log"; : >"$fg/bell.log"; rm -f "$fg/record.fail"; [ -z "${FAILREC:-}" ] || touch "$fg/record.fail"
+  HOME="$fg/home" FAKE_DIR="$fg" AIDE_VERIFIER_DIR="$fg/av" AIDE_VERIFIER_WM_DECIDE="$fg/bin/fake-wmd" AIDE_VERIFIER_BELL="$fg/bin/fake-bell" AIDE_VERIFIER_GATE_ROOT="$fg/gate" \
+    bash "$script" finish "$nm" >"$fg/out" 2>&1
+}
+# (a) the #443 golden-skip line DEEP above the tail (40 neutral lines between it and the tail)
+{ grep -F 'LOAD_GUARD=1:' "$fx"; for i in $(seq 40); do echo "tests/test_neutral_$i.py ......  [ $i%]"; done; grep -vF 'LOAD_GUARD=1:' "$fx"; } >"$fg/deep.log"
+fin deep "$fg/deep.log"; rc=$?
+[ "$rc" = 12 ] && grep -q ' GUARD-SKIP rc=12 ' "$fg/av/deep/finished" && ! grep -q FAIL "$fg/av/deep/finished" \
+  && grep -q '^record .*--kind verdict .*--gates '"$GV"' .*CORRECT-RETRACT '"$GV"': GUARD-SKIP 1 test(s) SKIPPED by the load guard (first: tests/test_golden.py:163)' "$fg/wmd.log" \
+  && grep -q 'EVENT GUARD-SKIP j0yen/synthorg#443 head c01a5f98efd103c833032b11a3b99346b2d9e9fe row '"$GV"' .*MERGE-OK RETRACTED; re-verify when load is below core count' "$fg/bell.log" \
+  && ! grep -q '^merge-gate' "$fg/wmd.log" \
+  && pass "vguard (a) golden skip far above the tail -> rc 12, finished GUARD-SKIP without FAIL, CORRECT-RETRACT row, GUARD-SKIP bell, merge-gate not called" || { bad "vguard (a) (rc=$rc finished=$(cat "$fg/av/deep/finished" 2>/dev/null))"; cat "$fg/out" "$fg/wmd.log" | head -n 8; }
+# (b) the same log without the line -> merge-gate runs, rc 0
+grep -vF 'LOAD_GUARD=1:' "$fx" >"$fg/clean.log"
+fin clean "$fg/clean.log"; rc=$?
+[ "$rc" = 0 ] && grep -q '^merge-gate '"$GV" "$fg/wmd.log" && ! grep -q GUARD-SKIP "$fg/bell.log" && pass "vguard (b) same log without the line -> merge-gate called, rc 0" || { bad "vguard (b) (rc=$rc)"; head -n 5 "$fg/out"; }
+# (c) SKIPPED [2] -> K=2 in the retraction and the bell
+printf 'SKIPPED [2] tests/wtp_support.py:43: SYNTHORG_LOAD_GUARD=1: 1-minute load average 12.0 exceeds core count 8\n' >"$fg/k2.log"
+fin k2 "$fg/k2.log"; rc=$?
+[ "$rc" = 12 ] && grep -q 'GUARD-SKIP 2 test(s) SKIPPED by the load guard (first: tests/wtp_support.py:43)' "$fg/wmd.log" && grep -q ': 2 test(s) skipped by the load guard' "$fg/bell.log" && pass "vguard (c) SKIPPED [2] -> K=2 in the row and the bell" || bad "vguard (c) (rc=$rc)"
+# (d) an ANSI-coloured skip line (pytest --color=yes) -> rc 12;  (d2) CR-led and CRLF lines
+printf '\033[33mSKIPPED\033[0m [1] tests/a.py:5: SYNTHORG_LOAD_GUARD=1: 1-minute load average 9.00 exceeds core count 8\n' >"$fg/ansi.log"
+fin ansi "$fg/ansi.log"; rc=$?; [ "$rc" = 12 ] && pass "vguard (d) ANSI-coloured skip line -> rc 12" || bad "vguard (d) (rc=$rc)"
+printf '\rSKIPPED [1] tests/a.py:5: SYNTHORG_LOAD_GUARD=1: 1-minute load average 9.00 exceeds core count 8\r\n' >"$fg/cr.log"
+fin cr "$fg/cr.log"; rc=$?; [ "$rc" = 12 ] && pass "vguard (d2) CR-led / CRLF skip line -> rc 12" || bad "vguard (d2) (rc=$rc)"
+# (e) `set SYNTHORG_LOAD_GUARD=1 to run it` is a different skip reason: not a guard skip
+printf 'SKIPPED [1] tests/test_cli_backend.py:354: real-claude probe: set SYNTHORG_LOAD_GUARD=1 to run it\n' >"$fg/excl.log"
+fin excl "$fg/excl.log"; rc=$?
+[ "$rc" = 0 ] && grep -q '^merge-gate ' "$fg/wmd.log" && pass "vguard (e) 'set SYNTHORG_LOAD_GUARD=1 to run it' is not a guard skip" || bad "vguard (e) (rc=$rc)"
+# (f) unitemized `3 skipped` summary with no SKIPPED lines: one WARN, merge-gate still called
+printf '10 passed, 3 skipped in 1.20s\n' >"$fg/unit.log"
+fin unit "$fg/unit.log"; rc=$?
+[ "$rc" = 0 ] && grep -q 'WARN skips not itemized (suite lacks -rs)' "$fg/out" && grep -q '^merge-gate ' "$fg/wmd.log" && pass "vguard (f) '3 skipped' with no SKIPPED lines -> WARN, merge-gate called" || bad "vguard (f) (rc=$rc)"
+# (h) amendment 4: only a GREEN verdict is retracted; a red one goes to merge-gate
+fin red "$fg/deep.log" "REFUSE j0yen/synthorg#443 tests red"; rc=$?
+[ "$rc" = 0 ] && grep -q '^merge-gate ' "$fg/wmd.log" && ! grep -q 'CORRECT-RETRACT' "$fg/wmd.log" && pass "vguard (h) a non-green verdict row goes to merge-gate, not the guard path" || bad "vguard (h) (rc=$rc)"
+# (i) amendment 5: the retraction row failing -> finished carries FAIL (driver rings stuck), bell says RETRACT FAILED, rc 12, merge-gate not called
+FAILREC=1 fin rfail "$fg/deep.log"; rc=$?
+[ "$rc" = 12 ] && grep -q ' GUARD-SKIP rc=12 RETRACT-FAILED ' "$fg/av/rfail/finished" && grep -q FAIL "$fg/av/rfail/finished" && grep -q 'RETRACT FAILED' "$fg/bell.log" && ! grep -q '^merge-gate' "$fg/wmd.log" && pass "vguard (i) retraction write fails -> finished RETRACT-FAILED (has FAIL), bell RETRACT FAILED, rc 12" || bad "vguard (i) (rc=$rc: $(cat "$fg/av/rfail/finished" 2>/dev/null))"
+# (j) the retraction is written BEFORE the finished file and before the bell
+python3 - "$script" <<'P' && pass "vguard (j) order in the script: record row, then bell, then finished" || bad "vguard (j) write order"
+import re, sys
+s = open(sys.argv[1]).read()
+i = s.index("CORRECT-RETRACT $verdict"); j = s.index('EVENT GUARD-SKIP', i); k = s.index('GUARD-SKIP rc=12 $verdict', j)
+sys.exit(0 if i < j < k else 1)
+P
+# (k) the scan reads the log only when readable; a missing log keeps the old path
+fin nolog "$fg/does-not-exist.log"; rc=$?
+[ "$rc" = 0 ] && grep -q '^merge-gate ' "$fg/wmd.log" && pass "vguard (k) a missing log keeps today's path (merge-gate decides)" || bad "vguard (k) (rc=$rc)"
+# (l) --guard-skip-re prints the built-in default when the live gen has no key, the gen value when it has one, exit 2 + built-in when grep -E rejects it
+def=$(AIDE_VERIFIER_GATE_ROOT="$fg/gate" bash "$script" --guard-skip-re 2>/dev/null)
+[ "$def" = '^SKIPPED \[([0-9]+)\] ([^ ]+): .*([A-Z_]*LOAD_GUARD=1: |load average [0-9.]+ exceeds core count)' ] && pass "vguard (l) --guard-skip-re prints the built-in default without a live key" || bad "vguard (l) default: $def"
+printf '{"repo_tokens": {}, "load_guard_skip_re": "^SKIPPED .*LOAD_GUARD=1: "}\n' >"$fg/gate/gen/merge-gate.json"
+[ "$(AIDE_VERIFIER_GATE_ROOT="$fg/gate" bash "$script" --guard-skip-re 2>/dev/null)" = '^SKIPPED .*LOAD_GUARD=1: ' ] && pass "vguard (l) a live load_guard_skip_re wins" || bad "vguard (l) live key"
+printf '{"repo_tokens": {}, "load_guard_skip_re": "^SKIPPED (?:\\\\[1\\\\]) \\\\d+"}\n' >"$fg/gate/gen/merge-gate.json"
+o=$(AIDE_VERIFIER_GATE_ROOT="$fg/gate" bash "$script" --guard-skip-re 2>/dev/null); rc=$?
+[ "$rc" = 2 ] && [ "$o" = "$def" ] && pass "vguard (l) a Python-only regex (?: / \\d -> exit 2, built-in printed" || bad "vguard (l) bad regex (rc=$rc: $o)"
+printf '{"repo_tokens": {}, "load_guard_skip_re": "(?:x"}\n' >"$fg/gate/gen/merge-gate.json"
+fin badre2 "$fg/deep.log"; rc=$?
+[ "$rc" = 12 ] && grep -q 'WARN live load_guard_skip_re' "$fg/out" && pass "vguard (l) finish with a rejected live regex falls back to the built-in default and WARNs (the skip is still caught)" || bad "vguard (l) finish fallback (rc=$rc)"
+printf '{"repo_tokens": {}}\n' >"$fg/gate/gen/merge-gate.json"
+
+# ---- vguard launch: load gate (exit 13 / queue / exit 9 / amendment 1 term / default nproc-3 / wait bound) and PYTEST_ADDOPTS -rs ----
+printf '' >"$vc/units"; rm -f "$vc/sdrun.log"; printf '9.50 8.00 7.00 3/900 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld1); rc=$?
+[ "$rc" = 13 ] && [[ "$out" == *"load 9.50"*">= MAX_LOAD 8"* ]] && [ ! -e "$vc/sdrun.log" ] && pass "vguard (g) loadavg 9.5, MAX 8 -> exit 13, nothing started" || bad "vguard (g) exit 13 (rc=$rc: $out)"
+( sleep 2; printf '1.00 1.00 1.00 1/9 1\n' >"$vc/lo" ) &
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld2 --queue); rc=$?; wait
+[ "$rc" = 0 ] && [ "$(wc -l <"$vc/sdrun.log")" = 1 ] && pass "vguard (g) --queue waits, load rewritten to 1.0 -> launches" || bad "vguard (g) queue (rc=$rc: $out)"
+rm -f "$vc/sdrun.log"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=0 vl ld3); rc=$?
+[ "$rc" = 9 ] && [ ! -e "$vc/sdrun.log" ] && pass "vguard (g) AIDE_VERIFIER_MAX_LOAD=0 -> exit 9" || bad "vguard (g) MAX_LOAD=0 (rc=$rc: $out)"
+# amendment 1: load1 + 2 x running verifier units < MAX
+printf 'rb-verifier-a.service active\n' >"$vc/units"; printf '6.50 1 1 1/1 1\n' >"$vc/lo"; rm -f "$vc/sdrun.log"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld4); rc=$?
+[ "$rc" = 13 ] && [[ "$out" == *"2 x 1 running"* ]] && pass "vguard (g) load 6.5 + 2 x 1 running unit >= 8 -> exit 13" || bad "vguard (g) unit term (rc=$rc: $out)"
+printf '5.50 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld5); rc=$?
+[ "$rc" = 0 ] && pass "vguard (g) load 5.5 + 2 x 1 running unit < 8 -> launches" || bad "vguard (g) unit term pass (rc=$rc: $out)"
+# default MAX_LOAD = nproc - 3 (min 1): a fake nproc of 6 -> 3, of 2 -> 1
+printf '' >"$vc/units"; printf '#!/bin/bash\necho 6\n' >"$vc/bin/nproc"; chmod +x "$vc/bin/nproc"; printf '3.20 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld6); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 3"* ]] && pass "vguard (g) default MAX_LOAD = nproc - 3 (6 -> 3)" || bad "vguard (g) default 3 (rc=$rc: $out)"
+printf '#!/bin/bash\necho 2\n' >"$vc/bin/nproc"; printf '1.20 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld7); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 1"* ]] && pass "vguard (g) default MAX_LOAD floors at 1 (nproc 2 -> 1)" || bad "vguard (g) default floor (rc=$rc: $out)"
+rm -f "$vc/bin/nproc"
+# the load wait is bounded by AIDE_VERIFIER_LOAD_WAIT_S -> exit 6
+printf '9.50 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 AIDE_VERIFIER_LOAD_WAIT_S=2 vl ld8 --queue); rc=$?
+[ "$rc" = 6 ] && [[ "$out" == *"load wait exceeded 2s"* ]] && pass "vguard (g) --queue load wait bounded by AIDE_VERIFIER_LOAD_WAIT_S -> exit 6" || bad "vguard (g) load wait bound (rc=$rc: $out)"
+# amendment 7: the unit's environment carries -rs (and keeps a caller's PYTEST_ADDOPTS)
+out=$(vl pt1); rc=$?
+grep -qxF 'export PYTEST_ADDOPTS=-rs' "$vc/av/pt1/launch.sh" && pass "vguard (m) the unit env (launch.sh) carries PYTEST_ADDOPTS=-rs" || bad "vguard (m) PYTEST_ADDOPTS (rc=$rc: $out; $(grep PYTEST "$vc/av/pt1/launch.sh" 2>/dev/null))"
+out=$(PYTEST_ADDOPTS="-x" vl pt2); rc=$?
+grep -qxF 'export PYTEST_ADDOPTS=-x\ -rs' "$vc/av/pt2/launch.sh" && pass "vguard (m) a caller's PYTEST_ADDOPTS is kept: '-x -rs'" || bad "vguard (m) PYTEST_ADDOPTS append"
 
 grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$script" && pass "script carries the anchored attribution regex" || bad "anchored attribution regex missing"
 grep -q 'merge-gate' "$script" && pass "script calls merge-gate" || bad "merge-gate missing"

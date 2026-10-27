@@ -35,19 +35,30 @@
 #       4 ROOM     need = max(PEAK_MB, PEAK_MB x (active+1) - SUM_cur) MB, PEAK_MB = 1024 (the per-verifier admission price), SUM_cur = sum of MemoryCurrent of the active
 #         units (their current RSS is already out of MemAvailable, their remaining ramp is not); `carbon-room.sh <need> --json` must exit 0: else exit 3 without --queue, else wait.
 #         MemoryMax=2G per unit stays the kill ceiling, not the price. Then systemd-run (lock fd closed for the unit).
+#       5 LOAD     load1 (first field of /proc/loadavg; AIDE_VERIFIER_LOADAVG_FILE overrides, tests) + 2 x active (aide|rb|r7)-verifier-* units (own excluded) must be
+#         < AIDE_VERIFIER_MAX_LOAD (default nproc - 3, minimum 1; an integer >= 1 else exit 9): exit 13 without --queue, else wait up to AIDE_VERIFIER_LOAD_WAIT_S
+#         (default = QUEUE_MAX_S) then exit 6. Evaluated under the same lock as the launch. A loaded host makes pytest skip its load-guarded tests (SYNTHORG_LOAD_GUARD=1), see finish.
+#         cmd_launch also exports PYTEST_ADDOPTS=<caller's> -rs from the unit's launch.sh so every skip is itemized as a `SKIPPED [n] file:line: reason` line.
 #       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
 #       must `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than SLOT_CEIL units are active or a unit's MemoryPeak tops PEAK_MB.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
-#       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
+#       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else, BEFORE merge-gate (GS): when the verdict row is
+#       green (its what starts MERGE-OK or CONFIRM) and the log (ANSI and CR stripped, WHOLE file) has pytest `SKIPPED [n] file:line: reason` lines matching the load-guard regex
+#       (`--guard-skip-re` prints it; the live swarm-decide gen/merge-gate.json key load_guard_skip_re wins, else the built-in default; one that grep -E rejects = built-in + WARN),
+#       the verdict is RETRACTED: a `CORRECT-RETRACT <verdict>: GUARD-SKIP K test(s) ...` kind=verdict --model deterministic row with --gates <verdict> (the existing voiding
+#       rule of hand-pr-land-driver (c): a gates==<verdict> row whose what starts CORRECT; wm-decide allows --gates on kind verdict only) is written FIRST, then ctl is belled
+#       (`EVENT GUARD-SKIP`), then finished = `<iso> GUARD-SKIP rc=12 <verdict> <tmo>` (no FAIL in it: the driver relaunches), exit 12. merge-gate is not called. If the row
+#       write fails, finished = `... GUARD-SKIP rc=12 RETRACT-FAILED ...` (contains FAIL on purpose: the driver rings stuck) and the bell says RETRACT FAILED. A log that is missing
+#       or unreadable keeps the old path (merge-gate G3 needs it anyway). A summary `N skipped` with no `SKIPPED [` line at all = one stderr WARN `skips not itemized`, then the old path.
 #       `wm-decide merge-gate <verdict> --pr N --repo O/R`: PASS line -> gate.txt + GATE-PASS row + bell to ctl; anything else -> RETRACT correction row + bell, exit 5.
 #       A second finish is a no-op (prints the first outcome) unless --again, so a bell is never doubled. Row-record failure on PASS: bell still sent, exit 7.
 #   --selftest   fakes for systemd-run/systemctl/wm-decide/bell/room in a throwaway dir; touches no real unit, row or seat.
 # Every gate-lint temp dir is removed by one EXIT trap (it also fires on a refusal or a signal); refusals leave through die()/refuse() only.
-# Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
+# Env: AIDE_VERIFIER_MAX_LOAD AIDE_VERIFIER_LOAD_WAIT_S AIDE_VERIFIER_LOADAVG_FILE (tests) AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
 #      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit) AIDE_VERIFIER_GATE_ROOT AIDE_VERIFIER_CGROUP_FILE (both tests only)
-# Exit: 0 ok / 1 systemd-run failed / 2 lint or usage or ceiling reached / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout (queue or lock) / 7 gate passed, row not recorded / 9 bad SLOT_CEIL or PEAK_MB (selftest only) / 10 429 breaker tripped / 11 not head-of-line.
+# Exit: 12 finish refused a load-guard skip / 13 launch: host load too high / 0 ok / 1 systemd-run failed / 2 lint or usage or ceiling reached / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout (queue or lock) / 7 gate passed, row not recorded / 9 bad SLOT_CEIL or PEAK_MB (selftest only) / 10 429 breaker tripped / 11 not head-of-line.
 # Never runs the real claude itself (only the generated launch.sh does, under the unit), never merges, never prints a token (output is redacted).
 set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
@@ -108,6 +119,39 @@ own_unit() {
   case "$seg" in *.service) printf '%s\n' "$seg" ;; esac
 }
 meta_get() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n1; }
+
+# ---- load-guard skip (GS): one regex, owned by swarm-decide (gen/merge-gate.json key load_guard_skip_re), built-in default otherwise ----
+GUARD_SKIP_RE_DEFAULT='^SKIPPED \[([0-9]+)\] ([^ ]+): .*([A-Z_]*LOAD_GUARD=1: |load average [0-9.]+ exceeds core count)'
+# guard_re_resolve: sets GS_RE (the regex in use), GS_NOTE, GS_BAD; rc 0 ok, rc 2 = the live key exists but grep -E rejects it (GS_RE is then the built-in default)
+guard_re_resolve() {
+  local root w v grc; GS_RE="$GUARD_SKIP_RE_DEFAULT"; GS_NOTE=""; GS_BAD=""
+  if [ -n "${AIDE_VERIFIER_GATE_ROOT:-}" ]; then root="$AIDE_VERIFIER_GATE_ROOT"
+  else w="$(command -v "$WMD" 2>/dev/null)" || return 0; root="$(dirname "$(dirname "$(readlink -f "$w")")")"; fi
+  [ -f "$root/gen/merge-gate.json" ] || return 0
+  v="$(jq -r '.load_guard_skip_re // empty' "$root/gen/merge-gate.json" 2>/dev/null)" || return 0
+  [ -n "$v" ] || return 0
+  printf '' | grep -E -- "$v" >/dev/null 2>&1; grc=$?
+  # grep -E must accept it (rc 0/1, not 2) and it must not be Python-only syntax (a (?: group or \d) that grep -E reads as something else
+  if [ "$grc" -gt 1 ]; then GS_BAD="$v"; GS_NOTE="live load_guard_skip_re is rejected by grep -E; built-in default in use"; return 2; fi
+  case "$v" in *'(?'*|*'\d'*|*'\D'*) GS_BAD="$v"; GS_NOTE="live load_guard_skip_re uses non-ERE syntax; built-in default in use"; return 2 ;; esac
+  GS_RE="$v"; return 0
+}
+# guard_norm <log>: the log with ANSI escapes and CRs removed
+guard_norm() { sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' -- "$1" | tr -d '\r'; }
+# guard_scan <log>: sets GS_K (sum of the [n] integers over matching lines), GS_FIRST (file:line of the first), GS_UNITEMIZED (N when the summary says N skipped and no SKIPPED [ line exists)
+guard_scan() {
+  local norm line; GS_K=0; GS_FIRST=""; GS_UNITEMIZED=0
+  norm="$(guard_norm "$1")"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [[ "$line" =~ ^SKIPPED\ \[([0-9]+)\]\ ([^\ ]+): ]]; then GS_K=$((GS_K + BASH_REMATCH[1])); [ -n "$GS_FIRST" ] || GS_FIRST="${BASH_REMATCH[2]}"
+    else GS_K=$((GS_K + 1)); [ -n "$GS_FIRST" ] || GS_FIRST="?"; fi
+  done < <(printf '%s\n' "$norm" | grep -E -- "$GS_RE")
+  if [ "$GS_K" = 0 ] && ! printf '%s\n' "$norm" | grep -qE '^SKIPPED \['; then
+    GS_UNITEMIZED="$(printf '%s\n' "$norm" | grep -E '(^|[ ,=])[0-9]+ skipped' | grep -E ' in [0-9]' | grep -oE '[0-9]+ skipped' | head -n1 | grep -oE '^[0-9]+')"
+    [ -n "$GS_UNITEMIZED" ] || GS_UNITEMIZED=0
+  fi
+}
 
 # ---- the fleet gate helpers (vcap v0.3); all run INSIDE the lock except where noted ----
 RESULT_429_RE='"api_error_status" *: *429([^0-9]|$)'
@@ -368,6 +412,10 @@ cmd_launch() {
   # ---- the fleet gate (one fixed lock; ticket -> breaker -> ceiling -> room) ----
   [[ "$SLOT_CEIL" =~ ^[0-9]+$ ]] && [ "$SLOT_CEIL" -ge 1 ] || die 9 "SLOT_CEIL must be an integer >= 1 (got '$SLOT_CEIL')"
   [[ "$PEAK_MB" =~ ^[0-9]+$ ]] && [ "$PEAK_MB" -ge 1 ] || die 9 "PEAK_MB must be an integer >= 1 (got '$PEAK_MB')"
+  local max_load="${AIDE_VERIFIER_MAX_LOAD:-}" load_wait="${AIDE_VERIFIER_LOAD_WAIT_S:-${AIDE_VERIFIER_QUEUE_MAX_S:-3600}}" lwaited=0 load1 loadf="${AIDE_VERIFIER_LOADAVG_FILE:-/proc/loadavg}"
+  if [ -z "$max_load" ]; then max_load=$(( $(nproc 2>/dev/null || echo 4) - 3 )); [ "$max_load" -ge 1 ] || max_load=1; fi
+  [[ "$max_load" =~ ^[0-9]+$ ]] && [ "$max_load" -ge 1 ] || die 9 "AIDE_VERIFIER_MAX_LOAD must be an integer >= 1 (got '$max_load')"
+  [[ "$load_wait" =~ ^[0-9]+$ ]] || die 9 "AIDE_VERIFIER_LOAD_WAIT_S must be an integer (got '$load_wait')"
   local capdir qprio; capdir="$(dirname "$LOCK")"
   QDIR="$capdir/queue"; BSTATE="$capdir/breaker.state"
   mkdir -p "$QDIR" || die 2 "cannot create $QDIR"
@@ -408,6 +456,14 @@ cmd_launch() {
     fi
     # 3 the hard ceiling
     if [ -z "$wrc" ] && [ "$nact" -ge "$SLOT_CEIL" ]; then wrc=2; wmsg="verifier cap reached: $nact of $SLOT_CEIL active (${act% })"; fi
+    # 3b load: load1 + 2 x the running verifier units must stay under MAX_LOAD (a loaded host makes pytest skip its load-guarded tests; the finish scan retracts such a verdict)
+    if [ -z "$wrc" ]; then
+      load1="$(awk 'NR==1 && $1 ~ /^[0-9]+([.][0-9]+)?$/ {print $1}' "$loadf" 2>/dev/null)"
+      if [ -z "$load1" ]; then echo "aide-verifier: note: cannot read a load average from $loadf; load gate skipped" >&2
+      elif ! awk -v l="$load1" -v n="$nact" -v m="$max_load" 'BEGIN{exit !(l + 2 * n < m)}'; then
+        wrc=13; wmsg="load $load1 + 2 x $nact running verifier unit(s) >= MAX_LOAD $max_load"
+      fi
+    fi
     # 4 room: running units' remaining ramp to PEAK_MB is priced, their current RSS is already out of MemAvailable
     if [ -z "$wrc" ]; then
       # shellcheck disable=SC2086
@@ -423,6 +479,7 @@ cmd_launch() {
     if [ "$QUEUE" != 1 ]; then die "$wrc" "$wmsg; use --queue to wait"; fi
     flock -u 9
     [ "$waited" -lt "$maxw" ] || die 6 "queue wait exceeded ${maxw}s ($wmsg)"
+    if [ "$wrc" = 13 ]; then [ "$lwaited" -lt "$load_wait" ] || die 6 "load wait exceeded ${load_wait}s ($wmsg)"; lwaited=$((lwaited + POLL)); fi
     sleep "$POLL"; waited=$((waited + POLL))
   done
   [ -z "$probe_key" ] || echo "probe $probe_key" >>"$BSTATE"
@@ -437,6 +494,7 @@ cmd_launch() {
     printf 'OAUTH=%q\n' "$oauth"
     printf '[ -r "$OAUTH" ] || { echo "aide-verifier: cannot read $OAUTH" >&2; exit 71; }\n'
     echo 'set -a; . "$OAUTH"; set +a'
+    printf 'export PYTEST_ADDOPTS=%q\n' "${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-rs"   # every pytest skip in the unit is itemized as a SKIPPED [n] line (finish scans them)
     printf 'D=%q\n' "$DIR"
     echo 'cd "$D" || exit 70'
     printf 'exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-%s}" %q -p --dangerously-skip-permissions --disallowedTools %q --settings "$D/settings.json" --model claude-sonnet-5-5 --output-format json "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$VTIMEOUT" "$claude" 'Bash(pkill:*) Bash(killall:*)'
@@ -491,6 +549,32 @@ cmd_finish() {
   log="$(printf '%s\n' "$text" | sed -n 's/^LOG: *//p' | tail -n1)"
   [ -n "$log" ] || log="$(printf '%s\n' "$text" | grep -oE '/[^[:space:]"`]*/verify/[^[:space:]"`]*\.log' | tail -n1)"
   [ -n "$log" ] || log="(no log path in result)"
+  # ---- GS: a verdict whose log shows tests SKIPPED by the load guard is not green (before merge-gate; only a green verdict is retracted) ----
+  if [ -f "$log" ] && [ -r "$log" ]; then
+    local vwhat gsrc=0; vwhat="$("$WMD" list --json 2>/dev/null | jq -r --arg id "$verdict" '[.[] | select(.id == $id)][0].what // ""' 2>/dev/null)"
+    guard_re_resolve || gsrc=$?
+    [ "$gsrc" = 0 ] || echo "aide-verifier: WARN $GS_NOTE" >&2
+    guard_scan "$log"
+    if [ "$GS_K" = 0 ] && [ "$GS_UNITEMIZED" != 0 ]; then echo "aide-verifier: WARN skips not itemized (suite lacks -rs): $GS_UNITEMIZED skipped in $log" >&2; fi
+    case "$vwhat" in ""|MERGE-OK*|CONFIRM*) ;; *) GS_K=0 ;; esac   # a red verdict goes to merge-gate as before; an unreadable row counts as green (fail closed on the skip)
+    if [ "$GS_K" -gt 0 ]; then
+      local gsmsg="GUARD-SKIP $GS_K test(s) SKIPPED by the load guard (first: $GS_FIRST)" gsfin=""
+      export EVENT_SOURCE="$agent"
+      if "$WMD" record --agent "$agent" --model deterministic --kind verdict --gates "$verdict" --target carbon \
+           --what "CORRECT-RETRACT $verdict: $gsmsg" \
+           --why "aide-verifier.sh finish: the log shows tests skipped by the load guard; a skipped suite is not a green verdict for $repo#$pr" \
+           --evidence "decision=$verdict; $gsmsg; $log" --reverse-text "none (retraction)" >/dev/null 2>"$d/record.err"; then
+        "$BELL" ctl "$agent EVENT GUARD-SKIP $repo#$pr head $head row $verdict (unit $unit): $GS_K test(s) skipped by the load guard (first: $GS_FIRST); MERGE-OK RETRACTED; re-verify when load is below core count; log $log; $tmo" >/dev/null 2>&1
+        echo "$(iso) GUARD-SKIP rc=12 $verdict $tmo" >"$d/finished"
+        echo "GUARD-SKIP $gsmsg" >&2
+      else
+        "$BELL" ctl "$agent EVENT GUARD-SKIP $repo#$pr head $head row $verdict (unit $unit): $GS_K test(s) skipped by the load guard (first: $GS_FIRST); RETRACT FAILED (the CORRECT-RETRACT row did not record: $(head -c 160 "$d/record.err" | tr '\n' ' ' | redact)); the MERGE-OK still stands, void it by hand; log $log; $tmo" >/dev/null 2>&1
+        echo "$(iso) GUARD-SKIP rc=12 RETRACT-FAILED $verdict $tmo" >"$d/finished"
+        echo "GUARD-SKIP $gsmsg; RETRACT FAILED: $(head -c 200 "$d/record.err" | redact)" >&2
+      fi
+      exit 12
+    fi
+  fi
   local out rc pass reason
   out="$("$WMD" merge-gate "$verdict" --pr "$pr" --repo "$repo" 2>&1)"; rc=$?
   pass="$(printf '%s\n' "$out" | grep -m1 -E '^PASS ')"
@@ -546,6 +630,7 @@ selftest() {
   local H=0123456789abcdef0123456789abcdef01234567 G=d-20261023-055214-aide-49cf V=d-20261023-061500-aide-7e1a
   mkdir -p "$T/home/.config/environment.d" "$T/bin"
   : >"$T/home/.config/environment.d/90-claude-oauth.conf"
+  echo "0.10 0.10 0.10 1/1 1" >"$T/loadavg"; export AIDE_VERIFIER_LOADAVG_FILE="$T/loadavg" AIDE_VERIFIER_MAX_LOAD=100   # the host's real load must not decide the selftest's launches (load gate, exit 13)
   cat >"$T/bin/fake-sdrun" <<'F'
 #!/bin/bash
 printf '%s\n' "$*" >>"$FAKE_DIR/sdrun.log"
@@ -1079,10 +1164,11 @@ F
 
 case "${1:-}" in
   --gate-names) echo "$GATE_NAMES"; exit 0 ;;
+  --guard-skip-re) guard_re_resolve; grc=$?; printf '%s\n' "$GS_RE"; [ "$grc" = 0 ] || echo "aide-verifier: $GS_NOTE (rejected: $GS_BAD)" >&2; exit "$grc" ;;
   --gate-grammar) printf '%s\n%s\n' "$GATED_RE_FMT" "$COMMIT_TOKEN_RE"; exit 0 ;;
   --selftest) selftest; exit $? ;;
   launch) shift; cmd_launch "$@" ;;
   finish) shift; cmd_finish "$@" ;;
   watch) shift; cmd_watch "$@" ;;
-  *) sed -n '2,51p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,62p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
