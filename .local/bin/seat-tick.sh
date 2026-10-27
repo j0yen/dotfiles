@@ -313,7 +313,7 @@ selftest() {
   tt() { env SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$1:1" "${@:2}"; }
   # the fake SIDs carry this run's pid: the guard scans every /proc cmdline for the SID, so two selftests running at once (or a seat's own session) must never share one
   local CS=selftest-ctl-sid-$$-0001 RS=selftest-rb-sid-$$-0002 SS=selftest-r7-sid-$$-0003 TS=selftest-tmo-sid-$$-0004
-  export FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
+  export SEAT_ASK_TEST=1 FLEET_DASH_DIR="$T/dash" SEATS_TABLE="$T/seats.tsv" MRC_TABLE="$T/mrc" GOAL_MD="$T/notes/wiki/goal.md" APPROVALS_FILE="$T/approvals.log" \
          SEAT_CLAUDE_BIN="$T/claude" SEAT_OAUTH_ENV="$T/oauth.conf" SEAT_LOCK_WAIT=1 SEAT_ASK_LOCK_WAIT=1
   mkdir -p "$T/dash"
   # col 8 = max_turns (ctl 60, rb 80, r7 80, tmo 80); the 'nt' row added later is a 7-column row (old table) and must run uncapped
@@ -587,14 +587,20 @@ FAKE
   [ "$rc" = 3 ] && grep -q "ALARM ctl: no 'controller' model row" "$T/e15b" && ! grep -q '^ARGV' "$T/o15b" && [ ! -e "$T/dash/fleet-status.md" ] && [ "$(j .last_skip_reason)" = no-model ]; chk "ctl tick, no controller model row: exit 3, claude not run, fleet-status.md NOT written (no boundary: open)" $?
   printf 'controller test-model-2\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
 
-  # 15c. seat-ask.sh: a refused ASK is visible (fake tick bin, real transient unit; nothing touches a seat)
+  # 15c. seat-ask.sh: a refused ASK is visible (fake tick bin, real transient unit; nothing touches a seat). Seat = the test seat `tst`, never a real one, and
+  # SEAT_ASK_ONFAILURE= (empty) drops OnFailure=seat-tick-failed@: even @tst is a real instance of the live template and would raise SEAT-TICK FAILED to ctl (ctl 49ab/1a7b: 6 false r7 alarms).
+  cp "$SEATS_TABLE" "$T/seats.pre-15c"; printf 'tst\trb\tselftest-tst-sid-%s\t20\t14400\t^/goal CLEARWATER:\t-\t80\n' "$$" >>"$SEATS_TABLE"
+  export SEAT_ASK_ONFAILURE=
+  out="$(env -u SEAT_ASK_TEST -u SEAT_ASK_ONFAILURE SEAT_ASK_DRY=1 SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" tst "dry" 2>&1)"
+  [[ "$out" == *" -p OnFailure=seat-tick-failed@tst.service "* ]]; chk "seat-ask.sh default (dry, SEAT_ASK_TEST unset) carries OnFailure=seat-tick-failed@tst.service" $?
   printf '#!/bin/bash\necho "ALARM $1 guard: fake refusal"\nexit "$(cat "$0.rc")"\n' >"$T/fake-tick"; chmod +x "$T/fake-tick"; echo 4 >"$T/fake-tick.rc"
-  out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "refuse me" 2>&1 >/dev/null)"; rc=$?
-  [ "$rc" = 4 ] && [ "$out" = "ASK REFUSED r7: ALARM r7 guard: fake refusal" ]; chk "seat-ask.sh: unit exit 4 -> exit 4 + 'ASK REFUSED r7: <last line>' on stderr ($rc: ${out:0:70})" $?
-  echo 6 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "refuse me" 2>&1 >/dev/null)"; rc=$?
-  [ "$rc" = 6 ] && [[ "$out" == "ASK REFUSED r7: "* ]]; chk "seat-ask.sh: unit exit 6 -> exit 6 + ASK REFUSED" $?
-  echo 0 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" r7 "fine" 2>"$T/e15c")"; rc=$?
-  [ "$rc" = 0 ] && [[ "$out" == seat-ask-r7-* ]] && [ ! -s "$T/e15c" ]; chk "seat-ask.sh: unit exit 0 -> exit 0, prints the unit name, nothing on stderr" $?
+  out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" tst "refuse me" 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 4 ] && [ "$out" = "ASK REFUSED tst: ALARM tst guard: fake refusal" ]; chk "seat-ask.sh: unit exit 4 -> exit 4 + 'ASK REFUSED tst: <last line>' on stderr ($rc: ${out:0:70})" $?
+  echo 6 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" tst "refuse me" 2>&1 >/dev/null)"; rc=$?
+  [ "$rc" = 6 ] && [[ "$out" == "ASK REFUSED tst: "* ]]; chk "seat-ask.sh: unit exit 6 -> exit 6 + ASK REFUSED" $?
+  echo 0 >"$T/fake-tick.rc"; out="$(SEAT_ASK_TICK_BIN="$T/fake-tick" "$HERE/seat-ask.sh" tst "fine" 2>"$T/e15c")"; rc=$?
+  [ "$rc" = 0 ] && [[ "$out" == seat-ask-tst-* ]] && [ ! -s "$T/e15c" ]; chk "seat-ask.sh: unit exit 0 -> exit 0, prints the unit name seat-ask-tst-*, nothing on stderr" $?
+  unset SEAT_ASK_ONFAILURE; cp "$T/seats.pre-15c" "$SEATS_TABLE"
 
   # 15d. EVENTS (10-22): events block in every prompt, offset, --event, wake, chain
   local EVD="$T/dash" evsz
