@@ -54,10 +54,7 @@ render_runs() {
 }
 render_queue() {
   if ! src_ok queue; then echo "queue: ?"; return; fi
-  local adm skp
-  adm=$(j '.queue.admitted|length')
-  skp=$(j '.queue.skipped | map({r:(.reason|split(":")[0]), n:(.slugs|length)}) | group_by(.r) | map("\(.[0].r) \(map(.n)|add)") | join(", ")')
-  echo "queue: admit $adm${skp:+, $skp}"
+  j '"queue: \(.queue.queue_total // "?") (building \(.queue.building // "?"), ready \(.queue.queue_ready // "?")" + (if .queue.blocked != null then ", blocked \(.queue.blocked)" else "" end) + (if .queue.parked != null then ", parked \(.queue.parked)" else "" end) + ")"'
 }
 render_decisions() {
   src_ok decisions || { echo "decisions: ?"; return; }

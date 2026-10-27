@@ -82,9 +82,15 @@ render() {
     echo "ended 24h: $NOHOST"
   fi
 
-  section "Queue" "$S .queue"
+  section "Queue" "$S .queue + .sources.queue"
   if present queue; then
-    jq -r '.queue | "admitted: \(.admitted|length) slots=\(.slots // "-")", (.skipped[]? | "skipped \(.reason): \(.slugs|length)")' "$status" 2>/dev/null | head -n 12
+    # fleet-dash counts (operator-status-gen.sh); never print a number the source did not vouch for
+    qs=$(sj '.sources.queue // "missing"')
+    if [ "$qs" = ok ]; then
+      jq -r '.queue | "queue: \(.queue_total // "?") (building \(.building // "?"), ready \(.queue_ready // "?")" + (if .blocked != null then ", blocked \(.blocked)" else "" end) + (if .parked != null then ", parked \(.parked)" else "" end) + ")"' "$status" 2>/dev/null | head -n 3
+    else
+      echo "queue: unknown ($qs)"
+    fi
   else
     echo "Queue: $NOHOST"
   fi

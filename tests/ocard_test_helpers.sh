@@ -75,6 +75,9 @@ IN
   export WM_BUILD_STATE_DIR="$work/state" OPERATOR_WM_BIN="$work/bin/wm-build" OPERATOR_PROC_ROOT="$work/proc"
   export SYNTHORG_STATE_DIR="$work/syn" OPERATOR_CACHE_DIR="$work/cache" WM_BUILD_CONFIG="$work/config.toml"
   : >"$WM_BUILD_CONFIG"
+  # fleet-dash status.json: fresh ts + the fleet-wide queue object the card reads
+  export OPERATOR_FLEET_STATUS="$work/fleet-status.json"
+  printf '{"ts":%s,"queue":{"queue_total":12,"queue_ready":5,"building":2,"blocked":3,"parked":2}}\n' "$(date +%s)" >"$OPERATOR_FLEET_STATUS"
   export PATH="$work/bin:$PATH"
   export HOME="$work/home"; mkdir -p "$HOME"
 }

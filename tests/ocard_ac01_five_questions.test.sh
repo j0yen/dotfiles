@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PRD dotfiles-operator-status-card AC1: with all five sources present the
-# generator's status.json answers runs, queue-by-reason, chain, siblings and
+# generator's status.json answers runs, fleet queue counts, chain, siblings and
 # daemon-vs-binary with no null field and every source ok.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,9 +11,7 @@ t="$work/t.json"
 jq -e . "$t" >/dev/null || { echo "NOT OK - t.json parses"; exit 1; }
 assert_eq "$(jq -r '[.runs[].id]|sort|join(",")' "$t")" "488,518,519" "runs: the 3 open rows"
 assert_eq "$(jq -r '.runs[0]|[.slug,.stage,(.age_min|type),.created_by,.mode]|join(",")' "$t")" "alpha,land,number,tick,daemon" "run row fields"
-assert_eq "$(jq -c '.queue.admitted' "$t")" '["s1","s2"]' "queue: admitted"
-assert_eq "$(jq -c '.queue.skipped|map({reason,slugs})|sort_by(.reason)' "$t")" \
-  '[{"reason":"cap=max_runs","slugs":["s4"]},{"reason":"claimed-by:redbaron","slugs":["s3"]}]' "queue: skipped grouped by reason"
+assert_eq "$(jq -c '.queue' "$t")" '{"queue_total":12,"queue_ready":5,"building":2,"blocked":3,"parked":2}' "queue: fleet-dash counts"
 assert_eq "$(jq -r '.chain|[.chain_run_id,.link,.status,.ts]|join(",")' "$t")" "c2,digest,running,2026-10-11T07:00:00Z" "chain: newest ledger row"
 assert_eq "$(jq -r '[.siblings[].session_id]|join(",")' "$t")" "claude-2576670,claude-9" "siblings: intents minus self"
 assert_eq "$(jq -r '.siblings[0]|[.skill,.prd,.since]|join(",")' "$t")" "dream,T9,2026-10-11T06:58:00Z" "sibling fields"
