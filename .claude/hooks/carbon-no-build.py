@@ -8,6 +8,7 @@ Bash   : command position only, after unwrapping systemd-run/timeout/nice/nohup/
          `bash -c`, `sh -c` and `tmux send-keys|new-session|new-window|...` is classified as a command.
 Edit/Write/MultiEdit/NotebookEdit : the path AS GIVEN is matched against the allowlist first; else the
          symlink-resolved path is denied when it sits in a git work tree.
+         `claude -p` / `claude --print` at command position is a headless coder turn and is denied.
 Agent  : subagent_type coder / coder-opus.
 """
 import fnmatch, json, os, re, sys
@@ -215,6 +216,8 @@ def classify(cmd, depth=0):
             return "cargo"
         if b in DIRECT:
             return "build-or-test"
+        if b == "claude" and any(x in ("-p", "--print") or x.startswith("--print=") for x in rest):
+            return "claude-print"   # a headless coder turn; rb-run-coder.sh launches it on redbaron over ssh and stays allowed
         if re.match(r"^python[\d.]*$", b):
             if re.search(r"(^|\s)-m\s*pytest\b", " ".join(rest)) or (rest and base(rest[0]) in ("pytest", "py.test")):
                 return "pytest"
