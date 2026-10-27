@@ -11,7 +11,8 @@ fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 
-base=$(mktemp -d -p "${TEST_TMPBASE:-$HOME/.cache/tmp}" .wchg-reap-test.XXXXXX) || exit 1
+_tb="${TEST_TMPBASE:-$HOME/.cache/tmp}"; mkdir -p "$_tb" || exit 1
+base=$(mktemp -d -p "$_tb" .wchg-reap-test.XXXXXX) || exit 1
 trap 'rm -rf "$base"' EXIT
 
 # stub watchman: roots in $STUB_ROOTS (JSON array), every call logged to $STUB_LOG, --no-spawn asserted on every call
