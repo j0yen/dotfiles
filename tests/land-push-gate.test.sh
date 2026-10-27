@@ -88,5 +88,5 @@ payload "$R" Read | env WM_SEAT=rb bash "$hook" >/dev/null 2>&1; n=$((n+1)); [ $
 # registered in the settings.json Bash PreToolUse list
 n=$((n+1)); jq -e '[.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[].command] | any(endswith("/.claude/hooks/land-push-gate.sh"))' "$here/.claude/settings.json" >/dev/null && echo "ok - land-push-gate.sh is registered under PreToolUse/Bash in .claude/settings.json" || { echo "NOT OK - hook not registered"; fail=1; }
 # the rb coder launcher exports the marker
-n=$((n+1)); grep -q 'RB_CODER_ID="\$n"' "$here/.local/bin/rb-run-coder.sh" && echo "ok - rb-run-coder.sh exports RB_CODER_ID" || { echo "NOT OK - RB_CODER_ID not exported by rb-run-coder.sh"; fail=1; }
+n=$((n+1)); grep -q "RB_CODER_ID='\"\$n\"'" "$here/.local/bin/rb-run-coder.sh" && echo "ok - rb-run-coder.sh exports RB_CODER_ID (on the remote host)" || { echo "NOT OK - RB_CODER_ID not exported by rb-run-coder.sh"; fail=1; }
 echo "land-push-gate: $n checks, fail=$fail"; exit $fail
