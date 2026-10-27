@@ -47,6 +47,8 @@ cd ~/dotfiles
 
 `install.sh` walks every file in the repo and symlinks it to the same relative path under `$HOME`, skipping its own meta (`README.md`, `install.sh`, `.gitignore`) and `settings.local.json`. An existing non-symlink target is backed up to `<name>.bak.<timestamp>` before linking; an already-correct symlink is left alone, so reruns are idempotent.
 
+`./install.sh --link-only [--paths-from <old> <new>]` is the pull-time half: the link loop and the protected-hooks check, nothing else. It never replaces or backs up a non-symlink target (it prints `conflict: <dst>`; replacement stays the full install's job), skips the watcher-lib consumer `--selftest` loop and `live-clone-guard.sh ensure` (it still runs `bash -n` on every linked `*.sh` and the watcher-lib sha/source check), and exits with the protected-hooks check's code. `--paths-from` links only the files in `git diff --name-status -M <old> <new>` (A/M/T/C link, D stale, R old stale + new link) and prints `stale: <dst>` for a removed path whose `$HOME` target is still a symlink into the repo (report only, nothing deleted). Both flags combine with `--dry-run`; the no-argument and `--dry-run` behaviour is unchanged.
+
 After this, run `~/wintermute/dotfiles/install.sh` too, so `settings.json` is in place with the `claude-self-start.sh` hook registered as a SessionStart entry.
 
 ## Where it fits
@@ -80,3 +82,15 @@ The shim dir must be on a seat's PATH and never on `wm-build.service`'s (the dae
 /home/jsy/dotfiles
 /home/jsy/wintermute/wm-build
 ```
+
+### A pull is an install (post-merge / post-rewrite / post-checkout)
+
+For a repo whose root has an executable `install.sh` that supports `--link-only` (grep of the flag), `ensure`/`install` also write three hooks next to pre-commit, so a live clone that installs from itself is deployed the moment it moves:
+
+- `post-merge` (fires after `git pull --ff-only` too): `./install.sh --link-only --paths-from <old> <new>`, old = `ORIG_HEAD`, else `HEAD@{1}`; with neither (or old not an ancestor of HEAD, or old == HEAD) a full `--link-only`.
+- `post-rewrite` (`pull --rebase`, amend): stdin is ignored, always a full `--link-only`.
+- `post-checkout`: acts only on a branch checkout (`$3 == 1`), `--paths-from $1 $2`.
+
+Each hook starts with `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX` and a `cd` to the toplevel, installs only from the live checkout itself (worktrees pass through), always exits 0, appends one line `<iso> <old>..<new> rc= linked= stale= conflict= selftest=skipped hook=...` (plus indented `stale:`/`conflict:` detail lines) to `~/.local/state/live-clone-guard/postmerge.log` under `flock`, and prints one stderr line when install.sh exits non-zero. `LIVE_CLONE_GUARD_DRY=1` passes `--dry-run` through. A foreign hook of the same name is left untouched (`refused-foreign-hook`, exit 3). Hooks are written to `git rev-parse --git-path hooks`; `live-clone-guard.sh check <repo>` prints one line per hook (pre-commit, post-merge, post-rewrite, post-checkout) and goes RED when `core.hooksPath` resolves away from `<repo>/.git/hooks`.
+
+Coverage limits. fleet-sync's own post-apply still runs the full `./install.sh` when it moves HEAD (unchanged); its `git merge --ff-only` also fires post-merge first, which is fine because links are idempotent. When fleet-sync instead has to `git reset --hard origin/<branch>` (history replaced upstream), or you run `git reset --hard` by hand, git fires no hook: that path is covered only by fleet-sync's install stamp (post-apply runs whenever HEAD differs from `~/.local/state/fleet-sync/<name>.installed`). Tests: `tests/install-link-only.test.sh`, `tests/live-clone-guard-postmerge.test.sh`, `tests/live-clone-guard.test.sh`.
