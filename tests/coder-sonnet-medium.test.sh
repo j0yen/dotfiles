@@ -9,7 +9,7 @@ fm=$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$A")
 if printf '%s\n' "$fm" | grep -qx 'model: sonnet' && printf '%s\n' "$fm" | grep -qx 'effort: medium'; then echo "ok - coder.md frontmatter = model: sonnet + effort: medium"
 else echo "NOT OK - coder.md frontmatter lacks model: sonnet / effort: medium"; fail=1; fi
 R="$here/.local/bin/rb-run-coder.sh"
-if grep -v '^[[:space:]]*#' "$R" | grep -E 'claude -p ' | grep -q -- '--model "$model" --effort "$effort"' && grep -qF 'model="${RB_CODER_MODEL:-sonnet}"; case "$model" in sonnet) effort=medium ;; opus) effort=high ;;' "$R"; then echo "ok - rb-run-coder.sh: sonnet (default) -> medium, opus -> high"
+if grep -v '^[[:space:]]*#' "$R" | grep -E 'claude -p ' | grep -qF -- "--model '\"\$model --effort \$effort\"'" && grep -qF 'model="${RB_CODER_MODEL:-sonnet}"; case "$model" in sonnet) effort=medium ;; opus) effort=high ;;' "$R"; then echo "ok - rb-run-coder.sh: sonnet (default) -> medium, opus -> high"
 else echo "NOT OK - rb-run-coder.sh model/effort mapping (sonnet=medium, opus=high) missing"; fail=1; fi
 O="$here/.claude/agents/coder-opus.md"
 ofm=$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$O" 2>/dev/null)
