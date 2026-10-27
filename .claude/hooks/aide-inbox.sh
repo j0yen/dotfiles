@@ -33,9 +33,10 @@ timers_alarm() {
 
 run() {
   local ev="${1:-}" in=""
-  if [ -z "$ev" ] && [ ! -t 0 ]; then
+  # always read the stdin JSON (session_id is needed even when $1 names the event, as settings.json invokes it)
+  if [ ! -t 0 ]; then
     in="$(timeout 2 cat 2>/dev/null)" || in=""
-    ev="$(printf '%s' "$in" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
+    [ -n "$ev" ] || ev="$(printf '%s' "$in" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
   fi
   case "$ev" in ""|UserPromptSubmit|SessionStart) ;; *) return 0 ;; esac
   [ "${WM_SEAT:-}" = aide ] || return 0
