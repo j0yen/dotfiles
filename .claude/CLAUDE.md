@@ -19,7 +19,7 @@
 
 - NO NON-PERMANENT HETZNER BOXES (Joe 10-11): fleet guard deletes all but hub/orch/mcphost-1. Box ladder/idle/roles if ever leased: memory/feedback_hetzner_cost_too_high_stop_all_boxes_20261011.md.
 - NEVER raise an idle, grace or cost limit myself; box idle 20 min.
-- Tokens: compact/hand off near ~180K context (threshold = two multiplied env values, never change one alone; seats pin 360000×50 % in their `--settings`; the carbon aide runs 180K too, Joe 10-23 11:3x AM "yes" ⚙ settings.local.json env 360000×50 %); one job, one model per session; tool output > 2 KB to a file, read a tail. Recipe: memory/feedback_token_discipline.md. BUILD_SHARE counts coder+inner+seats ctl/rb/r7/aide as building (Joe 10-23 12:2x PM "controller, rb and r7 are part of the wm-build now", "aide is also part of wm-build") ⚙ token-ledger BUILD_ROLES_RE + aide-inbox.sh aide-sids; alarm < 50 %.
+- Tokens: compact/hand off near ~180K context (threshold = two multiplied env values, never change one alone; seats pin 240000×50 % = 120K in their `--settings` (Joe 10-26 10:5x PM "yes, set 120K", approvals #32; 80K thrashed: post-compaction p50 72-83K ⚙ .config/claude-seat/{settings,ctl-settings}.json + tests/seat-compact-120k.test.sh); the carbon aide runs 180K too, Joe 10-23 11:3x AM "yes" ⚙ settings.local.json env 360000×50 %); one job, one model per session; tool output > 2 KB to a file, read a tail. Recipe: memory/feedback_token_discipline.md. BUILD_SHARE counts coder+inner+seats ctl/rb/r7/aide as building (Joe 10-23 12:2x PM "controller, rb and r7 are part of the wm-build now", "aide is also part of wm-build") ⚙ token-ledger BUILD_ROLES_RE + aide-inbox.sh aide-sids; alarm < 50 %.
 - No paid GitHub Actions.
 
 # Models and review

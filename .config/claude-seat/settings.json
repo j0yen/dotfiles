@@ -4,7 +4,7 @@
     "library-skills@skills-dir": false
   },
   "env": {
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "360000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "240000",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
   },
   "autoCompactEnabled": true,
