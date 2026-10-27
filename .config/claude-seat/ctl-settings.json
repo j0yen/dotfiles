@@ -1,7 +1,8 @@
 {
   "env": {
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "240000",
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50",
+    "CLAUDE_CODE_EFFORT_LEVEL": "medium"
   },
   "autoCompactEnabled": true,
   "autoCompactWindow": "auto",
