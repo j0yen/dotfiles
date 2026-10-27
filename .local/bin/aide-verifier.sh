@@ -446,7 +446,7 @@ cmd_launch() {
   jq -n --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$h}]}]}}' >"$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
   printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" >"$DIR/meta"
   # ---- start ----
-  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
@@ -811,6 +811,7 @@ F
   echo "rb-verifier-other.service" >"$T/active"
   out="$(L cap1 "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 0 ] && [ "$out" = aide-verifier-cap1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(a) 1 active of 2 -> launches ($out)" $?
+  grep -q -- "-p CPUWeight=20 -p Nice=10 -p IOWeight=20" "$T/sdrun.log"; chk "(a) the unit launch carries CPUWeight=20 Nice=10 IOWeight=20" $?
   ask="$(cat "$T/room.log")"; [ "$ask" = 2048 ]; chk "(a) room asked for PEAK_MB 1024 x (1 active + 1) - Σ MemoryCurrent 0 ([not set]) = $ask MB" $?
   : >"$T/active"; rm -f "$T/room.log"; L cap0 "${A[@]}" --head "$H" >/dev/null
   ask="$(cat "$T/room.log")"; [ "$ask" = 1024 ]; chk "(a) 0 active -> room asked for PEAK_MB 1024 ($ask)" $?
@@ -972,7 +973,7 @@ F
   out="$(L ok1 "${A[@]}" --head "$H" --notes 'a "quoted" note; $(not run)' --expect '663 tests')"; rc=$?
   local D="$T/av/ok1"
   [ "$rc" = 0 ] && [ "$out" = aide-verifier-ok1 ]; chk "launch ok: exit 0, prints the unit name" $?
-  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, HOME, PATH, launch.sh" $?
+  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, CPUWeight, Nice, IOWeight, HOME, PATH, launch.sh" $?
   grep -q "$H" "$D/prompt.md" && grep -q "$G" "$D/prompt.md" && grep -qF 'tests/*.test.sh EXIT=0' "$D/prompt.md" && grep -q 'HARD CONSTRAINTS' "$D/prompt.md" \
     && grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$D/prompt.md" && grep -q 'wm-verify-run' "$D/prompt.md" && grep -qF '$(not run)' "$D/prompt.md" \
     && grep -q -- "--what \"MERGE-OK j0yen/dotfiles#7 COMMIT=$H agent=verifier:aide-verifier-ok1 recorded_by=unit:aide-verifier-ok1 session=own-headless-claude-p" "$D/prompt.md" \
