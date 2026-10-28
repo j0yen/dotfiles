@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# r7-redrive.sh <run> <from> --expect <stage> --why "<why>" --evidence "<one read>" [--reverse "<text>"] [--model M] [--after-merge]
+# r7-redrive.sh <run> <from> --expect <stage> --why "<why>" --evidence "<one read>" [--reverse "<text>"] [--model M] [--after-merge] [--stop]
 #   --after-merge (only with <from>=land) is forwarded to wm-build for a PR already merged (479/#534: "pr-merged: already merged").
+#   --stop (any step) is forwarded to wm-build so a redrive of an OPEN run stops its driver first (ctl ddf8, r7 8:23 PM 10-27: 503 --from inner).
 #   The ONLY way the r7 seat redrives a ryzen7 run by hand: the wm-decide run-state row is recorded FIRST, and
 #   `wm-build run redrive <run> --from <from> --operator r7` runs on ryzen7 ONLY when the record printed a decision id.
 #   A refused or id-less record exits 2 and never reaches ssh (ctl 2:1x 10-23, class 373c: a `[ -n "$R" ] &&` in a
@@ -10,14 +11,14 @@
 set -uo pipefail
 HOST="${R7_REDRIVE_HOST:-ryzen7}"
 ID_RE='d-[0-9]{8}-[0-9]{6}-[a-z0-9:-]+-[0-9a-f]{4}'
-usage() { echo "usage: r7-redrive.sh <run> <inner|gate|land|live> --expect <claimed|gate|inner|land|released> --why W --evidence E [--reverse R] [--model M] [--after-merge]" >&2; exit 64; }
+usage() { echo "usage: r7-redrive.sh <run> <inner|gate|land|live> --expect <claimed|gate|inner|land|released> --why W --evidence E [--reverse R] [--model M] [--after-merge] [--stop]" >&2; exit 64; }
 
 redrive() {
   [ $# -ge 2 ] || usage
-  local run=$1 from=$2 expect="" why="" ev="" rev="" am="" model="${R7_MODEL:-opus}"; shift 2
+  local run=$1 from=$2 expect="" why="" ev="" rev="" am="" stp="" model="${R7_MODEL:-opus}"; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --expect) expect=${2:-}; shift 2 ;; --why) why=${2:-}; shift 2 ;; --evidence) ev=${2:-}; shift 2 ;;
-    --reverse) rev=${2:-}; shift 2 ;; --model) model=${2:-}; shift 2 ;; --after-merge) am=" --after-merge"; shift ;; *) echo "r7-redrive.sh: unknown arg '$1'" >&2; usage ;; esac; done
+    --reverse) rev=${2:-}; shift 2 ;; --model) model=${2:-}; shift 2 ;; --after-merge) am=" --after-merge"; shift ;; --stop) stp=" --stop"; shift ;; *) echo "r7-redrive.sh: unknown arg '$1'" >&2; usage ;; esac; done
   case $run in ''|*[!0-9]*) echo "r7-redrive.sh: run must be a number, got '$run'" >&2; usage ;; esac
   case $from in inner|gate|land|live) ;; *) echo "r7-redrive.sh: --from must be inner|gate|land|live, got '$from'" >&2; usage ;; esac
   [ -z "$am" ] || [ "$from" = land ] || { echo "r7-redrive.sh: --after-merge only applies to --from land, got --from $from; refusing" >&2; usage; }
@@ -27,7 +28,7 @@ redrive() {
   local out err drc id WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}" SSH="${R7_REDRIVE_SSH:-ssh}"   # read per call (selftest stubs)
   err=$(mktemp)
   out=$("$WM_DECIDE" record --agent r7 --model "$model" --kind run-state --run "$HOST:$run" --expect "$expect" \
-        --what "redrive $run --from $from$am --operator r7" --why "$why" --evidence "$ev" --reverse-text "$rev" 2>"$err"); drc=$?
+        --what "redrive $run --from $from$am$stp --operator r7" --why "$why" --evidence "$ev" --reverse-text "$rev" 2>"$err"); drc=$?
   # success = rc 0 AND a stdout line that IS the id (wm_decide/cli.py record: print(id_); return 0); an id quoted
   # inside a refusal or printed under a nonzero exit is not a row (verifier 2:2x 10-23)
   id=""; [ $drc = 0 ] && id=$(printf '%s\n' "$out" | grep -xE "$ID_RE" | head -1)
@@ -37,7 +38,7 @@ redrive() {
     rm -f "$err"; return 2
   fi
   rm -f "$err"; echo "row=$id"
-  "$SSH" "$HOST" "export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH; wm-build run redrive $run --from $from$am --operator r7" 2>&1 | tail -3
+  "$SSH" "$HOST" "export PATH=\$HOME/.cargo/bin:\$HOME/.local/bin:\$PATH; wm-build run redrive $run --from $from$am$stp --operator r7" 2>&1 | tail -3
   local rc=${PIPESTATUS[0]}; echo "redrive $run --from $from rc=$rc row=$id"; return $rc
 }
 
