@@ -5,6 +5,7 @@
 # Remote mode (--host) runs over a FAKE ssh first on PATH (strips `-o BatchMode=yes <h>`, runs the rest as bash -c "$*" like a remote shell); the real ssh is never reached.
 # Plain bash, run from the repo root:  bash tests/rb-land-push.test.sh
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wrap="${RB_LAND_PUSH_UNDER_TEST:-$here/.local/bin/rb-land-push.sh}"   # a mutation proof points this at a throwaway copy
 T="$(mktemp -d "${TMPDIR:-/tmp}/rblp.XXXXXX")"; trap 'rm -rf "$T"' EXIT

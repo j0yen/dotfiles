@@ -14,6 +14,8 @@ assert_eq "$(jq -r '.config.tick_loaded_at|type' "$t")" "string" "tick row found
 if ! command -v strace >/dev/null || ! strace -o /dev/null -e trace=read true 2>/dev/null; then
   echo "NOT OK - strace unavailable, cannot count bytes read"; exit 1
 fi
+# the stand-in (fixture build only) is not the generator: the generator reads with -readonly, which every host sqlite3 serves, so count the host binary
+PATH="$(printf %s "$PATH" | sed -E 's#(^|:)[^:]*/hermetic-sqlite3\.[0-9]+(:|$)#\1#; s#^:##')"
 tr="$work/strace.out"
 strace -f -o "$tr" -e trace=read,pread64,readv "$GEN" --out "$t"
 bytes=$(awk '/ (read|pread64|readv)\(/ && $NF ~ /^[0-9]+$/ {s+=$NF; next} / = [0-9]+$/ {s+=$NF} END{print s+0}' "$tr")
