@@ -56,6 +56,18 @@ link() {
   fi
 }
 
+# A host-local environment.d file that already sets TMPDIR wins over the fleet default (RedBaron: /mnt/data/tmp/user);
+# the fleet file is not linked there. Files that resolve into this repo do not count.
+host_sets_tmpdir() {
+  local f dst="$home/.config/environment.d/05-tmpdir.conf"
+  for f in "$home"/.config/environment.d/*.conf; do
+    [[ -f "$f" && "$f" != "$dst" ]] || continue
+    [[ "$(readlink -f "$f")" == "$repo_root"/* ]] && continue
+    grep -q '^TMPDIR=' "$f" && return 0
+  done
+  return 1
+}
+
 # Walk every file under the repo (excluding .git/, dotfiles meta).
 while IFS= read -r -d '' src; do
   rel="${src#$repo_root/}"
@@ -66,8 +78,19 @@ while IFS= read -r -d '' src; do
     printf 'skip (claude-self or local-only): %s\n' "$rel"
     continue
   fi
+  if [[ "$rel" == .config/environment.d/05-tmpdir.conf ]] && host_sets_tmpdir; then
+    printf 'skip (host-local TMPDIR file wins): %s\n' "$rel"
+    continue
+  fi
   link "$src" "$home/$rel"
 done < <(find "$repo_root" -type f -print0)
+
+# fleet TMPDIR contract (.config/environment.d/05-tmpdir.conf): the target dir must exist, mode 700.
+if [[ $DRY -eq 1 ]]; then
+  printf 'would run: mkdir -p %s/.cache/tmp && chmod 700 %s/.cache/tmp\n' "$home" "$home"
+else
+  mkdir -p "$home/.cache/tmp" && chmod 700 "$home/.cache/tmp"
+fi
 
 # fleet-sync post-apply check of the shared watcher lib: writes ~/.local/state/watchers/_lib.json
 # (sha, bash -n, source test, every discovered consumer's --selftest). Its exit code is install.sh's, so
