@@ -207,7 +207,7 @@ if not rerr:
 rows.sort(key=lambda r: r["_t"])
 
 out = {"active": False, "run_id": None, "refusal": None, "refused_at": None, "read_at": iso(now),
-       "source": src, "hand_slots": 0, "parts": [], "exempt": exempt, "unknown_since": None}
+       "source": src, "hand_slots": 0, "parts": [], "exempt": exempt, "unknown_since": None, "read_error": None}
 line = None
 # unknown_since: when the journal first became unreadable (fleet-dash warns after 10 min); carried while reads keep failing
 unk0 = (prev or {}).get("unknown_since") if (prev or {}).get("source") in ("unknown", "stale-ssh") else None
@@ -228,16 +228,17 @@ def blind_origin():
 skip_write = False
 
 if rerr:
+    rerr1 = " ".join(rerr.split())[:200]
     ok_prev = False
     if prev and prev.get("active"):
         try: ok_prev = (now - pts(prev["read_at"])).total_seconds() < CEIL
         except Exception: ok_prev = False
     if ok_prev:
-        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = blind_origin()
+        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = blind_origin(); out["read_error"] = rerr1
         age = int((now - pts(prev["refused_at"] or prev["read_at"])).total_seconds())
         line = "HOLD run=%s refusal=%s age_s=%d hand_slots=%s source=stale-ssh" % (out.get("run_id"), out.get("refusal"), age, out.get("hand_slots"))
     else:
-        out["source"] = "unknown"; out["unknown_since"] = blind_origin()
+        out["source"] = "unknown"; out["unknown_since"] = blind_origin(); out["read_error"] = rerr1
         line = "OK unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
         age_s = int((now - pts(out["unknown_since"])).total_seconds())
         # fail-closed (shu): only a spawn gate refuses; --probe-only (timer) and --exempt (--no-cargo) accept blindness.
