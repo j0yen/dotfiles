@@ -69,6 +69,13 @@ while IFS= read -r -d '' src; do
   link "$src" "$home/$rel"
 done < <(find "$repo_root" -type f -print0)
 
+# fleet TMPDIR contract (.config/environment.d/92-tmpdir.conf): the target dir must exist, mode 700.
+if [[ $DRY -eq 1 ]]; then
+  printf 'would run: mkdir -p %s/.cache/tmp && chmod 700 %s/.cache/tmp\n' "$home" "$home"
+else
+  mkdir -p "$home/.cache/tmp" && chmod 700 "$home/.cache/tmp"
+fi
+
 # fleet-sync post-apply check of the shared watcher lib: writes ~/.local/state/watchers/_lib.json
 # (sha, bash -n, source test, every discovered consumer's --selftest). Its exit code is install.sh's, so
 # fleet-sync reports "post-apply FAILED" when the lib or a consumer is broken; the links above are already in place.
