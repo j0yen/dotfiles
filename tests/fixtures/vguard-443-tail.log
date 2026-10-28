@@ -1,0 +1,30 @@
+SKIPPED [1] tests/fdh1_measured_parity_test.py:250: SYNTHORG_FD_REAL_PAIR (tenant data) not set
+SKIPPED [1] tests/fdpin_snapshot_generator_test.py:97: SYNTHORG_FD_RECS (the held store root, tenant data) not set
+SKIPPED [1] tests/fdrs_replay_stable_test.py:391: SYNTHORG_FD_RECS (tenant data) not set
+SKIPPED [1] tests/iwk_ac1_parse_live_doc_test.py:29: live prod fetch; set SYNTHORG_IWK_LIVE=1
+SKIPPED [1] tests/fcrt_ac3_ac4_edge_test.py:52: no caddy binary on PATH (hub carries caddy v2.11.4)
+SKIPPED [1] tests/test_cli_backend.py:354: real-claude probe: set SYNTHORG_TESTS_ALLOW_REAL_CLI=1 to run it
+SKIPPED [1] tests/test_acceptance.py:1188: AC-22 is MAY-level and out of Tranche D's scope; org topology is fixed at runtime.
+SKIPPED [1] tests/test_acceptance.py:1193: AC-23 is MAY-level and out of Tranche D's scope; only the CEO seat is human in v1.
+SKIPPED [1] tests/test_acceptance.py:1198: AC-24 is MAY-level and out of Tranche D's scope; no scenario scripting exists yet.
+SKIPPED [1] tests/test_acceptance.py:1203: AC-25 is MAY-level and out of Tranche D's scope; market.CalibrationReport is a documented stub with no reference set wired in.
+SKIPPED [1] tests/test_consumer_corpus.py:241: /tmp/x/runs/mcp-host-project-discover/market/panel-composition.yaml not present in this checkout
+SKIPPED [2] tests/wtp_support.py:43: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/test_golden.py:163: SYNTHORG_LOAD_GUARD=1: 1-minute load average 15.17 exceeds core count 8
+SKIPPED [1] tests/test_model_ladder_refresh.py:80: real-claude probe: set SYNTHORG_TESTS_ALLOW_REAL_CLI=1 to run it
+SKIPPED [1] tests/wtp_ac11_ranks_integration_specialist_above_rapid_prototyper_test.py:51: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac12_dream_context_deferred_test.py:21: PRD-mcphost-wtp-signal Requirement 8 [P2]/AC-12: no digest/dream-context assembly channel exists in this repo to carry wtp_weight alongside baseline.json - deferred per the PRD's own instruction, not implemented.
+SKIPPED [1] tests/wtp_ac1_all_tasks_and_segments_graded_test.py:26: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac1_all_tasks_and_segments_graded_test.py:43: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac1_all_tasks_and_segments_graded_test.py:63: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac2_corpus_and_composition_byte_identical_test.py:23: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac3_nonzero_grade_has_a_quote_test.py:24: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac3_nonzero_grade_has_a_quote_test.py:40: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac8_determinism_test.py:21: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac8_determinism_test.py:43: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+SKIPPED [1] tests/wtp_ac9_reference_gradings_test.py:87: /tmp/x/runs/mcp-host-project-discover not present in this checkout (gitignored run-local output)
+6011 passed, 28 skipped, 1 xfailed in 530.83s (0:08:50)
+WM-VERIFY HEAD=c01a5f98efd103c833032b11a3b99346b2d9e9fe
+WM-VERIFY CMD=uv sync -q --frozen && uv run ruff check . && uv run mypy src && uv run synthorg promise lint && uv run pytest -q -p no:cacheprovider tests/mec_mcphost_error_contract_test.py && uv run pytest -q -p no:cacheprovider -m "not flaky and not slow" -n 4
+WM-VERIFY DIRTY=0
+WM-VERIFY EXIT=0
