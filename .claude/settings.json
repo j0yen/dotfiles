@@ -493,6 +493,11 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/merge-gate-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/cargo-block-carbon.sh"
           },
           {
