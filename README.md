@@ -72,7 +72,7 @@ The shim dir must be on a seat's PATH and never on `wm-build.service`'s (the dae
 
 ## Live-clone guard
 
-`live-clone-guard.sh install <repo>` writes a pre-commit hook that refuses every commit in a checkout that must only move by fast-forward from its remote (a live clone); commits in worktrees of the same repo pass, and `LIVE_CLONE_COMMIT=1` overrides for a deliberate hand action. `install.sh` runs `live-clone-guard.sh ensure`, which reads `~/.config/live-clone-guard/repos` (one absolute path per line, `#` comments; per host, not shipped by this repo). carbon's file:
+`live-clone-guard.sh install <repo>` writes a pre-commit hook that refuses every commit in a checkout that must only move by fast-forward from its remote (a live clone); commits in worktrees of the same repo pass, and `LIVE_CLONE_COMMIT=1` overrides for a deliberate hand action. A repo with `core.hooksPath` set never reads `.git/hooks/`, so the hook is inert there unless `<hooksPath>/pre-commit` is executable and carries the line `# live-clone-guard-chain` (build-skill's `scripts/repo-hooks/pre-commit` chains to the repo hook): `check` exits 1 with `inert: ...`, and `ensure` prints `inert-hookspath` and exits 6 (install.sh's call stays non-fatal, the line shows in its log). `install.sh` runs `live-clone-guard.sh ensure`, which reads `~/.config/live-clone-guard/repos` (one absolute path per line, `#` comments; per host, not shipped by this repo). carbon's file:
 
 ```
 # live clones on carbon: never commit here; use a worktree + PR
