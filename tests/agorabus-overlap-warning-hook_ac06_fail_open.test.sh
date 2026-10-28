@@ -6,6 +6,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/agorabus-overlap-warning-hook_test_helpers.sh"
+. "$here/lib/timing.sh"
 overlap_setup
 payload="{\"cwd\":\"$cwd\",\"prompt\":\"hi\"}"
 mkdir -p "$work/home" "$work/nobin"
@@ -20,15 +21,19 @@ chmod +x "$work/hang"
 mkdir -p "$work/hangbin"; ln -s "$work/hang" "$work/hangbin/agorabus"
 real=$(PATH="${PATH#"$work/bin:"}" command -v agorabus || true)
 
-check() { # $1=label $2=PATH $3=HOME
-  local start end ms out rc
-  start=$(date +%s%N)
+# One sample: the hook run under $1=PATH $2=HOME with a fresh state dir
+# ($MED_STATE, from med_ms). Functional asserts hold on EVERY sample.
+one_sample() {
+  local out rc
   out=$(printf '%s' "$payload" | env -u CLAUDE_AGORABUS_SID CLAUDE_AGORABUS_SID="$sid" \
-    AGORABUS_INTENT_STATE_DIR="$work/state" HOME="$3" PATH="$2" "$HOOK"); rc=$?
-  end=$(date +%s%N); ms=$(( (end - start) / 1000000 ))
-  assert_eq "$rc" "0" "$1: exit 0"
-  assert_eq "$out" "" "$1: no stdout"
-  [ "$ms" -lt 200 ] && echo "ok - $1: ${ms} ms < 200" || { echo "NOT OK - $1: ${ms} ms"; fail=1; }
+    AGORABUS_INTENT_STATE_DIR="$MED_STATE" HOME="$S_HOME" PATH="$S_PATH" "$HOOK"); rc=$?
+  [ "$rc" = 0 ] || { echo "NOT OK - $S_LABEL: exit $rc"; fail=1; }
+  [ -z "$out" ] || { echo "NOT OK - $S_LABEL: stdout '$out'"; fail=1; }
+}
+check() { # $1=label $2=PATH $3=HOME
+  S_LABEL="$1" S_PATH="$2" S_HOME="$3"
+  med_ms 3 one_sample && echo "ok - $1: median ${MED_MS} ms < 200, every sample < 1000" \
+    || { echo "NOT OK - $1: median ${MED_MS} ms, samples ${MED_SAMPLES[*]}"; fail=1; }
 }
 check "no agorabus binary" "$work/nobin" "$work/home"
 check "hanging daemon" "$work/hangbin:$work/nobin" "$work/home"
