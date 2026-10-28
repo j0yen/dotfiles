@@ -12,13 +12,44 @@
 # (the branch owner re-commits clean); an unreadable list fails closed (ATTRIBUTION-UNCHECKED). RB_MERGE_ALLOW_BRANCH_TRAILERS=1 bypasses it (Joe-authorized legacy branches only) with a stderr note.
 # After the merge the merge commit's message is re-read; a hit prints ATTRIBUTION-LANDED <oid> on stderr and exits 3 (the merge already happened; this makes it loud, it does not revert).
 set -euo pipefail
-usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name>" >&2; exit 64; }
+usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name> [--handoff <aide d-id>]" >&2; exit 64; }
+handoff=""
+if [ $# -eq 5 ] && [ "$4" = "--handoff" ]; then handoff="$5"; set -- "$1" "$2" "$3"; fi
 [ $# -eq 3 ] || usage
 v="$1"; pr="$2"; repo="$3"
 case "$pr" in ''|*[!0-9]*) echo "rb-merge.sh: pr must be a number, got '$pr'" >&2; usage ;; esac
 case "$repo" in */*) ;; *) echo "rb-merge.sh: repo must be owner/name, got '$repo'" >&2; usage ;; esac
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
+
+# DISCOVERY CHAIN GUARD (r7 9:26 PM, ctl 382b, approval 51): r7 merged synthorg #449 from its own seat; r7 verifies and gates, the AIDE runs this script.
+# A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
+CHAIN_REPOS=(j0yen/synthorg)   # the ONE place the discovery chain repos are listed (no other dotfiles script keeps this set: hand-pr-land-driver HPLD_REPOS is the wider hand-PR set)
+chain_guard() {
+  local r in_chain=0
+  for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$repo" ] && in_chain=1; done
+  [ "$in_chain" = 1 ] || return 0
+  [ "${WM_SEAT:-}" = aide ] && return 0
+  if [ -n "$handoff" ]; then
+    local rows
+    if rows="$("$WM_DECIDE" list --since 30d --json 2>/dev/null)" && printf '%s' "$rows" | python3 -I -c '
+import json, re, sys
+hid, pr, repo = sys.argv[1:4]
+for row in json.load(sys.stdin):
+    if row.get("id") != hid:
+        continue
+    if row.get("agent") != "aide":
+        break
+    text = " ".join(str(v) for v in row.values())
+    if repo in text and re.search(r"(?:pr=|#)%s(?!\d)" % re.escape(pr), text):
+        sys.exit(0)
+    break
+sys.exit(1)' "$handoff" "$pr" "$repo"; then return 0; fi
+  fi
+  echo "rb-merge: REFUSED discovery chain PR $repo#$pr needs WM_SEAT=aide or --handoff <aide d-id> (approval 51)" >&2
+  exit 3
+}
+chain_guard
 
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams
