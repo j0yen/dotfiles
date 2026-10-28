@@ -62,5 +62,20 @@ check "$(grep -c '^wmd \(record\|merge-done\)' "$tmp/calls")" "0" "the guard onl
 run env -u WM_SEAT bash "$wrap" $V 7 j0yen/dotfiles
 check "$rc:$(grep -c '^wmd merge-gate' "$tmp/calls"):$(merges):$(wc -c <"$tmp/err")" "0:1:1:0" "g: non-chain repo, WM_SEAT unset -> today's path, unchanged"
 
+for sp in J0yen/Synthorg https://github.com/j0yen/synthorg j0yen/synthorg.git; do
+  run env -u WM_SEAT bash "$wrap" $V 449 "$sp"
+  check "$rc:$(merges):$(grep -c '^wmd merge-gate' "$tmp/calls")" "3:0:0" "n: spelling '$sp', WM_SEAT unset -> refused, no merge"
+done
+run env WM_SEAT=r7 STUB_ROWS="$(row aide 'j0yen/synthorg pr=12 and j0yen/mcphost pr=449')" bash "$wrap" $V 449 j0yen/synthorg --handoff $H
+check "$rc:$(merges)" "3:0" "o: split row (repo and pr=449 from different pairs) -> refused"
+run env WM_SEAT=r7 STUB_ROWS="$(row aide 'j0yen/synthorg xpr=449')" bash "$wrap" $V 449 j0yen/synthorg --handoff $H
+check "$rc:$(merges)" "3:0" "p: xpr=449 (no left boundary) -> refused"
+run env WM_SEAT=r7 STUB_ROWS="$(row aide 'handoff j0yen/synthorg#4')" bash "$wrap" $V 449 j0yen/synthorg --handoff $H
+check "$rc:$(merges)" "3:0" "q: row #4 vs PR 449 -> refused"
+run env WM_SEAT=r7 STUB_ROWS="$(row aide 'handoff J0yen/Synthorg#449')" bash "$wrap" $V 449 j0yen/synthorg --handoff $H
+check "$rc:$(merges)" "0:1" "r: mixed-case row J0yen/Synthorg#449 proceeds"
+run env WM_SEAT=r7 STUB_ROWS="$(row aide 'handoff j0yen/synthorg#449')" bash "$wrap" $V 449 https://github.com/J0yen/Synthorg.git --handoff $H
+check "$rc:$(merges)" "0:1" "s: URL spelling + valid handoff proceeds"
+
 echo "rb-merge-chain-guard: $n checks, fail=$fail"
 exit "$fail"
