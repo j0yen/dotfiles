@@ -6,6 +6,7 @@
 # testability knobs, so tests never touch the real ~/.cache/token-ledger or
 # ~/.claude/projects, run no live ssh, and stay hermetic/reproducible.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 
 TL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.local/bin/token-ledger"
 FIXTURES="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/ledgerday"
