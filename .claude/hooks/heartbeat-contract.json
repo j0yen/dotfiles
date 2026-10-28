@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "env": "WM_BUILD_PROGRESS",
+  "hand_dir": "~/.cache/rb-seat/coders",
+  "keys": [
+    "v",
+    "ts",
+    "msg",
+    "phase",
+    "what",
+    "pid",
+    "since",
+    "deadline",
+    "call"
+  ],
+  "msg_kinds": [
+    "heartbeat pre",
+    "heartbeat post",
+    "heartbeat tick",
+    "heartbeat stop"
+  ],
+  "tick_s": 300,
+  "deadline_clamp_s": 3600,
+  "default_tool_timeout_s": 120,
+  "nextest_budget_s": 600,
+  "compile_allowance_s": 900,
+  "source": "j0yen/wm-build docs/heartbeat-contract.json @ PENDING"
+}

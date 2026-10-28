@@ -401,6 +401,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/coder-heartbeat.sh stop",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Notification": [
@@ -591,6 +601,16 @@
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/coder-heartbeat.sh pre",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -665,6 +685,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/coder-heartbeat.sh post",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -709,6 +739,16 @@
             "command": "/home/jsy/.claude/scripts/procstat-cargo.sh end error",
             "timeout": 5,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/coder-heartbeat.sh post",
+            "timeout": 5
           }
         ]
       }
