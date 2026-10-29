@@ -33,7 +33,8 @@ run_check() {
     return 2
   fi
   [ -r "$LOG" ] || { echo "approval-check.sh: cannot read $LOG" >&2; return 1; }
-  local now line ts e out="" n=0 lid; now=$(date +%s)
+  local now line ts e out="" n=0 lid flags dups; now=$(date +%s)
+  dups=$(grep -E "$DATA_RE" "$LOG" | cut -d' ' -f1 | sort | uniq -d)
   while IFS= read -r line; do
     [[ "$line" =~ $DATA_RE ]] || continue
     lid="${line%% | *}"; lid="${lid#\#}"
@@ -41,7 +42,11 @@ run_check() {
     if [ -n "$idq" ] && [ "$lid" != "$idq" ]; then continue; fi
     if [ -n "$se" ] && [ -n "$e" ]; then [ "$e" -ge "$se" ] || continue; fi   # unparsed stamp: fail open, always included
     if [ -n "$pat" ]; then printf '%s\n' "$line" | grep -qiE -- "$pat" 2>/dev/null || continue; fi
-    if [ -n "$e" ]; then out+="age=$(( (now - e) / 60 ))m $line"$'\n'; else out+="age=? UNPARSED-STAMP $line"$'\n'; fi
+    flags=""
+    [ -n "$e" ] || flags="UNPARSED-STAMP "
+    [[ "$ts" =~ [0-9]:[0-9]x ]] && flags+="X-MINUTE-STAMP "
+    grep -qxF -- "#$lid" <<< "$dups" && flags+="DUPLICATE-NUMBER #$lid "
+    if [ -n "$e" ]; then out+="age=$(( (now - e) / 60 ))m $flags$line"$'\n'; else out+="age=? $flags$line"$'\n'; fi
     n=$((n+1))
   done < "$LOG"
   [ "$n" -gt 0 ] || return 1

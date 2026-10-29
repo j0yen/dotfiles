@@ -14,8 +14,8 @@ good_ts=$(date -d '10 minutes ago' '+%F %-I:%M %p %Z')
 chmod 600 "$f"
 out=$(APPROVALS_FILE="$f" "$CHK" --since '1 hour ago'); rc=$?
 [ $rc -eq 0 ] && ok "since exit 0" || bad "since rc=$rc"
-echo "$out" | grep -q '^age=? UNPARSED-STAMP #2 | .*1:5x PM' && ok "bad row prints UNPARSED-STAMP and is in --since window" || bad "bad row missing: $out"
+echo "$out" | grep -q '^age=? UNPARSED-STAMP \(X-MINUTE-STAMP \)\?#2 | .*1:5x PM' && ok "bad row prints UNPARSED-STAMP and is in --since window" || bad "bad row missing: $out"
 echo "$out" | grep -q '^age=[0-9]*m #1 | .*good row' && ok "good row unchanged" || bad "good row changed: $out"
 echo "$out" | grep -c UNPARSED-STAMP | grep -qx 1 && ok "good row not flagged" || bad "flag count"
-out=$(APPROVALS_FILE="$f" "$CHK"); echo "$out" | grep -q 'UNPARSED-STAMP #2' && ok "no-window read includes bad row" || bad "no-window"
+out=$(APPROVALS_FILE="$f" "$CHK"); echo "$out" | grep -q 'UNPARSED-STAMP \(X-MINUTE-STAMP \)\?#2' && ok "no-window read includes bad row" || bad "no-window"
 echo "pass=$pass fail=$fail"; [ $fail -eq 0 ]
