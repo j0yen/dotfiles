@@ -3,7 +3,7 @@
 # (premise + expiry in the unit Description/RuntimeMaxSec). Rings the seat when the turn ends.
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
-# gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
+# gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh), tooling-budget 4,
 # spawn-hold 76, spec-lint 73, STEP 0 75.
 # env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests).
@@ -23,6 +23,11 @@ if ! pl_msg=$(rb_prompt_pair_lint "$pf" 2>&1 >/dev/null); then
   pl_txt=$(sed -n "$(printf '%s\n' "$pl_msg" | head -n 1 | sed -n 's/^line \([0-9]*\):.*/\1/p')p" "$pf" | cut -c1-160)
   echo "REFUSED pair-lint $pf: $(printf '%s\n' "$pl_msg" | head -n 1) | text: $pl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED pair-lint: $pl_txt" || true; exit 77
 fi
+# tooling-budget gate (Joe 10-29 approvals #62): a brief that clones a tooling repo (swarm-decide, dotfiles, wm-build) is refused (exit 4) at tooling_share >= 0.05; fail-open on a missing/stale ledger file (.local/lib/tooling-budget.sh).
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tooling-budget.sh"
+tb_out=$(tb_check "$pf"); tb_rc=$?
+[ -z "$tb_out" ] || echo "$tb_out" >&2
+if [ "$tb_rc" = 4 ]; then echo "$tb_out" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n $tb_out" || true; exit 4; fi
 # spawn-hold gate (CSH, replaces the interim freeze-file gate of row 2041): EVERY spawn asks rb-spawn-hold.sh
 # whether a daemon redrive on redbaron is memory-refused; HOLD -> exit 76 + report + seat-event. The only exemption is
 # --no-cargo (a prompt that never runs cargo on redbaron); it is logged in the seat-event and as `exempt` in spawn-hold.json.

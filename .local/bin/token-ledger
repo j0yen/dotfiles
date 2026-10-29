@@ -66,7 +66,15 @@
 #                        share_denominator, excluded_roles_re,
 #                        per_role:{role:weighted}} for today (build_share is a
 #                        percent with one decimal, null when per_role is
-#                        unknown); for the fleet dashboard to pick up
+#                        unknown); for the fleet dashboard to pick up. Also
+#                        tooling_share (fraction, 4 dp; null when the window
+#                        has no tokens), tooling_weighted, tooling_window_days
+#                        (7), tooling_budget (0.05): tooling = sessions whose
+#                        transcript cwd is a git checkout with origin
+#                        j0yen/{swarm-decide,dotfiles,wm-build}; unattributed
+#                        sessions are NOT tooling. today-summary.txt gets
+#                        `ALARM tooling_share=X.X % >= 80 % of 5 % budget`
+#                        at >= 4 %. Sidecar tooling-daily.tsv (date, weighted).
 #
 # Testability knobs (env vars; all optional, all default to the real
 # thing): TOKEN_LEDGER_STATE_DIR, TOKEN_LEDGER_JSONL_ROOT,
@@ -236,6 +244,25 @@ file_role_prior() {
   echo "${r:-interactive}"
 }
 
+# file_tooling FILE -> "1" when the transcript's session cwd (first .cwd field in its first 60 lines) is a git checkout whose
+# origin is one of the TOOLING_REPOS_RE repos (tooling budget, Joe 10-29 approvals #62), else "". A session with no cwd field, a
+# cwd that no longer exists, no origin, or any other origin is NOT tooling. Cached per cwd.
+TOOLING_REPOS_RE='(^|[/:])j0yen/(swarm-decide|dotfiles|wm-build)(\.git)?/?$'
+declare -A TOOLING_BY_CWD=()
+file_tooling() {
+  local cwd url
+  cwd="$(head -n 60 -- "$1" 2>/dev/null | jq -r 'select(.cwd != null) | .cwd' 2>/dev/null | head -n1)"
+  [ -n "$cwd" ] || return 0
+  if [ -z "${TOOLING_BY_CWD[$cwd]+x}" ]; then
+    TOOLING_BY_CWD["$cwd"]=""
+    if [ -d "$cwd" ]; then
+      url="$(git -C "$cwd" remote get-url origin 2>/dev/null || true)"
+      [[ "$url" =~ $TOOLING_REPOS_RE ]] && TOOLING_BY_CWD["$cwd"]=1
+    fi
+  fi
+  printf '%s' "${TOOLING_BY_CWD[$cwd]}"
+}
+
 # gather_raw SINCE -> this host's own raw (non-deduped) records as NDJSON,
 # tagged host=$LOCAL_HOST. The mtime prefilter only skips whole files that
 # could not possibly hold anything in range; the real per-record window
@@ -246,15 +273,16 @@ gather_raw() {
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
   load_seats
   load_aide_sids
-  local f role sidf since prior
+  local f role sidf since prior tool
   while IFS= read -r -d '' f; do
     role="$(file_role "$f")"
     since=0; prior="$role"; sidf="$(basename -- "$f" .jsonl)"
     if [[ "$role" == seat:aide:* ]] && [[ "$f" != */subagents/* ]] && [ "${SINCE_BY_SID[$sidf]:-0}" -gt 0 ] 2>/dev/null; then
       since="${SINCE_BY_SID[$sidf]}"; prior="$(file_role_prior "$f")"
     fi
-    jq -c --arg host "$LOCAL_HOST" --arg role "$role" --arg prior "$prior" --argjson since "$since" \
-      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role: (if \$since > 0 and ((.ts | sub(\"\\\\.[0-9]+\"; \"\") | try fromdateiso8601 catch \$since) < \$since) then \$prior else \$role end)}" -- "$f" 2>/dev/null
+    tool="$(file_tooling "$f")"
+    jq -c --arg host "$LOCAL_HOST" --arg role "$role" --arg prior "$prior" --argjson since "$since" --arg tool "$tool" \
+      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + (if \$tool == \"1\" then {tooling: true} else {} end) + {host:\$host, role: (if \$since > 0 and ((.ts | sub(\"\\\\.[0-9]+\"; \"\") | try fromdateiso8601 catch \$since) < \$since) then \$prior else \$role end)}" -- "$f" 2>/dev/null
   done < <(find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null)
 }
 
@@ -429,6 +457,7 @@ agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
         | map({role: .[0].role, w: ([.[] | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add | round)})
         | sort_by(.role)
       ),
+      tooling: ([.[] | select(.tooling == true) | (.in + .cw*1.25 + .cr*0.1 + .out*5)] | add // 0 | round),
       ids: [.[].id]
     })
   | map(. + {weighted: ([.per_model[].w] | add // 0)})
@@ -436,6 +465,7 @@ agg_json="$(jq -n --arg since "$since" --arg until "$until_" '
 ' "$records_file")"
 
 declare -A old_rows
+declare -A tool_rows   # date -> tooling weighted for the days this run recomputed (sidecar tooling-daily.tsv)
 if [ -f "$LEDGER_TSV" ]; then
   while IFS=$'\t' read -r r_date r_rest; do
     [ "$r_date" = "date" ] && continue
@@ -460,6 +490,7 @@ while IFS= read -r day_obj; do
   d_perhost="$(jq -r '[.per_host[] | "\(.host)=\(.w)"] | join(" ")' <<<"$day_obj")"
   d_compactions="$(jq -r '.compactions' <<<"$day_obj")"
   d_perrole="$(jq -r '[.per_role[] | "\(.role)=\(.w)"] | join(";")' <<<"$day_obj")"
+  tool_rows["$d_date"]="$(jq -r '.tooling // 0' <<<"$day_obj")"
   old_rows["$d_date"]="$d_date"$'\t'"$d_permodel"$'\t'"$d_weighted"$'\t'"$d_status"$'\t'"$d_complete"$'\t'"$hosts_csv"$'\t'"$missing_csv"$'\t'"$generated"$'\t'"$d_split"$'\t'"$d_perhost"$'\t'"$d_compactions"$'\t'"$d_perrole"
   jq -r --arg d "$d_date" '.ids[] | "\(.)\t\($d)"' <<<"$day_obj" >> "$new_index_entries"
 done < <(jq -c '.[]' <<<"$agg_json")
@@ -552,16 +583,43 @@ else
   summary="$summary · build_share n/a"
 fi
 
+# ---- tooling_share (Joe 10-29 approvals #62, goal.md TOOLING BUDGET): weighted tokens of sessions whose cwd is a swarm-decide /
+# dotfiles / wm-build checkout, over the trailing TOOLING_WINDOW_DAYS days ending today, / ALL weighted tokens of the same days.
+# Numerator from the sidecar tooling-daily.tsv (date, weighted; upserted per recomputed day, so days before this feature shipped
+# count 0 until re-run with --day), denominator from ledger.tsv col 3. Alarm at 80 % of the budget; the coder-spawn refusal at
+# 100 % lives in .local/lib/tooling-budget.sh.
+TOOLING_WINDOW_DAYS=7
+TOOLING_BUDGET=0.05
+TOOLING_DAILY_TSV="$STATE_DIR/tooling-daily.tsv"
+tmp_tool="$STATE_DIR/.tooling-daily.tsv.tmp.$$"
+{
+  for d in "${!tool_rows[@]}"; do printf '%s\t%s\n' "$d" "${tool_rows[$d]}"; done
+  [ -f "$TOOLING_DAILY_TSV" ] && cat -- "$TOOLING_DAILY_TSV"
+} 2>/dev/null | awk -F'\t' 'NF>=2 && !($1 in seen){seen[$1]=1; print}' | sort > "$tmp_tool"
+mv -- "$tmp_tool" "$TOOLING_DAILY_TSV"
+tool_from="$(date -u -d "$today_date -$((TOOLING_WINDOW_DAYS - 1)) day" +%F)"
+tool_w="$(awk -F'\t' -v a="$tool_from" -v b="$today_date" '$1>=a && $1<=b{s+=$2} END{printf "%d", s}' "$TOOLING_DAILY_TSV")"
+tool_den="$(awk -F'\t' -v a="$tool_from" -v b="$today_date" '$1>=a && $1<=b && $1!="date"{s+=$3} END{printf "%d", s}' "$LEDGER_TSV")"
+tool_share="null"; tool_alarm=""
+if [ "${tool_den:-0}" -gt 0 ] 2>/dev/null; then
+  tool_share="$(awk -v t="$tool_w" -v d="$tool_den" 'BEGIN{printf "%.4f", t/d}')"
+  if awk -v s="$tool_share" -v b="$TOOLING_BUDGET" 'BEGIN{exit !(s >= 0.8*b)}'; then
+    tool_alarm="ALARM tooling_share=$(awk -v s="$tool_share" 'BEGIN{printf "%.1f", s*100}') % >= 80 % of 5 % budget"
+  fi
+fi
+
 tmp_summary="$STATE_DIR/.today-summary.txt.tmp.$$"
-{ printf '%s\n' "$summary"; [ -n "$bs_alarm" ] && printf '%s\n' "$bs_alarm"; [ -n "$lane_alarms" ] && printf '%s\n' "$lane_alarms"; true; } > "$tmp_summary"
+{ printf '%s\n' "$summary"; [ -n "$bs_alarm" ] && printf '%s\n' "$bs_alarm"; [ -n "$lane_alarms" ] && printf '%s\n' "$lane_alarms"; [ -n "$tool_alarm" ] && printf '%s\n' "$tool_alarm"; true; } > "$tmp_summary"
 mv -- "$tmp_summary" "$SUMMARY_TXT"
 
 tmp_bs="$STATE_DIR/.build-share.json.tmp.$$"
 jq -n --arg date "$today_date" --argjson share "$bs_json_share" \
       --argjson build "${t_build:-0}" --argjson total "${t_weighted:-0}" --arg pr "$t_perrole" --arg roles "$BUILD_ROLES_RE" \
-      --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" --argjson lanes "${lanes_json:-{\}}" '
+      --argjson excl "${t_excl:-0}" --argjson denom "${t_denom:-0}" --arg xroles "$EXCLUDE_ROLES_RE" --argjson lanes "${lanes_json:-{\}}" \
+      --argjson tshare "$tool_share" --argjson tw "${tool_w:-0}" --argjson twin "$TOOLING_WINDOW_DAYS" --argjson tbud "$TOOLING_BUDGET" '
   {date: $date, build_share: $share, build_weighted: $build, total_weighted: $total, build_roles_re: $roles,
-   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles}
+   excluded_weighted: $excl, share_denominator: $denom, excluded_roles_re: $xroles,
+   tooling_share: $tshare, tooling_weighted: $tw, tooling_window_days: $twin, tooling_budget: $tbud}
   + (if ($lanes | length) > 0 then {aide_lanes: $lanes} else {} end)
   + {per_role: ($pr | split(";") | map(select(length > 0) | split("=") | {(.[0]): (.[1] | tonumber)}) | add // {})}' \
   > "$tmp_bs" && mv -- "$tmp_bs" "$BUILD_SHARE_JSON"

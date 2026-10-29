@@ -55,7 +55,8 @@ rm -f "$state"/today-summary.txt "$state"/build-share.json
 env AIDE_LANE_ALARM_PCT=50 "$work/token-ledger.origin" >/dev/null 2>&1
 cmp -s "$work/new-summary.txt" "$state/today-summary.txt"; assert_eq "$?" "0" "main-only day: today-summary.txt byte-identical to origin/main's token-ledger"
 # build_roles_re is the one intended difference (the new regex admits aide:<lane> roles; counting is identical with no lane rows): compare with it dropped
-cmp -s <(jq -S 'del(.build_roles_re)' "$work/new-bs.json") <(jq -S 'del(.build_roles_re)' "$state/build-share.json"); assert_eq "$?" "0" "main-only day: build-share.json identical to origin/main's token-ledger except build_roles_re"
+# the four tooling_* keys (tooling budget, approvals #62) are additive and absent from a pre-merge origin/main: dropped from both sides like build_roles_re
+cmp -s <(jq -S 'del(.build_roles_re, .tooling_share, .tooling_weighted, .tooling_window_days, .tooling_budget)' "$work/new-bs.json") <(jq -S 'del(.build_roles_re, .tooling_share, .tooling_weighted, .tooling_window_days, .tooling_budget)' "$state/build-share.json"); assert_eq "$?" "0" "main-only day: build-share.json identical to origin/main's token-ledger except build_roles_re + tooling_*"
 # build lane at 60 %: alarms aide_lane build (main 40 % does not)
 rm -rf "$state"/* "$jsonl"/*; printf 'sid-m\nsid-b build since=%s\n' "$T0" >"$TOKEN_LEDGER_AIDE_SIDS"
 usr $D/sid-m.jsonl 2026-09-12T07:00:00Z; rec $D/sid-m.jsonl a1 2026-09-12T09:00:00Z 40000000
