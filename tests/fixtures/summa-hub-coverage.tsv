@@ -1,0 +1,32 @@
+# 30 most frequent keyword shapes in the real lookups.jsonl (command: tests/fixtures/summa-hub-coverage-gen.sh <ledger>).
+# columns: keywords <TAB> hub title when v2 emits exactly that one hub AND it is the judged subject; NO-HIT for a probe prompt; else MISSING-HUB (zero, several, or the wrong hub) <TAB> judged subject hub (informational)
+agent build minute operator running timer	MISSING-HUB	Operator Seats
+conflict home land local resolve state	MISSING-HUB	Landing Train
+agent branch build documents home prds	MISSING-HUB	PRD Pipeline
+agent autobuilder produce receipt reviewer stage	MISSING-HUB	MISSING-HUB
+reply single word	NO-HIT	NOT-A-SUBJECT
+branch build home local mcphost state	MISSING-HUB	mcphost
+conflict home local rebase resolve state	MISSING-HUB	Landing Train
+acceptance adversarially call criterion mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially blob criterion mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially chain criterion mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially criterion mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially criterion feedback mcphost verify	MISSING-HUB	Verifier Protocol
+finished leaving pybuild session without worktree	MISSING-HUB	Fleet Skills
+acceptance adversarially criterion mcphost paged verify	MISSING-HUB	Verifier Protocol
+exfiltration implement mcphost proof secret worktree	MISSING-HUB	mcphost
+acceptance adversarially contract criterion mcphost verify	MISSING-HUB	Verifier Protocol
+attempt pass previous resolve second sonnet	MISSING-HUB	MISSING-HUB
+first full operator pressure proc sweep	MISSING-HUB	Operator Seats
+acceptance adversarially criterion healthz mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially criterion example mcphost verify	MISSING-HUB	Verifier Protocol
+adversarial surface synthorg tier truth verifier	MISSING-HUB	Synthorg
+acceptance adversarially criterion mcphost user verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially criterion mcphost table verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially child criterion mcphost verify	MISSING-HUB	Verifier Protocol
+adversarial allowed authenticated synthorg tools verifier	MISSING-HUB	Synthorg
+acceptance adversarially criterion data mcphost verify	MISSING-HUB	Verifier Protocol
+acceptance adversarially config criterion dotfiles verify	MISSING-HUB	Verifier Protocol
+image implement mcphost prewarm python runtime	MISSING-HUB	mcphost
+adversarial contract pair planted synthorg verifier	MISSING-HUB	Synthorg
+acceptance adversarially criterion docs mcphost verify	MISSING-HUB	Verifier Protocol
