@@ -39,9 +39,9 @@ run_check() {
     lid="${line%% | *}"; lid="${lid#\#}"
     ts="${line#* | }"; ts="${ts%% | *}"; e=$(date -d "$ts" +%s 2>/dev/null) || e=""
     if [ -n "$idq" ] && [ "$lid" != "$idq" ]; then continue; fi
-    if [ -n "$se" ]; then [ -n "$e" ] && [ "$e" -ge "$se" ] || continue; fi
+    if [ -n "$se" ] && [ -n "$e" ]; then [ "$e" -ge "$se" ] || continue; fi   # unparsed stamp: fail open, always included
     if [ -n "$pat" ]; then printf '%s\n' "$line" | grep -qiE -- "$pat" 2>/dev/null || continue; fi
-    if [ -n "$e" ]; then out+="age=$(( (now - e) / 60 ))m $line"$'\n'; else out+="age=?m $line"$'\n'; fi
+    if [ -n "$e" ]; then out+="age=$(( (now - e) / 60 ))m $line"$'\n'; else out+="age=? UNPARSED-STAMP $line"$'\n'; fi
     n=$((n+1))
   done < "$LOG"
   [ "$n" -gt 0 ] || return 1
