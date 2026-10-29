@@ -3,7 +3,7 @@
 # the `<` redirect of such a validate-only sudo. Feeds hook JSON on stdin, asserts deny (rc 2, one reason line) vs allow (rc 0, silent). Plain bash, from the repo root:
 #   bash tests/sudo-stdin-guard.test.sh
 # Every command below is only a JSON string fed to the hook; nothing here runs sudo or reads a real secret. The fixture pass file is /nonexistent/fixture-pass.
-# Three mutants of the hook (copied to a temp dir, sed-edited) are run through the same cases; a mutant that survives (no case reddens) is a FAIL.
+# Four mutants of the hook (copied to a temp dir, sed-edited) are run through the same cases; a mutant that survives (no case reddens) is a FAIL.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 hook="${SUDO_STDIN_GUARD_UNDER_TEST:-$here/.claude/hooks/sudo-stdin-guard.sh}"
@@ -15,6 +15,16 @@ pass=0; fail=0; failed=()
 run_case() {
   local h=$1 want=$2 cmd=$3 err rc
   err=$(jq -n --arg c "$cmd" '{tool_name:"Bash",tool_input:{command:$c}}' | bash "$h" 2>&1 >/dev/null); rc=$?
+  verdict "$want" "$rc" "$err"
+}
+# run_raw <hook> <want> <raw stdin payload> [PATH override]  -> same check, payload fed verbatim (no jq wrapping)
+run_raw() {
+  local h=$1 want=$2 raw=$3 p=${4:-$PATH} err rc
+  err=$(printf '%s' "$raw" | PATH=$p bash "$h" 2>&1 >/dev/null); rc=$?
+  verdict "$want" "$rc" "$err"
+}
+verdict() {
+  local want=$1 rc=$2 err=$3
   if [ "$want" = deny ]; then
     [ $rc = 2 ] && [[ "$err" == "sudo-stdin-guard: "* ]] && [ "$(printf '%s\n' "$err" | wc -l)" = 1 ]
   else
@@ -57,8 +67,22 @@ add allow allow-10 "sudo -Sp '' -v < $REAL"
 add allow allow-11a "sudo -S -p \"\" -v < $REAL && sudo -n tee -a /etc/fstab"
 add allow allow-11b "ssh redbaron 'sudo -S -p \"\" -v < $REAL && sudo -n systemctl daemon-reload'"
 
+# raw-payload cases (fail-closed on sudo): "<deny|allow>|<name>|<raw payload>"
+RAWCASES=()
+addr() { RAWCASES+=("$1|$2|$3"); }
+addr deny  fc-deny-1 '{not json sudo -S tee f'
+addr deny  fc-deny-2 '{"tool_name":"Bash","tool_input":{"cmd":"sudo -S tee f"}}'
+addr deny  fc-deny-3 '{"tool_name":"Bash","tool_input":{"command":["sudo","-S","tee","f"]}}'
+addr allow fc-allow-1 '{not json ls'
+addr allow fc-allow-2 ''
+addr allow fc-allow-3 '{"tool_name":"Bash","tool_input":{}}'
+
 replay() {  # replay <hook> -> prints the names of the cases that fail
   local h=$1 row want name cmd
+  for row in "${RAWCASES[@]}"; do
+    want=${row%%|*}; row=${row#*|}; name=${row%%|*}; cmd=${row#*|}
+    run_raw "$h" "$want" "$cmd" || echo "$name"
+  done
   for row in "${CASES[@]}"; do
     want=${row%%|*}; row=${row#*|}; name=${row%%|*}; cmd=${row#*|}
     run_case "$h" "$want" "$cmd" || echo "$name"
@@ -71,8 +95,23 @@ for row in "${CASES[@]}"; do
   else fail=$((fail+1)); failed+=("$name"); echo "NOT OK - $name ($want): $cmd"; fi
 done
 
-# mutants: each must redden at least one case; the list of reddened cases is printed
+for row in "${RAWCASES[@]}"; do
+  want=${row%%|*}; r=${row#*|}; name=${r%%|*}; cmd=${r#*|}
+  if run_raw "$hook" "$want" "$cmd"; then pass=$((pass+1)); echo "ok - $name ($want)"
+  else fail=$((fail+1)); failed+=("$name"); echo "NOT OK - $name ($want): $cmd"; fi
+done
+
+# no python3 on PATH: a temp bin dir holds only bash + cat; the shim must deny a payload containing sudo and allow one without
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/sudo-guard-mut.XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/nopy"; ln -s "$(command -v bash)" "$tmp/nopy/bash"; ln -s "$(command -v cat)" "$tmp/nopy/cat"
+for row in 'deny|nopy-deny|{"tool_name":"Bash","tool_input":{"command":"ls; sudo -S tee f"}}' 'allow|nopy-allow|{"tool_name":"Bash","tool_input":{"command":"ls /etc"}}'; do
+  want=${row%%|*}; r=${row#*|}; name=${r%%|*}; cmd=${r#*|}
+  if PATH=$tmp/nopy command -v python3 >/dev/null; then fail=$((fail+1)); failed+=("$name-python-present"); echo "NOT OK - $name: python3 still on the test PATH"; continue; fi
+  if run_raw "$hook" "$want" "$cmd" "$tmp/nopy"; then pass=$((pass+1)); echo "ok - $name ($want)"
+  else fail=$((fail+1)); failed+=("$name"); echo "NOT OK - $name ($want): $cmd"; fi
+done
+
+# mutants: each must redden at least one case; the list of reddened cases is printed
 mutate() {  # mutate <label> <sed-expr> <expected-case-prefix>...
   local label=$1 expr=$2; shift 2
   local m="$tmp/$label.sh" red
@@ -88,6 +127,7 @@ mutate() {  # mutate <label> <sed-expr> <expected-case-prefix>...
 mutate m1-no-quoted-scan 's/for sub in subs:  # RECURSE-LINE/for sub in []:/' deny-6 deny-7
 mutate m2-any-v-is-safe 's/^( *)safe = .*# SAFE-LINE/\1safe = "v" in acts/' deny-14
 mutate m3-no-rule2 's/bad = True  # RULE2-LINE/pass/' deny-9 deny-10
+mutate m4-fail-open '/FAILCLOSED-LINE/s/"sudo" in raw/False/g' fc-deny-1 fc-deny-2 fc-deny-3
 
 echo "PASS $pass / FAIL $fail"
 [ $fail = 0 ] || { printf 'failed: %s\n' "${failed[*]}"; exit 1; }

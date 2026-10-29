@@ -5,9 +5,12 @@
 #  2. the literal wm-sudo/pass may appear ONLY as the `<` redirect of such a validate-only stdin-sudo. `cat <path> |`, `< <path>` on any other command, or <path> as an argument is denied.
 # The whole command text is scanned by a quote-aware scanner (a `"` inside '...' is literal, \" escapes inside "...", backslash-newline continues); every quoted string is scanned again
 # (ssh h '...', bash -c "..."). An invocation ends at ; && || | & ( ) a backtick, a newline, or the end of its quote. Ambiguous shape = DENY.
-# Accepted gaps: variable indirection (s=sudo; $s -S ...), globbed pass paths (wm-sudo/pa*), heredoc bodies. Fails OPEN on a missing python3 or an unparseable payload.
+# Accepted gaps: variable indirection (s=sudo; $s -S ...), globbed pass paths (wm-sudo/pa*), heredoc bodies. FAIL-CLOSED on sudo: a missing python3, an empty or non-JSON payload, a missing or non-string tool_input.command (or a scanner crash) is
+# DENIED when the raw stdin payload contains the substring `sudo` (case-sensitive), and allowed otherwise.
 set -uo pipefail
-PY=$(command -v python3) || exit 0
+MSG='sudo-stdin-guard: sudo -S/--stdin may only validate. Use: sudo -S -p "" -v < ~/.config/wm-sudo/pass && sudo -n <cmd> (never pipe data into a sudo -S < passfile wrapper)'
+RAW=$(cat)
+PY=$(command -v python3) || { [[ $RAW == *sudo* ]] && { printf '%s\n' "$MSG" >&2; exit 2; }; exit 0; }
 PROG=$(cat <<'PYEOF'
 import json, os, re, sys
 PASS, OK, SEP = "wm-sudo/pass", {"v", "k", "K"}, set(";&|\n()`")
@@ -85,13 +88,15 @@ def scan(text):
     for sub in subs:  # RECURSE-LINE
         bad = scan(sub) or bad
     return bad
+raw = sys.stdin.buffer.read().decode("utf-8", "replace")
 try:
-    cmd = json.load(sys.stdin).get("tool_input", {}).get("command")
+    cmd = json.loads(raw)["tool_input"]["command"]
+    bad = scan(cmd) if isinstance(cmd, str) else "sudo" in raw  # FAILCLOSED-LINE
 except Exception:
-    sys.exit(0)
-if isinstance(cmd, str) and scan(cmd):
-    sys.stderr.write('sudo-stdin-guard: sudo -S/--stdin may only validate. Use: sudo -S -p "" -v < ~/.config/wm-sudo/pass && sudo -n <cmd> (never pipe data into a sudo -S < passfile wrapper)\n')
+    bad = "sudo" in raw  # FAILCLOSED-LINE
+if bad:
+    sys.stderr.write(sys.argv[1] + "\n")
     sys.exit(2)
 PYEOF
 )
-exec "$PY" -I -c "$PROG"
+exec "$PY" -I -c "$PROG" "$MSG" <<<"$RAW"
