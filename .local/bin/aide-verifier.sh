@@ -46,6 +46,7 @@
 # Every gate-lint temp dir is removed by one EXIT trap (it also fires on a refusal or a signal); refusals leave through die()/refuse() only.
 # Env: AIDE_VERIFIER_AGENT AIDE_VERIFIER_DIR (~/.local/state/aide-verifier) AIDE_VERIFIER_ROOM_CMD (carbon-room.sh) AIDE_VERIFIER_SYSTEMD_RUN AIDE_VERIFIER_SYSTEMCTL
 #      AIDE_VERIFIER_WM_DECIDE AIDE_VERIFIER_BELL (seat-event.sh) AIDE_VERIFIER_TEMPLATE (a template file with {{PLACEHOLDERS}}; tests) AIDE_VERIFIER_CLAUDE
+#      AIDE_VERIFIER_SUITE_HOST (the suite runs on that host via hpld-fetch-verify.sh, never here; carbon/localhost/this host refuse)
 #      AIDE_VERIFIER_OAUTH_CONF AIDE_VERIFIER_UNIT_PATH (the PATH given to the unit) AIDE_VERIFIER_GATE_ROOT AIDE_VERIFIER_CGROUP_FILE (both tests only)
 # Exit: 0 ok / 1 systemd-run failed / 2 lint or usage or ceiling reached / 3 no room / 4 no verdict row / 5 merge-gate FAIL / 6 wait timeout (queue or lock) / 7 gate passed, row not recorded / 9 bad SLOT_CEIL or PEAK_MB (selftest only) / 10 429 breaker tripped / 11 not head-of-line.
 # Never runs the real claude itself (only the generated launch.sh does, under the unit), never merges, never prints a token (output is redacted).
@@ -168,7 +169,7 @@ STEPS
 3. Attribution: `gh api repos/{{REPO}}/pulls/{{PR}}/commits --paginate -q '.[].commit.message'` and `gh pr view {{PR}} --repo {{REPO}} --json body -q .body`; grep each with the anchored case-insensitive regex `^[[:space:]]*(co-authored-by:|generated with)`; both counts must be 0.
 4. Suite under the LIVE wrapper from inside the clone as ONE quoted string. The wrapper ~/.local/bin/wm-verify-run has NO --help flag: read its header first; it runs `bash -c` on its single argument and appends WM-VERIFY HEAD/CMD/DIRTY/EXIT lines; the log lands in ~/.local/state/swarm-decide/verify/. Shape:
    cd $d/repo && ~/.local/bin/wm-verify-run {{SUITE_Q}}
-   The G3 token is `{{TOKEN}}`. How merge-gate G3 reads it (wm_decide/mergegate.py g3_missing): a token ending in ` EXIT=0` passes when the log's `WM-VERIFY EXIT=0` trailer is present AND the `WM-VERIFY CMD=` trailer contains the text before ` EXIT=0`, so it does NOT have to appear as a literal body line; any other token must appear in a body line. The wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}} If anything fails: STOP, report the failing names, record NO verdict.
+   The G3 token is `{{TOKEN}}`. How merge-gate G3 reads it (wm_decide/mergegate.py g3_missing): a token ending in ` EXIT=0` passes when the log's `WM-VERIFY EXIT=0` trailer is present AND the `WM-VERIFY CMD=` trailer contains the text before ` EXIT=0`, so it does NOT have to appear as a literal body line; any other token must appear in a body line. The wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}}{{REMOTE}} If anything fails: STOP, report the failing names, record NO verdict.
 5. EVIDENCE BUNDLE (write-time checks V1-V3 read it; the grader sees only its sha256, the last 20 lines and your quoted lines, so evidence missing from the attached file does not exist):
    a. ONE artifact must contain ALL the evidence you cite: full per-test output, result.json content, mutation runs. Never `tail -N` or `grep` evidence down to a summary. Put extra evidence FIRST and the wm-verify-run log LAST so its WM-VERIFY trailer stays in the final lines: `cat <extra evidence files> <log path> > {{DIR}}/bundle.log` (just <log path> when there is no extra evidence). Attach the bundle, not the bare log.
    b. QUOTE: copy 1 to 3 lines VERBATIM from the bundle (for example the suite's `ALL PASS files=N` line) and pass each as `--quote "<line>"`. Prove each with `grep -cF -- "<line>" {{DIR}}/bundle.log` (must print 1 or more) BEFORE recording. A quote is an exact substring of the WHOLE bundle, never a regex and never reworded.
@@ -179,7 +180,7 @@ STEPS
    wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach {{DIR}}/bundle.log --quote "<verbatim line 1>" [--quote "<verbatim line 2>"] --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: scope=<full|the -k/subset you ran>; fresh clone == head; <a count copied from one log line: write it as N passed (or ran=N pass=N) ONLY with an N that a log line shows as 'N passed', 'pass=N' or 'Ran N tests'; merge-gate G4 refuses any count claim it cannot find in the log, so if the log has no such line write 'all pass, 0 FAIL' and no number> via wm-verify-run ({{TOKEN}}); attribution 0/0" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
    The 'ungradable:' line is informational; report any refusal verbatim.
 
-HARD CONSTRAINTS: never kill by pattern: no pkill, no killall, no `kill` with a -f or name/pattern argument, no `pgrep|xargs kill` (a pkill -f 'wm-verify-run' hit every seat's suite on carbon, 10-24 11:05 PM); you may kill only PIDs you started yourself, or stop your own unit with `systemctl --user stop {{AGENT}}-verifier-{{NAME}}`; never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
+HARD CONSTRAINTS: never kill by pattern: no pkill, no killall, no `kill` with a -f or name/pattern argument, no `pgrep|xargs kill` (a pkill -f 'wm-verify-run' hit every seat's suite on carbon, 10-24 11:05 PM); you may kill only PIDs you started yourself, or stop your own unit with `systemctl --user stop {{AGENT}}-verifier-{{NAME}}`; never merge or push; never run the real interactive claude; no ssh or scp of your own (the only exception is the one script step 4 names when it names one); no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
 
 FINAL OUTPUT (plain text, at most 15 lines): head, attribution counts, test counts + the token line, then exactly `LOG: <absolute log path>` and `VERDICT: <verdict row id>` on their own lines, refusals.
 TPL
@@ -191,7 +192,7 @@ render() {
   t="${t//'{{AGENT}}'/$AGENT}"; t="${t//'{{NAME}}'/$NAME}"; t="${t//'{{REPO}}'/$REPO}"; t="${t//'{{PR}}'/$PR}"; t="${t//'{{HEAD}}'/$HEAD}"
   t="${t//'{{GATED}}'/$GATED}"; t="${t//'{{TOKEN}}'/$TOKEN}"; t="${t//'{{DIR}}'/$DIR}"
   t="${t//'{{CLONE_URL}}'/$CLONE_URL}"; t="${t//'{{SUITE_Q}}'/$SUITE_Q}"
-  t="${t//'{{NOTES}}'/$NOTES_TXT}"; t="${t//'{{EXPECT}}'/$EXPECT_TXT}"
+  t="${t//'{{NOTES}}'/$NOTES_TXT}"; t="${t//'{{EXPECT}}'/$EXPECT_TXT}"; t="${t//'{{REMOTE}}'/$REMOTE_TXT}"
   printf '%s\n' "$t"
 }
 
@@ -354,6 +355,12 @@ cmd_launch() {
   DIR="$ROOT/$NAME"
   SUITE_Q="'${SUITE//\'/\'\\\'\'}'"
   NOTES_TXT=""; [ -z "$NOTES" ] || NOTES_TXT=" ($(printf '%s' "$NOTES" | tr '\n' ' '))"
+  REMOTE_TXT=""
+  if [ -n "${AIDE_VERIFIER_SUITE_HOST:-}" ]; then
+    case "$AIDE_VERIFIER_SUITE_HOST" in carbon|localhost|127.*|::1|"$(hostname 2>/dev/null)") die 2 "lint: AIDE_VERIFIER_SUITE_HOST=$AIDE_VERIFIER_SUITE_HOST is this host; carbon never runs a suite" ;; esac
+    [[ "$AIDE_VERIFIER_SUITE_HOST" =~ ^[A-Za-z0-9._-]+$ ]] || die 2 "lint: AIDE_VERIFIER_SUITE_HOST is not a host name"
+    REMOTE_TXT=" REMOTE SUITE (AIDE_VERIFIER_SUITE_HOST is set): do NOT run the suite here and skip the local wm-verify-run line above. Run exactly: ~/.local/bin/hpld-fetch-verify.sh $REPO $PR $HEAD --out $DIR --suite $SUITE_Q . It runs the suite on the suite host and prints LOG: <path> and EXIT: <n>. Exit 0 = log fetched and provenance OK (EXIT is the suite's verdict; the log is the wm-verify-run log for steps 5-6). Exit 5 = provenance mismatch or the PR head moved: STOP, record NO verdict. Exit 6 = unverified (ssh down or no log): STOP, record NO verdict, never call it a failure or a pass. Never run ssh or scp yourself."
+  fi
   EXPECT_TXT=""; [ -z "$EXPECT" ] || EXPECT_TXT=" Expected: $(printf '%s' "$EXPECT" | tr '\n' ' ')."
   local tpl rendered what
   if [ -n "${AIDE_VERIFIER_TEMPLATE:-}" ]; then tpl="$(cat "$AIDE_VERIFIER_TEMPLATE" 2>/dev/null)" || die 2 "lint: cannot read AIDE_VERIFIER_TEMPLATE"
@@ -453,7 +460,7 @@ cmd_launch() {
   jq -n --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$h}]}]}}' >"$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
   printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" >"$DIR/meta"
   # ---- start ----
-  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" ${AIDE_VERIFIER_SUITE_HOST:+--setenv=AIDE_VERIFIER_SUITE_HOST="$AIDE_VERIFIER_SUITE_HOST"} "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
@@ -991,6 +998,12 @@ F
     && grep -qF "wm-verify-run 'bash tests/run.sh; echo \"tests/*.test.sh EXIT=\$?\"'" "$D/prompt.md"; chk "prompt.md: head, gated id, token line, HARD CONSTRAINTS, anchored attribution regex, one quoted suite, verdict --what" $?
   [ -x "$D/launch.sh" ] && grep -q 'aide-verifier-ok1' "$D/launch.sh" && bash -n "$D/launch.sh"; chk "launch.sh is executable, names the unit, parses" $?
   grep -q '"$(cat "$D/prompt.md")"' "$D/launch.sh" && ! grep -qE 'bash -c|sh -c' "$D/launch.sh" && ! grep -qE ' -c ' "$T/sdrun.log"; chk "the prompt is read from the file by launch.sh, never passed through bash -c" $?
+  ! grep -q 'hpld-fetch-verify' "$D/prompt.md" && ! grep -q 'AIDE_VERIFIER_SUITE_HOST' "$T/sdrun.log"; chk "suite host unset: the prompt has no remote step and the unit gets no suite-host env" $?
+  rm -f "$T/sdrun.log"; out="$(AIDE_VERIFIER_SUITE_HOST=carbon L sh1 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"carbon never runs a suite"* ]] && [ ! -e "$T/sdrun.log" ]; chk "AIDE_VERIFIER_SUITE_HOST=carbon -> exit 2, nothing started" $?
+  out="$(AIDE_VERIFIER_SUITE_HOST=ryzen7 L sh2 "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 0 ] && grep -qF "~/.local/bin/hpld-fetch-verify.sh j0yen/dotfiles 7 $H --out $T/av/sh2 --suite 'bash tests/run.sh; echo \"tests/*.test.sh EXIT=\$?\"'" "$T/av/sh2/prompt.md" \
+    && grep -q -- '--setenv=AIDE_VERIFIER_SUITE_HOST=ryzen7 ' "$T/sdrun.log"; chk "AIDE_VERIFIER_SUITE_HOST=ryzen7: the prompt calls hpld-fetch-verify.sh with the quoted suite and the unit gets the env" $?
   grep -q ' launched unit=aide-verifier-ok1 ' "$D/state"; chk "state has a launched line" $?
   # ---- unit timeout + kill guard (TKG) ----
   grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-2400}" ' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh runs timeout with AIDE_VERIFIER_TIMEOUT_S default 2400, meta timeout_s=2400" $?

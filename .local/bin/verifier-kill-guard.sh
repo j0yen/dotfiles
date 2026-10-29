@@ -2,6 +2,7 @@
 # verifier-kill-guard.sh: PreToolUse(Bash) hook for aide-verifier units (registered only through the unit's own settings.json, so it never touches other sessions).
 # Denies (exit 2) a Bash command that kills by pattern, judged at COMMAND POSITION only (line start, or after ; && || | & $( ` and the prefixes xargs, timeout N, env, sudo, nohup):
 #   pkill, killall, xargs kill, and `kill` with any argument that is not a numeric PID, a signal flag, `--`, a negative process group, a plain $var, or $(cat <file>).
+# ssh/scp/sftp/rsync at command position are denied too (AIDE_VERIFIER_SUITE_HOST runs go through hpld-fetch-verify.sh, the one allowed invocation).
 # `bash -c '<cmd>'` is checked recursively. grep/echo/sed/git text that merely contains "kill", and `systemctl --user kill|stop`, are allowed.
 # Why: a verifier ran `pkill -f 'wm-verify-run'` on 10-24 11:05 PM and killed every seat's suite on carbon. Allowed: `kill 12345`, `kill -9 $pid`.
 set -u
@@ -84,6 +85,8 @@ def check(text, depth=0):
         base = toks[0].rsplit("/", 1)[-1]
         if base in ("pkill", "killall"):
             deny("pkill/killall")
+        if base in ("ssh", "scp", "sftp", "rsync"):
+            deny("ssh/scp: a verifier never opens a remote shell itself; the only remote step is ~/.local/bin/hpld-fetch-verify.sh")
         if base in ("bash", "sh", "dash", "zsh") and "-c" in toks:
             try:
                 real = shlex.split(orig)
