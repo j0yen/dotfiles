@@ -41,7 +41,7 @@ fi
 export HPLD_MODE="$MODE"
 exec python3 -I -c "$(sed -n '/^#PY-BEGIN$/,/^#PY-END$/p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed '1d;$d')"
 #PY-BEGIN
-import datetime as dt, json, os, re, shlex, subprocess, sys, time
+import datetime as dt, json, os, re, shlex, socket, subprocess, sys, time
 
 MODE = os.environ["HPLD_MODE"]
 HOME = os.path.expanduser("~")
@@ -63,6 +63,7 @@ T0 = time.monotonic()
 MAX_LAUNCHES, MAX_LAUNCH_FAILS = 2, 3
 AGENT, VIA = "coder:hand-pr-land-driver", "hand-pr-land-driver"
 SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; cargo repos never do
+SUITE_HOST = os.environ.get("AIDE_VERIFIER_SUITE_HOST", "")   # where aide-verifier.sh runs a SUITE_REPOS suite (hpld-fetch-verify.sh); carbon never does
 HEX40 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
 COMMIT_RE = re.compile(r"COMMIT=([0-9a-fA-F]{7,40})")
 KEY_RE = re.compile(r" k=(\S+)")
@@ -118,6 +119,11 @@ def suite_for(repo, tier, own_tests):
         own = " && uv run pytest -q -p no:cacheprovider " + " ".join(shlex.quote(t) for t in own_tests)
     sel = "" if tier == "full" else ' -m "not flaky and not slow"'
     return "%s%s && uv run pytest -q -p no:cacheprovider%s -n 2" % (pre, own, sel)
+
+
+def suite_host_bad():
+    h = SUITE_HOST.strip().lower()
+    return (not h or h in ("carbon", "localhost", "::1") or h.startswith("127.") or h == socket.gethostname().lower())
 
 
 def short(repo):
@@ -359,6 +365,11 @@ for repo in REPOS:
             k = "nosuite:%s" % pfx
             if k not in hp_keys:
                 actions.append(dict(base, act="ring-nosuite", key=k, msg="%s: GATED head %s has no unattended suite on carbon (cargo repo); verify it by hand on its build host" % (tag, live[:12])))
+            continue
+        if suite_host_bad():   # never a local verify: carbon does not run a suite (CLAUDE.md § Hosts)
+            k = "suitehost:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-suite-host-missing", key=k, msg="%s: GATED head %s not verified: AIDE_VERIFIER_SUITE_HOST is %s (must name the suite host, never carbon/localhost); set it in the driver unit env" % (tag, live[:12], SUITE_HOST or "unset")))
             continue
         if gate_failed or launches >= MAX_LAUNCHES or fails >= MAX_LAUNCH_FAILS:
             k = "stuck:%s" % pfx
