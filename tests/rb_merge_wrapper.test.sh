@@ -10,7 +10,11 @@ trap 'rm -rf "$tmp"' EXIT
 fail=0
 ok()  { echo "ok - rb-merge: $1"; }
 bad() { echo "NOT OK - rb-merge: $1"; fail=1; }
-check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3: got '$1', want '$2'"; fi; }
+check() { if [ -e "$tmp/tripwire" ]; then bad "$3: a real gh/wm-decide on PATH was called (tripwire)"; elif [ "$1" = "$2" ]; then ok "$3"; else bad "$3: got '$1', want '$2'"; fi; }
+# tripwire: PATH shims for the REAL gh / wm-decide; the stubs under test are reached only through WM_DECIDE_BIN / RB_MERGE_GH
+mkdir -p "$tmp/trip"
+for b in gh wm-decide; do printf '#!/bin/sh\ntouch "%s/tripwire"\nexit 99\n' "$tmp" > "$tmp/trip/$b"; chmod +x "$tmp/trip/$b"; done
+export PATH="$tmp/trip:$PATH" HOME="$tmp/home"; mkdir -p "$HOME"
 
 OID=a1b2c3d4e5f60123456789abcdef0123456789ab
 cat > "$tmp/wm-decide" <<'S'
@@ -23,6 +27,8 @@ case "$1" in
       fail) echo "G0 FAIL verdict=$2: final verdict is CORRECT" >&2; echo "G3 FAIL verdict=$2: no log" >&2; exit 2 ;;
     esac ;;
   merge-done) exit 0 ;;
+  list) [ "${STUB_LIST_RC:-0}" = 0 ] || exit "$STUB_LIST_RC"
+        printf '%s\n' "$STUB_LIST_JSON" ;;
 esac
 S
 cat > "$tmp/gh" <<'S'
@@ -48,8 +54,11 @@ esac
 exit "${STUB_GH_RC:-0}"
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
-export STUB_LOG="$tmp" STUB_OID="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
 V=d-20261022-140000-rb-abcd
+ROW='{"id":"%s","kind":"verdict","agent":"r7","what":"CONFIRM x COMMIT=%s"%s}'
+DEFAULT_LIST="[$(printf "$ROW" $V $OID ',"via":"verifier"')]"
+export STUB_LIST_JSON="$DEFAULT_LIST"
+export STUB_LOG="$tmp" STUB_OID="$OID" STUB_V="$V" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
 
 : > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; rc=$?
 check "$rc" "0" "a passing gate merges"
@@ -100,6 +109,24 @@ check "$rc:$(grep -c 'pr merge' "$tmp/calls"):$(grep -c 'ATTRIBUTION-UNCHECKED' 
 : > "$tmp/calls"; STUB_COMMITS_JSON='[]' bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "3:0" "an empty branch-commit list fails closed"
 
+# VIA-NOT-VERIFIER (ctl c246): the verdict row must carry via=verifier BEFORE the gate and any gh call
+viacase() { # name expected-rc expected-grep ; env STUB_* set by the caller
+  : > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>"$tmp/err"; rc=$?
+  check "$rc:$(grep -c 'pr merge' "$tmp/calls"):$(grep -c 'merge-gate' "$tmp/calls"):$(grep -c 'merge-done' "$tmp/calls")" "3:0:0:0" "$1: exit 3, no gh merge, merge-gate not called"
+  grep -qE "$2" "$tmp/err" && ok "$1: message" || bad "$1: message missing: $(cat "$tmp/err")"
+}
+STUB_LIST_JSON="[$(printf "$ROW" $V $OID ',"via":"r7"')]" viacase "via=r7 (the d24b shape)" "^VIA-NOT-VERIFIER verdict=$V via=r7\$"
+STUB_LIST_JSON="[$(printf "$ROW" $V $OID '')]" viacase "via missing" "^VIA-NOT-VERIFIER verdict=$V via=\$"
+STUB_LIST_JSON="[$(printf "$ROW" $V $OID ',"via":""')]" viacase "via empty" "^VIA-NOT-VERIFIER verdict=$V via=\$"
+STUB_LIST_JSON="[$(printf "$ROW" d-other $OID ',"via":"verifier"')]" viacase "id absent" "VIA-UNCHECKED"
+STUB_LIST_JSON='[]' viacase "empty list (id absent)" "VIA-UNCHECKED"
+STUB_LIST_RC=1 viacase "list stub rc!=0" "VIA-UNCHECKED"
+STUB_LIST_JSON='not json at all' viacase "list stub non-JSON" "VIA-UNCHECKED"
+STUB_LIST_JSON='{"id":"x"}' viacase "list stub JSON but not a list" "VIA-UNCHECKED"
+: > "$tmp/calls"; bash "$wrap" $V 7 j0yen/swarm-decide >/dev/null 2>&1; rc=$?
+check "$rc:$(grep -c 'pr merge' "$tmp/calls")" "0:1" "via=verifier proceeds to the gate and the merge"
+grep -qF 'RB_MERGE_BYPASS' "$wrap" && bad "a bypass env var exists" || ok "no bypass env var in the wrapper"
+
 bash "$wrap" $V seven j0yen/swarm-decide >/dev/null 2>&1; check "$?" "64" "a non-numeric pr is a usage error"
 bash "$wrap" $V 7 swarm-decide >/dev/null 2>&1;          check "$?" "64" "repo must be owner/name"
 bash "$wrap" $V 7 j0yen/swarm-decide --auto >/dev/null 2>&1; check "$?" "64" "no extra gh flags (--auto) are accepted"
@@ -109,5 +136,6 @@ grep -q '^set -euo pipefail' "$wrap" && ok "set -euo pipefail" || bad "set -euo 
 if grep -nE 'merge-gate[^#]*\|' "$wrap" | grep -v '^\s*#' | grep -q .; then bad "merge-gate is piped"; else ok "merge-gate output is captured, not piped"; fi
 grep -q 'merge-gate' "$wrap" && grep -q -- '--match-head-commit "\$oid"' "$wrap" && ok "gh pr merge --match-head-commit \$oid is in the wrapper" || bad "wrapper missing match-head-commit"
 
+[ ! -e "$tmp/tripwire" ] && ok "tripwire untouched" || bad "tripwire touched: a real gh or wm-decide ran"
 [ "$fail" = 0 ] && echo "ALL OK - rb-merge" || echo "FAILED - rb-merge"
 exit "$fail"
