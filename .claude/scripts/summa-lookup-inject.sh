@@ -15,6 +15,19 @@
 # or name what's being asked, so the caller reads the page instead of
 # re-deriving the answer from scratch.
 #
+# Ranker v2 (hub pages replace lookups): candidates are entities/, answers/
+# and playbooks/ pages. A page qualifies only with >= 2 DISTINCT prompt
+# keywords matched (token-prefix) on title + aliases + first paragraph, at
+# least one of them on title/aliases/question (a paragraph-only overlap is
+# noise: "reply single word" matched a hub on two prose words)
+# (answers: the `question:` line is the title); only each page's frontmatter
+# and first paragraph are read (capped at 4 KB). Pages tagged `hub` rank
+# first, then match count. Mention-only stubs (body outside `## Mentions`
+# < 200 bytes) are excluded, and a page is injected at most once per session
+# (prior ledger rows with the same sid, last 2000 lines). The ledger row
+# records `injected: [paths]` (what was actually emitted) so the Stop hook
+# can score read-after-inject.
+#
 # Emits at most a 6-line context block (paths only, never page bodies) and
 # appends one hit/miss line per evaluated prompt to a ledger (now also
 # recording "mode" and "host" per line, so a fleet-wide ledger can be
@@ -86,7 +99,7 @@ fi
 # ---- Keyword extraction -------------------------------------------------
 # Lowercase, split on non-alphanumerics, drop tokens <4 chars and a small
 # stopword list, keep up to 6 distinct tokens in order of first appearance.
-stopwords="the this that with from what when where which does have about into your should would could there their they them then than also just like make need want some more only very been were will"
+stopwords="the this that with from what when where which does have about into your should would could there their they them then than also just like make need want some more only very been were will seat event events wait lets status"
 
 keywords="$(
     printf '%s' "$prompt" \
@@ -101,6 +114,7 @@ keywords="$(
         {
             if (length($0) < 4) next;
             if ($0 in stopset) next;
+            if ($0 ~ /^20[0-9][0-9]$/) next;
             if ($0 in seen) next;
             seen[$0] = 1;
             print $0;
@@ -114,104 +128,137 @@ keywords="$(
 
 mapfile -t kw_arr <<<"$keywords"
 
-# ---- Answer lookup --------------------------------------------------------
-# For each wiki/answers/*.md: frontmatter `question:` line (quotes stripped)
-# plus the filename; count how many distinct keywords appear (case-insensitive
-# substring). Rank by count desc, keep top 3 with count >=1.
-answers_dir="$wiki_dir/answers"
-answer_hits=""
-answer_count=0
-if [ -d "$answers_dir" ] && compgen -G "$answers_dir"/*.md >/dev/null 2>&1; then
-    for f in "$answers_dir"/*.md; do
-        base="$(basename "$f")"
-        qline="$(grep -m1 '^question:' "$f" 2>/dev/null | sed -e 's/^question:[[:space:]]*//' -e 's/^"//' -e 's/"$//')"
-        haystack="$(printf '%s %s' "$base" "$qline" | tr 'A-Z' 'a-z')"
-        n=0
-        for kw in "${kw_arr[@]}"; do
-            case "$haystack" in
-                *"$kw"*) n=$((n + 1)) ;;
-            esac
-        done
-        [ "$n" -ge 1 ] || continue
-        printf -v line '%d\t%s\t%s' "$n" "$base" "$qline"
-        answer_hits="$answer_hits$line"$'\n'
-    done
+# ---- Candidate scan (one awk over every candidate page) ---------------------
+# Reads, per page, only the frontmatter (title / aliases / question / tags)
+# and the first body paragraph, stopping at the paragraph end or 4096 bytes.
+# Emits "<matches>\t<hub 0|1>\t<title matches>\t<path>\t<label>" for pages
+# with >= 2 distinct keyword matches, >= 1 of them on title/aliases/question. A keyword matches a token that starts with it.
+SCAN_AWK='
+function lc(s) { return tolower(s) }
+function flush(   hay, th, i, n, hits, thits, tok, t, ntok, parts) {
+    if (cur == "") return
+    hay = " " lc(title " " aliases " " question " " para) " "
+    gsub(/[^a-z0-9]+/, " ", hay)
+    th = " " lc(title " " aliases " " question) " "
+    gsub(/[^a-z0-9]+/, " ", th)
+    hits = 0; thits = 0
+    for (i = 1; i <= nk; i++) {
+        if (index(hay, " " kw[i]) > 0) hits++
+        if (index(th, " " kw[i]) > 0) thits++
+    }
+    if (hits >= 2 && thits >= 1) {
+        label = (question != "" ? question : title)
+        gsub(/[\t\r]/, " ", label)
+        printf "%d\t%d\t%d\t%s\t%s\n", hits, hub, thits, cur, substr(label, 1, 100)
+    }
+    cur = ""
+}
+function strip(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); if (s ~ /^".*"$/) s = substr(s, 2, length(s) - 2); return s }
+BEGIN { nk = split(kws, kw, " ") }
+FNR == 1 {
+    flush()
+    cur = FILENAME; infm = ($0 == "---"); done = 0; blk = ""
+    title = ""; aliases = ""; question = ""; para = ""; hub = 0; bytes = 0; inpara = 0
+    if (!infm) { done = 0 }
+}
+{
+    if (cur == "") next
+    bytes += length($0) + 1
+    if (infm && FNR > 1) {
+        if ($0 == "---") { infm = 0; next }
+        if ($0 ~ /^[A-Za-z_][A-Za-z0-9_-]*:/) {
+            k = $0; sub(/:.*/, "", k); v = $0; sub(/^[^:]*:[ \t]*/, "", v); blk = ""
+            if (k == "title") title = strip(v)
+            else if (k == "question") question = strip(v)
+            else if (k == "aliases") { if (v == "") blk = "aliases"; else aliases = v }
+            else if (k == "tags") { if (v == "") blk = "tags"; else if (v ~ /(^|[^a-z0-9_-])hub([^a-z0-9_-]|$)/) hub = 1 }
+        } else if (blk != "" && $0 ~ /^[ \t]*-[ \t]/) {
+            v = $0; sub(/^[ \t]*-[ \t]+/, "", v)
+            if (blk == "aliases") aliases = aliases " " v
+            else if (strip(v) == "hub") hub = 1
+        }
+        if (bytes > 4096) { flush(); nextfile }
+        next
+    }
+    if (FNR == 1 && infm) next
+    if (!done) {
+        if ($0 ~ /^[ \t]*$/ || $0 ~ /^#/) { if (inpara) { done = 1 } }
+        else { para = para " " $0; inpara = 1 }
+        if (done || bytes > 4096) { flush(); nextfile }
+    }
+}
+END { flush() }
+'
+
+scan_dirs=()
+for d in entities answers playbooks; do
+    [ -d "$wiki_dir/$d" ] && scan_dirs+=("$wiki_dir/$d")
+done
+candidates=""
+if [ "${#scan_dirs[@]}" -gt 0 ]; then
+    candidates="$(find "${scan_dirs[@]}" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null \
+        | xargs -0 awk -v kws="${kw_arr[*]}" "$SCAN_AWK" 2>/dev/null \
+        | sort -t $'\t' -k2,2nr -k1,1nr -k3,3nr -k4,4 )"
 fi
 
-top_answers=""
-if [ -n "$answer_hits" ]; then
-    top_answers="$(printf '%s' "$answer_hits" | sort -t $'\t' -k1,1 -rn | head -n 3)"
-    answer_count="$(printf '%s\n' "$top_answers" | grep -c . || true)"
+# Pages already injected earlier in this session (cheap: tail window + grep).
+prior_injected=""
+if [ -n "$sid" ] && [ -f "$SUMMA_LEDGER" ]; then
+    prior_injected="$(tail -n 2000 "$SUMMA_LEDGER" 2>/dev/null | grep -F "\"sid\":\"$sid\"" \
+        | "$JQ" -r '(.injected // .pages // [])[]?' 2>/dev/null | sort -u)"
 fi
 
-# ---- Entity lookup ---------------------------------------------------------
-# Names list from wiki/entities/*.md basenames (drop names <5 chars), then a
-# whole-word fixed-string grep of each entity title inside the prompt.
-entities_dir="$wiki_dir/entities"
-entity_hits=""
-entity_count=0
-if [ -d "$entities_dir" ]; then
-    names_file="$(mktemp)"
-    trap 'rm -f "$names_file"' EXIT
-    {
-        for f in "$entities_dir"/*.md; do
-            [ -e "$f" ] || continue
-            name="${f##*/}"
-            name="${name%.md}"
-            [ "${#name}" -ge 5 ] || continue
-            printf '%s\n' "$name"
-        done
-    } >"$names_file"
-    if [ -s "$names_file" ]; then
-        # grep -o returns the matched TEXT AS IT APPEARED IN THE PROMPT
-        # (whatever case the user typed), not the pattern's original
-        # case — so resolve each match back to its original-case
-        # basename via a case-insensitive exact-line lookup in
-        # names_file before using it to build a wiki path.
-        matched_raw="$(grep -o -i -w -F -f "$names_file" <<<"$prompt" 2>/dev/null \
-            | awk '!seen[tolower($0)]++' || true)"
-        if [ -n "$matched_raw" ]; then
-            resolved=""
-            while IFS= read -r m; do
-                [ -n "$m" ] || continue
-                orig="$(grep -m1 -ixF "$m" "$names_file" 2>/dev/null)"
-                [ -n "$orig" ] || orig="$m"
-                resolved="$resolved$orig"$'\n'
-            done <<<"$matched_raw"
-            matched="$(printf '%s' "$resolved" | grep -v '^$' | awk '!seen[tolower($0)]++' || true)"
-            if [ -n "$matched" ]; then
-                entity_count="$(printf '%s\n' "$matched" | grep -c . || true)"
-                top_entities="$(printf '%s\n' "$matched" | head -n 3)"
-                entity_hits="$top_entities"
-            fi
-        fi
-    fi
-    rm -f "$names_file"
-    trap - EXIT
-fi
+# Body bytes outside a `## Mentions` section (frontmatter excluded).
+body_bytes_outside_mentions() {
+    awk '
+        NR == 1 && $0 == "---" { fm = 1; next }
+        fm { if ($0 == "---") fm = 0; next }
+        /^## / { skip = ($0 ~ /^## Mentions[ \t]*$/) }
+        !skip { n += length($0) + 1 }
+        END { print n + 0 }
+    ' "$1" 2>/dev/null
+}
 
 # ---- Build output ----------------------------------------------------------
 pages=()
 out=""
 n_ans_out=0
-if [ -n "$top_answers" ]; then
-    while IFS=$'\t' read -r cnt base qline; do
-        [ -n "$base" ] || continue
-        short="${qline:0:100}"
-        out="$out$(printf 'answer  wiki/answers/%s  — %s' "$base" "$short")"$'\n'
-        pages+=("wiki/answers/$base")
-        n_ans_out=$((n_ans_out + 1))
-    done <<<"$top_answers"
-fi
-
 n_ent_out=0
-if [ -n "$entity_hits" ]; then
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        out="$out$(printf 'entity  wiki/entities/%s.md' "$name")"$'\n'
-        pages+=("wiki/entities/$name.md")
-        n_ent_out=$((n_ent_out + 1))
-    done <<<"$entity_hits"
+matched_any=0
+n_dedup=0
+n_ans_slot=0
+n_ent_slot=0
+if [ -n "$candidates" ]; then
+    while IFS=$'\t' read -r cnt is_hub tcnt path label; do
+        [ -n "$path" ] || continue
+        rel="wiki/${path#"$wiki_dir"/}"
+        if [ "$is_hub" != "1" ]; then
+            [ "$(body_bytes_outside_mentions "$path")" -ge 200 ] || continue
+        fi
+        matched_any=1
+        # The caps pick the top pages first; a page already injected this
+        # session then drops out WITHOUT back-filling from lower ranks.
+        case "$rel" in
+            wiki/answers/*) [ "$n_ans_slot" -lt 3 ] || continue; n_ans_slot=$((n_ans_slot + 1)) ;;
+            *) [ "$n_ent_slot" -lt 3 ] || continue; n_ent_slot=$((n_ent_slot + 1)) ;;
+        esac
+        if [ -n "$prior_injected" ] && grep -qxF -- "$rel" <<<"$prior_injected"; then
+            n_dedup=$((n_dedup + 1))
+            continue
+        fi
+        case "$rel" in
+            wiki/answers/*)
+                out="$out$(printf 'answer  %s  — %s' "$rel" "${label:0:100}")"$'\n'
+                n_ans_out=$((n_ans_out + 1)) ;;
+            wiki/entities/*)
+                out="$out$(printf 'entity  %s' "$rel")"$'\n'
+                n_ent_out=$((n_ent_out + 1)) ;;
+            *)
+                out="$out$(printf 'page    %s' "$rel")"$'\n'
+                n_ent_out=$((n_ent_out + 1)) ;;
+        esac
+        pages+=("$rel")
+    done <<<"$candidates"
 fi
 
 hit_count=$((n_ans_out + n_ent_out))
@@ -239,7 +286,7 @@ mkdir -p "$(dirname "$SUMMA_LEDGER")" 2>/dev/null || true
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
 result="miss"
-[ "$hit_count" -ge 1 ] && result="hit"
+{ [ "$hit_count" -ge 1 ] || [ "$matched_any" -eq 1 ]; } && result="hit"
 
 kw_json="$(printf '%s\n' "${kw_arr[@]}" | "$JQ" -R . | "$JQ" -s . 2>/dev/null)"
 pages_json="[]"
@@ -256,9 +303,11 @@ line="$("$JQ" -nc \
     --argjson entities "$n_ent_out" \
     --arg result "$result" \
     --argjson pages "${pages_json:-[]}" \
+    --argjson injected "${pages_json:-[]}" \
+    --argjson deduped "$n_dedup" \
     --arg mode "$mode" \
     --arg host "$host" \
-    '{ts:$ts, sid:$sid, prompt_sha:$sha, keywords:$keywords, answers:$answers, entities:$entities, result:$result, pages:$pages, mode:$mode, host:$host}' \
+    '{ts:$ts, sid:$sid, prompt_sha:$sha, keywords:$keywords, answers:$answers, entities:$entities, result:$result, pages:$pages, injected:$injected, deduped:$deduped, mode:$mode, host:$host}' \
     2>/dev/null)"
 
 if [ -n "$line" ]; then

@@ -34,7 +34,7 @@ asked: 2026-09-01T00:00:00Z
 cites: []
 ---
 
-body text.
+body text. This page records the decision, its reasons and the follow-up work in enough detail that the ranker v2 stub check (body outside a Mentions section of at least 200 bytes) keeps it. More filler words follow so the body is comfortably past the limit for any fixture page.
 EOF
 
 cat > "$tmp/vault/wiki/answers/2026-09-02-wintermute-hub-decision.md" <<'EOF'
@@ -45,11 +45,19 @@ asked: 2026-09-02T00:00:00Z
 cites: []
 ---
 
-body text.
+body text. This page records the decision, its reasons and the follow-up work in enough detail that the ranker v2 stub check (body outside a Mentions section of at least 200 bytes) keeps it. More filler words follow so the body is comfortably past the limit for any fixture page.
 EOF
 
-touch "$tmp/vault/wiki/entities/Wintermute Hub.md"
-touch "$tmp/vault/wiki/entities/Hub.md"
+cat > "$tmp/vault/wiki/entities/Wintermute Hub.md" <<'EOF'
+---
+summa: entity
+title: Wintermute Hub
+aliases: [wintermute hub, hub box]
+---
+
+The Wintermute Hub downsize decision and the hub capacity plan for the fleet. This page records the decision, its reasons and the follow-up work in enough detail that the ranker v2 stub check (body outside a Mentions section of at least 200 bytes) keeps it. More filler words follow so the body is comfortably past the limit for any fixture page.
+EOF
+touch "$tmp/vault/wiki/entities/Hub.md"   # short-name stub: never injected
 touch "$tmp/vault/wiki/entities/Casper.md"
 
 LEDGER="$tmp/ledger.jsonl"
@@ -119,11 +127,11 @@ fi
 # ---- Case 7: wall time + hit on the REAL vault -----------------------------
 real_ledger="$tmp/real_ledger.jsonl"
 t0=$(date +%s%N)
-out="$(printf '{"prompt":"what did we decide about the Wintermute Hub downsize","session_id":"c7"}' \
+out="$(printf '{"prompt":"what is summa and how does the lookup hook work","session_id":"c7"}' \
     | SUMMA_VAULT="$HOME/Notes" SUMMA_LEDGER="$real_ledger" bash "$LOOKUP")"
 t1=$(date +%s%N)
 elapsed_ms=$(( (t1 - t0) / 1000000 ))
-if [ "$elapsed_ms" -lt 300 ] && printf '%s' "$out" | grep -qF 'Wintermute Hub.md'; then
+if [ "$elapsed_ms" -lt 300 ] && printf '%s' "$out" | grep -qF 'wiki/entities/Summa.md'; then
     ok
 else
     fail "case7_real_vault_wall_time (elapsed_ms=$elapsed_ms)"

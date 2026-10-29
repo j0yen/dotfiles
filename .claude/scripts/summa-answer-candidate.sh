@@ -26,6 +26,15 @@
 # draft file). Every decision (emit / below_threshold / duplicate /
 # no_transcript) appends one line to .audit.log.
 #
+# Read-after-inject (every Stop, before the draft logic): for this session's
+# ledger rows, how many of the pages summa-lookup-inject.sh actually injected
+# (row field `injected`, vault-relative) did the session `Read`? Path match is
+# `realpath -m` on both sides (symlinked vault paths compare equal). One row
+# {"ts","sid","kind":"read-after-inject","read":n,"injected":m[,"bytes":b]} is
+# appended to the ledger when the numbers changed since this sid's last such
+# row (Stop fires every turn; the SessionStart line sums the LAST row per sid).
+# `read` counts distinct injected paths with >= 1 Read call, so read <= injected.
+#
 # Best-effort; silent on every failure.
 
 set -uo pipefail
@@ -36,6 +45,7 @@ MIN_ANSWER_LEN=400
 N=200 # tail window over the session JSONL
 
 SUMMA_LEDGER="${SUMMA_LEDGER:-$HOME/.cache/summa/lookups.jsonl}"
+SUMMA_VAULT="${SUMMA_VAULT:-$HOME/Notes}"
 draft_dir="${SUMMA_ANSWER_CANDIDATES_DIR:-$HOME/.claude/scratch/summa-answer-candidates}"
 audit_log="$draft_dir/.audit.log"
 mkdir -p "$draft_dir" 2>/dev/null
@@ -71,6 +81,62 @@ def is_human_prompt:
 # ------------------------------------------------------------------------
 
 sess_file="$HOME/.claude/projects/-home-jsy/$sid.jsonl"
+
+# ---- Read-after-inject ---------------------------------------------------
+read_after_inject() {
+    local tr="$1" inj_rel inj_abs="" p r
+    [ -f "$SUMMA_LEDGER" ] && [ -f "$tr" ] || return 0
+    inj_rel="$(grep -F "\"sid\":\"$sid\"" "$SUMMA_LEDGER" 2>/dev/null \
+        | "$JQ" -r 'select(.kind == null) | (.injected // [])[]?' 2>/dev/null | sort -u)"
+    [ -n "$inj_rel" ] || return 0
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        r="$(realpath -m -- "$SUMMA_VAULT/$p" 2>/dev/null)" || continue
+        inj_abs="$inj_abs$r"$'\n'
+    done <<<"$inj_rel"
+    inj_abs="$(printf '%s' "$inj_abs" | sort -u)"
+    local m
+    m="$(printf '%s\n' "$inj_abs" | grep -c .)"
+    [ "$m" -gt 0 ] || return 0
+
+    # Every Read tool_use in the transcript: "<tool_use_id>\t<file_path>".
+    local reads hit_ids="" read_paths="" id fp rp
+    reads="$("$JQ" -r 'select(.type=="assistant") | .message.content[]?
+        | select(type=="object" and .type=="tool_use" and .name=="Read" and (.input.file_path|type)=="string")
+        | "\(.id)\t\(.input.file_path)"' "$tr" 2>/dev/null)"
+    while IFS=$'\t' read -r id fp; do
+        [ -n "$id" ] || continue
+        rp="$(realpath -m -- "$fp" 2>/dev/null)" || continue
+        if grep -qxF -- "$rp" <<<"$inj_abs"; then
+            hit_ids="$hit_ids$id"$'\n'
+            read_paths="$read_paths$rp"$'\n'
+        fi
+    done <<<"$reads"
+    local n=0 ids_json bytes=""
+    [ -n "$read_paths" ] && n="$(printf '%s' "$read_paths" | sort -u | grep -c .)"
+    if [ -n "$hit_ids" ]; then
+        ids_json="$(printf '%s' "$hit_ids" | "$JQ" -R . | "$JQ" -s . 2>/dev/null)"
+        bytes="$("$JQ" -r --argjson ids "${ids_json:-[]}" 'select(.type=="user") | .message.content? | arrays | .[]
+            | select(type=="object" and .type=="tool_result" and (.tool_use_id as $i | $ids | index($i)))
+            | (.content | if type=="string" then . else ([.[]? | .text? // ""] | join("")) end | utf8bytelength)' "$tr" 2>/dev/null \
+            | awk '{s += $1; c++} END {if (c) print s}')"
+    fi
+    local last row
+    last="$(grep -F "\"sid\":\"$sid\"" "$SUMMA_LEDGER" 2>/dev/null | grep -F '"kind":"read-after-inject"' | tail -n1)"
+    row="$("$JQ" -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "$sid" \
+        --argjson read "$n" --argjson injected "$m" --arg bytes "$bytes" \
+        '{ts:$ts, sid:$sid, kind:"read-after-inject", read:$read, injected:$injected}
+         + (if $bytes != "" then {bytes:($bytes|tonumber)} else {} end)' 2>/dev/null)"
+    [ -n "$row" ] || return 0
+    if [ -n "$last" ] && [ "$("$JQ" -c 'del(.ts)' <<<"$last" 2>/dev/null)" = "$("$JQ" -c 'del(.ts)' <<<"$row" 2>/dev/null)" ]; then
+        return 0
+    fi
+    printf '%s\n' "$row" >>"$SUMMA_LEDGER"
+}
+tr_path="$("$JQ" -r '.transcript_path // empty' <<<"$input" 2>/dev/null)"
+[ -f "$tr_path" ] || tr_path="$sess_file"
+read_after_inject "$tr_path"
+
 if [ ! -f "$sess_file" ]; then
     printf '%s session=%s decision=no_transcript\n' "$ts" "$sid" >>"$audit_log"
     exit 0

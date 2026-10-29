@@ -1,0 +1,9 @@
+{"type":"user","message":{"role":"user","content":"where is the parked prds page"},"sessionId":"__SID__","uuid":"u-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me read it."}]},"sessionId":"__SID__","uuid":"a-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_A1","name":"Read","input":{"file_path":"__READ_A__"}}]},"sessionId":"__SID__","uuid":"a-2"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A1","content":"1\t# page A body line one\n2\tline two\n"}]},"sessionId":"__SID__","uuid":"u-2"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_B1","name":"Read","input":{"file_path":"__READ_B__"}}]},"sessionId":"__SID__","uuid":"a-3"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_B1","content":[{"type":"text","text":"1\t# page B body\n"}]}]},"sessionId":"__SID__","uuid":"u-3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_C1","name":"Read","input":{"file_path":"__READ_OTHER__"}}]},"sessionId":"__SID__","uuid":"a-4"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_C1","content":"1\tnot an injected page\n"}]},"sessionId":"__SID__","uuid":"u-4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_G1","name":"Grep","input":{"pattern":"x","path":"__READ_C__"}}]},"sessionId":"__SID__","uuid":"a-5"}
