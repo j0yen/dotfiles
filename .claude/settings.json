@@ -515,6 +515,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/analysis-page-gate.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/sudo-stdin-guard.sh",
+            "timeout": 5
           }
         ]
       },
