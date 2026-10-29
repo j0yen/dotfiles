@@ -64,7 +64,6 @@ MAX_LAUNCHES, MAX_LAUNCH_FAILS = 2, 3
 AGENT, VIA = "coder:hand-pr-land-driver", "hand-pr-land-driver"
 SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; cargo repos never do
 SUITE_HOST = os.environ.get("AIDE_VERIFIER_SUITE_HOST", "")   # where aide-verifier.sh runs a SUITE_REPOS suite (hpld-fetch-verify.sh); carbon never does
-SUITE_HOST_CHECK = "HPLD_VERIFIER" not in os.environ   # a stubbed verifier (tests) never reaches a host; the real default always does
 HEX40 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
 COMMIT_RE = re.compile(r"COMMIT=([0-9a-fA-F]{7,40})")
 KEY_RE = re.compile(r" k=(\S+)")
@@ -124,7 +123,7 @@ def suite_for(repo, tier, own_tests):
 
 def suite_host_bad():
     h = SUITE_HOST.strip().lower()
-    return SUITE_HOST_CHECK and (not h or h in ("carbon", "localhost", "::1") or h.startswith("127.") or h == socket.gethostname().lower())
+    return (not h or h in ("carbon", "localhost", "::1") or h.startswith("127.") or h == socket.gethostname().lower())
 
 
 def short(repo):

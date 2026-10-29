@@ -90,7 +90,7 @@ unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
   [ -n "${5:-}" ] && printf '{"result":"verdict row %s\\nLOG: /x.log"}' "$5" >"$T/vdir/$1/result.json"
 }
 tick() {   # tick [--dry-run]  (stdout kept in $T/out)
-  T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
+  T="$T" AIDE_VERIFIER_SUITE_HOST=suite-stub HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
   HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD="${PREMISE_CMD:-true}" bash "$DRV" "$@" >"$T/out" 2>&1; }
 n() { grep -c "$1" "$T/calls.log"; }   # count of calls matching

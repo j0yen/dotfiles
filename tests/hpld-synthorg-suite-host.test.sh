@@ -21,6 +21,11 @@ fresh; unset AIDE_VERIFIER_SUITE_HOST; ptick
 [ $r = 0 ] && pass "host unset + synthorg row: ring-suite-host-missing, zero verifier calls, zero local systemd-run" || { bad "host unset"; cat "$T/out" "$T/records.log"; }
 ptick; [ "$(grep -ci "ring-suite-host-missing" "$T/records.log")" = 1 ] && pass "the ring is idempotent (second tick adds no row)" || bad "ring repeated"
 cleanup
+# a stubbed verifier (HPLD_VERIFIER set) is no bypass: no suite host still refuses
+fresh; unset AIDE_VERIFIER_SUITE_HOST; T="$T" HOME="$T/home" PATH="$T/bin:$PATH" HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
+  HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD=true bash "$DRV" >"$T/out" 2>&1
+[ "$(n '^verifier')" = 0 ] && grep -qi "ring-suite-host-missing" "$T/records.log" && pass "HPLD_VERIFIER set + no suite host: still ring-suite-host-missing, zero verifier calls" || { bad "HPLD_VERIFIER bypass"; cat "$T/out"; }
+cleanup
 for h in carbon localhost 127.0.0.1 "$(hostname)"; do
   fresh; AIDE_VERIFIER_SUITE_HOST=$h ptick
   [ "$(n '^verifier')" = 0 ] && [ "$(n '^systemd-run')" = 0 ] && grep -qi "ring-suite-host-missing" "$T/records.log" && pass "host=$h: refused with a ring, no local verify" || bad "host=$h launched"
