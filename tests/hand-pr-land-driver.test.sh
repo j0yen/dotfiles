@@ -145,9 +145,25 @@ cleanup
 
 # ---- (d) merged >= 15 min ago with no r7 START -> one ring; with a START or too young -> none
 setup; row g1 900 r7 design "x"; printf '{"event":"pr-merged","oid":"%s","pr":41,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"
+D40=$(printf 'd%.0s' $(seq 40)); printf '{"state":"MERGED","mergeCommit":{"oid":"%s"}}\n' "$D40" >"$T/state-41"
 tick; tick
-[ "$(n '^seat-ask r7')" = 1 ] && grep -q "seat-ask r7 $REPO#41 merged $H1; run post-merge suite" "$T/calls.log" && pass "(d) one post-merge ring to r7, not repeated" || bad "(d) ring ($(grep seat-ask "$T/calls.log"))"
+[ "$(n '^seat-ask r7')" = 1 ] && grep -q "seat-ask r7 $REPO#41 merged; run post-merge suite at MERGE commit $D40 (PR head $H1)" "$T/calls.log" && ! grep -q "MERGE commit $H1" "$T/calls.log" && ! grep -q "seat-ask r7 $REPO#41 merged $H1" "$T/calls.log" && pass "(d) one post-merge ring to r7 at the merge commit, not the PR head, not repeated" || bad "(d) ring ($(grep seat-ask "$T/calls.log"))"
 cleanup
+
+# ---- (d2) no readable merge commit -> no ring, no MERGE commit text
+setup; printf '{"event":"pr-merged","oid":"%s","pr":43,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"
+tick; tick
+[ "$(n '^seat-ask')" = 0 ] && ! grep -q "MERGE commit" "$T/calls.log" && pass "(d2) no merge commit: no ring, no MERGE commit text" || bad "(d2) ($(grep seat-ask "$T/calls.log"))"
+cleanup
+
+# ---- (d3) mcphost rings rb at its merge commit
+REPO_SAVED=$REPO; REPO=j0yen/mcphost   # tick pins HPLD_REPOS to $REPO
+setup; printf '{"event":"pr-merged","oid":"%s","pr":44,"repo":"j0yen/mcphost","ts":"%s","verdict":"v1"}\n' "$H1" "$(iso 20)" >"$T/events.jsonl"
+E40=$(printf 'e%.0s' $(seq 40)); printf '{"state":"MERGED","mergeCommit":{"oid":"%s"}}\n' "$E40" >"$T/state-44"
+tick; tick
+grep -q "seat-ask rb j0yen/mcphost#44 merged; run post-merge suite at MERGE commit $E40 (PR head $H1)" "$T/calls.log" && ! grep -q "seat-ask r7 j0yen/mcphost#44" "$T/calls.log" && pass "(d3) mcphost ring goes to rb at the merge commit, none to r7" || bad "(d3) ($(grep seat-ask "$T/calls.log"))"
+cleanup
+REPO=$REPO_SAVED
 setup; printf '{"event":"pr-merged","oid":"%s","pr":41,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"; row s1 5 r7 plan "START r7-suite-41 on ryzen7 ($REPO#41)"; tick
 [ "$(n '^seat-ask')" = 0 ] && pass "(d) an r7 START row naming the PR suppresses the ring" || bad "(d) START ignored"
 cleanup
