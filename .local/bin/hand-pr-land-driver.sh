@@ -11,7 +11,8 @@
 #   (a) no current verdict, no active verifier unit for the PR -> ROOM check (carbon-room.sh 1024 --reserve-MB 3072), then `aide-verifier.sh launch` (fast CI tier by default;
 #       `TIER=full` or `SUITE=full` in the GATED row -> full pytest + --timeout 5400). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
 # and, once per merged PR (merge-events.jsonl pr-merged, last HPLD_POSTMERGE_WINDOW_H h):
-#   (d) merged >= 15 min ago, no r7 `START` row naming the PR since the merge -> `seat-ask.sh r7 '<repo>#<pr> merged <sha>; run post-merge suite'` ONCE.
+#   (d) merged >= 15 min ago, no rb/r7 `START` row naming the PR since the merge -> `seat-ask.sh <owner> '<repo>#<pr> merged; run post-merge suite at MERGE commit <sha>'` ONCE;
+#       owner by repo (mcphost -> rb, synthorg/wm-build -> r7), sha = gh mergeCommit.oid (never the event's PR-head oid); 6 unreadable ticks -> postmerge_skipped row.
 # Every action writes a ledger row (kind=observe, what `HPLD <ACTION> <repo>#<pr> k=<key> ...`). The wm-decide agent enum has no `hand-pr-land-driver`, so the row's agent is
 # `coder:hand-pr-land-driver` (the enum's per-job pattern) and via=hand-pr-land-driver. The `k=<key>` token is the idempotency key: a key already in the ledger is never acted on again;
 # rings write their row BEFORE the ring. A flock keeps two ticks from overlapping. Launch refusals that are transient (ROOM no, ceiling, 429 breaker, not head-of-line) write no row and retry next tick.
@@ -124,6 +125,80 @@ def short(repo):
     return {"j0yen/synthorg": "syn", "j0yen/mcphost": "mcp", "j0yen/wm-build": "wmb"}.get(repo, re.sub(r"[^a-z0-9]", "", repo.split("/")[-1].lower())[:4])
 
 
+POSTMERGE_OWNER = {"j0yen/mcphost": "rb", "j0yen/synthorg": "r7", "j0yen/wm-build": "r7"}   # who runs the post-merge suite; an unknown repo has no owner (never defaulted to r7)
+PM_MAX_TRIES = 6
+
+
+def postmerge_owner(repo):
+    return POSTMERGE_OWNER.get(repo)
+
+
+def merge_commit(repo, pr, run):
+    """mergeCommit.oid (40 hex) of a MERGED PR, else None. `run(repo, pr)` returns the parsed `gh pr view --json mergeCommit,state`; it is REQUIRED (no default) and any failure of it reads as None."""
+    if run is None:
+        raise ValueError("merge_commit: run is required")
+    try:
+        d = run(repo, pr)
+        oid = ((d or {}).get("mergeCommit") or {}).get("oid") or ""
+        if (d or {}).get("state") == "MERGED" and re.fullmatch(r"[0-9a-fA-F]{40}", oid):
+            return oid.lower()
+    except Exception:
+        pass
+    return None
+
+
+def gh_pr_view(repo, pr):
+    """The production `run` for merge_commit: one gh call, 30 s cap; raises on failure (merge_commit turns that into None)."""
+    rc_, o_, e_ = sh([GH, "pr", "view", str(pr), "-R", repo, "--json", "mergeCommit,state"], 30)
+    if rc_ != 0:
+        raise RuntimeError("gh pr view rc=%d" % rc_)
+    return json.loads(o_)
+
+
+def postmerge_tick(events, merge_commit_fn, emit, state):
+    """(d) post-merge suite ring. state = {"keys": set of consumed ledger keys, "rows": ledger rows} (+ optional "now", "repos"). Mutates state["keys"] for what it emits."""
+    keys, rows = state["keys"], state.get("rows") or []
+    t_now = state.get("now") if state.get("now") is not None else now()
+    repos = state.get("repos", REPOS)
+    for e in events:
+        if e.get("event") != "pr-merged" or e.get("repo") not in repos:
+            continue
+        t = ts_epoch(e.get("ts"))
+        if t_now - t < PM_WAIT_S or t_now - t > PM_WINDOW_H * 3600:
+            continue
+        repo, pr, pr_head = e["repo"], e["pr"], e.get("oid") or ""
+        owner = postmerge_owner(repo)
+        if owner is None:
+            log("postmerge: no owner seat for repo %s; no ring" % repo)
+            continue
+        tag = "%s#%s" % (repo, pr)
+        skipk = "postmerge-skip:%s" % tag
+        if skipk in keys:
+            continue
+        pat = re.compile(r"(?<![0-9])%s(?![0-9])" % re.escape(str(pr)))
+        if any(r.get("agent") in ("rb", "r7") and (r.get("what") or "").startswith("START") and ts_epoch(r.get("ts")) >= t and pat.search(r["what"]) for r in rows):
+            continue   # either seat already started a suite for this PR
+        mc = merge_commit_fn(repo, pr)
+        tryp = "pmtry:%s:" % tag
+        if mc is None:
+            n = sum(1 for k in keys if k.startswith(tryp)) + 1
+            if n >= PM_MAX_TRIES:
+                keys.add(skipk)
+                emit({"act": "observe-pmskip", "repo": repo, "pr": pr, "tag": tag, "key": skipk, "msg": "postmerge_skipped: no-merge-commit after %d tries" % n})
+                log("postmerge: %s no merge commit after %d tries; skipped" % (tag, n))
+            else:
+                keys.add(tryp + str(n))
+                emit({"act": "observe-pmretry", "repo": repo, "pr": pr, "tag": tag, "key": tryp + str(n), "msg": "merge commit not readable yet (try %d of %d)" % (n, PM_MAX_TRIES)})
+                log("postmerge: %s merge commit not readable (try %d of %d); no ring this tick" % (tag, n, PM_MAX_TRIES))
+            continue
+        k = "postmerge:%s:%s:%s" % (tag, owner, mc[:12])
+        if k in keys:
+            continue
+        keys.add(k)
+        emit({"act": "ring-postmerge", "repo": repo, "pr": pr, "head": mc, "pr_head": pr_head, "owner": owner, "tag": tag, "key": k,
+              "msg": "%s merged; run post-merge suite at MERGE commit %s (PR head %s)" % (tag, mc, pr_head)})
+
+
 def selftest():
     bad = []
 
@@ -142,6 +217,33 @@ def selftest():
     chk("own tests quoted", "tests/a_test.py" in suite_for("j0yen/synthorg", "fast", ["tests/a_test.py"]))
     chk("verifier pytest runs 2 xdist workers, never 4", suite_for("j0yen/synthorg", "fast", []).endswith("-n 2") and suite_for("j0yen/synthorg", "full", ["t.py"]).endswith("-n 2") and "-n 4" not in suite_for("j0yen/synthorg", "full", []))
     chk("unit name charset", re.fullmatch(r"[a-z0-9-]+", "hpl-%s-%d-%s-%d" % (short("j0yen/synthorg"), 4, "abcdef0", 1)) is not None)
+    ev = lambda repo, oid: {"event": "pr-merged", "repo": repo, "pr": 7, "oid": oid, "ts": "2026-10-30T08:00:00+00:00"}
+    t_ok = ts_epoch("2026-10-30T08:00:00+00:00") + 20 * 60
+    chk("post-merge owner by repo", postmerge_owner("j0yen/mcphost") == "rb" and postmerge_owner("j0yen/synthorg") == "r7" and postmerge_owner("j0yen/wm-build") == "r7" and postmerge_owner("j0yen/other") is None)
+    st0 = {"keys": set(), "rows": [], "now": t_ok, "repos": ["j0yen/other"]}
+    got0 = []
+    postmerge_tick([ev("j0yen/other", "b" * 40)], lambda r, p: "c" * 40, got0.append, st0)
+    chk("post-merge unknown repo: no emit, no key", got0 == [] and st0["keys"] == set())
+    good = lambda r, p: {"state": "MERGED", "mergeCommit": {"oid": "c" * 40}}
+
+    def boom(r, p):
+        raise RuntimeError("gh down")
+    try:
+        merge_commit("j0yen/mcphost", 7, None)
+        none_raises = False
+    except ValueError:
+        none_raises = True
+    st1 = {"keys": set(), "rows": [], "now": t_ok, "repos": ["j0yen/mcphost"]}
+    got1 = []
+    postmerge_tick([ev("j0yen/mcphost", "b" * 40)], lambda r, p: "c" * 40, got1.append, st1)
+    postmerge_tick([ev("j0yen/mcphost", "b" * 40)], lambda r, p: "c" * 40, got1.append, st1)
+    chk("post-merge quotes merge commit, not head",
+        merge_commit("j0yen/mcphost", 7, good) == "c" * 40
+        and merge_commit("j0yen/mcphost", 7, lambda r, p: {"state": "OPEN", "mergeCommit": {"oid": "c" * 40}}) is None
+        and merge_commit("j0yen/mcphost", 7, lambda r, p: {"state": "MERGED", "mergeCommit": {"oid": "c" * 7}}) is None
+        and merge_commit("j0yen/mcphost", 7, boom) is None
+        and none_raises
+        and len(got1) == 1 and got1[0]["owner"] == "rb" and got1[0]["head"] == "c" * 40 and got1[0]["pr_head"] == "b" * 40)
     print("SELFTEST " + ("FAIL" if bad else "PASS"))
     return 1 if bad else 0
 
@@ -375,22 +477,7 @@ try:
     events = [json.loads(l) for l in open(EVENTS) if l.strip()]
 except OSError:
     events = []
-for e in events:
-    if e.get("event") != "pr-merged" or e.get("repo") not in REPOS:
-        continue
-    t = ts_epoch(e.get("ts"))
-    if now() - t < PM_WAIT_S or now() - t > PM_WINDOW_H * 3600:
-        continue
-    repo, pr, oid = e["repo"], e["pr"], e.get("oid") or ""
-    tag = "%s#%s" % (repo, pr)
-    k = "postmerge:%s:%s" % (tag, oid[:12])
-    if k in hp_keys:
-        continue
-    pat = re.compile(r"(?<![0-9])%s(?![0-9])" % re.escape(str(pr)))
-    if any(r.get("agent") == "r7" and (r.get("what") or "").startswith("START") and ts_epoch(r.get("ts")) >= t and pat.search(r["what"]) for r in rows):
-        continue
-    actions.append({"act": "ring-postmerge", "repo": repo, "pr": pr, "head": oid, "owner": "r7", "tag": tag, "key": k,
-                    "msg": "%s merged %s; run post-merge suite" % (tag, oid)})
+postmerge_tick(events, lambda repo, pr: merge_commit(repo, pr, gh_pr_view), actions.append, {"keys": hp_keys, "rows": rows})
 
 # ---------------------------------------------------------------- act side
 if MODE == "dry":
