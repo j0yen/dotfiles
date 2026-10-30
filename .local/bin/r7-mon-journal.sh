@@ -42,19 +42,43 @@ stall_age() {   # af51 (row 37ea): minutes since the newest coder session JSONL 
   local d; d=".claude/projects/$(printf %s "/home/jsy/.local/state/wm-build/wt/$1" | sed 's/[^A-Za-z0-9]/-/g')"
   ${R7_STALL_SH:-ssh $R7_SSH_OPTS $R7_HOST} "cd ~ && f=\$(ls -t $d/*.jsonl 2>/dev/null | head -1); if [ -n \"\$f\" ]; then echo \$(( (\$(date +%s) - \$(stat -c %Y \"\$f\")) / 60 )); else echo none; fi" 2>/dev/null || echo unread
 }
-stall_note() {  # INNER LIVENESS: the daemon stall alarm reads progress.jsonl; the coder JSONL mtime is the truth
-  local a; a=$(stall_age "$1")
-  case "$a" in none|unread|'') echo "coder_jsonl=$a (no live coder session read)";;
-    *) if [ "$a" -lt 15 ]; then echo "coder_jsonl_age=${a}m LIVE: NOT a stall"; else echo "coder_jsonl_age=${a}m STALLED: redrive from inner"; fi;; esac
+step_read() {  # ctl 8898 (10-30): "<step> <unit> <cpu_ns> <io_bytes>" of slug $1's live `wm-build step` child; "none" when no step child runs
+  local q='p=$(pgrep -o -f "wm-build step PAT "); [ -n "$p" ] || { echo none; exit 0; }; set -- $(ps -o args= -p "$p"); s=$4; u=$(ps -o unit= -p "$p" | tr -d " ")
+g() { v=$(systemctl --user show -p "$1" --value "$u" 2>/dev/null | tr -dc 0-9); [ -n "$v" ] || v=$(systemctl show -p "$1" --value "$u" 2>/dev/null | tr -dc 0-9); echo "${v:-0}"; }
+echo "$s $u $(g CPUUsageNSec) $(( $(g IOReadBytes) + $(g IOWriteBytes) ))"'
+  q=${q/PAT/[${1:0:1}]${1:1}}   # bracketed first char: the remote shell's own cmdline never matches the pattern
+  ${R7_STALL_SH:-ssh $R7_SSH_OPTS $R7_HOST} "$q" 2>/dev/null || echo unread
 }
-stall_selftest() {
-  local t f=0 o; t=$(mktemp -d); mkdir -p "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug"
-  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *none* ]] || f=1
-  touch "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug/a.jsonl"
-  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *LIVE* ]] || f=1
-  touch -d '-30 min' "$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug/a.jsonl"
-  o=$(HOME=$t R7_STALL_SH="bash -c" stall_note x-slug); [[ $o == *STALLED* ]] || f=1
-  rm -rf "$t"; [ $f = 0 ] && echo "STALL-NOTE SELFTEST OK (none/LIVE/STALLED)" || { echo "STALL-NOTE SELFTEST FAIL"; return 1; }
+stall_note() {  # INNER LIVENESS. Coder JSONL age is read ONLY while the step is the coder (inner/coder) or no step child runs;
+  # any other step (gate/land/live) is judged by CPU+IO deltas of its unit over R7_STALL_GAP s (506 at 2:29 AM 10-30: gate live, jsonl 46m, called STALLED)
+  local a s u c0 i0 s1 c1 i1 g=${R7_STALL_GAP:-10}
+  read -r s u c0 i0 <<<"$(step_read "$1")"
+  case "${s:-none}" in
+    none|unread|inner|coder) ;;
+    *) sleep "$g"; read -r s1 _ c1 i1 <<<"$(step_read "$1")"
+       if [ "$s1" != "$s" ]; then echo "step=$s changed to ${s1:-none} during the read: NOT a stall"
+       elif [ $((c1-c0)) -gt 0 ] || [ $((i1-i0)) -gt 0 ]; then echo "step=$s unit=$u cpu_delta_ns=$((c1-c0)) io_delta=$((i1-i0)) over ${g}s LIVE: NOT a stall (coder jsonl not read outside the coder step)"
+       else echo "step=$s unit=$u cpu_delta_ns=0 io_delta=0 over ${g}s NO PROGRESS: read the step unit; never redrive --from inner for a $s step"; fi
+       return;;
+  esac
+  a=$(stall_age "$1")
+  case "$a" in none|unread|'') echo "step=${s:-none} coder_jsonl=$a (no live coder session read)";;
+    *) if [ "$a" -lt 15 ]; then echo "step=${s:-none} coder_jsonl_age=${a}m LIVE: NOT a stall"; else echo "step=${s:-none} coder_jsonl_age=${a}m STALLED: redrive from inner"; fi;; esac
+}
+stall_selftest() {  # hermetic: stub pgrep/ps/systemctl on PATH; case 4 replays 506 at 2:29 AM 10-30 (gate child, jsonl 46m, CPU moving) -> NOT a stall
+  local t f=0 o j b; t=$(mktemp -d); b=$t/bin; j="$t/.claude/projects/-home-jsy--local-state-wm-build-wt-x-slug"; mkdir -p "$j" "$b"
+  printf '#!/bin/sh\n[ -s "%s/step" ] && echo 2687066\nexit 0\n' "$t" > "$b/pgrep"
+  printf '#!/bin/sh\ncase "$*" in *unit=*) echo wm-build-inner506-a.service;; *) echo "/home/jsy/.cargo/bin/wm-build step x-slug $(cat %s/step) --run 506";; esac\n' "$t" > "$b/ps"
+  printf '#!/bin/sh\ncase "$*" in *CPUUsageNSec*) c=$(cat %s/cpu); echo $c; echo $((c+$(cat %s/inc))) > %s/cpu;; *) echo "[not set]";; esac\n' "$t" "$t" "$t" > "$b/systemctl"
+  chmod +x "$b"/*; echo 6348364184000 > "$t/cpu"; echo 1660000000 > "$t/inc"; : > "$t/step"
+  run() { HOME=$t PATH=$b:$PATH R7_STALL_SH="bash -c" R7_STALL_GAP=0 stall_note x-slug; }
+  o=$(run); [[ $o == *none* ]] || { f=1; echo "case1 none: $o"; }
+  touch "$j/a.jsonl"; o=$(run); [[ $o == *LIVE* ]] || { f=1; echo "case2 fresh jsonl: $o"; }
+  touch -d '-46 min' "$j/a.jsonl"; o=$(run); [[ $o == *STALLED* ]] || { f=1; echo "case3 no step, jsonl 46m: $o"; }
+  echo gate > "$t/step"; o=$(run); [[ $o == *"step=gate"*LIVE* && $o != *STALLED* ]] || { f=1; echo "case4 REPLAY-506 gate cpu moving, jsonl 46m: $o"; }
+  echo 0 > "$t/inc"; o=$(run); [[ $o == *"NO PROGRESS"* && $o != *"redrive from inner"* ]] || { f=1; echo "case5 gate cpu flat: $o"; }
+  echo inner > "$t/step"; o=$(run); [[ $o == *"step=inner"*STALLED* ]] || { f=1; echo "case6 coder step, jsonl 46m: $o"; }
+  rm -rf "$t"; [ $f = 0 ] && echo "STALL-NOTE SELFTEST OK (none/LIVE/STALLED/REPLAY-506 gate LIVE/gate flat NO PROGRESS/inner STALLED)" || { echo "STALL-NOTE SELFTEST FAIL"; return 1; }
 }
 
 parse_loop() {   # stdin: parser output (CAND/HB lines); stdout: bells. wp_gate runs on every HB (30 s) so an expired premise stops the wake.
@@ -108,6 +132,7 @@ selftest() {
   echo "SELFTEST PASS $SCRIPT journal readable, required events present, synthetic ended-run -> exactly 1 bell [$(printf '%s' "$line" | cut -c1-110)], 429-in-id no bell, error-field 429 bell, wake budget 6/2; stub seat-event rc=64 -> 1 EVENT-ERR line, EVENT_SOURCE=r7-mon-$NAME"
 }
 
+if [ "${1:-}" = --stall-selftest ]; then stall_selftest; exit $?; fi   # hermetic, no ssh (tests/r7-mon-journal-stall.test.sh)
 r7_wp_arm r7-mon-journal "$R7_PREMISE_TEXT" "ssh $R7_SSH_OPTS $R7_HOST 'test -s $RJ'"
 if [ "${1:-}" = --selftest ]; then selftest; rc=$?; stall_selftest || rc=1; r7_wp_line || rc=1; exit $rc; fi
 R7_HB_NAME=$NAME; export R7_HB_NAME
