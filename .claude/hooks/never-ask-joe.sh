@@ -14,7 +14,7 @@ set -euo pipefail
 
 STATE_DIR="${NAJ_STATE_DIR:-$HOME/.local/state/never-ask-joe}"
 REASON='NEVER ASK JOE (approvals #80): do the recommended action now, log approve.sh (aide) or a DECISION row (seat), report what was done.'
-ASK_RE='reply "?(yes|go)|say "?go|\bwant me to\b|\bshould I\b|\bshall I\b|(one|a) decision for you|your (call|word|approval|ok)\b|needs? (joe'"'"'?s|your) (word|approval|ok)|\bdo you want\b|\bwould you like\b|\blet me know\b|please (confirm|approve|advise)|waiting (on|for) (joe|you)\b|which (one|option)\b|ok to (proceed|apply)|(proceed|confirm|approve)\?'
+ASK_RE='reply "?(yes|go)|say "?go|\bwant me to\b|\bshould I\b|\bshall I\b|(one|a) decision for you|your (call|word|approval|ok)\b|needs? (joe'"'"'?s|your) (word|approval|ok)|\bdo you want\b|\bwould you like\b|\blet me know\b|please (confirm|approve|advise)|waiting (on|for) (joe|you)\b|which (one|option)\b|ok to (proceed|apply)|(proceed|confirm|approve)\?|until you say( otherwise)?|stays as-is until|\b(can|could|will|would|happy to)\b.{0,40}\bif you (want|like|prefer)\b|\bif you (want|like|prefer)[,.]?[[:space:]]*$|\byour choice\b[[:space:]]*[:?]|\b(hold(ing)?|wait(ing)?|pending|parked|left as[- ]is|unchanged)\b.{0,40}\b(until|pending|for) (you|your|joe)\b|\bawaiting (your|joe)\b|\bon your (go|signal|nod|say-so)\b|\bunless you (say|object)\b'
 EXEMPT_RE='not done|reported as not done|refused'
 
 log_fire() { # kind phrase

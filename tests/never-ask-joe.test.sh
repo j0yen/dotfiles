@@ -46,11 +46,25 @@ expect "block: would you like"       block rb "$(t 'Would you like me to land it
 expect "block: keyword w/o not-done" block rb "$(t 'Token spend is fine. Want me to redrive 1068?')"
 expect "block: seared not-done line plus unrelated ask" block rb "$(t "$(printf 'Not done: raising the cost limit needs Joe'"'"'s word (seared class)\nStatus: 3 runs open.\nShould I redrive 1068?')")"
 
+expect "block: recommend-then-hold stays as-is"  block rb "$(t 'I recommend X; it stays as-is until you say otherwise.')"
+expect "block: holding until you say"          block rb "$(t 'Holding the land until you say.')"
+expect "block: can ... if you want"            block rb "$(t 'I can redrive it if you want.')"
+expect "block: your choice colon"              block rb "$(t 'Your choice: A or B.')"
+expect "block: left unchanged pending review"  block rb "$(t 'Left unchanged pending your review.')"
+expect "block: unless you object"              block rb "$(t 'Will proceed unless you object.')"
+expect "block: awaiting Joes nod"              block rb "$(t "Awaiting Joe's nod.")"
+expect "block: hold on a different line than the not-done clause" block rb "$(t "$(printf 'Not done: idle limit raise (seared class)\nHolding the redrive until you say.')")"
+
 # allows
 expect "allow: not-done form same line" allow rb "$(t "Not done: raising the cost limit needs Joe's word (seared class)")"
 expect "allow: plain STATUS"            allow rb "$(t $'STATUS 10:52 PM\nTask: hook build.\nState: tests green.\nNext: commit.')"
 expect "allow: WM_SEAT unset"           allow -  "$(t 'Want me to redrive 1068?')"
 expect "allow: stop_hook_active"        allow rb "$(t 'Should I merge?')" true
+expect "allow: not-done form with stays as-is" allow rb "$(t 'Not done: raising the idle limit stays as-is until you say otherwise (seared class)')"
+expect "allow: the way you want it"            allow rb "$(t 'Pushed the fix the way you want it.')"
+expect "allow: delta if you want detail"       allow rb "$(t 'Fleet dash shows the delta if you want detail.')"
+expect "allow: your choice of 120K"            allow rb "$(t 'Your choice of 120K was right.')"
+expect "allow: holding until r7 confirms"      allow rb "$(t 'Holding the land until r7 confirms.')"
 
 # AskUserQuestion
 before=$(nlog)
@@ -89,8 +103,8 @@ before=$(nlog)
 out=$(stop_in "$tmp/nope.jsonl" | WM_SEAT=rb bash "$hook" 2>/dev/null); rc=$?
 if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ $(( $(nlog)-before )) -eq 1 ] && tail -n1 "$log" | grep -q "transcript-missing"; then ok "missing transcript: fail open + transcript-missing logged"; else bad "missing transcript (rc=$rc out=[$out])"; fi
 
-# log never holds message text beyond the phrase
-if ! grep -qE "fstab|1068|redrive" "$log"; then ok "fires.log holds no message text beyond the matched phrase"; else bad "fires.log leaks message text"; fi
+# log never holds message text beyond the phrase (the word "redrive" is no longer a leak marker: it sits inside the matched phrase of the hold fixtures)
+if ! grep -qE "fstab|1068|Token spend|Status:|seared" "$log"; then ok "fires.log holds no message text beyond the matched phrase"; else bad "fires.log leaks message text"; fi
 
 # settings wiring
 s="$here/.claude/settings.json"
