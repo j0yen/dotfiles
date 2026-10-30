@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # fd-merge.sh <verdict-row-id> <branch> -- the ONLY way a seat lands a fleet-dash branch on the remote main (fleet-dash has no PR and no merge gate). Runs on carbon.
 # Refuses (exit 3, one line `FD-MERGE REFUSED: <reason>`, no git write, no wm-decide write) unless ALL hold:
-#   1. the verdict row: kind=verdict, via=verifier, first token of `what` = CONFIRM, exactly one COMMIT=<40 hex> token in `what`
-#   2. the gated row (the verdict's `gates` id): kind=other, `what` starts `GATED fleet-dash `, same COMMIT
+#   1. the verdict row: kind=verdict, via=verifier, first token of `what` = CONFIRM, exactly one COMMIT=<40 hex> token in `what` (ended by a comma, whitespace or end of text)
+#   2. the gated row (the verdict's `gates` id): kind=gate or other, `what` starts `GATED fleet-dash `, same COMMIT
 #   3. the two rows' `session` values are non-empty and differ
 #   4. `git fetch` of the remote works, remote/<branch> == COMMIT exactly, and remote/main == local HEAD (a remote main that moved ahead refuses, so local main is never advanced without the remote)
 #   5. the repo is on main, the worktree is clean, and HEAD is an ancestor of COMMIT (fast-forward)
@@ -32,7 +32,7 @@ commit="$(python3 -I -c 'import json,re,sys
 v, g = json.loads(sys.argv[1]), json.loads(sys.argv[2])
 def bad(m):
     sys.stderr.write(m); sys.exit(3)
-rx = re.compile(r"(?:^|\s)COMMIT=([0-9a-f]{40})(?=\s|$)")
+rx = re.compile(r"(?:^|\s)COMMIT=([0-9a-f]{40})(?=,|\s|$)")
 def commits(w):
     return [m.group(1) for m in rx.finditer(w)]
 vw, gw = v.get("what") or "", g.get("what") or ""
@@ -41,7 +41,7 @@ if v.get("via") != "verifier": bad("row %s via=%r, not verifier" % (v.get("id"),
 if (vw.split() or [""])[0] != "CONFIRM": bad("row %s verdict word is not CONFIRM" % v.get("id"))
 vc = commits(vw)
 if len(vc) != 1: bad("row %s needs exactly one full 40-hex COMMIT=, found %d" % (v.get("id"), len(vc)))
-if g.get("kind") != "other": bad("gated row %s kind is %r, not other" % (g.get("id"), g.get("kind")))
+if g.get("kind") not in ("gate", "other"): bad("gated row %s kind is %r, not gate or other" % (g.get("id"), g.get("kind")))
 if not gw.startswith("GATED fleet-dash "): bad("gated row %s is not a GATED fleet-dash row" % g.get("id"))
 gc = commits(gw)
 if gc != vc: bad("gated COMMIT differs from the verdict COMMIT")

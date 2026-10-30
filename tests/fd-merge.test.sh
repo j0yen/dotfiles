@@ -47,13 +47,13 @@ newworld() {
   git clone -q -o orch "$W/remote.git" "$W/repo" 2>/dev/null
   export FD_MERGE_REPO="$W/repo"; : > "$tmp/calls"; rm -f "$tmp/err"
 }
-# rows: V = verdict d-v gating d-g; per-case overrides through VIA VWORD VTOK GTOK GPFX VSESS GSESS KINDV KINDG DUP
+# rows: V = verdict d-v gating d-g; per-case overrides through VWHAT (whole verdict text) VIA VWORD VTOK GTOK GPFX VSESS GSESS KINDV KINDG DUP
 mkrows() {
   VTOK_X="${VTOK-COMMIT=$C}" GTOK_X="${GTOK-COMMIT=$C}" python3 -I - "$tmp/rows.json" <<'P'
 import json, os, sys
 e = os.environ.get
 v = {"id": "d-v", "kind": e("KINDV", "verdict"), "agent": "r7", "via": e("VIA", "verifier"), "session": e("VSESS", "sess-v"), "gates": "d-g",
-     "what": "%s fleet-dash feat %s agent=verifier:r7 ran ok" % (e("VWORD", "CONFIRM"), e("VTOK_X"))}
+     "what": e("VWHAT") or "%s fleet-dash feat %s agent=verifier:r7 ran ok" % (e("VWORD", "CONFIRM"), e("VTOK_X"))}
 g = {"id": "d-g", "kind": e("KINDG", "other"), "agent": "r7", "via": "r7", "session": e("GSESS", "sess-g"), "gates": None,
      "what": "%s feat %s agent=rb" % (e("GPFX", "GATED fleet-dash"), e("GTOK_X"))}
 rows = [v, g]
@@ -121,6 +121,18 @@ newworld; STUB_RECORD_RC=1 runcase; check "$rc" 4 "record fails after a good tra
 check "$(rmain)" "$C" "record fails: remote main == COMMIT"
 grep -qx "MERGED fleet-dash feat COMMIT=$C verdict=d-v" "$tmp/err" && ok "record fails: the MERGED line is on stderr" || bad "MERGED line missing: $(cat "$tmp/err")"
 grep -q 'step record' "$tmp/err" && ok "record fails: names the step" || bad "step not named"
+
+# real-row shapes (ctl b854 10-30): trailing comma after COMMIT, gated row kind gate
+newworld; VWHAT="CONFIRM MERGE-OK fleet-dash 14c60b4 COMMIT=$C, gating the GATED row" KINDG=gate runcase
+check "$rc" 0 "comma-trailed COMMIT + gated kind gate: exit 0"
+check "$(rmain)" "$C" "comma-trailed COMMIT + gated kind gate: remote main == COMMIT"
+check "$(grep -c '^wmd record' "$tmp/calls")" 1 "comma-trailed COMMIT + gated kind gate: exactly one record call"
+newworld; VWHAT="CONFIRM MERGE-OK fleet-dash 14c60b4 COMMIT=${C:0:39}, gating the GATED row" KINDG=gate refused "comma after a 39-hex COMMIT"
+newworld; KINDG=verdict refused "gated row kind verdict (kind gate allowed)"
+newworld; KINDG=note refused "gated row kind note"
+newworld; VWHAT="CONFIRM MERGE-OK fleet-dash COMMIT=${C}G, gating" KINDG=gate refused "COMMIT then G then comma"
+newworld; VWHAT="CONFIRM MERGE-OK fleet-dash COMMIT=${C}-x gating" KINDG=gate refused "COMMIT then -x"
+newworld; VWHAT="CONFIRM MERGE-OK fleet-dash COMMIT=$C, gating" KINDG=gate VSESS=same GSESS=same refused "kind gate with the same session"
 
 # structure
 grep -q '^set -uo pipefail' "$fd" && ok "strict mode" || bad "strict mode missing"
