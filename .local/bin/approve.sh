@@ -4,10 +4,13 @@
 #   approve.sh --last N        print the last N approval lines (non-comment) prefixed age=<N>m
 #   approve.sh --selftest
 #   approve.sh "<quote>" "<re>" --trial-id <id> --trial-ends <iso> --signal '<read>' --revert '<cmd>'   approval + an open trial row (all four flags or none)
-#   approve.sh --trial-add --trial-id <id> --approval '#<n>' --started <iso> --trial-ends <iso> --signal '<read>' --revert '<cmd>' --state <open|kept|reverted|pending> [--start-gate '<text>']
-#   approve.sh --trial-close <id> <kept|reverted>       approve.sh --trial-open <id> --trial-ends <iso>  (pending -> open)       approve.sh --trials
-# Trials: ${APPROVE_TRIALS:-~/.claude/state/trials.json}, JSON array of {id, approval, started, ends, signal, revert, state, start_gate?, closed?}; atomic write under flock;
+#   approve.sh --trial-add --trial-id <id> --approval '#<n>' --started <iso> --trial-ends <iso> --signal '<read>' --revert '<cmd>' --state <open|kept|reverted|pending> [--start-gate '<text>'] [--arms 'a,b,c']
+#   approve.sh --trial-close <id> <keep|revert|unmeasured|extend> [--trial-ends <iso>]       approve.sh --trial-open <id> --trial-ends <iso> [--arms 'a,b,c']  (pending -> open)       approve.sh --trials
+# Trials: ${APPROVE_TRIALS:-~/.claude/state/trials.json}, JSON array of {id, approval, started, ends, signal, revert, state, start_gate?, closed?, arms?, extended?, closes?}; atomic write under flock;
 #   a malformed file is refused (exit 4) and never overwritten. Trial flags keep the tmux refusal (exit 3); bad input exits 2.
+# Close rule: keep/revert need >= ${APPROVE_TRIAL_MIN_GRADED:-20} Fable-graded decisions rows per arm in started..min(ends,now) (decisions.sqlite, ${WM_DECIDE_DB:-~/.local/state/swarm-decide/decisions.sqlite}),
+#   else exit 5 and only 'unmeasured' (runs the revert) or 'extend' (once, later --trial-ends) is allowed. Only an open trial closes (else 2). Revert command failing = exit 6; a failed
+#   ${WM_DECIDE_BIN:-wm-decide} plan row = exit 7. Every close writes one plan row. Now = ${APPROVE_NOW:-the clock}. Revert logs: ${APPROVE_TRIAL_LOG_DIR:-~/.claude/state/trial-logs}.
 # Line format: #<id> | <YYYY-MM-DD h:MM AM/PM TZ> | <session> | Joe: "<verbatim>" | re: <what>
 #   id = highest existing id + 1 (1 if none), strictly increasing, no dedupe (identical text appends a new id).
 # Guard: refuses (exit 3) inside tmux session rb, r7 or ctl. Append-only: never edits existing lines. File mode 600.
@@ -19,8 +22,12 @@ HEADER='# Joe approvals. Written ONLY by the aide session (approve.sh), append-o
 DATA_RE='^#[0-9]+ \| '
 TRIALS="${APPROVE_TRIALS:-$HOME/.claude/state/trials.json}"
 
+now_date() { # date, but "now" is APPROVE_NOW when it parses (tests)
+  if [ -n "${APPROVE_NOW:-}" ] && date -d "$APPROVE_NOW" >/dev/null 2>&1; then date -d "$APPROVE_NOW" "$@"; else date "$@"; fi
+}
+
 age_lines() { # stdin = log lines; prints "age=<N>m <line>" for data lines
-  local line ts e now; now=$(date +%s)
+  local line ts e now; now=$(now_date +%s)
   while IFS= read -r line; do
     [[ "$line" =~ $DATA_RE ]] || continue
     ts="${line#* | }"; ts="${ts%% | *}"
@@ -89,7 +96,7 @@ selftest() {
 [ "${1:-}" = "--selftest" ] && { selftest; rc=$?; [ $rc -eq 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"; exit $rc; }
 
 TRIAL_PY=$(cat <<'PYEOF'
-import sys, json, os, re, tempfile
+import sys, json, os, re, tempfile, sqlite3, subprocess, urllib.parse
 from datetime import datetime
 op, path = sys.argv[1], sys.argv[2]
 kv = dict(zip(sys.argv[3::2], sys.argv[4::2]))
@@ -100,7 +107,23 @@ def iso(s):
     try: d = datetime.fromisoformat(s)
     except (ValueError, TypeError): return False
     return d.tzinfo is not None
-def now(): return datetime.now().astimezone().isoformat(timespec="seconds")
+def pnow():
+    e = os.environ.get("APPROVE_NOW")
+    if e:
+        if not iso(e): die(2, "APPROVE_NOW must be ISO-8601 with an offset")
+        return datetime.fromisoformat(e)
+    return datetime.now().astimezone()
+def now(): return pnow().isoformat(timespec="seconds")
+def parse_arms(s):
+    out = []
+    for a in s.split(","):
+        a = a.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", a): die(2, "bad arm %r (--arms is a comma list of agent names)" % a)
+        if a not in out: out.append(a)
+    return out
+def dt(s, what):
+    if not iso(s): die(2, "trial has no usable %s (%r)" % (what, s))
+    return datetime.fromisoformat(s)
 rows = []
 if os.path.exists(path):
     try:
@@ -148,18 +171,106 @@ elif op == "add":
            "signal": kv["signal"], "revert": kv["revert"], "state": st}
     if kv.get("start_gate"): row["start_gate"] = kv["start_gate"]
     if st in ("kept", "reverted") and kv.get("closed"): row["closed"] = kv["closed"]
+    if "arms" in kv: row["arms"] = parse_arms(kv["arms"])
     rows.append(row); save(); print("approve.sh: trial added: %s (%s)" % (i, st))
 elif op == "close":
     r = find(kv.get("id", ""))
     if r is None: die(2, "unknown trial id %s" % kv.get("id", ""))
-    if kv.get("state") not in ("kept", "reverted"): die(2, "close state must be kept or reverted")
-    r["state"] = kv["state"]; r["closed"] = now(); save(); print("approve.sh: trial closed: %s -> %s" % (r["id"], r["state"]))
+    verdict = kv.get("verdict", "")
+    if verdict not in ("keep", "revert", "unmeasured", "extend"): die(2, "close verdict must be keep, revert, unmeasured or extend")
+    st = r.get("state")
+    if st == "pending": die(2, "trial %s is pending: open it first (--trial-open)" % r["id"])
+    if st != "open": die(2, "trial %s is %s, only an open trial can be closed" % (r["id"], st))
+    if verdict != "extend" and "ends" in kv: die(2, "--trial-ends is only valid with extend")
+    cur_ends = dt(r.get("ends", ""), "ends"); started = dt(r.get("started", ""), "started")
+    if verdict == "extend":
+        if "ends" not in kv or not iso(kv["ends"]): die(2, "extend needs --trial-ends <iso with offset>")
+        if datetime.fromisoformat(kv["ends"]) <= cur_ends: die(2, "extend needs --trial-ends later than the current ends %s" % r["ends"])
+        if r.get("extended", 0): die(2, "trial %s was already extended once" % r["id"])
+    try: minn = int(os.environ.get("APPROVE_TRIAL_MIN_GRADED", "20"))
+    except ValueError: die(2, "APPROVE_TRIAL_MIN_GRADED must be an integer")
+    nowdt = pnow(); wend = min(cur_ends, nowdt)
+    arms = r.get("arms") or []
+    counts = {a: {"rows": 0, "graded": 0} for a in arms}
+    dbnote = None
+    if arms:
+        dbp = os.environ.get("WM_DECIDE_DB") or os.path.join(os.environ.get("HOME", ""), ".local/state/swarm-decide/decisions.sqlite")
+        try:
+            con = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(dbp), uri=True)
+            try: dbrows = con.execute("SELECT ts, agent, tags, regrade FROM decisions").fetchall()
+            finally: con.close()
+        except sqlite3.Error as e:
+            dbrows = []; dbnote = "decisions db unreadable (%s): %s" % (dbp, e)
+        for ts, agent, tags, regrade in dbrows:
+            if agent not in counts: continue
+            try: t = datetime.fromisoformat(ts)
+            except (ValueError, TypeError): continue
+            if t.tzinfo is None or not (started <= t <= wend): continue
+            counts[agent]["rows"] += 1
+            try:
+                rg = json.loads(regrade) if regrade else None
+                tg = json.loads(tags) if tags else []
+            except (ValueError, TypeError): continue
+            if not isinstance(rg, dict) or not isinstance(tg, list): continue
+            v = rg.get("verdict")
+            if rg.get("by") == "fable-regrader" and isinstance(v, str) and v and v != "UNGRADED" and "test" not in tg and "legacy" not in tg:
+                counts[agent]["graded"] += 1
+    measured = bool(arms) and all(counts[a]["graded"] >= minn for a in arms)
+    win = "%s..%s" % (r["started"], wend.isoformat(timespec="seconds"))
+    if verdict in ("keep", "revert") and not measured:
+        if dbnote: sys.stderr.write(dbnote + "\n")
+        if not arms: sys.stderr.write("trial %s has no arms recorded; nothing to measure\n" % r["id"])
+        for a in arms: sys.stderr.write("arm %s: %d/%d Fable-graded of %d rows in %s\n" % (a, counts[a]["graded"], minn, counts[a]["rows"], win))
+        sys.stderr.write("not measured: only 'unmeasured' (runs the revert) or 'extend' (once)\n"); sys.exit(5)
+    ts = nowdt.isoformat(timespec="seconds")
+    evid = "; ".join("%s %d/%d graded of %d rows" % (a, counts[a]["graded"], minn, counts[a]["rows"]) for a in arms) + "; window " + win
+    reverse = ("set ends back to %s" % r["ends"]) if verdict == "extend" else r["revert"]
+    def record():
+        cmd = [os.environ.get("WM_DECIDE_BIN") or "wm-decide", "record", "--agent", "aide", "--via", "approve.sh", "--kind", "plan",
+               "--tag", "trial:" + r["id"], "--what", "%s trial %s" % (verdict, r["id"]),
+               "--why", "%s close rule; measured=%s" % (r.get("approval", ""), "true" if measured else "false"),
+               "--evidence", evid, "--reverse-text", reverse]
+        try: p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        except OSError as e:
+            sys.stderr.write("approve.sh: wm-decide record failed to run: %s\n" % e); return None
+        out = p.stdout.strip()
+        if p.returncode != 0 or not re.fullmatch(r"d-[0-9]{8}-[0-9]{6}-\S+", out):
+            sys.stderr.write("approve.sh: wm-decide record failed (rc %d, id %r)\n" % (p.returncode, out[:80])); return None
+        return out
+    def entry(rid):
+        e = {"ts": ts, "verdict": verdict, "row": rid}
+        if rid is None: e["unrecorded"] = True
+        e["measured"] = measured; e["counts"] = counts
+        return e
+    if verdict in ("keep", "extend"):
+        rid = record()
+        if rid is None: sys.exit(7)
+        if verdict == "keep": r["state"] = "kept"; r["closed"] = ts
+        else: r["ends"] = kv["ends"]; r["extended"] = 1
+        r["closes"] = list(r.get("closes", [])) + [entry(rid)]
+        save(); print("approve.sh: trial %s: %s -> %s (row %s)" % (verdict, r["id"], r["state"], rid))
+    else:
+        logdir = os.environ.get("APPROVE_TRIAL_LOG_DIR") or os.path.join(os.environ.get("HOME", ""), ".claude/state/trial-logs")
+        os.makedirs(logdir, exist_ok=True)
+        logp = os.path.join(logdir, "%s.%s.log" % (r["id"], nowdt.strftime("%Y%m%dT%H%M%S")))
+        with open(logp, "ab") as lf:
+            rc = subprocess.run(["bash", "-c", r["revert"]], stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT).returncode
+        if rc != 0: die(6, "revert command failed (rc %d, log %s); trial left open" % (rc, logp))
+        rid = record()
+        r["state"] = "reverted" if verdict == "revert" else "reverted-unmeasured"; r["closed"] = ts
+        r["closes"] = list(r.get("closes", [])) + [entry(rid)]
+        save()
+        if rid is None:
+            sys.stderr.write("revert applied, wm-decide row NOT recorded\n"); sys.exit(7)
+        print("approve.sh: trial %s: %s -> %s (row %s, revert log %s)" % (verdict, r["id"], r["state"], rid, logp))
 elif op == "open":
     r = find(kv.get("id", ""))
     if r is None: die(2, "unknown trial id %s" % kv.get("id", ""))
     if r.get("state") != "pending": die(2, "trial %s is %s, only a pending trial can be opened" % (r["id"], r.get("state")))
     if not iso(kv.get("ends", "")): die(2, "--trial-ends must be ISO-8601 with an offset")
-    r["started"] = now(); r["ends"] = kv["ends"]; r["state"] = "open"; save()
+    arms = parse_arms(kv["arms"]) if "arms" in kv else (r.get("arms") or [])
+    if not arms: die(2, "trial %s has no arms: pass --arms 'a,b,c' (nothing written)" % r["id"])
+    r["arms"] = arms; r["started"] = now(); r["ends"] = kv["ends"]; r["state"] = "open"; save()
     print("approve.sh: trial opened: %s ends %s" % (r["id"], r["ends"]))
 else:
     die(2, "internal: unknown op")
@@ -177,7 +288,7 @@ trial_parse() { # trial_parse "<allowed keys, space separated>" args...: fills T
   while [ $# -gt 0 ]; do
     case "$1" in
       --trial-id) k=id ;; --trial-ends) k=ends ;; --signal) k=signal ;; --revert) k=revert ;; --approval) k=approval ;;
-      --started) k=started ;; --state) k=state ;; --start-gate) k=start_gate ;;
+      --started) k=started ;; --state) k=state ;; --start-gate) k=start_gate ;; --arms) k=arms ;;
       *) echo "approve.sh: unexpected argument: $1" >&2; exit 2 ;;
     esac
     f="$1"
@@ -193,19 +304,20 @@ trial_mode() {
   case "$mode" in
     --trials) [ $# -eq 0 ] || { echo "usage: approve.sh --trials" >&2; exit 2; }; trial_py list; exit $? ;;
     --trial-close)
-      [ $# -eq 2 ] || { echo "usage: approve.sh --trial-close <id> <kept|reverted>" >&2; exit 2; }
-      trial_py close id "$1" state "$2"; exit $? ;;
+      [ $# -ge 2 ] || { echo "usage: approve.sh --trial-close <id> <keep|revert|unmeasured|extend> [--trial-ends <iso>]" >&2; exit 2; }
+      T[id]="$1"; T[verdict]="$2"; shift 2; trial_parse "ends" "$@"
+      trial_py close id "${T[id]}" verdict "${T[verdict]}" ${T[ends]+ends "${T[ends]}"}; exit $? ;;
     --trial-open)
-      [ $# -ge 1 ] || { echo "usage: approve.sh --trial-open <id> --trial-ends <iso>" >&2; exit 2; }
-      T[id]="$1"; shift; trial_parse "ends" "$@"
-      [ -n "${T[ends]+x}" ] || { echo "usage: approve.sh --trial-open <id> --trial-ends <iso>" >&2; exit 2; }
-      trial_py open id "${T[id]}" ends "${T[ends]}"; exit $? ;;
+      [ $# -ge 1 ] || { echo "usage: approve.sh --trial-open <id> --trial-ends <iso> [--arms 'a,b,c']" >&2; exit 2; }
+      T[id]="$1"; shift; trial_parse "ends arms" "$@"
+      [ -n "${T[ends]+x}" ] || { echo "usage: approve.sh --trial-open <id> --trial-ends <iso> [--arms 'a,b,c']" >&2; exit 2; }
+      trial_py open id "${T[id]}" ends "${T[ends]}" ${T[arms]+arms "${T[arms]}"}; exit $? ;;
     --trial-add)
-      trial_parse "id approval started ends signal revert state start_gate" "$@"
+      trial_parse "id approval started ends signal revert state start_gate arms" "$@"
       local k; for k in id approval started ends signal revert state; do
-        [ -n "${T[$k]+x}" ] || { echo "usage: approve.sh --trial-add --trial-id <id> --approval '#<n>' --started <iso> --trial-ends <iso> --signal '<read>' --revert '<cmd>' --state <open|kept|reverted|pending> [--start-gate '<text>']" >&2; exit 2; }
+        [ -n "${T[$k]+x}" ] || { echo "usage: approve.sh --trial-add --trial-id <id> --approval '#<n>' --started <iso> --trial-ends <iso> --signal '<read>' --revert '<cmd>' --state <open|kept|reverted|pending> [--start-gate '<text>'] [--arms 'a,b,c']" >&2; exit 2; }
       done
-      trial_py add id "${T[id]}" approval "${T[approval]}" started "${T[started]}" ends "${T[ends]}" signal "${T[signal]}" revert "${T[revert]}" state "${T[state]}" start_gate "${T[start_gate]-}"
+      trial_py add id "${T[id]}" approval "${T[approval]}" started "${T[started]}" ends "${T[ends]}" signal "${T[signal]}" revert "${T[revert]}" state "${T[state]}" start_gate "${T[start_gate]-}" ${T[arms]+arms "${T[arms]}"}
       exit $? ;;
   esac
 }
@@ -240,14 +352,14 @@ chmod 600 "$LOG"
 # id allocation + append under one lock so concurrent writers never share an id
 line=$( ( flock 9
   last=$(grep -oE '^#[0-9]+' "$LOG" | tr -d '#' | sort -n | tail -n1); id=$(( ${last:-0} + 1 ))
-  l=$(printf '#%s | %s | %s | Joe: "%s" | re: %s' "$id" "$(date '+%F %-I:%M %p %Z')" "${CLAUDE_SESSION_NAME:-aide}" "$quote" "$re")
+  l=$(printf '#%s | %s | %s | Joe: "%s" | re: %s' "$id" "$(now_date '+%F %-I:%M %p %Z')" "${CLAUDE_SESSION_NAME:-aide}" "$quote" "$re")
   printf '%s\n' "$l" >> "$LOG"; printf '%s' "$l" ) 9>>"$LOG" )
 chmod 600 "$LOG"
 echo "approve.sh: appended: $line"
 trial_rc=0
 if [ "$has_trial" = 1 ]; then   # the approval is already on the log; a trial failure is reported but still rings the bell
   new_id="${line#\#}"; new_id="${new_id%% *}"
-  trial_py add id "${T[id]}" approval "#$new_id" started "$(date -Iseconds)" ends "${T[ends]}" signal "${T[signal]}" revert "${T[revert]}" state open || trial_rc=$?
+  trial_py add id "${T[id]}" approval "#$new_id" started "$(now_date -Iseconds)" ends "${T[ends]}" signal "${T[signal]}" revert "${T[revert]}" state open || trial_rc=$?
 fi
 EV="${SEAT_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}"
 if [ -x "$EV" ]; then   # ring the controller; never fails the approval
