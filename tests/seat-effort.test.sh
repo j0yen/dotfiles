@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# effort is a trial-tracked setting: see ~/.claude/state/trials.json (seat-effort-high-82); approvals #82 reverted trial #39 (medium)
 # Joe 10-26 11:5x PM "yes, run the check and trial medium" (approvals #39); trial ends 2026-10-28 12:00 AM, keep if Fable correction rate flat
 # Seats (ctl, rb, r7) run at medium effort via env CLAUDE_CODE_EFFORT_LEVEL in their --settings files (the user settings modelSettings say high; the env overrides it).
 # Model stays claude-opus-5-5. The aide (settings.local.json), coders and coder-opus are untouched. Revert = delete the env key from both files and this test.
@@ -7,7 +8,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
 ok() { if [ "$2" = 0 ]; then echo "ok - $1"; else echo "NOT OK - $1"; fail=1; fi; }
 for f in settings.json ctl-settings.json; do
-  [ "$(jq -r '.env.CLAUDE_CODE_EFFORT_LEVEL' "$here/.config/claude-seat/$f")" = medium ]; ok "$f (rb/r7 or ctl) effort medium" $?
+  [ "$(jq -r '.env.CLAUDE_CODE_EFFORT_LEVEL' "$here/.config/claude-seat/$f")" = high ]; ok "$f (rb/r7 or ctl) effort high" $?
 done
 A="$HOME/.claude/settings.local.json"
 if [ -f "$A" ]; then [ "$(jq -r '.env.CLAUDE_CODE_EFFORT_LEVEL // "unset"' "$A")" = unset ]; ok "aide settings.local.json effort untouched" $?; else echo "skip - no $A"; fi
