@@ -401,6 +401,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Notification": [
@@ -589,6 +599,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
+            "timeout": 10
           }
         ]
       }
