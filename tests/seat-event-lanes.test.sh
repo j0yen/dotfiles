@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # aide-lanes step 4: seat-event.sh aide:<lane> addressing. Temp SEATS_TABLE + EVENTS_DIR + HOME; nothing live is touched.
 set -u
+# capability probe (first executable block): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment" "systemd-run --user --quiet true"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 SE="$(cd "$(dirname "$0")/.." && pwd)/.local/bin/seat-event.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 fail=0; ok() { echo "PASS $1"; }; bad() { echo "FAIL $1"; fail=1; }

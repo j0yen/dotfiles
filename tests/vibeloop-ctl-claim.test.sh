@@ -6,6 +6,10 @@
 #   bash tests/vibeloop-ctl-claim.test.sh
 # from the repo root. Exits nonzero (and prints every failure) if any assertion fails.
 set -uo pipefail
+# capability probe (first executable block; the claim path reaches systemctl through `rb`): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CTL="$here/../.local/bin/vibeloop-ctl"
 
