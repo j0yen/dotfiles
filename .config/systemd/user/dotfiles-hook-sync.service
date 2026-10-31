@@ -1,0 +1,8 @@
+[Unit]
+Description=Link repo hooks into ~/.claude/hooks (link-only, never replaces) and check every registered hook resolves; fails (exit 3) on an unresolved hook, (exit 2) once expired. State: ~/.cache/dotfiles-hook-sync/state
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=120
+ExecStart=%h/.local/bin/dotfiles-hook-sync.sh

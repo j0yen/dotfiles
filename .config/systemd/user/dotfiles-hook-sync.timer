@@ -1,0 +1,9 @@
+[Unit]
+Description=3 min after boot, then every 10 min: dotfiles-hook-sync (registered hooks must resolve on this node)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
