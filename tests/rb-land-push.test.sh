@@ -156,7 +156,8 @@ out=$(env -u RB_LAND_PUSH_TEST_ORIGIN bash "$wrap" --confirm "$ID" --repo "$T/wt
 # (i) repo prefix allowlist (--host mode only)
 REPO=/usr/local/src/x;                                                                                  refused "(i) --host repo outside RB_LAND_PUSH_REPO_PREFIXES" repo-not-allowed "$ID"
 REPO="$T/../x";                                                                                         refused "(i) a .. component is refused" repo-not-allowed "$ID"
-out=$(env -u RB_LAND_PUSH_REPO_PREFIXES bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --host redbaron 2>&1)
+# host-independent: $T lives under TMPDIR, which is /mnt/data/tmp/... on RedBaron and so sits INSIDE the default /mnt/data/ prefix; a repo outside it is refused on every host
+out=$(env -u RB_LAND_PUSH_REPO_PREFIXES bash "$wrap" --confirm "$ID" --repo /usr/local/src/x --branch "$B" --host redbaron 2>&1)
 [[ "$out" == "REFUSED repo-not-allowed"* ]] && ok "(i) the default prefix is /mnt/data/" || bad "default prefix not enforced: $out"
 REPO="$T/wt"
 # repo config holding include.* keys is refused (git cannot unset a repo's own includes with -c)

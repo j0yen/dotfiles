@@ -36,7 +36,11 @@ printf '#!/bin/sh\necho fixture-host\n' > "$fakehome/.cargo/bin/hostname"; chmod
 # checkout's working tree looks like to install.sh, which never reads .git).
 (cd "$repo" && tar --exclude=.git -cf - .) | (cd "$checkout" && tar -xf -)
 
-HOME="$fakehome" bash "$checkout/install.sh" >/dev/null
+# The post-apply watcher-lib check install.sh ends with runs every consumer's --selftest (rb-reprice-watch.sh alone takes ~4 min on a loaded RedBaron, over the 120 s
+# per-consumer WPA_TIMEOUT, so install.sh exits 1). That check is not this AC (symlinks + unit files) and has its own tests/watcher-lib-postapply selftest, so it is pointed at an
+# empty consumer dir here; the lib sha/bash -n/source check still runs.
+mkdir -p "$work/nobin"
+HOME="$fakehome" WPA_BIN="$work/nobin" bash "$checkout/install.sh" >/dev/null
 rc=$?
 assert_eq "$rc" "0" "install.sh exits 0 against a fresh checkout"
 

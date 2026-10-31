@@ -29,8 +29,7 @@
 #      (2) host guard: off RedBaron the watcher prints WRONG-HOST and exits 0 (--selftest skips it; --circuit-gate exits 2 so wip-redrive.sh never reads it as ok). (3) a HELD row is checked BEFORE the W1 circuit gate (it never touches rr_fail / the circuit counters)
 #      and early_release SKIPS a held row and tries the next eligible one (still at most ONE release attempt per pass). (4) a disarmed gate with open ledger rows rings RB-BELL WP-DISARMED-LEDGER-NONEMPTY n=<k> once per ledger pass and sets status.json wp_disarmed_ledger=<k>.
 #   ROUND 4 (rb 10-22 1:3x PM, row d-20261022-132754-rb-1012, Fable APPROVE-WITH-FIXES): T2 now ARMS T4R exactly like T4 (t4r_cost + t4r_arm BEFORE runs_to_1, revert kept, NO exit;
-#      the loop continues). While T4R_RUN is set neither T2 nor T4 fires a second pause or arm (one arm, one state file). The state file gains lowered_from (new key; load falls back
-#      to t4_lowered_from), t4r_cause=T2|T4 and daemon_restart_within=<secs since wm-build.service ActiveEnterTimestamp at the arm, or unknown>. A T2-armed pause adds a recovery gate to
+#      the loop continues). While T4R_RUN is set neither T2 nor T4 fires a second pause or arm (one arm, one state file). The state file gains lowered_from (the legacy t4_lowered_from key is no longer read: a file with only that key loads with no lowered_from), t4r_cause=T2|T4 and daemon_restart_within=<secs since wm-build.service ActiveEnterTimestamp at the arm, or unknown>. A T2-armed pause adds a recovery gate to
 #      every pass: MemAvailable_GiB >= 12 + INNER_PEAK_GIB - SIGMA_LIVE_INNER_CAPS (peak = max priced inner row, the target() SQL; sigma = live inners x [cargo_jobs.mem_caps_gb] inner);
 #      T4-armed pauses keep the old gate. STUCK bell: 2 h, but 30 min when t4r_cause=T2 AND daemon_restart_within <= 300. R16: state present and the row open but no longer paused
 #      (the seat redrove by hand) -> clear state, restore max_runs to lowered_from under the round-3 rule, ZERO redrive calls.
@@ -210,14 +209,13 @@ t4r_save(){ # persist the recovery watch (tmp + mv) so a watcher restart does no
   { echo "T4R_RUN=$T4R_RUN"; echo "T4R_PAUSED_AT=$T4R_PAUSED_AT"; echo "T4R_COST=$T4R_COST"; echo "T4R_LAST=$T4R_LAST"; echo "T4R_STUCK=$T4R_STUCK"; echo "lowered_from=$T4R_FROM"; echo "t4r_cause=$T4R_CAUSE"; echo "daemon_restart_within=$T4R_RESTART"; } > "$tmp" \
     && mv -f -- "$tmp" "$T4R_STATE" || log "T4R state save failed ($T4R_STATE)"; }
 t4r_load(){ # once at startup: restore a persisted recovery watch; a run that ended or is no longer paused makes the file stale (deleted, no writes). T4R_N restarts at 0.
-  local k v run= at= cost=unknown last= stuck=0 st from= oldfrom= newseen= cause=T4 restart=unknown
+  local k v run= at= cost=unknown last= stuck=0 st from= cause=T4 restart=unknown
   [ -f "$T4R_STATE" ] || return 0  # LOADGUARD
-  while IFS== read -r k v; do case "$k" in T4R_RUN) run=$v;; T4R_PAUSED_AT) at=$v;; T4R_COST) cost=$v;; T4R_LAST) last=$v;; T4R_STUCK) stuck=$v;; lowered_from) from=$v; newseen=1;; t4_lowered_from) oldfrom=$v;; t4r_cause) cause=$v;; daemon_restart_within) restart=$v;; esac; done < "$T4R_STATE"
+  while IFS== read -r k v; do case "$k" in T4R_RUN) run=$v;; T4R_PAUSED_AT) at=$v;; T4R_COST) cost=$v;; T4R_LAST) last=$v;; T4R_STUCK) stuck=$v;; lowered_from) from=$v;; t4r_cause) cause=$v;; daemon_restart_within) restart=$v;; esac; done < "$T4R_STATE"
   case "$run$at" in ''|*[!0-9]*) log "T4R state unreadable (run=[$run] paused_at=[$at]), deleted"; t4r_state_rm; return 0;; esac
   # round 5: a run no longer paused (hand redrive) is KEPT, t4r_step restores after the io window. Round 6: an EMPTY read is unknown, never stale: the state loads and t4r_step re-reads
   if rowq load "$run" "select ended is null from runs where id=$run"; then st=$ROWV
     if [ "$st" != 1 ]; then log "T4R state stale run=$run (row ended), deleted"; t4r_state_rm; return 0; fi; fi  # STALEDEL
-  [ -n "$newseen" ] || from=$oldfrom  # T4LF-FALLBACK
   case "$from" in ""|*[!0-9]*) from=;; esac  # key absent / empty / junk = the pause lowered nothing, recovery never raises
   case "$cause" in T2|T4) ;; *) cause=T4;; esac; case "$restart" in ''|*[!0-9]*) restart=unknown;; esac
   T4R_CAUSE=$cause; T4R_RESTART=$restart; T4R_FROM=$from; T4R_RUN=$run; T4R_PAUSED_AT=$at; T4R_COST=$cost; T4R_LAST=$last; T4R_STUCK=$stuck; T4R_N=0; T4R_EXPLOG=; T4R_ATT=0; T4R_HOLD=0; T4R_HRSEEN=; T4R_SATT=0; T4R_SOK=
@@ -690,12 +688,12 @@ FAKEWIP
   RW_NOW=$((NOW0+7200)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 1 ] || { fail "R17 within=301 no stuck at 2 h"; return 1; }
   ARM_CAUSE=T4 ARM_DEW=60 fresh; io 8; RW_NOW=$((NOW0+1800)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 0 ] || { fail "R17 T4 cause stuck at 30 min"; return 1; }
   ARM_CAUSE=T2 ARM_DEW=300 fresh; io 8; RW_NOW=$((NOW0+1800)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 1 ] || { fail "R17 within=300 no stuck at 30 min"; return 1; }
-  # R18: a state file with ONLY t4_lowered_from=2 (the shape of the live run-1037 file) loads as lowered_from=2, cause T4, restart unknown, then restores exactly 2; the new key wins when both exist
+  # R18: the legacy t4_lowered_from key is no longer read (TODO 2026-10-29 done): a file with ONLY t4_lowered_from=2 loads with no lowered_from (cause T4, restart unknown) and recovery lowers/raises nothing (zero limits-guard calls, redrive still happens); lowered_from is read when both exist
   fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nT4R_COST=0\nT4R_LAST=last_commit=5ddad49a\nT4R_STUCK=0\nt4_lowered_from=2\n' "$NOW0" > "$T4R_STATE"
   T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_COST=unknown; T4R_LAST=; T4R_STUCK=0; T4R_N=0; T4R_EXPLOG=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
-  [ "$T4R_FROM" = 2 ] && [ "$T4R_RUN" = 7 ] && [ "$T4R_CAUSE" = T4 ] && [ "$T4R_RESTART" = unknown ] || { fail "R18 legacy load from=[$T4R_FROM] run=[$T4R_RUN] cause=[$T4R_CAUSE]"; return 1; }
+  [ -z "$T4R_FROM" ] && [ "$T4R_RUN" = 7 ] && [ "$T4R_CAUSE" = T4 ] && [ "$T4R_RESTART" = unknown ] || { fail "R18 legacy load from=[$T4R_FROM] run=[$T4R_RUN] cause=[$T4R_CAUSE]"; return 1; }
   passes "$need"
-  [ "$(cnt '^wm-build-limits-guard set max_runs=2 ')" = 1 ] && [ "$(cnt '^wm-build-limits-guard enforce$')" = 1 ] && [ "$(cnt '^wm-build run redrive 7 --from inner$')" = 1 ] || { fail "R18 legacy restore calls=[$(tr '\n' '|' < "$CALLS")]"; return 1; }
+  [ "$(cnt '^wm-build-limits-guard')" = 0 ] && [ "$(cnt '^wm-build run redrive 7 --from inner$')" = 1 ] || { fail "R18 legacy restore calls=[$(tr '\n' '|' < "$CALLS")]"; return 1; }
   fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nlowered_from=3\nt4_lowered_from=2\nt4r_cause=T2\ndaemon_restart_within=45\n' "$NOW0" > "$T4R_STATE"
   T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
   [ "$T4R_FROM" = 3 ] && [ "$T4R_CAUSE" = T2 ] && [ "$T4R_RESTART" = 45 ] || { fail "R18 new key precedence from=[$T4R_FROM] cause=[$T4R_CAUSE] restart=[$T4R_RESTART]"; return 1; }
@@ -966,10 +964,6 @@ if [ "${1:-}" = "--selftest" ]; then
   t=$(mktemp -d); sqlite3 "$t/s.db" "create table runs(id integer, stage text, outcome text, driver_unit text); insert into runs values (1012,'land',null,'wm-build-inner1012-a'),(1014,'gate',null,'wm-build-inner1014-a'),(1015,'gate',null,'wm-build-inner1015-a')"
   z=$(RW_ALL_ACTIVE=1 live_inners "$t/s.db" | grep -c .); sqlite3 "$t/s.db" "insert into runs values (1020,'inner',null,'wm-build-inner1020-a'),(1021,'inner','done','wm-build-inner1021-a')"
   one=$(RW_ALL_ACTIVE=1 live_inners "$t/s.db" | tr '\n' ' '); rm -rf "$t"
-  # TODO 2026-10-29: drop the t4_lowered_from read (the T4LF-FALLBACK line in t4r_load), this check, and the back-compat note in the header (the live run-1037 state file uses the old key until then)
-  todo_check(){ [ "$1" \> 2026-10-29 ] && grep -q '# T4LF-FALLBACK$' "${BASH_SOURCE[0]}" && return 1; return 0; }
-  todo_check 2026-10-29 && ! todo_check 2026-10-30 || { echo "SELFTEST FAIL TODO check is not live (fallback marker missing or date logic wrong)"; exit 1; }
-  todo_check "${RW_TODAY:-$(date +%F)}" || { echo "SELFTEST FAIL TODO 2026-10-29: drop the t4_lowered_from read (T4LF-FALLBACK in t4r_load)"; exit 1; }
   t4r=$(t4_selftest) || { echo "$t4r"; exit 1; }
   t4rr=$(t4r_selftest) || { echo "$t4rr"; exit 1; }
   ww=$(w_selftest) || { echo "$ww"; exit 1; }
