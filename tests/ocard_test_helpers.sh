@@ -4,6 +4,7 @@
 # (state.db, journal, binary, fake proc/systemctl/agorabus), a synthorg chain
 # dir and an operator cache dir, then points the scripts at them via env.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEN="$ROOT/.claude/scripts/operator-status-gen.sh"
