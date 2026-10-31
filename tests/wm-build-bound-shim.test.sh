@@ -11,6 +11,7 @@ ctl=$here/.local/bin/wm-build-shim-ctl.sh
 units=$here/.config/systemd/user
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 pass=0; fail=0
+unset SSH_CLIENT  # the shim logs SSH_CLIENT; a run over ssh must not leak its own into the no-ssh cases (F5)
 ok() { pass=$((pass + 1)); echo "PASS: $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL: $1"; }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
