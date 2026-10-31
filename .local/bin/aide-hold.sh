@@ -36,8 +36,8 @@ rd() {
 }
 
 FLAG_CMD='f="$HOME/'$FLAG_REL'"; if [ -e "$f" ]; then echo present; sed -n "s/^EXPIRES=//p" "$f" | head -n 1; else echo absent; fi'
-ORCH_CMD="systemctl --user cat 'mcphost-deploy-*' 2>/dev/null; exit 0"
-CFG_CMD='b="$HOME/.cargo/bin/wm-build"; if [ -x "$b" ]; then "$b" config show 2>/dev/null | grep -E "hold_file"; fi; exit 0'
+ORCH_CMD='e=$(mktemp) || { echo __SYSTEMCTL_FAILED__; exit 0; }; o=$(systemctl --user cat "mcphost-deploy-*" 2>"$e"); rc=$?; printf "%s\n" "$o"; if [ $rc -ne 0 ] && ! printf "%s\n" "$o" | grep -q "^# /" && ! grep -q "No files found" "$e"; then echo __SYSTEMCTL_FAILED__; fi; rm -f "$e"; exit 0'
+CFG_CMD='echo "HOME=$HOME"; b="$HOME/.cargo/bin/wm-build"; if [ -x "$b" ]; then "$b" config show 2>/dev/null | grep -E "hold_file"; fi; exit 0'
 WATCH_CMD='if [ "$(systemctl --user is-active rb-land-hold-watch.timer 2>/dev/null)" = active ]; then for s in rb-land-hold-watch.sh r7-land-hold-watch.sh; do if grep -q "'$CANON'" "$HOME/.local/bin/$s" 2>/dev/null; then echo "$s"; fi; done; fi; exit 0'
 CARBON_CMD='for s in rb-merge.sh fd-merge.sh grader-backlog-loop.sh; do if grep -q "'$CANON'" "$HOME/.local/bin/$s" 2>/dev/null; then echo "$s"; fi; done; exit 0'
 
@@ -48,6 +48,7 @@ orch_parse() {
   awk -v canon="$CANON" '
     /^# \/.*\.service$/ { n = split($2, a, "/"); cur = a[n]; units[cur] = 1; drop[cur] = ""; next }
     /^# \/.*\.service\.d\/.*\.conf$/ { n = split($2, a, "/"); if (cur != "") drop[cur] = a[n]; next }
+    /^# \// { cur = ""; next }
     index($0, "ConditionPathExists=!") == 1 && index($0, canon) > 0 { if (cur != "") cov[cur] = 1 }
     END {
       total = 0; hit = 0; name = ""
@@ -57,6 +58,24 @@ orch_parse() {
     }'
 }
 
+# cfg_hold_ok OUT: OUT = `HOME=<remote home>` then the hold_file lines of `wm-build config show`. True when the key land.hold_file (or hold_file)
+# has a value that, after trimming, quote removal and a leading ~/ expanded against that HOME, equals the canonical path exactly.
+cfg_hold_ok() {
+  local line home='' key val
+  while IFS= read -r line; do
+    case $line in HOME=*) home=${line#HOME=}; continue;; esac
+    case $line in *=*) ;; *) continue;; esac
+    key=${line%%=*}; val=${line#*=}
+    key=${key//[[:space:]]/}
+    [ "$key" = land.hold_file ] || [ "$key" = hold_file ] || continue
+    val=${val#"${val%%[![:space:]]*}"}; val=${val%"${val##*[![:space:]]}"}
+    val=${val#[\"\']}; val=${val%[\"\']}
+    case $val in "~/"*) [ -n "$home" ] && val=$home/${val#"~/"};; esac
+    [ -n "$home" ] && [ "$val" = "$home/$FLAG_REL" ] && return 0
+  done <<< "$1"
+  return 1
+}
+
 # consumer_of HOST -> prints a consumer name, `none`, or `UNREAD`
 consumer_of() {
   local h=$1 out rc cls; cls=$(host_class "$h")
@@ -64,11 +83,12 @@ consumer_of() {
     orch)
       out=$(rd "$h" "$ORCH_CMD" </dev/null 2>/dev/null); rc=$?
       [ $rc -eq 0 ] || { echo UNREAD; return; }
+      printf '%s\n' "$out" | grep -qx '__SYSTEMCTL_FAILED__' && { echo UNREAD; return; }
       printf '%s\n' "$out" | orch_parse ;;
     watch)
       out=$(rd "$h" "$CFG_CMD" </dev/null 2>/dev/null); rc=$?
       [ $rc -eq 0 ] || { echo UNREAD; return; }
-      if printf '%s\n' "$out" | grep -q "$CANON"; then echo "wm-build land.hold_file"; return; fi
+      if cfg_hold_ok "$out"; then echo "wm-build land.hold_file"; return; fi
       out=$(rd "$h" "$WATCH_CMD" </dev/null 2>/dev/null); rc=$?
       [ $rc -eq 0 ] || { echo UNREAD; return; }
       out=$(printf '%s\n' "$out" | sed -n 1p); echo "${out:-none}" ;;
@@ -114,8 +134,13 @@ for line in open(rows):
         res[h] = {"flag": "unread", "consumer": old.get("consumer") or "unread",
                   "expires": old.get("expires"), "ts": old.get("ts", now)}
     else:
-        res[h] = {"flag": flag, "consumer": con or old.get("consumer") or "unread",
-                  "expires": exp or None, "ts": now}
+        if con:
+            res[h] = {"flag": flag, "consumer": con, "expires": exp or None, "ts": now}
+        else:
+            # flag read, consumer read failed: ts stays at when the kept consumer was last proven
+            kept = old.get("consumer")
+            res[h] = {"flag": flag, "consumer": kept or "unread", "expires": exp or None,
+                      "ts": old.get("ts", now) if kept else now, "consumer_read": "unread"}
 lines = ["  %s: %s" % (json.dumps(h), json.dumps(res[h], separators=(", ", ": "))) for h in res]
 tmp = out + ".tmp.%d" % os.getpid()
 with open(tmp, "w") as f:

@@ -25,6 +25,7 @@ mk() {
 while [ $# -gt 0 ]; do case $1 in -o) shift 2;; -*) shift;; *) break;; esac; done
 host=$1; shift
 case ",${STUB_SSH_FAIL:-}," in *,"$host",*) echo "ssh: connect to host $host port 22: Connection timed out" >&2; exit 255;; esac
+case "$*" in *"$STUB_FAIL_CMD"*) echo "ssh: stub read failure" >&2; exit 255;; esac
 printf '%s %s\n' "$host" "$*" >> "$STUB_ROOT/ssh.calls"
 HOME="$STUB_ROOT/homes/$host" PATH="$STUB_ROOT/hostbin/$host:$PATH" exec bash -c "$*"
 EOS
@@ -65,7 +66,7 @@ EOS
   OUTJ=$S/out/hold-consumers.json
 }
 run() { # args -> aide-hold.sh in the sandbox
-  env -i HOME="$S/homes/carbon" PATH="$S/bin:/usr/bin:/bin" TZ=UTC STUB_ROOT="$S" STUB_SSH_FAIL="${FAILHOSTS:-}" \
+  env -i HOME="$S/homes/carbon" PATH="$S/bin:/usr/bin:/bin" TZ=UTC STUB_ROOT="$S" STUB_SSH_FAIL="${FAILHOSTS:-}" STUB_FAIL_CMD="${FAILCMD:-@@none@@}" \
     AIDE_HOLD_OUT="$OUTJ" AIDE_HOLD_NOW="$NOW" AIDE_HOLD_SSH="$S/bin/ssh" bash "$AH" "$@"
 }
 jget() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d[sys.argv[2]][sys.argv[3]])' "$OUTJ" "$1" "$2"; }
@@ -144,6 +145,49 @@ chmod a-w "$S/homes/redbaron/.local/state/aide"   # the flag cannot be removed: 
 run lift --approval 125 --reason "hold released" >"$S/lift.out" 2>&1; rc=$?
 chmod u+w "$S/homes/redbaron/.local/state/aide"
 [ "$rc" -ne 0 ] && grep -q redbaron "$S/lift.out" && ok "lift with a consumer still enforcing: non-zero ($rc) naming redbaron" 0 || { ok "lift with a consumer still enforcing: non-zero naming redbaron" 1; cat "$S/lift.out"; }
+
+# 7. review fixes on 83716af
+# 7.1 a ConditionPathExists=! line in a .path unit that follows a service is not credited to that service
+mk pathunit; repoint
+{ for u in on-land release-checkout release; do
+    printf '# /home/jsy/.config/systemd/user/mcphost-deploy-%s.service\n[Service]\nExecStart=/bin/true\n\n' "$u"
+    printf '# /home/jsy/.config/systemd/user/mcphost-deploy-%s.service.d/90-grading-hold.conf\n' "$u"; sed -n 27,29p "$TXT"; printf '\n'
+  done
+  printf '# /home/jsy/.config/systemd/user/mcphost-deploy-catchup.service\n[Service]\nExecStart=/bin/true\n\n'
+  printf '# /home/jsy/.config/systemd/user/mcphost-deploy-catchup.timer\n[Unit]\n'; sed -n 27,29p "$TXT"; printf '\n'
+  printf '# /home/jsy/.config/systemd/user/mcphost-deploy-catchup.path\n[Unit]\nConditionPathExists=!%%h/.local/state/aide/grading-hold\n\n'
+} > "$S/orch-cat.txt"
+run probe >/dev/null 2>&1
+[ "$(jget orch consumer)" = none ] && ok "7.1 condition line in a .timer/.path unit is not credited to the previous service (orch none)" 0 || { ok "7.1 condition in non-service unit not credited" 1; cat "$OUTJ"; }
+# 7.2 hold_file is parsed as a key and compared exactly
+mk holdsub; hf() { printf '#!/bin/bash\n[ "$1 $2" = "config show" ] && { echo "land.max_runs = 2"; echo "%s"; }\n' "$1" > "$S/homes/redbaron/.cargo/bin/wm-build"; chmod +x "$S/homes/redbaron/.cargo/bin/wm-build"; }
+hf 'land.hold_file = /elsewhere/aide/grading-hold.bak'; run probe >/dev/null 2>&1
+[ "$(jget redbaron consumer)" = none ] && ok "7.2 hold_file naming another path that contains aide/grading-hold falls back (not a consumer)" 0 || ok "7.2 substring hold_file falls back" 1
+hf 'land.note = ~/.local/state/aide/grading-hold'; run probe >/dev/null 2>&1
+[ "$(jget redbaron consumer)" = none ] && ok "7.2 canonical path under a different key is not a consumer" 0 || ok "7.2 other key not a consumer" 1
+hf 'land.hold_file = "~/.local/state/aide/grading-hold"  '; run probe >/dev/null 2>&1
+[ "$(jget redbaron consumer)" = "wm-build land.hold_file" ] && ok "7.2 exact hold_file (quoted, trimmed, ~/ expanded) -> consumer" 0 || ok "7.2 exact hold_file -> consumer" 1
+hf "land.hold_file = $S/homes/redbaron/.local/state/aide/grading-hold"; run probe >/dev/null 2>&1
+[ "$(jget redbaron consumer)" = "wm-build land.hold_file" ] && ok "7.2 exact absolute hold_file -> consumer" 0 || ok "7.2 exact absolute hold_file -> consumer" 1
+# 7.3 flag read ok, consumer read fails: consumer and ts kept, consumer_read unread
+mk keepts; repoint
+run place --approval 125 --reason "test hold" --expires 2026-11-07T20:00:00Z >/dev/null 2>&1
+OLD=$NOW; NOW=$((OLD+900)); FAILCMD='hold_file' run probe >/dev/null 2>&1; NEW_RC=$?; NOW=$OLD
+[ "$(jget redbaron flag)" = present ] && [ "$(jget redbaron consumer)" = rb-land-hold-watch.sh ] && [ "$(jget redbaron ts)" = "$OLD" ] && [ "$(jget redbaron consumer_read)" = unread ] && ok "7.3 consumer read failed: flag present, consumer kept, ts NOT advanced, consumer_read=unread" 0 || { ok "7.3 consumer read failed keeps ts" 1; cat "$OUTJ"; }
+[ "$(jget orch ts)" = "$((OLD+900))" ] && ok "7.3 hosts whose consumer read succeeded advance ts" 0 || ok "7.3 hosts whose consumer read succeeded advance ts" 1
+# 7.4 orch systemctl itself fails: unread, previous consumer and ts kept, never none
+mk orchfail; repoint
+run probe >/dev/null 2>&1; OC=$(jget orch consumer)
+printf '#!/bin/bash\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n' > "$S/hostbin/orch/systemctl"
+OLD=$NOW; NOW=$((OLD+900)); run probe >/dev/null 2>&1; NOW=$OLD
+[ "$(jget orch consumer)" = "$OC" ] && [ "$(jget orch ts)" = "$OLD" ] && [ "$(jget orch consumer_read)" = unread ] && [ "$OC" != none ] && ok "7.4 systemctl failure on orch: unread, previous consumer + ts kept (not none)" 0 || { ok "7.4 systemctl failure on orch" 1; cat "$OUTJ"; }
+mk orchfail2; run probe >/dev/null 2>&1
+printf '#!/bin/bash\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n' > "$S/hostbin/orch/systemctl"
+rm -f "$OUTJ"; run probe >/dev/null 2>&1
+[ "$(jget orch consumer)" = unread ] && ok "7.4 systemctl failure with no previous reading: consumer unread, never none" 0 || ok "7.4 systemctl failure, no previous reading" 1
+printf '#!/bin/bash\necho "No files found for mcphost-deploy-*.service." >&2\nexit 1\n' > "$S/hostbin/orch/systemctl"
+run probe >/dev/null 2>&1
+[ "$(jget orch consumer)" = none ] && ok "7.4 no units matched is a real none" 0 || ok "7.4 no units matched -> none" 1
 
 # 6. units
 u=$repo/.config/systemd/user
