@@ -13,7 +13,7 @@ out=$(HOME="$th" bash "$script" --selftest 2>&1)
 for c in 'default launch.sh runs' '--timeout 5400 reaches' '--timeout 99999 -> exit 2' '--timeout 59 -> exit 2' '--timeout abc -> exit 2' 'finish reports the recorded timeout_s' 'launch.sh denies Bash(pkill' 'prompt forbids pkill'; do
   printf '%s\n' "$out" | grep -F 'PASS TKG ' | grep -qF -- "$c" && pass "selftest TKG: $c" || { bad "selftest TKG case missing or failing: $c"; printf '%s\n' "$out" | grep -F 'TKG' | head -n 12; }
 done
-printf '%s\n' "$out" | grep -q '^FAIL' && bad "selftest has a FAIL line" || pass "selftest has no FAIL line"
+printf '%s\n' "$out" | grep -q '^FAIL' && { bad "selftest has a FAIL line"; printf '%s\n' "$out" | grep -n '^FAIL' | head -n 20; printf '%s\n' "$out" | tail -n 1; } || pass "selftest has no FAIL line"
 hook() { printf '%s' "$1" | jq -Rs '{tool_name:"Bash",tool_input:{command:.}}' | bash "$guard" >/dev/null 2>"$th/err"; }
 deny() { hook "$1"; [ $? = 2 ] && grep -q 'verifier-kill-guard: refused' "$th/err" && pass "guard denies: $1" || bad "guard should deny: $1"; }
 allow() { hook "$1"; [ $? = 0 ] && pass "guard allows: $1" || bad "guard should allow: $1"; }
