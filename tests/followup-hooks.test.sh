@@ -3,8 +3,11 @@
 # overdue id; ctl is checked against every seat. wm-decide is a fixture (the part-A contract), never the live ledger; state lives under a tmp dir.
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-base="${FUP_TEST_TMP:-/mnt/data/hand/tmp-fupD}"; mkdir -p "$base"
-tmp="$(mktemp -d -p "$base")"; trap 'rm -rf "$tmp"' EXIT
+if [ -n "${FUP_TEST_TMP:-}" ]; then base="$FUP_TEST_TMP"; fup_base_mktemp=0
+else base="$(mktemp -d "${TMPDIR:-/tmp}/followup-hooks.XXXXXX")"; fup_base_mktemp=1; fi
+mkdir -p "$base"; echo "base=$base"; export FUP_TEST_TMP="$base"
+tmp="$(mktemp -d -p "$base")"
+trap 'rm -rf "$tmp"; if [ "${fup_base_mktemp:-0}" = 1 ] && [ -n "${base:-}" ]; then case "$base" in */followup-hooks.*) rm -rf "$base" ;; esac; fi' EXIT
 fail=0; pass=0
 ok()  { echo "PASS $1"; pass=$((pass + 1)); }
 bad() { echo "FAIL $1"; fail=$((fail + 1)); }
