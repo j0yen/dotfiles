@@ -26,6 +26,12 @@ trap 'rm -rf "$work"' EXIT
 checkout="$work/checkout"
 fakehome="$work/home"
 mkdir -p "$checkout" "$fakehome"
+# Hermetic host identity: install.sh runs every watcher consumer's --selftest, and r7-pressure-shed.sh's selftest FAILS (not skips)
+# when `hostname -s` = ryzen7 and wm-build is not on its PATH ($HOME/.cargo/bin first). Under the fixture HOME wm-build is never
+# there, so the result would depend on which host runs the glob. A stub `hostname` first on that PATH pins a non-ryzen7 identity;
+# install.sh's handling of a real selftest failure is untouched.
+mkdir -p "$fakehome/.cargo/bin"
+printf '#!/bin/sh\necho fixture-host\n' > "$fakehome/.cargo/bin/hostname"; chmod +x "$fakehome/.cargo/bin/hostname"
 # Mirror the repo's tracked-file surface without .git (matches what a real
 # checkout's working tree looks like to install.sh, which never reads .git).
 (cd "$repo" && tar --exclude=.git -cf - .) | (cd "$checkout" && tar -xf -)
