@@ -1314,6 +1314,13 @@ else
 fi
 [ -n "$EV_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$EV_BLOCK"
 [ -n "$ASK_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$ASK_BLOCK"
+# follow-up tracker D1 (approvals #114): the seat's owed/overdue ids ride every prompt kind; silent when none are owed or `wm-decide followups` is unmeasured
+# (SessionStart prints the unmeasured line), so an absent or failing tracker never changes a prompt.
+for _fl in "$(dirname "$(readlink -f "$0")")/../../.claude/hooks/followup-lib.sh" "$HOME/.claude/hooks/followup-lib.sh"; do
+  # shellcheck disable=SC1090
+  [ -r "$_fl" ] && { . "$_fl"; FU_LINE="$(followups_line "$SEAT" 2>/dev/null)" || FU_LINE=""; break; }
+done
+[ -n "${FU_LINE:-}" ] && PROMPT="$PROMPT"$'\n'"$FU_LINE"
 
 # d. model row: a missing row refuses (exit 3) before anything is written
 MODEL="$(awk -v r="$ROLE" '$1==r{print $2}' "$MRC" 2>/dev/null | head -1)"
