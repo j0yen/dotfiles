@@ -688,6 +688,12 @@ FAKEWIP
   RW_NOW=$((NOW0+7200)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 1 ] || { fail "R17 within=301 no stuck at 2 h"; return 1; }
   ARM_CAUSE=T4 ARM_DEW=60 fresh; io 8; RW_NOW=$((NOW0+1800)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 0 ] || { fail "R17 T4 cause stuck at 30 min"; return 1; }
   ARM_CAUSE=T2 ARM_DEW=300 fresh; io 8; RW_NOW=$((NOW0+1800)); t4r_step 0; [ "$(grep -c 'REPRICE-RECOVER-STUCK' "$LOG")" = 1 ] || { fail "R17 within=300 no stuck at 30 min"; return 1; }
+  # R18: a state file with ONLY lowered_from=2 loads as from=2, cause T4, restart unknown, then restores exactly 2; a stale t4_lowered_from key is ignored (lowered_from wins when both exist, absent lowered_from = from empty)
+  fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nT4R_COST=0\nT4R_LAST=last_commit=5ddad49a\nT4R_STUCK=0\nlowered_from=2\n' "$NOW0" > "$T4R_STATE"
+  T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_COST=unknown; T4R_LAST=; T4R_STUCK=0; T4R_N=0; T4R_EXPLOG=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
+  [ "$T4R_FROM" = 2 ] && [ "$T4R_RUN" = 7 ] && [ "$T4R_CAUSE" = T4 ] && [ "$T4R_RESTART" = unknown ] || { fail "R18 load from=[$T4R_FROM] run=[$T4R_RUN] cause=[$T4R_CAUSE]"; return 1; }
+  passes "$need"
+  [ "$(cnt '^wm-build-limits-guard set max_runs=2 ')" = 1 ] && [ "$(cnt '^wm-build-limits-guard enforce$')" = 1 ] && [ "$(cnt '^wm-build run redrive 7 --from inner$')" = 1 ] || { fail "R18 restore calls=[$(tr '\n' '|' < "$CALLS")]"; return 1; }
   # R18: the legacy t4_lowered_from key is no longer read (TODO 2026-10-29 done): a file with ONLY t4_lowered_from=2 loads with no lowered_from (cause T4, restart unknown) and recovery lowers/raises nothing (zero limits-guard calls, redrive still happens); lowered_from is read when both exist
   fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nT4R_COST=0\nT4R_LAST=last_commit=5ddad49a\nT4R_STUCK=0\nt4_lowered_from=2\n' "$NOW0" > "$T4R_STATE"
   T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_COST=unknown; T4R_LAST=; T4R_STUCK=0; T4R_N=0; T4R_EXPLOG=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
@@ -697,6 +703,9 @@ FAKEWIP
   fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nlowered_from=3\nt4_lowered_from=2\nt4r_cause=T2\ndaemon_restart_within=45\n' "$NOW0" > "$T4R_STATE"
   T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
   [ "$T4R_FROM" = 3 ] && [ "$T4R_CAUSE" = T2 ] && [ "$T4R_RESTART" = 45 ] || { fail "R18 new key precedence from=[$T4R_FROM] cause=[$T4R_CAUSE] restart=[$T4R_RESTART]"; return 1; }
+  fresh; printf 'T4R_RUN=7\nT4R_PAUSED_AT=%s\nt4_lowered_from=2\n' "$NOW0" > "$T4R_STATE"
+  T4R_RUN=; T4R_FROM=; T4R_PAUSED_AT=; T4R_CAUSE=T4; T4R_RESTART=unknown; t4r_load
+  [ "$T4R_RUN" = 7 ] && [ -z "$T4R_FROM" ] || { fail "R18 old key only must be ignored run=[$T4R_RUN] from=[$T4R_FROM]"; return 1; }
   # R19: the redrive returns rc 3 (prefix-cap) twice, then 0 -> exactly 3 redrive calls, each >= 3 passes apart, one RETRY bell, then the RECOVER bell, state file gone after the third call; never --force/--ungated/unpause
   fresh; printf '3\n3\n' > "$FAKE_RCS"; passes "$need"
   [ "$(cnt '^wm-build run redrive 7 --from inner$')" = 1 ] && [ -e "$T4R_STATE" ] && [ "$T4R_RUN" = 7 ] && grep -q 'T4R redrive-retry run=7 rc=3 attempt=1' "$LOG" || { fail "R19 first failure did not keep the state calls=[$(tr '\n' '|' < "$CALLS")] log=[$(tail -n 3 "$LOG" | tr '\n' '|')]"; return 1; }
