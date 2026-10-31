@@ -6,6 +6,10 @@
 #   bash tests/vibeloop-ctl-claim.test.sh
 # from the repo root. Exits nonzero (and prints every failure) if any assertion fails.
 set -uo pipefail
+# capability probe (first executable block; the claim path reaches systemctl through `rb`): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CTL="$here/../.local/bin/vibeloop-ctl"
 
@@ -30,6 +34,19 @@ mkdir -p "$repo/vibeloop" "$repo/build-queue" "$repo/parked" "$repo/projects"
 git -C "$repo" add -A && git -C "$repo" commit -q -m init
 
 export DREAM_PRD_DIR="$repo"
+# Off RedBaron, vibeloop-ctl's rb() runs its remote reads over `ssh redbaron` (status: limits, journal, timers), so the result depended on the host.
+# A fake ssh first on PATH logs its argv to $work/ssh.log and runs the remote command locally under a scratch HOME: same result on any host,
+# no network, never the live ~/Documents/PRDs. On RedBaron rb() runs locally and the fake is never called.
+mkdir -p "$work/bin" "$work/remote-home"
+cat > "$work/bin/ssh" <<'EOS'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_SSH_LOG"
+while [ "${1:-}" = -o ]; do shift 2; done
+shift
+HOME="$FAKE_SSH_HOME" exec bash -c "$*"
+EOS
+chmod +x "$work/bin/ssh"; : > "$work/ssh.log"
+export PATH="$work/bin:$PATH" FAKE_SSH_LOG="$work/ssh.log" FAKE_SSH_HOME="$work/remote-home"
 run() { bash "$CTL" "$@" 2>/dev/null; }          # stdout only — pull/push warnings are expected noise
 runrc() { bash "$CTL" "$@" >/dev/null 2>&1; echo $?; }
 
@@ -114,4 +131,5 @@ if [ "$fail" -eq 0 ]; then
 else
   echo "vibeloop-ctl-claim tests FAILED"
 fi
+echo "# fake ssh calls: $(grep -c . "$work/ssh.log") (host $(hostname))"
 exit "$fail"
