@@ -38,6 +38,7 @@
 #       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
 #       must `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than SLOT_CEIL units are active or a unit's MemoryPeak tops PEAK_MB.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
+#       ON CARBON (`hostname -s` = carbon) launch exits 3 `carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)` right after the lints, before the fleet gate / any unit; finish and watch are unaffected.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
 #       `wm-decide merge-gate <verdict> --pr N --repo O/R`: PASS line -> gate.txt + GATE-PASS row + bell to ctl; anything else -> RETRACT correction row + bell, exit 5.
@@ -348,6 +349,7 @@ cmd_launch() {
   [ -n "${TOKEN//[[:space:]]/}" ] || die 2 "lint: --token (the G3 token line) is empty"
   case "$TOKEN" in *'"'*|*'`'*|*'$'*|*$'\n'*) die 2 "lint: --token must not contain \" \` \$ or a newline" ;; esac
   [ -n "${SUITE//[[:space:]]/}" ] || die 2 "lint: --suite is empty"
+  [ "$(hostname -s 2>/dev/null)" != carbon ] || die 3 "carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)"   # carbon-no-build (Joe 10-27, approvals #47): before the fleet gate, any clone or unit
   [ -z "$PRIO" ] || [[ "$PRIO" =~ ^[01]$ ]] || die 2 "lint: --prio must be 0 or 1"
   [ -n "$CLONE_URL" ] || CLONE_URL="https://github.com/$REPO.git"
   [ -d "$ROOT/$NAME" ] && [ -e "$ROOT/$NAME/state" ] && die 2 "lint: name '$NAME' already used ($ROOT/$NAME/state exists)"

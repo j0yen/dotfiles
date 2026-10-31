@@ -70,6 +70,7 @@ E
 echo "lint $*" >>"$T/calls.log"; [ "$(cat "$T/lint.rc")" = 0 ] || echo "G4: stub refusal"; exit "$(cat "$T/lint.rc")"
 E
   chmod +x "$T"/bin/*
+  for h in redbaron carbon; do mkdir -p "$T/hb-$h"; printf '#!/bin/sh\necho %s\n' "$h" >"$T/hb-$h/hostname"; chmod +x "$T/hb-$h/hostname"; done   # hostname -s via PATH only (carbon-no-build)
 }
 row() {   # row <id> <minutes-ago> <agent> <kind> <what> [gates]
   python3 - "$T/rows.json" "$1" "$(iso "$2")" "$3" "$4" "$5" "${6:-}" <<'E'
@@ -89,8 +90,8 @@ unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
   mkdir -p "$T/vdir/$1"; printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=pytest EXIT=0\nagent=aide\n' "$REPO" "$2" "$3" "$4" >"$T/vdir/$1/meta"
   [ -n "${5:-}" ] && printf '{"result":"verdict row %s\\nLOG: /x.log"}' "$5" >"$T/vdir/$1/result.json"
 }
-tick() {   # tick [--dry-run]  (stdout kept in $T/out)
-  T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
+tick() {   # tick [--dry-run]  (stdout kept in $T/out; HOSTSTUB=carbon|redbaron picks the stubbed hostname, default redbaron)
+  PATH="$T/hb-${HOSTSTUB:-redbaron}:$PATH" T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
   HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD="${PREMISE_CMD:-true}" bash "$DRV" "$@" >"$T/out" 2>&1; }
 n() { grep -c "$1" "$T/calls.log"; }   # count of calls matching
@@ -231,6 +232,14 @@ setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; row v1 500 aide verdict
 [ "$(n '^rb-merge')" = 0 ] && [ "$(n '^seat-ask')" = 0 ] && [ "$(grep -c 'HPLD OBSERVE-DEPWAIT' "$T/records.log")" = 1 ] && grep -q '#40(OPEN)' "$T/records.log" && ! grep -q '#39' "$T/records.log" && pass "Depends-on open dep: merge held, no ring, one observe row per head" || bad "depends open ($(cat "$T/records.log"))"
 echo MERGED >"$T/state-40"; tick
 [ "$(n '^rb-merge v1 41')" = 1 ] && pass "Depends-on all merged: merge proceeds" || bad "depends merged"
+cleanup
+
+# ---- carbon-no-build (Joe 10-27, approvals #47): on carbon a GATED suite row launches nothing and rings r7 once per head
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1 fix x"; pr $REPO 41 $H1
+HOSTSTUB=carbon tick; HOSTSTUB=carbon tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(n '^room ')" = 0 ] && [ "$(n '^seat-ask r7')" = 1 ] && [ "$(n '^seat-ask')" = 1 ] && grep -q 'HPLD RING-CARBONSUITE .*#41 k=carbonsuite:' "$T/records.log" && pass "(carbon) GATED suite row: no launch, no ROOM call, one ring to r7 over two ticks, one row" || bad "(carbon) GATED suite row on carbon"
+echo "$H2" >"$T/h2"; pr $REPO 41 $H2; row g2 5 r7 design "GATED $REPO#41 COMMIT=$H2 re-gated"; HOSTSTUB=carbon tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(n '^seat-ask r7')" = 2 ] && pass "(carbon) a new head rings r7 once more (once per head)" || bad "(carbon) per-head ring"
 cleanup
 
 bash "$DRV" --selftest >/dev/null && pass "--selftest" || bad "--selftest"
