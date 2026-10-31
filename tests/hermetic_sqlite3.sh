@@ -23,11 +23,13 @@ while i < len(args):
     elif a == "-json": js = True
     elif a == "-separator": sep = args[i + 1]; i += 1
     elif a in ("-noheader", "-bail", "-batch"): pass
+    elif a.startswith("-") and len(a) > 1 and a[1].isalpha(): sys.exit("sqlite3 stand-in: flag not implemented: " + a)
     else: rest.append(a)
     i += 1
 if not rest: sys.exit("sqlite3 stand-in: no database argument")
 db, sql = rest[0], " ".join(rest[1:]) if len(rest) > 1 else sys.stdin.read()
-if sql.lstrip().startswith("."): sys.exit("sqlite3 stand-in: dot-commands unsupported: " + sql.split()[0])
+for ln in sql.splitlines():
+    if ln.lstrip().startswith("."): sys.exit("sqlite3 stand-in: dot-commands unsupported: " + ln.split()[0])
 try:
     c = sqlite3.connect("file:%s?mode=%s" % (db, "ro" if ro else "rwc"), uri=True, timeout=5)
     buf, jrows = "", []
@@ -49,6 +51,7 @@ except sqlite3.Error as e:
 PY
   chmod +x "$_hs_dir/sqlite3.$$" && mv -f "$_hs_dir/sqlite3.$$" "$_hs_dir/sqlite3" || { echo "FAIL: hermetic_sqlite3: cannot install the stand-in" >&2; rm -rf "$_hs_probe"; exit 2; }
   export PATH="$_hs_dir:$PATH"
+  echo "hermetic_sqlite3: active $_hs_dir/sqlite3 (PATH sqlite3 cannot create a db)" >&2
   sqlite3 "$_hs_probe/q.db" "create table t(x); insert into t values (1);" >/dev/null 2>&1 \
     && [ "$(sqlite3 "$_hs_probe/q.db" 'select x from t' 2>/dev/null)" = 1 ] \
     || { echo "FAIL: hermetic_sqlite3: stand-in cannot create a db either" >&2; rm -rf "$_hs_probe"; exit 2; }
