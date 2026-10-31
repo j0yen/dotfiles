@@ -1,0 +1,6 @@
+{
+  "spec_older_7d": {"rb": 1, "r7": 0, "aide": 0},
+  "live_path_missing": [["2026-10-31-example-five-whys-rhyme.md", "~/.local/bin/example-missing.sh"]],
+  "unchecked": 1,
+  "ts": 1793440200
+}
