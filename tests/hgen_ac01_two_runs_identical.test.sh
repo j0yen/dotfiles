@@ -22,6 +22,11 @@ assert_contains "$(cat "$a")" "ended 24h: 602 ended-b outcome=Code cause=op-clos
 assert_contains "$(cat "$a")" "ended 24h: 601 ended-a outcome=Landed cause=landed" "second ended run"
 assert_contains "$(cat "$a")" "open: 488 alpha land" "open run from status.json"
 assert_contains "$(cat "$a")" "newest: c2 digest running" "newest chain row"
-assert_contains "$(cat "$a")" "skipped cap=max_runs: 1" "queue by skip reason"
+assert_contains "$(cat "$a")" "queue: 12 (building 2, ready 5, blocked 3, parked 2)" "queue counts from fleet-dash"
+# a stale queue source prints unknown, never a number
+jq '.sources.queue="stale"' "$work/cache/status.json" >"$work/stale.json" && cp "$work/stale.json" "$work/cache/status.json"
+"$HGEN" --out "$work/c.md"
+assert_contains "$(cat "$work/c.md")" "queue: unknown (stale)" "stale queue source -> unknown"
+assert_eq "$(grep -c 'queue: 12' "$work/c.md")" "0" "stale source prints no number"
 assert_eq "$(ls "$work" | grep -c 'tmp')" "0" "no temp file left"
 exit $fail

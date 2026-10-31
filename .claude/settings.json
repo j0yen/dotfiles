@@ -321,6 +321,20 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/skill-marker.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-skill-router.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -377,6 +391,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Notification": [
@@ -422,7 +446,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/jsy/.claude/hooks/dream-spawn-gate.sh",
+            "command": "/home/jsy/.claude/hooks/fable-skill-spawn-gate.sh",
             "timeout": 5
           },
           {
@@ -477,11 +501,20 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-claim-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\" ] && exec \"$HOME/.claude/hooks/mcphost-stamp-gate.sh\"; exit 0'"
           },
           {
             "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/cargo-slot-gate.sh\" ] && exec \"$HOME/.claude/hooks/cargo-slot-gate.sh\"; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-page-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -536,6 +569,11 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-page-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -614,6 +652,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/config-reload-check.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
             "timeout": 10
           }
         ]

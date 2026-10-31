@@ -29,5 +29,12 @@ grep -q ' | aide | aide 6:41 AM re ctl 6:0x: reply body one$' "$L" && grep -q ' 
 [ "$(jq -r '[.stamped,.typed_label_replaced]|@csv' "$EVENTS_DIR/tst-events.json")" = "3,2" ]; ok "events.json counters stamped=3 typed_label_replaced=2" $?
 a="$("$ASK" tst "rb 6:1x AM: ask body" 2>&1)"
 [[ "$a" == *" tst --ask aide 6:41 AM: ask body" ]] && ! [[ "$a" == *6:1x* ]]; ok "seat-ask argv carries the real stamp and not the typed clock" $?
+# aide lanes (step 3b ii): seat_stamp_source
+src() { env -i PATH="$PATH" "$@" bash -c ". '$here/.local/lib/seat-time-stamp.sh'; seat_stamp_source"; }
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=build)" = "aide:build" ]; ok "WM_SEAT=aide WM_AIDE_LANE=build -> source aide:build" $?
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=main)" = "aide" ]; ok "WM_AIDE_LANE=main -> source aide" $?
+[ "$(src WM_SEAT=aide)" = "aide" ]; ok "WM_AIDE_LANE unset -> source aide" $?
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=build EVENT_SOURCE=x)" = "x" ]; ok "EVENT_SOURCE=x wins over the lane" $?
+[ "$(src WM_SEAT=rb WM_AIDE_LANE=build)" = "rb" ]; ok "non-aide seat ignores WM_AIDE_LANE" $?
 [ "$fail" = 0 ] && echo "ALL OK" || echo "FAILED"
 exit "$fail"

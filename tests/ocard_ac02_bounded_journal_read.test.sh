@@ -10,7 +10,7 @@ assert_eq "$(stat -c %s "$work/state/journal.jsonl" | awk '{print ($1>300000000)
 t="$work/t.json"
 s=$(date +%s.%N); "$GEN" --out "$t"; e=$(date +%s.%N)
 assert_eq "$(awk -v s="$s" -v e="$e" 'BEGIN{print (e-s<2)?"fast":"slow"}')" "fast" "generator wall < 2 s"
-assert_eq "$(jq -r '.queue.admitted|length' "$t")" "2" "tick row found at the end of the journal"
+assert_eq "$(jq -r '.config.tick_loaded_at|type' "$t")" "string" "tick row found at the end of the journal (config.tick_loaded_at)"
 if ! command -v strace >/dev/null || ! strace -o /dev/null -e trace=read true 2>/dev/null; then
   echo "NOT OK - strace unavailable, cannot count bytes read"; exit 1
 fi
