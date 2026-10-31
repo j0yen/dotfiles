@@ -10,7 +10,7 @@
 #       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>;
 #       MERGE-GATE LINTS (AVL; each names the merge-gate rule, all failures printed, no bypass flag): G0 the --gated row does not exist; G6 the gated row names no
 #       agent=, or the verifier id equals its agent= / author= / agent column; G3 --repo has no repo_tokens entry or --suite lacks the prefix of a required
-#       `<prefix> EXIT=0` token (tokens without EXIT=0 print `lint: note:` and are checked from the log only); G1 --head != the live PR head (gh pr view;
+#       `<prefix> EXIT=0` token (tokens without EXIT=0 print `lint: note:` and are checked from the log only; any-of tokens, those holding merge-gate's ANY_OF separator, are body-only too: merge-gate g3_missing checks ANY_OF first); G1 --head != the live PR head (gh pr view;
 #       a gh failure refuses); KIND (V9) the --gated row's `what` must hold `GATED <repo>#<pr>` (word-bounded) and exactly one `COMMIT=<40 hex>` equal to --head
 #       (case-folded): a spawn/plan row or a stale GATED row is refused. KIND is STRICTER than merge-gate (which never reads the gated row's COMMIT=); its
 #       authority is the controller ruling ctl 12:59 + 1:11, 10-23, and its grammar is the one constant pair GATED_RE_FMT/COMMIT_TOKEN_RE below
@@ -197,7 +197,7 @@ render() {
 
 # ---- merge-gate launch lints (AVL) ----
 # Names the helper imports from the live merge-gate tree; `aide-verifier.sh --gate-names` prints them so tests/aide-verifier-gate-nodrift.test.sh checks the SAME list.
-GATE_NAMES="wm_decide.mergegate._agent_token wm_decide.mergegate.AGENT_RE wm_decide.mergegate.AUTHOR_RE wm_decide.mergegate.g3_missing wm_decide.mergegate.strip_attachments wm_decide.mergegate.contract.canon_agent"
+GATE_NAMES="wm_decide.mergegate._agent_token wm_decide.mergegate.AGENT_RE wm_decide.mergegate.AUTHOR_RE wm_decide.mergegate.g3_missing wm_decide.mergegate.ANY_OF wm_decide.mergegate.strip_attachments wm_decide.mergegate.contract.canon_agent"
 # L-KIND grammar (V9/W2/W4): ONE constant pair, passed to the helper and printed by `--gate-grammar` for the no-drift test. %s %s = re.escape(<repo>), <pr>;
 # <repo> is the exact owner/name string L-G3 looks up in repo_tokens. merge-gate has no GATED grammar, so there is nothing to import.
 GATED_RE_FMT='(^|\s)GATED %s#%s(\s|$)'
@@ -249,11 +249,11 @@ def lint_g3(mg, tokens):
     missing, problem = mg.g3_missing(list(tokens), [att], head)
     if problem:
         refuse("G3", problem)
-    bad = [t for t in missing if t.endswith(" EXIT=0")]
+    bad = [t for t in missing if t.endswith(" EXIT=0") and mg.ANY_OF not in t]  # any-of tokens are body-only (g3_missing checks ANY_OF first)
     if bad:
         refuse("G3", "--suite does not show the required token prefix(es) %s (the CMD of the log must contain each prefix)" % " | ".join(t[: -len(" EXIT=0")] for t in bad))
     for t in missing:
-        if not t.endswith(" EXIT=0"):
+        if not t.endswith(" EXIT=0") or mg.ANY_OF in t:
             note("%s is checked from the log only" % t)
 try:
     mg = importlib.import_module("wm_decide.mergegate")
@@ -602,6 +602,7 @@ from . import contract
 AGENT_RE = re.compile(r"\bagent=([A-Za-z0-9:._-]+)")
 AUTHOR_RE = re.compile(r"\bauthor=([A-Za-z0-9:._-]+)")
 COMMIT_RE = re.compile(r"\bCOMMIT=([0-9A-Fa-f]{12,40})\b")
+ANY_OF = " || "
 def strip_attachments(evidence):
     out, skip = [], False
     for ln in (evidence or "").splitlines():
@@ -617,7 +618,9 @@ def _agent_token(row, rx=AGENT_RE):
 def g3_missing(tokens, atts, commit):
     missing = []
     for tok in tokens:
-        if tok.endswith(" EXIT=0"):
+        if ANY_OF in tok:
+            ok = any(a["trailer"].get("EXIT") == "0" and any(alt in ln for alt in tok.split(ANY_OF) for ln in a["body"]) for a in atts)
+        elif tok.endswith(" EXIT=0"):
             ok = any(a["trailer"].get("EXIT") == "0" and tok[:-7] in (a["trailer"].get("CMD") or "") for a in atts)
         else:
             ok = any(tok in ln for a in atts for ln in a["body"])
@@ -626,12 +629,12 @@ def g3_missing(tokens, atts, commit):
 F
     [ -z "${3:-}" ] || sed -i 's/^def _agent_token/def _agent_token_renamed/' "$1/wm_decide/mergegate.py"
   }
-  local TOK='{"j0yen/dotfiles": ["tests/*.test.sh EXIT=0"], "j0yen/synthorg": ["pytest EXIT=0"], "j0yen/mcphost": ["-D warnings EXIT=0", "clippy delta=0", "cargo test EXIT=0"]}'
+  local TOK='{"j0yen/dotfiles": ["tests/*.test.sh EXIT=0"], "j0yen/synthorg": ["pytest EXIT=0"], "j0yen/mcphost": ["-D warnings EXIT=0", "clippy delta=0", "cargo test EXIT=0"], "j0yen/wm-build": ["-D warnings EXIT=0", "clippy delta=0", "test result: || cargo test EXIT=0"]}'
   mkgate "$T/gate" "$TOK"
   export AIDE_VERIFIER_GATE_ROOT="$T/gate"
   mkdir -p "$T/home/wintermute/swarm-decide"; cp -r "$T/gate/." "$T/home/wintermute/swarm-decide/"; mkgate "$T" "$TOK"   # decoys: the old default root and the tree next to fake-wmd must never be used
   local G0=d-20261023-055215-aide-0001 GB=d-20261023-055216-aide-0002 GC=d-20261023-055217-aide-0003 GD=d-20261023-055218-aide-0004 GE=d-20261023-055219-aide-0005 GF=d-20261023-055220-aide-0006 GN=d-20261023-055221-aide-0007
-  local GS=d-20261023-055222-aide-0008 GM=d-20261023-055223-aide-0009 GU=d-20261023-055224-aide-000a GV=d-20261023-055225-aide-000b
+  local GS=d-20261023-055222-aide-0008 GM=d-20261023-055223-aide-0009 GU=d-20261023-055224-aide-000a GV=d-20261023-055225-aide-000b GW=d-20261023-055226-aide-000c
   local K1=d-20261023-055231-aide-0101 K2=d-20261023-055232-aide-0102 K4=d-20261023-055234-aide-0104 K6=d-20261023-055236-aide-0106 K7=d-20261023-055237-aide-0107
   local K8=d-20261023-055238-aide-0108 K9=d-20261023-055239-aide-0109 K10=d-20261023-055240-aide-010a K11=d-20261023-055241-aide-010b K12=d-20261023-055242-aide-010c
   local OLD=1111111111111111111111111111111111111111
@@ -656,6 +659,7 @@ F
  {"id":"$GS","agent":"aide","what":"GATED j0yen/synthorg#7 COMMIT=$H agent=coder:s","why":"","evidence":""},
  {"id":"$GM","agent":"aide","what":"GATED j0yen/mcphost#7 COMMIT=$H agent=coder:m","why":"","evidence":""},
  {"id":"$GU","agent":"aide","what":"GATED j0yen/unknown#7 COMMIT=$H agent=coder:u","why":"","evidence":""},
+ {"id":"$GW","agent":"aide","what":"GATED j0yen/wm-build#7 COMMIT=$H agent=coder:w","why":"","evidence":""},
  {"id":"$GV","agent":"aide","what":"GATED j0yen/live2only#7 COMMIT=$H agent=coder:l","why":"","evidence":""},
  {"id":"$K1","agent":"aide","kind":"plan","what":"PLAN j0yen/dotfiles#7 COMMIT=$H agent=coder:x","why":"","evidence":""},
  {"id":"$K2","agent":"aide","what":"GATED j0yen/dotfiles#8 COMMIT=$H agent=coder:x","why":"","evidence":""},
@@ -753,6 +757,11 @@ F
   [ "$rc" = 3 ] && [[ "$out" != *"lint:"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (g): a correct launch passes every gate lint and reaches the room stage (exit 3, no lint line)" $?
   out="$(FAKE_ROOM=no L gl-h --repo j0yen/mcphost --pr 7 --head "$H" --gated "$GM" --token 't' --suite 'cargo test -D warnings; echo clippy delta=0')"; rc=$?
   [ "$rc" = 3 ] && [[ "$out" == *"lint: note: clippy delta=0 is checked from the log only"* ]] && [[ "$out" != *"lint: G3"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (h): a non-EXIT token prints the note and does not refuse" $?
+  rm -f "$T"/home/.local/state/verifier-cap/queue/*   # the rc 3 of (g)/(h) leaves its ticket; a wm-build launch (prio 0) must not wait behind it
+  out="$(FAKE_ROOM=no L gl-h2 --repo j0yen/wm-build --pr 7 --head "$H" --gated "$GW" --token 't' --suite 'cargo clippy -D warnings; echo clippy delta=0')"; rc=$?
+  [ "$rc" = 3 ] && [ "$(grep -c 'lint: note:' <<<"$out")" = 2 ] && [[ "$out" == *"lint: note: test result: || cargo test EXIT=0 is checked from the log only"* ]] && [[ "$out" != *"lint: G3"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (h2): an any-of token is body-only: a wm-build suite with -D warnings passes G3 with two notes" $?
+  out="$(L gl-h3 --repo j0yen/wm-build --pr 7 --head "$H" --gated "$GW" --token 't' --suite 'cargo test; echo clippy delta=0')"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"lint: G3"* ]] && [[ "$out" == *"prefix(es) -D warnings ("* ]] && [[ "$(grep 'lint: G3' <<<"$out")" != *"test result:"* ]] && none gl-h3; chk "gate lint (h3): a wm-build suite without -D warnings -> exit 2, G3 naming only -D warnings" $?
   # C1: negative controls replaying the real misses (each gated row's `what` is copied verbatim from the ledger row named at its definition)
   kref c1-e2f0 "$RE2F0" "no GATED token for j0yen/dotfiles#7";            chk "gate lint (C1/e2f0): the real kind=plan row e2f0 as --gated -> exit 2, no GATED token" $?
   kref c1-0a48 "$R0A48" "no GATED token for j0yen/dotfiles#7";            chk "gate lint (C1/0a48): the real coder-spawn row 0a48 as --gated -> exit 2, no GATED token" $?
