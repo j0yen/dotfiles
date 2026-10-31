@@ -1,0 +1,29 @@
+== orch
+mcphost-deploy-on-land.path: 
+mcphost-deploy-release-checkout.path: 
+mcphost-deploy-release.path: 
+mcphost-deploy-catchup.service: 
+mcphost-deploy-on-land.service: 
+mcphost-deploy-release-checkout.service: 
+mcphost-deploy-release.service: 
+mcphost-deploy-catchup.timer: 
+ls: cannot access '/home/jsy/.cache/aide/grading-hold*': No such file or directory
+-rw-rw-r--  1 jsy jsy  133 Oct 30 20:08 grading-hold
+== redbaron
+Sat 2026-10-31 02:50:30 PDT 12s Sat 2026-10-31 02:50:15 PDT 2s ago rb-land-hold-watch.timer rb-land-hold-watch.service
+/home/jsy/.local/bin/rb-land-hold-watch.sh md5=9427257d
+-rw-r--r--  1 jsy jsy  123 Oct 30 17:09 grading-hold
+== ryzen7
+Sat 2026-10-31 02:50:23 PDT  5s Sat 2026-10-31 02:50:08 PDT  9s ago rb-land-hold-watch.timer     rb-land-hold-watch.service
+Sat 2026-10-31 02:50:30 PDT 11s Sat 2026-10-31 02:49:30 PDT 48s ago land-red-hold-synthorg.timer land-red-hold-synthorg.service
+Sat 2026-10-31 02:50:30 PDT 11s Sat 2026-10-31 02:49:30 PDT 48s ago land-red-hold.timer          land-red-hold.service
+/home/jsy/.local/bin/r7-land-hold-watch.sh md5=25444f21
+/home/jsy/.local/bin/r7-land-hold-watch.sh.v1-7201ade5 md5=7201ade5
+/home/jsy/.local/bin/rb-land-hold-watch.sh md5=9427257d
+== carbon
+-rw-rw-r--+   1 jsy jsy   6157 Oct 30 19:02 grading-hold.md
+-rw-rw-r--    1 jsy jsy   1226 Oct 31 02:50 hold-consumers-read.txt
+== CORRECTION 2:5x AM (aide): the empty orch lines above are `systemctl --user show -p ConditionPathExists` reading EMPTY. Truth: each mcphost-deploy-*.service has drop-in 90-grading-hold.conf (ConditionPathExists=!/home/jsy/.local/state/aide/grading-hold); journal: "mcphost-deploy-catchup.service ... skipped, unmet condition check ConditionPathExists=!/home/jsy/.local/state/aide/grad" every 5 min.
+[Unit]
+# aide grading-hold guard (approvals #105, 2026-10-30): prod/deploy-tool changes skipped while the hold file exists; the aide removes it on hold release. Adds a refusal only.
+ConditionPathExists=!%h/.local/state/aide/grading-hold

@@ -1,0 +1,10 @@
+[Unit]
+Description=Grading-hold consumer probe: read-only ssh to orch/redbaron/ryzen7, writes ~/.cache/fleet-dash/hold-consumers.json (1071 M4, approvals #125/#110)
+# carbon only: the files install everywhere (install.sh links the whole tree), the unit runs on carbon
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=180
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/aide-hold.sh probe"

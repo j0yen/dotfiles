@@ -1,0 +1,6 @@
+{
+  "carbon": {"flag": "absent", "consumer": "none", "expires": null, "ts": 1793440200},
+  "orch": {"flag": "present", "consumer": "mcphost-deploy-*.service 90-grading-hold.conf", "expires": null, "ts": 1793440200},
+  "redbaron": {"flag": "present", "consumer": "none", "expires": null, "ts": 1793440200},
+  "ryzen7": {"flag": "absent", "consumer": "none", "expires": null, "ts": 1793440200}
+}
