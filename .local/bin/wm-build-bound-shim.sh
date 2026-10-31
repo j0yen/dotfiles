@@ -3,12 +3,14 @@
 # PURPOSE: top-level `wm-build status` and `wm-build runs` read the whole user journal (~12 G) into memory; one call from an r7 timer froze
 #   ryzen7 10-24 2:38 PM and a Claude-Bash hook cannot see timers, scripts or subprocesses. This shim bounds those two subcommands host-side:
 #   they run in a transient scope with MemoryMax=2G, MemorySwapMax=0, and are REFUSED (exit 2) when no memory bound is available.
-# PREMISE: until the wm-build status/runs whole-journal fix is promoted (rb hand PR 1e3f).   EXPIRES: 2026-10-31 (enforced by wm-build-shim-ctl.sh).
+# PREMISE: until the wm-build status/runs whole-journal fix is promoted (rb hand PR 1e3f).   EXPIRES: 2026-11-14 (enforced by wm-build-shim-ctl.sh).
 # CLASSIFIER: walk argv, skip the wm-build GLOBAL options (src/cli.rs top-level struct: --config --prd-dir --state-dir --max-runs --set, each
 #   takes a value, also as --opt=value) and stop at the first non-option word = the subcommand. Bound iff it is `status` or `runs`. An option
 #   not in that list before any subcommand -> fallback: bound iff some word equals `status` or `runs`. Over-matching only bounds a call.
 # `--selftest` as $1 is answered by the shim itself (classifier table, never execs REAL).
-# Seams (tests): WM_BUILD_REAL (real binary), WM_BUILD_SHIM_RUNDIR (default /run/user/$(id -u)).
+# Seams (tests): WM_BUILD_REAL (real binary), WM_BUILD_SHIM_RUNDIR (default /run/user/$(id -u)), WM_BUILD_SHIM_FIRES (fires log).
+# FIRES LOG: a bound call appends one line first (ts, subcommand, PPID, parent comm, parent cmdline[:200], SSH_CLIENT); never the environment;
+#   a write failure never blocks the call.
 set -u
 
 # wmb_classify <argv...>: prints "bound" or "pass".
@@ -82,7 +84,17 @@ if [ "${1:-}" = "--selftest" ]; then wmb_selftest; fi
 
 REAL=${WM_BUILD_REAL:-$(dirname "$(readlink -f "$0")")/wm-build.real}
 
+wmb_fires() {
+  local fires=${WM_BUILD_SHIM_FIRES:-$HOME/.local/state/wm-build-shim/fires.log} sub=- w comm cmd
+  for w in "$@"; do case $w in status|runs) sub=$w; break ;; esac; done
+  comm=$(cat "/proc/$PPID/comm" 2>/dev/null)
+  cmd=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | head -c 200)
+  mkdir -p "$(dirname "$fires")" 2>/dev/null
+  { printf '%s sub=%s ppid=%s comm=%s cmdline=%s ssh=%s\n' "$(date -Is)" "$sub" "$PPID" "$comm" "$cmd" "${SSH_CLIENT:-none}" >> "$fires"; } 2>/dev/null
+}
+
 if [ "$(wmb_classify "$@")" = bound ]; then
+  wmb_fires "$@"
   rundir=${WM_BUILD_SHIM_RUNDIR:-/run/user/$(id -u)}
   if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -e "$rundir/bus" ]; then
     export XDG_RUNTIME_DIR=$rundir

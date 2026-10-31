@@ -6,7 +6,7 @@
 #   wm-build-shim-ctl.sh [--dir D] check                 prints ok | elf-at-path | missing-real | obsolete | expired; exit 0 only on ok; writes the state file
 #   wm-build-shim-ctl.sh --selftest                      every mode against a temp dir with stub binaries
 # DIR defaults to ~/.cargo/bin. The running daemon keeps its open inode: install hard-links (never cp) the live ELF to wm-build.real first.
-# PREMISE: until the wm-build status/runs whole-journal fix is promoted (rb hand PR 1e3f).   EXPIRES: 2026-10-31 -> `check` prints `expired`,
+# PREMISE: until the wm-build status/runs whole-journal fix is promoted (rb hand PR 1e3f).   EXPIRES: 2026-11-14 -> `check` prints `expired`,
 #   `install` refuses to install the shim, `place` still places but to the path (the shim is retired, not refreshed).
 # Seams (tests/selftest only): WM_BUILD_SHIM_ELF_MAGIC (first 4 bytes that count as an ELF; default \x7fELF -- tests use "#!/b" so tiny sh stubs
 #   whose --version prints a chosen string stand in for ELF binaries), WM_BUILD_SHIM_STATE (default ~/.cache/wm-build-shim/state),
@@ -14,7 +14,7 @@
 #   WM_BUILD_SHIM_OBSOLETE_AT (production knob: real --version >= this -> check says obsolete).
 set -u
 
-EXPIRES=${WM_BUILD_SHIM_EXPIRES:-2026-10-31}
+EXPIRES=${WM_BUILD_SHIM_EXPIRES:-2026-11-14}
 SELF=$(readlink -f "$0")
 SRC=${WM_BUILD_SHIM_SRC:-$(dirname "$SELF")/wm-build-bound-shim.sh}
 STATE=${WM_BUILD_SHIM_STATE:-$HOME/.cache/wm-build-shim/state}

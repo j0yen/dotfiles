@@ -166,6 +166,73 @@ vwant=$("$d4/wm-build" --version | head -n1)
 eq "real ELF: --version through the shim" "$("$d4/wm-build" --version | head -n1)" "$vwant"
 eq "real ELF: check ok" "$("$ctl" --dir "$d4" check)" ok
 
+# --- guard26 refresh (aide 10-30): no loop with the RB PATH shim, daemon-side subcommands never bound, fires log, new expiry ----------
+# NO-LOOP: REAL is resolved from the shim's own readlink -f path, never through PATH. A decoy "PATH shim" ahead on PATH named wm-build
+# (what ~/.local/bin/wm-build is) would log LOOP if the shim re-resolved wm-build via PATH. Invoked via a symlink found by PATH lookup.
+mkdir -p "$t/nl/cargo-bin" "$t/nl/link" "$t/nl/decoy"
+cp "$shim" "$t/nl/cargo-bin/wm-build"; cp "$real" "$t/nl/cargo-bin/wm-build.real"
+ln -s "$t/nl/cargo-bin/wm-build" "$t/nl/link/wm-build"
+printf '#!/bin/sh\necho LOOP >> "%s/nl/loop.log"\nexit 99\n' "$t" > "$t/nl/decoy/wm-build"; chmod 755 "$t/nl/decoy/wm-build"
+: > "$t/nl/loop.log"
+out=$(env -u WM_BUILD_REAL PATH="$t/nl/link:$t/nl/decoy:$PATH" STUB_LOG="$t/stub.log" wm-build daemon 2>&1); rc=$?
+eq "no loop: symlink via PATH, WM_BUILD_REAL unset -> wm-build.real beside the target" "$out" "REAL-ARGV: daemon"
+[ ! -s "$t/nl/loop.log" ] && ok "no loop: decoy PATH shim never re-entered" || bad "no loop: decoy PATH shim was re-entered"
+: > "$t/sdr.log"
+out=$(env -u WM_BUILD_REAL -u XDG_RUNTIME_DIR PATH="$t/fakebin:$t/nl/decoy:$PATH" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="$t/nl/fires0.log" "$t/nl/link/wm-build" status 2>&1)
+eq "no loop: bound branch hands systemd-run the real beside the shim" "$out" "REAL-ARGV: status"
+grep -q -- "-- $t/nl/cargo-bin/wm-build.real status" "$t/sdr.log" && ok "no loop: systemd-run argv names wm-build.real by absolute path" || bad "no loop: systemd-run argv ($(tr '\n' '|' < "$t/sdr.log"))"
+[ ! -s "$t/nl/loop.log" ] && ok "no loop: decoy untouched on the bound path" || bad "no loop: decoy hit on the bound path"
+
+# F2: every non-status/runs subcommand reaches the real with argv intact, same PID (exec), no systemd-run scope wrap, no fires line
+cat > "$t/pidreal" <<'PIDSTUB'
+#!/bin/sh
+echo "PID=$$ ARGV=$*"
+PIDSTUB
+chmod 755 "$t/pidreal"
+cat > "$t/pidwrap" <<'PIDWRAP'
+#!/bin/bash
+# prints this shell's PID after exec'ing the shim: the stub must report the same PID
+echo "WRAPPID=$$"
+exec "$@"
+PIDWRAP
+chmod 755 "$t/pidwrap"
+f2_cases=("daemon" "daemon --foreground" "drive --run 1042" "driver --run 7" "gate run 5" "land 5 --now" "place /tmp/cand" "run redrive 5 --from land" "--version" "-V" "--state-dir /x daemon" "--config /c --set a=b land 9")
+for c in "${f2_cases[@]}"; do
+  : > "$t/sdr.log"; rm -f "$t/f2fires.log"
+  # shellcheck disable=SC2086
+  out=$(env -u XDG_RUNTIME_DIR PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$t/pidreal" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="$t/f2fires.log" "$t/pidwrap" "$shim" $c 2>&1)
+  wp=$(printf '%s\n' "$out" | sed -n 's/^WRAPPID=//p'); sp=$(printf '%s\n' "$out" | sed -n 's/^PID=\([0-9]*\) .*/\1/p')
+  av=$(printf '%s\n' "$out" | sed -n 's/^PID=[0-9]* ARGV=//p')
+  if [ -n "$wp" ] && [ "$wp" = "$sp" ] && [ "$av" = "$c" ] && [ ! -s "$t/sdr.log" ] && [ ! -e "$t/f2fires.log" ]; then ok "F2 exec pass-through: $c"; else bad "F2 exec pass-through: $c (out=$out sdr=$(tr '\n' '|' < "$t/sdr.log"))"; fi
+done
+
+# F5: fires log, one line per bound call, written before systemd-run; unset the log dir -> still runs; unwritable -> still runs
+rm -f "$t/fires.log"; : > "$t/sdr.log"
+out=$(env -u XDG_RUNTIME_DIR SSH_CLIENT="203.0.113.9 5555 22" PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$real" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="$t/fires/sub/fires.log" "$shim" runs --json 2>&1); rc=$?
+eq "F5: bound call still runs with the fires dir created" "$out|$rc" "REAL-ARGV: runs --json|0"
+fl=$t/fires/sub/fires.log
+eq "F5: exactly one fires line" "$(wc -l < "$fl")" 1
+[[ $(cat "$fl") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+[+-][0-9:]+\ sub=runs\ ppid=[0-9]+\ comm=.+\ cmdline=.*\ ssh=203\.0\.113\.9\ 5555\ 22$ ]] && ok "F5: line carries ts, subcommand, ppid, comm, cmdline, ssh" || bad "F5: line shape ($(cat "$fl"))"
+env -u XDG_RUNTIME_DIR PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$real" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="$fl" "$shim" status >/dev/null 2>&1
+eq "F5: second bound call appends" "$(wc -l < "$fl")" 2
+[[ $(tail -n1 "$fl") == *"ssh=none" ]] && ok "F5: SSH_CLIENT unset -> none" || bad "F5: ssh=none ($(tail -n1 "$fl"))"
+secret=SHIM_FIRES_CANARY_ENV_VALUE
+env -u XDG_RUNTIME_DIR CANARY_VAR=$secret PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$real" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="$fl" "$shim" status >/dev/null 2>&1
+grep -q "$secret" "$fl" && bad "F5: environment leaked into the fires log" || ok "F5: environment never written"
+out=$(env -u XDG_RUNTIME_DIR PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$real" WM_BUILD_SHIM_RUNDIR="$t/rundir" SDR_LOG="$t/sdr.log" WM_BUILD_SHIM_FIRES="/proc/nonexistent/x/fires.log" "$shim" status 2>&1); rc=$?
+eq "F5: unwritable fires log does not block the call" "$out|$rc" "REAL-ARGV: status|0"
+out=$(env -u XDG_RUNTIME_DIR PATH="$t/fakebin:$PATH" WM_BUILD_REAL="$real" WM_BUILD_SHIM_RUNDIR="$t/norun" WM_BUILD_SHIM_FIRES="$t/fires/refused.log" "$shim" status 2>&1); rc=$?
+eq "F5: refusal path still exits 2 with the fires log on" "$rc" 2
+
+# new expiry 2026-11-14 (default, no WM_BUILD_SHIM_EXPIRES): not expired on the day, expired the day after; text agrees everywhere
+d5=$t/cb5; mkdir -p "$d5"; mkstub "$d5/wm-build" 0.1.0
+env -u WM_BUILD_SHIM_EXPIRES WM_BUILD_SHIM_ELF_MAGIC="#!/b" WM_BUILD_SHIM_TODAY=2026-11-14 "$ctl" --dir "$d5" install >/dev/null 2>&1; eq "expiry default: install allowed on 2026-11-14" $? 0
+eq "expiry default: 2026-11-14 not expired" "$(env -u WM_BUILD_SHIM_EXPIRES WM_BUILD_SHIM_ELF_MAGIC="#!/b" WM_BUILD_SHIM_TODAY=2026-11-14 "$ctl" --dir "$d5" check)" ok
+eq "expiry default: 2026-11-15 expired" "$(env -u WM_BUILD_SHIM_EXPIRES WM_BUILD_SHIM_ELF_MAGIC="#!/b" WM_BUILD_SHIM_TODAY=2026-11-15 "$ctl" --dir "$d5" check)" expired
+n_old=$(grep -c '2026-10-31' "$shim" "$ctl" "$units"/wm-build-shim-check.service "$units"/wm-build-shim-check.timer | awk -F: '{s+=$2} END{print s}')
+eq "expiry text: no 2026-10-31 left" "$n_old" 0
+[ "$(grep -l '2026-11-14' "$shim" "$ctl" "$units"/wm-build-shim-check.service "$units"/wm-build-shim-check.timer | wc -l)" = 4 ] && ok "expiry text: 2026-11-14 in shim, ctl, both units" || bad "expiry text 2026-11-14"
+
 # ctl --selftest and the units
 out=$(WM_BUILD_SHIM_ELF_MAGIC='' "$ctl" --selftest 2>&1); rc=$?
 if [ $rc -eq 0 ] && [[ $out == "selftest OK n="* ]]; then ok "ctl --selftest ($out)"; else bad "ctl --selftest rc=$rc $out"; fi

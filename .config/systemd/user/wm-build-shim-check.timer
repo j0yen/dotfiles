@@ -1,5 +1,5 @@
 [Unit]
-Description=wm-build bound-shim drift check every 5 min (expires 2026-10-31)
+Description=wm-build bound-shim drift check every 5 min (expires 2026-11-14)
 
 [Timer]
 OnBootSec=2min
