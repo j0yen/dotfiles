@@ -80,3 +80,13 @@ The shim dir must be on a seat's PATH and never on `wm-build.service`'s (the dae
 /home/jsy/dotfiles
 /home/jsy/wintermute/wm-build
 ```
+
+## Watchman root guard (`.local/bin/watchman`, `.local/bin/watchman-root-guard.sh`, `.config/watchman-guard/deny.list`)
+
+Incident 10-20: a watchman client added the root `/home/jsy`; 12 s later the 65536 inotify watches were gone (10-23: systemd could not add unit watches).
+- `deny.list` is the ONE list of roots watchman must never watch (equality match on `realpath -m`, never a prefix; descendants pass). The shim and the sweeper both read it through `.local/lib/watchman-guard-lib.sh`.
+- The shim `~/.local/bin/watchman` (linked by `install.sh`; `~/.local/bin` precedes `/usr/bin` in tmux seats, coders, user units and the aide) logs every call as one redacted JSON line in `~/.local/state/watchman-guard/clients.jsonl` (ts, pid = the server log's `pid=N`, 3 ppid cmdlines, cwd, argv, kind; never env) and refuses CLI `watch`, `watch-project`, `trigger`, `state-enter`, `state-leave`, `subscribe` on a DENY root (exit 1). It fails open everywhere else; library clients (pywatchman) are logged, not refusable.
+- `watchman-root-guard.sh` (PREMISE + EXPIRES 2026-11-24 + `--selftest`) `watch-del`s any DENY root with `/usr/bin/watchman --no-spawn --no-local` under `timeout 10`, bells the ctl seat (one per root per 10 min) and is the only enforcement for library clients. `watchman-root-guard.timer` (1 min) is the real guard; `.path` (PathChanged on the saved-state file) is a fast path that needs an inotify watch and is dead when watches are exhausted.
+- Enable after merge: `systemctl --user daemon-reload && systemctl --user enable --now watchman-root-guard.timer watchman-root-guard.path`.
+- Deferred (3c): `enforce_root_files` / `WATCHMAN_CONFIG_FILE`, until clients.jsonl names the owners of the 4 rootless roots or EXPIRES.
+- Test: `bash tests/watchman-guard.test.sh` (stub watchman only, never the real server; includes mutations i/ii/iii/v/vi).

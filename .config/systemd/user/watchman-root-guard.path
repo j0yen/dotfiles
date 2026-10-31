@@ -1,0 +1,11 @@
+[Unit]
+Description=watchman root guard fast path: sweep when watchman rewrites its saved-state file
+
+[Path]
+# Needs an inotify watch of its own: DEAD exactly when the watches are exhausted (10-23 "No space left on device" adding unit watches).
+# watchman-root-guard.timer (1 min) is the real guard; this only shortens the window while inotify still has room.
+PathChanged=%h/.cache/tmp/jsy-state/state
+Unit=watchman-root-guard.service
+
+[Install]
+WantedBy=default.target
