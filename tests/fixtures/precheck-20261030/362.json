@@ -1,0 +1,168 @@
+{
+ "id": "362",
+ "class": "leg",
+ "launch_ts": "2026-10-30T03:35:13-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00 (the 03:35:13 instance is the one that ran; two earlier instances at other heads were stopped)",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-wmb-362 -p RuntimeMaxSec=10h --setenv=WMB_SHA=a44b4c68 --setenv=WMB_BASE=254bea4 --setenv=WMB_AFTER=r7-wmb-365 --setenv=WMB_FILTERS='inner::suite_plan judged_ first_red_missing_returns_names_absent_from_the_rerun big_red_suite_goes_to_the_fix_coder_by_stdin_file_not_argv coder_done_ac_red_suite_one_fix_pass_then_reruns_the_same_full_invocation' --description='PREMISE rb lands wm-build#362 innersuite3 only on a ryzen7 --via verifier row at exact HEAD a44b4c68; ...' ... <leg script not recoverable>",
+ "cmd_source": "journal --user -u r7-wmb-362.service Started line (description) + page 362 (unit env); argv beyond these is not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-362",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-362 -p RuntimeMaxSec=10h --setenv=WMB_SHA=a44b4c68 --setenv=WMB_BASE=254bea4 --setenv=WMB_AFTER=r7-wmb-365 --setenv=WMB_FILTERS='inner::suite_plan judged_ first_red_missing_returns_names_absent_from_the_rerun big_red_suite_goes_to_the_fix_coder_by_stdin_file_not_argv coder_done_ac_red_suite_one_fix_pass_then_reruns_the_same_full_invocation' --description='PREMISE rb lands wm-build#362 innersuite3 only on a ryzen7 --via verifier row at exact HEAD a44b4c68; ...' ... <leg script not recoverable>",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "a44b4c68",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T03:35:13-07:00",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE rb lands wm-build#362 innersuite3 only on a ryzen7 --via verifier row at exact HEAD a44b4c68; fix-check filters + -D warnings check + full lib DELTA vs 254bea4 (rb 3:34) EXPIRES RuntimeMaxSec 10h.",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journal --user -u r7-wmb-362.service: Started line 2026-10-30T03:35:13-07:00"
+  },
+  {
+   "key": "unit_env",
+   "value": "WMB_SHA=a44b4c68, WMB_BASE=254bea4, WMB_AFTER=r7-wmb-365, WMB_FILTERS set to 5 test-name filters (inner::suite_plan judged_ first_red_missing_returns_names_absent_from_the_rerun big_red_suite_goes_to_the_fix_coder_by_stdin_file_not_argv coder_done_ac_red_suite_one_fix_pass_then_reruns_the_same_full_invocation); RuntimeMaxSec 10h; no ExecStartPre",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "page 362 \"What happened\" (systemctl cat r7-wmb-362; transient unit, unchanged since Started)"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T02:03:06-07:00 Started",
+    "2026-10-30T02:33:02-07:00 stopped/exited",
+    "2026-10-30T02:33:02-07:00 Started",
+    "2026-10-30T03:33:35-07:00 stopped/exited",
+    "2026-10-30T03:35:13-07:00 Started"
+   ],
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journalctl --user -u r7-wmb-362.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-mempsi-cordon since 2026-10-30T00:16:38-07:00: PREMISE mem PSI full avg300>30 sheds r7-wmb-m14 then m14g (ctl 5cf0); EXPIRES <later-stamp elided>.",
+    "r7-wmb-3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-wmb-3632.sh.",
+    "r7-psi-cordon3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-psi-cordon3632.sh.",
+    "r7-wmb-364 since 2026-10-30T01:51:36-07:00: PREMISE rb lands #364 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 8h.",
+    "wm-build-inner506-a since 2026-10-30T03:08:15-07:00: [systemd-run] /home/jsy/.cargo/bin/wm-build drive --run 506 --state-dir /home/jsy/.local/state/wm-build --prd-",
+    "r7-wmb-365 since 2026-10-30T03:33:38-07:00: PREMISE rb lands wm-build#365 only on a ryzen7 --via verifier row at exact HEAD; full lib+inner DELTA vs 254be"
+   ],
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "queue_order",
+   "value": "unit sleeps in a 60 s wait on r7-wmb-365 (WMB_AFTER); 364 and 3632 legs ahead of it",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "page 362 (unit env WMB_AFTER) + journal unit Started lines of r7-wmb-364, r7-wmb-3632, r7-wmb-365"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@a44b4c68: inner: judged-run guard (done needs Green AND no name filter), first_red_missing, fixtures (a)-(e) (#362) | 2 files +109/-5: src/inner/mod.rs, src/inner/suite_plan.rs | parent b242493c"
+   ],
+   "as_of": "2026-10-30T03:01:36-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/a44b4c68 (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "wm-build#362 OPEN since 2026-10-30T00:08:15-07:00, branch inner-suite-no-fail-fast: inner: full suite no-fail-fast, unfiltered rerun, partial-suite red; missing contract-suit... (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "gh api repos/j0yen/wm-build/pulls/362 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "pr_body_statement",
+   "value": "PR body: \"Written with no compile on RedBaron; compile + tests on ryzen7 (r7 leg r7-wmb-m14)\"",
+   "as_of": "2026-10-30T03:01:36-07:00",
+   "source": "page 362 (GitHub PR #362 body, quoted at the push of a44b4c68)"
+  },
+  {
+   "key": "repo_ci_guards",
+   "value": "wm-build has no .github/workflows, no .githooks, no #![deny] (GitHub contents API 404 x2)",
+   "as_of": "2026-10-30T03:01:36-07:00",
+   "source": "page 362 (read after launch; files absent at the a44b4c68 push commit, not re-measured at launch)"
+  },
+  {
+   "key": "cheap_stage_output_for_head",
+   "value": "unknown: no cargo check / cargo test result for a44b4c68 exists in any leg log before launch",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "scan of ~/.local/state/r7-wmb-verify/*.log for HEAD=a44b4c68 with end <= launch: none"
+  },
+  {
+   "key": "gate_script_md5",
+   "value": "unknown",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "no record of r7-wmb-gate.sh md5 at launch (first log header is written when the leg starts)"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": "none",
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-024931-rb-bc31 rb other: launched rb-coder-innersuite2 on #362 wt (e7789ad): red first run + green rerun = done only if fix range touches src|tests .rs (suite_fix_commit + suite_first_red in inner.result), else code with suit",
+    "d-20261030-030058-rb-998f rb other: launched rb-coder-ceilingguard (mcphost ceiling-guard, md5 2936ca06) + rb-coder-innersuite3 (#362 judged_done, md5 2c90ca87); published #362 head b242493 (ff e7789ad) for r7 leg",
+    "d-20261030-030104-rb-c2df rb other: summa relaunch deferred behind ceilingguard+innersuite3; branch rb/summa-hubs-ranker published 2ffcde7; head suite 197/8 fail vs base 192/6, new fails ledgerday_ac6, ledgerday_ac8, summa-hub-coverage",
+    "d-20261030-031546-rb-481b rb other: queued wm-build defects (owner rb, spec ~/.cache/rb-seat/spec-gate-clean-wt.md): (1) gate leaves extended-gates.toml prd_path rewritten -> land 114 dirty-worktree (506), test = gate then land on fixtu",
+    "d-20261030-033411-r7-8cc0 r7 other: ryzen7 leg queue reordered to ctl 4cc4 order: stopped idle-waiting r7-wmb-362 (stale head e7789ad, not innersuite3/b242493), r7-wmb-365 (base origin/main, queued behind 362) and r7-wmb-364ssd (T7 meas",
+    "d-20261030-033502-rb-974e rb other: #362 innersuite3 published a44b4c6 (sonnet verifier CONFIRM: 1 commit on b242493, setup-only edits to 2 existing tests, first_red_missing unwired, follow-up) and sent to r7 for its leg; ceiling-guard "
+   ],
+   "as_of": "2026-10-30T03:35:02-07:00",
+   "source": "decisions.sqlite rows d-20261030-024931-rb-bc31, d-20261030-030058-rb-998f, d-20261030-030104-rb-c2df, d-20261030-031546-rb-481b, d-20261030-033411-r7-8cc0, d-20261030-033502-rb-974e"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "none: no leg log for this head or slug started before launch"
+   ],
+   "as_of": "2026-10-30T03:35:13-07:00",
+   "source": "scan of ~/.local/state/r7-wmb-verify/*.log and ~/.local/state/r7-syn-verify/v*.log (start < launch)"
+  }
+ ],
+ "expected": "BLOCK_OR_NEEDS_READ",
+ "note": "The seat row announcing this leg was written after the unit started and is excluded (row=null)."
+}

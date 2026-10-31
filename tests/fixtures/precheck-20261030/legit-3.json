@@ -1,0 +1,154 @@
+{
+ "id": "legit-3",
+ "class": "leg",
+ "launch_ts": "2026-10-30T15:56:43-07:00",
+ "launch_ts_source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-dotpr2 --description='PREMISE dotfiles#167/#165/#166 full tests under wm-verify-run with the swarm-decide live tree bin on PATH ...' ... ~/.cache/r7-seat/r7-dotpr2.sh 167:63932e5bed3094913402517a0e86b1d2539f8f53 165:6299ba731b45f4d7375986d0e6ad8381fee741ed 166:803030dde76cc572215da3c8e3c452f5a6716b30",
+ "cmd_source": "journal --user -u r7-dotpr2.service Started line (description) + args= in ~/.local/state/r7-wmb-verify/dotpr2-20261030T155643.log queued line",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-dotpr2",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-dotpr2 --description='PREMISE dotfiles#167/#165/#166 full tests under wm-verify-run with the swarm-decide live tree bin on PATH ...' ... ~/.cache/r7-seat/r7-dotpr2.sh 167:63932e5bed3094913402517a0e86b1d2539f8f53 165:6299ba731b45f4d7375986d0e6ad8381fee741ed 166:803030dde76cc572215da3c8e3c452f5a6716b30",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "63932e5b",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T15:56:43-07:00",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE dotfiles#167/#165/#166 full tests under wm-verify-run with the swarm-decide live tree bin on PATH (nodrift runs for real); replaces r7-dotpr165166 EXPIRES 4h.",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journal --user -u r7-dotpr2.service: Started line 2026-10-30T15:56:43-07:00"
+  },
+  {
+   "key": "script_args",
+   "value": "args=167:63932e5bed3094913402517a0e86b1d2539f8f53 165:6299ba731b45f4d7375986d0e6ad8381fee741ed 166:803030dde76cc572215da3c8e3c452f5a6716b30; the script waits for r7-dot167c to end before the first PR",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "~/.local/state/r7-wmb-verify/dotpr2-20261030T155643.log (queued line) + ~/.cache/r7-seat/r7-dotpr2.sh header"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T15:56:43-07:00 Started"
+   ],
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journalctl --user -u r7-dotpr2.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: 2026-10-30T13:00.",
+    "r7-syn-verify-465b since 2026-10-30T12:38:51-07:00: PREMISE: PR #465 380661c4 serial gate lane (gate.yml:31) green under empty HOME, rc real via timeout -k 60 450",
+    "r7-wmb-b99full since 2026-10-30T14:57:26-07:00: r7 b99b56f full MEASURED leg (wm-build inner-suite-no-fail-fast) after 508full. PREMISE: rb merges b99b56f onl",
+    "r7-syn-verify-465d since 2026-10-30T15:06:47-07:00: PREMISE: PR #465 380661c4 gate main lane (gate.yml:31) green under empty HOME, rerun under wm-verify-run so me",
+    "r7-wmb-falsv37 since 2026-10-30T15:37:42-07:00: PREMISE: v3.7 cheap-stage falsifier on a0219f61 (508full) must end VERDICT=RED reason=cheap-touched-fail namin",
+    "r7-dot167c since 2026-10-30T15:41:45-07:00: PREMISE: dotfiles#167 63932e5 timed reprice selftest + full tests under wm-verify-run, system sqlite3 first (r",
+    "r7-wmb-etx366 since 2026-10-30T15:49:58-07:00: PREMISE rb 3:44 PM: wm-build#366 ETXTBSY fix 2eb3d0e cheap stage + 50 reentrancy loops + 5-10 full-lib, etxtbs"
+   ],
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "dotfiles@63932e5b: dotfiles: main green: execute the rb-reprice-watch 10-29 TODO (drop t4_lowered_from fallback, re-key fixtures) + track hand-pr-land-driver 70-synthorg-to-ryzen7 drop-in | 2 files +15/-13: .config/systemd/user/hand-pr-land-driver.service.d/70-synthorg-to-ryzen7.conf, .local/bin/rb-reprice-watch.sh | parent eac70dcf"
+   ],
+   "as_of": "2026-10-30T15:32:57-07:00",
+   "source": "gh api repos/j0yen/dotfiles/commits/63932e5b (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "dotfiles#167 OPEN since 2026-10-30T15:36:42-07:00, branch fix-main-red-20261030: dotfiles: main green: execute rb-reprice-watch 10-29 TODO + track hand-pr-land-driver 70-s... (no close/merge event on GitHub as of launch)",
+    "dotfiles#165 OPEN since 2026-10-30T11:00:54-07:00, branch seat-effort-high: seat effort: back to high (approvals #82, trial #39 reverted) (no close/merge event on GitHub as of launch)",
+    "dotfiles#166 OPEN since 2026-10-30T11:00:57-07:00, branch approve-trial-contract: approve.sh: track in dotfiles, add trial rows (trials.json) (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "gh api repos/j0yen/dotfiles/pulls/167 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used); gh api repos/j0yen/dotfiles/pulls/165 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used); gh api repos/j0yen/dotfiles/pulls/166 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "ci_check_runs_for_head",
+   "value": "none listed (dotfiles has no paid Actions)",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "gh api repos/j0yen/dotfiles/commits/63932e5b/check-runs"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:56:43-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-wmbrs363b3-20261030T135430.log HEAD=254bea47 end=2026-10-30T13:58:46-07:00 VERDICT=GREEN reason=fixonly wall_s=271",
+    "leg-508fix-20261030T140006.log HEAD=a0219f61 end=2026-10-30T14:04:11-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-508full-20261030T140536.log HEAD=a0219f61 end=2026-10-30T15:05:06-07:00 VERDICT=MEASURED wall_s=3572"
+   ],
+   "as_of": "2026-10-30T15:05:06-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-153652-rb-d21b rb other: hand PR j0yen/dotfiles#167 opened, head 63932e5bed3094913402517a0e86b1d2539f8f53 (fix-main-red-20261030): executes rb-reprice-watch 10-29 TODO + tracks 70-synthorg-to-ryzen7 drop-in; sonnet verifier C",
+    "d-20261030-154444-r7-0298 r7 other: r7 replaced dotfiles#167 test leg r7-dot167 (no wm-verify-run trailer) with r7-dot167b and then r7-dot167c on ryzen7 (head 63932e5bed3094913402517a0e86b1d2539f8f53): a timed rb-reprice-watch.sh --self",
+    "d-20261030-154457-r7-624e r7 other: r7 retired its own 10-19 read-only python sqlite3 shim on ryzen7: renamed ~/.local/bin/sqlite3 to ~/.local/bin/sqlite3.r7shim-off-20261030, so sqlite3 now resolves to /usr/bin/sqlite3 3.46.1 for every",
+    "d-20261030-155129-r7-4fe7 r7 other: r7 launched leg r7-dotpr165166 on ryzen7 (MemoryMax 2G, 3h): full tests/*.test.sh under wm-verify-run for dotfiles#165 at 6299ba731b45f4d7375986d0e6ad8381fee741ed then #166 at 803030dde76cc572215da3c8"
+   ],
+   "as_of": "2026-10-30T15:51:29-07:00",
+   "source": "decisions.sqlite rows d-20261030-153652-rb-d21b, d-20261030-154444-r7-0298, d-20261030-154457-r7-624e, d-20261030-155129-r7-4fe7"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "dot167-20261030T153914.log | same head or slug: HEAD=63932e5b started 2026-10-30T15:39:14-07:00; no end line in the log (killed or never finished)",
+    "dot167b-20261030T154035.log | same head or slug: HEAD=63932e5b started 2026-10-30T15:40:35-07:00; no end line in the log (killed or never finished)",
+    "dot167c-20261030T154145.log | same head or slug: HEAD=63932e5b started 2026-10-30T15:41:45-07:00; still running at launch (its end line is later)",
+    "dotpr-20261030T155119.log | same slug, other head: HEAD=unknown started 2026-10-30T15:51:19-07:00; no end line in the log (killed or never finished)"
+   ],
+   "as_of": "2026-10-30T15:51:19-07:00",
+   "source": "~/.local/state/r7-wmb-verify/dot167-20261030T153914.log; ~/.local/state/r7-wmb-verify/dot167b-20261030T154035.log; ~/.local/state/r7-wmb-verify/dot167c-20261030T154145.log; ~/.local/state/r7-wmb-verify/dotpr-20261030T155119.log"
+  }
+ ],
+ "expected": "ALLOW",
+ "why_legit": "dotpr2 log VERDICT dotfiles#167 RED with two real failures (ledgerday_ac6, ledgerday_ac8) that drove the next dotfiles fix; log ~/.local/state/r7-wmb-verify/dotpr2-20261030T155643.log (RESULT/VERDICT lines). Near miss: #167 was an open PR with four earlier same-head runs (dot167, dot167b, dot167c, dotpr) whose runs used a PATH that lacked the real wm-decide.",
+ "note": "No decision row announced this leg."
+}

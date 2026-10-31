@@ -1,0 +1,151 @@
+{
+ "id": "legit-4",
+ "class": "leg",
+ "launch_ts": "2026-10-30T15:37:42-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00 (restart of a unit first started 2026-10-30T15:36:55-07:00; the leg proper began later)",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-wmb-falsv37 --setenv=WMB_SHA=a0219f6188ef --setenv=WMB_BASE=254bea47 --description='PREMISE: v3.7 cheap-stage falsifier on a0219f61 (508full) must end VERDICT=RED reason=cheap-touched-fail naming actor::tests::act_every_journal_op_is_classified in < 15 min of its ...' ... gate ~/.cache/r7-seat/r7-wmb-gate.sh.v37",
+ "cmd_source": "journal --user -u r7-wmb-falsv37.service Started line (description); argv beyond these is not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-falsv37",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-falsv37 --setenv=WMB_SHA=a0219f6188ef --setenv=WMB_BASE=254bea47 --description='PREMISE: v3.7 cheap-stage falsifier on a0219f61 (508full) must end VERDICT=RED reason=cheap-touched-fail naming actor::tests::act_every_journal_op_is_classified in < 15 min of its ...' ... gate ~/.cache/r7-seat/r7-wmb-gate.sh.v37",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "a0219f61",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T15:37:42-07:00",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE: v3.7 cheap-stage falsifier on a0219f61 (508full) must end VERDICT=RED reason=cheap-touched-fail naming actor::tests::act_every_journal_op_is_classified in < 15 min of its own start; fail = no install of v37. EXPIRES: RuntimeMaxSec 10h.",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journal --user -u r7-wmb-falsv37.service: Started line 2026-10-30T15:37:42-07:00"
+  },
+  {
+   "key": "gate_variant",
+   "value": "the unit runs the v3.7 gate file ~/.cache/r7-seat/r7-wmb-gate.sh.v37, not the live r7-wmb-gate.sh",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "unit description + leg log header GATE path of this unit (path only; the log postdates launch)"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T15:36:55-07:00 Started",
+    "2026-10-30T15:37:42-07:00 stopped/exited",
+    "2026-10-30T15:37:42-07:00 Started"
+   ],
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journalctl --user -u r7-wmb-falsv37.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: 2026-10-30T13:00.",
+    "r7-syn-verify-465b since 2026-10-30T12:38:51-07:00: PREMISE: PR #465 380661c4 serial gate lane (gate.yml:31) green under empty HOME, rc real via timeout -k 60 450",
+    "r7-wmb-b99full since 2026-10-30T14:57:26-07:00: r7 b99b56f full MEASURED leg (wm-build inner-suite-no-fail-fast) after 508full. PREMISE: rb merges b99b56f onl",
+    "r7-syn-verify-465d since 2026-10-30T15:06:47-07:00: PREMISE: PR #465 380661c4 gate main lane (gate.yml:31) green under empty HOME, rerun under wm-verify-run so me"
+   ],
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@a0219f61: gate+inner: a release commit that bumps only pyproject.toml/uv.lock versions keeps its parent's py receipts (run 508) | 3 files +397/-7: src/gate/mod.rs, src/inner/python.rs, src/land/lockfile.rs | parent 254bea47"
+   ],
+   "as_of": "2026-10-30T13:06:33-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/a0219f61 (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "wm-build#366 OPEN since 2026-10-30T13:59:14-07:00, branch receipt-version-only-reuse: inner: keep py receipts fresh across version-only release commits (508) (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "gh api repos/j0yen/wm-build/pulls/366 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:37:42-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-wmbrs363h3-20261030T133730.log HEAD=f637ddb6 end=2026-10-30T13:41:46-07:00 VERDICT=GREEN reason=fixonly wall_s=270",
+    "leg-wmbrs363b1-20261030T134330.log HEAD=254bea47 end=2026-10-30T13:47:50-07:00 VERDICT=GREEN reason=fixonly wall_s=270",
+    "leg-wmbrs363b2-20261030T134930.log HEAD=254bea47 end=2026-10-30T13:53:39-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-wmbrs363b3-20261030T135430.log HEAD=254bea47 end=2026-10-30T13:58:46-07:00 VERDICT=GREEN reason=fixonly wall_s=271",
+    "leg-508fix-20261030T140006.log HEAD=a0219f61 end=2026-10-30T14:04:11-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-508full-20261030T140536.log HEAD=a0219f61 end=2026-10-30T15:05:06-07:00 VERDICT=MEASURED wall_s=3572"
+   ],
+   "as_of": "2026-10-30T15:05:06-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-145737-r7-c613 r7 other: r7 launched r7-wmb-b99full (b99b56f full MEASURED leg vs 254bea47) chained WMB_AFTER=r7-wmb-508full",
+    "d-20261030-145748-r7-a14d r7 other: r7 launched r7-dotfiles164: dotfiles#164 head 7dbce1a vs main delta suite on ryzen7, waits for r7-wmb-508full",
+    "d-20261030-151015-r7-fa9f r7 other: 508 falsifier KILL stands: 508full leg on a0219f6188ef2953ab5e9f7293e842afd2e458ad ended VERDICT=MEASURED RED; synthorg lands stay hand + break-glass",
+    "d-20261030-151756-r7-5897 r7 other: r7 launched r7-coder-scheap (sonnet medium, MemoryMax 5G, 3600 s) to write r7-wmb-gate.sh.v37 with a cheap touched-module lib-test stage before the census; new files only, live gate untouched",
+    "d-20261030-152056-rb-6657 rb other: wm-build#366 fail 1 fix: coder rb-coder-wmb508fix2 on RB adds receipt-version-only-reused to NON_OPERATOR_OPS as a new commit on a0219f6 (no-cargo); falsifier for fail 2 (pr_ready_failure_is_infra_not",
+    "d-20261030-152756-r7-8822 r7 other: admit r7-flake508 on ryzen7 (Nice 19, idle IO, MemoryMax 4G, jobs 2, expires <later-clock elided>): a0219f61 pair x3 alone with --exact --nocapture, then the full lib set on head, then on base 254bea47 only if pr_",
+    "d-20261030-153451-rb-f111 rb other: wm-build#366 fail 2 (pr_ready_failure_is_infra_not_crash ETXTBSY) routed INTO 366 as a 2nd fix commit: coder rb-coder-wmb508fix3 on 2633c62, test-only helper write_exec_script = body to .src, child cp",
+    "d-20261030-153644-r7-6a98 r7 other: 508 falsifier verdict superseded: INCONCLUSIVE (harness broken), not KILL; supersedes d-20261030-151015-r7-fa9f per aide approvals 94 (ctl d-20261030-153517-controller-aa77). Experiment stays open."
+   ],
+   "as_of": "2026-10-30T15:36:44-07:00",
+   "source": "decisions.sqlite rows d-20261030-145737-r7-c613, d-20261030-145748-r7-a14d, d-20261030-151015-r7-fa9f, d-20261030-151756-r7-5897, d-20261030-152056-rb-6657, d-20261030-152756-r7-8822, d-20261030-153451-rb-f111, d-20261030-153644-r7-6a98"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "leg-508fix-20261030T140006.log | same head: HEAD=a0219f61 start=2026-10-30T14:00:06-07:00 end=2026-10-30T14:04:11-07:00 VERDICT=GREEN reason=fixonly; wall_s=255",
+    "leg-508full-20261030T140536.log | same head: HEAD=a0219f61 start=2026-10-30T14:05:36-07:00 end=2026-10-30T15:05:06-07:00 VERDICT=MEASURED; tests EXIT=101 passed=3329 failed=32; DELTA fmt head-only-files=0 base-files=870 | DELTA tests head-only-fails=2; test actor::tests::act_every_journal_op_is_classified ... FAILED | test land::reentrancy_tests::pr_ready_failure_is_infra_not_crash ... FAILED; wall_s=3572",
+    "flake508-20261030T152704.log | same head: HEAD=a0219f61 start=2026-10-30T15:27:04-07:00 end=2026-10-30T15:30:01-07:00 no VERDICT line"
+   ],
+   "as_of": "2026-10-30T15:30:01-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-508fix-20261030T140006.log; ~/.local/state/r7-wmb-verify/leg-508full-20261030T140536.log; ~/.local/state/r7-wmb-verify/flake508-20261030T152704.log"
+  }
+ ],
+ "expected": "ALLOW",
+ "why_legit": "Answered its falsifier: row d-20261030-161921-r7-977d \"FALSIFIER REFUTED + leg stopped: gate v3.7 cheap stage on a0219f6 selected mods=3, passed=530 failed=0 EXIT=0 in 36 s, missing both known a0219f6 fails\"; evidence ~/.cache/r7-seat/falsv37-refuted.log. Near miss: a prior same-head MEASURED RED leg (508full) existed, but it ran the old gate, not v3.7.",
+ "note": "No decision row announced this leg."
+}

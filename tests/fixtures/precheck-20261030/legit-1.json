@@ -1,0 +1,144 @@
+{
+ "id": "legit-1",
+ "class": "relaunch",
+ "launch_ts": "2026-10-30T15:06:47-07:00",
+ "launch_ts_source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-syn-verify-465d ... --description='PREMISE: PR #465 380661c4 gate main lane (gate.yml:31) green under empty HOME, rerun under wm-verify-run so merge-gate G3 has a WM-VERIFY trailer; waits for 508full, ...' ~/.cache/r7-seat/r7-syn-verify-465d.sh (args unknown)",
+ "cmd_source": "journal --user -u r7-syn-verify-465d.service Started line (description) + script file ~/.cache/r7-seat/r7-syn-verify-465d.sh; argv not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-syn-verify-465d",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-syn-verify-465d ... --description='PREMISE: PR #465 380661c4 gate main lane (gate.yml:31) green under empty HOME, rerun under wm-verify-run so merge-gate G3 has a WM-VERIFY trailer; waits for 508full, ...' ~/.cache/r7-seat/r7-syn-verify-465d.sh (args unknown)",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "380661c4",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T15:06:47-07:00",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE: PR #465 380661c4 gate main lane (gate.yml:31) green under empty HOME, rerun under wm-verify-run so merge-gate G3 has a WM-VERIFY trailer; waits for 508full, runs beside b99full. EXPIRES: <later-stamp elided>.",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journal --user -u r7-syn-verify-465d.service: Started line 2026-10-30T15:06:47-07:00"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T15:06:47-07:00 Started"
+   ],
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journalctl --user -u r7-syn-verify-465d.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: 2026-10-30T13:00.",
+    "r7-syn-verify-465b since 2026-10-30T12:38:51-07:00: PREMISE: PR #465 380661c4 serial gate lane (gate.yml:31) green under empty HOME, rc real via timeout -k 60 450",
+    "r7-wmb-b99full since 2026-10-30T14:57:26-07:00: r7 b99b56f full MEASURED leg (wm-build inner-suite-no-fail-fast) after 508full. PREMISE: rb merges b99b56f onl"
+   ],
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "synthorg@380661c4: tests: revert ppat_ac01 md rewritten by suite run | 1 files +3/-2: tests/ppat_ac01_patience_moves_outcomes.md | parent 517a136a"
+   ],
+   "as_of": "2026-10-30T10:32:17-07:00",
+   "source": "gh api repos/j0yen/synthorg/commits/380661c4 (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "synthorg#465 OPEN since 2026-10-30T10:32:13-07:00, branch r7/hermetic-home-calibpub: tests: hermetic HOME for calibpub_ac5 + gate_line single source (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "gh api repos/j0yen/synthorg/pulls/465 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "ci_check_runs_for_head",
+   "value": "none listed (gh api check-runs for 380661c4 returned no runs)",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "gh api repos/j0yen/synthorg/commits/380661c4/check-runs"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T15:06:47-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-wmbrs363b2-20261030T134930.log HEAD=254bea47 end=2026-10-30T13:53:39-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-wmbrs363b3-20261030T135430.log HEAD=254bea47 end=2026-10-30T13:58:46-07:00 VERDICT=GREEN reason=fixonly wall_s=271",
+    "leg-508fix-20261030T140006.log HEAD=a0219f61 end=2026-10-30T14:04:11-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-508full-20261030T140536.log HEAD=a0219f61 end=2026-10-30T15:05:06-07:00 VERDICT=MEASURED wall_s=3572"
+   ],
+   "as_of": "2026-10-30T15:05:06-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-110959-r7-1b26 r7 other: ryzen7 units r7-syn-verify-465 (synthorg PR #465 380661c4 then master 9590c0e2, master-gate pytest line under empty HOME, MemoryMax 6G) + r7-handtests-1101 (dotfiles#165 6299ba73, #166 7c8ae7de, fleet",
+    "d-20261030-124011-r7-912a r7 other: relaunch PR #465 verify as unit r7-syn-verify-465b on ryzen7 (script md5 5d50724f, 12:38:51 PM): gate.yml:31 serial lane, timeout -k 60 4500 (master gate constant), verdict from rc AND pytest summary,",
+    "d-20261030-125411-r7-6b2a r7 other: r7 12:55: 465b died in clone (GitHub HTTP/2 CANCEL, rc=97, printed RED wrongly); script now retries fetch x3 and maps 97/98 to UNMEASURED; relaunched as r7-syn-verify-465c 12:47:55 (md5 66594660, past",
+    "d-20261030-145758-r7-b701 r7 other: CONFIRM synthorg#465 ryzen7 full verify COMMIT=380661c49550e70a3995dc5b67c567c7b3ad7780 agent=verifier-sonnet-465-1457",
+    "d-20261030-150136-r7-05c5 r7 other: r7-syn-verify lane script prints HOME_MODE + home=mktemp on RESULT/VERDICT lines",
+    "d-20261030-150258-r7-c19b r7 verdict: CONFIRM synthorg#465 gate main lane GREEN rc=0 7315 passed 0 failed COMMIT=380661c49550e70a3995dc5b67c567c7b3ad7780 agent=verifier-sonnet-465-1502 HOME=mktemp (r7-syn-verify-465b.sh line 29 HOME=$D/h,"
+   ],
+   "as_of": "2026-10-30T15:02:58-07:00",
+   "source": "decisions.sqlite rows d-20261030-110959-r7-1b26, d-20261030-124011-r7-912a, d-20261030-125411-r7-6b2a, d-20261030-145758-r7-b701, d-20261030-150136-r7-05c5, d-20261030-150258-r7-c19b"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "v465-20261030-110852.log#380661c4 | same head: HEAD=380661c4 start=2026-10-30T11:08:52-07:00; no END line; RESULT 380661c4 rc=124; the next run in the same log file started 2026-10-30T12:03:27-07:00",
+    "v465b-20261030-123851.log#380661c4 | same head: HEAD=380661c4 start=2026-10-30T12:38:51-07:00 end=2026-10-30T12:42:32-07:00 VERDICT=RED rc=97; RESULT 380661c4 rc=97 summary=none",
+    "v465b-20261030-124755.log#380661c4 | same head: HEAD=380661c4 start=2026-10-30T12:47:55-07:00 end=2026-10-30T13:48:25-07:00 VERDICT=GREEN rc=0; RESULT 380661c4 rc=0 summary=7315 passed, 29 skipped, 3 deselected, 5 xfailed in 3614.41s (1:00:14)"
+   ],
+   "as_of": "2026-10-30T13:48:25-07:00",
+   "source": "~/.local/state/r7-syn-verify/v465-20261030-110852.log; ~/.local/state/r7-syn-verify/v465b-20261030-123851.log; ~/.local/state/r7-syn-verify/v465b-20261030-124755.log"
+  }
+ ],
+ "expected": "ALLOW",
+ "why_legit": "Used by aide verifier row d-20261030-161225-aide-8ebc (MERGE-OK j0yen/synthorg#465 COMMIT=380661c4, 7315 passed, home=mktemp read from v465d log); v465d log VERDICT=GREEN rc=0 home=mktemp. Near miss: earlier same-head legs existed (UNMEASURED rc=124, RED rc=97, GREEN rc=0 under the real HOME), but none ran under an empty HOME with a WM-VERIFY trailer.",
+ "note": "No decision row announced this relaunch."
+}

@@ -1,0 +1,130 @@
+{
+ "id": "legit-5",
+ "class": "redrive",
+ "launch_ts": "2026-10-30T03:08:15-07:00",
+ "launch_ts_source": "journal --user -u wm-build-inner506-a.service Started line 2026-10-30T03:08:15-07:00 (the redrive starts this unit; row 7446 was written 8 s earlier)",
+ "seat": "r7",
+ "cmd": "wm-build run redrive 506 --from land --operator r7",
+ "cmd_source": "row d-20261030-030807-r7-7446 (what: \"redrive 506 --from land --operator r7\"); the wrapper r7-redrive.sh ssh argv is not recoverable",
+ "cmd_exact": false,
+ "row": {
+  "id": "d-20261030-030807-r7-7446",
+  "ts": "2026-10-30T03:08:07-07:00",
+  "what": "redrive 506 --from land --operator r7",
+  "why": "gate pass ad403950 (new=[] remote 0/31); land refused decision 114 on the gate's own prd_path rewrite of extended-gates.toml, restored; wt clean",
+  "evidence": "runs/506/gate.result.json verdict=pass; land.result.json detail=worktree not clean; decision 114"
+ },
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journal --user -u wm-build-inner506-a.service Started line 2026-10-30T03:08:15-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "wm-build-inner506-a",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journal --user -u wm-build-inner506-a.service Started line 2026-10-30T03:08:15-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "wm-build run redrive 506 --from land --operator r7",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "row d-20261030-030807-r7-7446"
+  },
+  {
+   "key": "head_sha",
+   "value": "n/a",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "row d-20261030-030807-r7-7446 (a redrive of run 506 names no git sha; gate result id ad403950)"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T03:08:15-07:00",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journal --user -u wm-build-inner506-a.service Started line 2026-10-30T03:08:15-07:00"
+  },
+  {
+   "key": "unit_execstart",
+   "value": "wm-build drive --run 506 --state-dir /home/jsy/.local/state/wm-build --prd-dir /home/jsy/Documents/PRDs --config /home/jsy/.config/wm-build/config.toml",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journal --user -u wm-build-inner506-a.service Started line 2026-10-30T03:08:15-07:00"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-29T17:37:42-07:00 Started",
+    "2026-10-29T17:55:02-07:00 stopped/exited",
+    "2026-10-29T23:54:26-07:00 Started",
+    "2026-10-30T02:38:10-07:00 stopped/exited",
+    "2026-10-30T02:38:10-07:00 stopped/exited",
+    "2026-10-30T02:42:16-07:00 Started",
+    "2026-10-30T03:04:22-07:00 stopped/exited",
+    "2026-10-30T03:08:15-07:00 Started"
+   ],
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journalctl --user -u wm-build-inner506-a.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-mempsi-cordon since 2026-10-30T00:16:38-07:00: PREMISE mem PSI full avg300>30 sheds r7-wmb-m14 then m14g (ctl 5cf0); EXPIRES <later-stamp elided>.",
+    "r7-wmb-3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-wmb-3632.sh.",
+    "r7-psi-cordon3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-psi-cordon3632.sh.",
+    "r7-wmb-364 since 2026-10-30T01:51:36-07:00: PREMISE rb lands #364 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 8h.",
+    "r7-wmb-365 since 2026-10-30T02:03:06-07:00: PREMISE rb lands #365 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 12h.",
+    "r7-wmb-364ssd since 2026-10-30T02:07:25-07:00: [systemd-run] /home/jsy/.local/bin/r7-wmb-gate.sh.",
+    "r7-wmb-362 since 2026-10-30T02:33:02-07:00: PREMISE rb lands #362 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 10h."
+   ],
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "run_506_state",
+   "value": "gate pass ad403950 (new=[] remote 0/31); land refused decision 114 on the gate's own prd_path rewrite of extended-gates.toml, restored; worktree clean",
+   "as_of": "2026-10-30T03:08:07-07:00",
+   "source": "row d-20261030-030807-r7-7446 (evidence: runs/506/gate.result.json verdict=pass; land.result.json detail=worktree not clean; decision 114)"
+  },
+  {
+   "key": "earlier_redrives_of_run_506",
+   "value": [
+    "row d-20261029-233759-r7-21d4: redrive 506 --from inner --operator r7",
+    "row d-20261029-235420-r7-3910: redrive 506 --from inner --operator r7",
+    "row d-20261029-235411-r7-ff36: commit inner506-a uncommitted coder tail"
+   ],
+   "as_of": "2026-10-29T23:54:20-07:00",
+   "source": "decisions.sqlite rows 21d4, 3910, ff36"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T03:08:15-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-015120-r7-dcd6 r7 other: r7 queues ryzen7 lib-based test legs r7-wmb-364 (wm-build#364 redrive-force-gate @01bd6b9, base redrive-inner-requires-coder) and r7-wmb-365 (#365 m1b-same-run-block @080728d, base origin/main, baseli",
+    "d-20261030-023317-r7-4759 r7 verdict: NO-REDRIVE run 506 (mcphost-implicit-signup-per-session-not-per-peer): 2:29 AM stall alarm is a false positive; the run is in its gate step, coder finished. 507 gate redrive HELD until 506 gate ends. ",
+    "d-20261030-023656-r7-e76e r7 other: r7-mon-journal stall_note keys on the active step: coder jsonl age only for inner/coder step or no step child; gate/land/live judged by CPU+IO delta of the step unit; hermetic replay test of 506 at 2:",
+    "d-20261030-023928-r7-4344 r7 run-state: redrive 507 --from gate --operator r7",
+    "d-20261030-024313-r7-bcb5 r7 other: 506: no redrive --from inner; leave on gate/land path, CI red kind=own -> fix coder; fix shrinks whoami stack, 1024000 B bound never raised (ctl 4884)",
+    "d-20261030-024731-r7-faf7 r7 other: 506 fix path CANCELLED: gate green on fwdtab_ac05 = pass",
+    "d-20261030-024931-rb-bc31 rb other: launched rb-coder-innersuite2 on #362 wt (e7789ad): red first run + green rerun = done only if fix range touches src|tests .rs (suite_fix_commit + suite_first_red in inner.result), else code with suit",
+    "d-20261030-025001-rb-2b7b rb other: ceiling-guard gate check (ctl 1fe0, 506 leaf) queued as spec ~/.cache/rb-seat/spec-ceiling-guard.md behind rb-coder-innersuite2; home (mcphost repo:audit vs wm-build gate) to scout before the brief"
+   ],
+   "as_of": "2026-10-30T02:50:01-07:00",
+   "source": "decisions.sqlite rows d-20261030-015120-r7-dcd6, d-20261030-023317-r7-4759, d-20261030-023656-r7-e76e, d-20261030-023928-r7-4344, d-20261030-024313-r7-bcb5, d-20261030-024731-r7-faf7, d-20261030-024931-rb-bc31, d-20261030-025001-rb-2b7b"
+  }
+ ],
+ "expected": "ALLOW",
+ "why_legit": "Used by row d-20261030-041050-r7-7bd9: run 506 ENDED outcome=code, land-merged 28728137 (PR #540 merged); \"land redriven 3:08 after dirty-worktree refusal d114\". Expensive (land stage plus ci-wait, a 52 min unit) and chosen because it follows a pass gate and a named, restored refusal; run 506 had earlier redrives from inner, not from land. Redrive class, picked from rows-1029-1030.tsv."
+}

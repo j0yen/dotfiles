@@ -1,0 +1,138 @@
+{
+ "id": "legit-6",
+ "class": "leg",
+ "launch_ts": "2026-10-30T06:41:12-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00",
+ "seat": "r7",
+ "cmd": "/bin/bash -c \"~/.cache/r7-seat/r7-census-after-362.sh > ~/.local/state/r7-wmb-verify/census-254bea47aa2d.log 2>&1\"",
+ "cmd_source": "journal --user -u r7-wmb-census-254bea4.service Started line (ExecStart text); the systemd-run flags are not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-census-254bea4",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-census-254bea4 ... /bin/bash -c \"~/.cache/r7-seat/r7-census-after-362.sh > ~/.local/state/r7-wmb-verify/census-254bea47aa2d.log 2>&1\"",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "254bea47",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T06:41:12-07:00",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "unit_execstart",
+   "value": "[systemd-run] /bin/bash -c \"~/.cache/r7-seat/r7-census-after-362.sh > ~/.local/state/r7-wmb-verify/census-254bea47aa2d.log 2>&1\".",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journal --user -u r7-wmb-census-254bea4.service: Started line 2026-10-30T06:41:12-07:00"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T06:41:12-07:00 Started"
+   ],
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journalctl --user -u r7-wmb-census-254bea4.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-wmb-362 since 2026-10-30T03:35:13-07:00: PREMISE rb lands wm-build#362 innersuite3 only on a ryzen7 --via verifier row at exact HEAD a44b4c68; fix-chec",
+    "r7-wmb-363b since 2026-10-30T03:43:42-07:00: PREMISE rb lands wm-build#363 only on a ryzen7 --via verifier row at 1c484f08; rerun of 3632 whose fmt-&&-chai",
+    "r7-wmb-364t since 2026-10-30T04:10:40-07:00: PREMISE fix-check supplement for wm-build#364 @01bd6b9: gate v3 runs file-named filters as --test binaries (36",
+    "r7-wmb-cse since 2026-10-30T04:10:47-07:00: PREMISE rb lands wm-build cargo-step-env only on a ryzen7 --via verifier row at exact HEAD 8149e322; fix-check"
+   ],
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@254bea47: wm-build 0.77.109: net squash strips attribution trailers, land gate refuses them (TSQ) | 10 files +452/-27: Cargo.lock, Cargo.toml, src/actor.rs, src/daemon/tick.rs, src/land/attribution.rs, src/land/git.rs, src/land/mod.rs, src/land/nsq_tests.rs | parent e03b387f"
+   ],
+   "as_of": "2026-10-25T01:00:14-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/254bea47 (committer date)"
+  },
+  {
+   "key": "census_cache_state",
+   "value": "no census of 254bea47 filled yet: the census directory ~/.local/state/r7-wmb-verify/census/254bea47... does not exist before this unit (its mtime is the fill time)",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "~/.local/state/r7-wmb-verify/census (directory created by this unit; no earlier fill logged)"
+  },
+  {
+   "key": "inline_base_runs_so_far",
+   "value": "legs 364 and 365 each re-ran the base test census inline (about 55 min each); 364 ended without a verdict at its 90 min timeout",
+   "as_of": "2026-10-30T05:07:11-07:00",
+   "source": "page 364 and ~/.local/state/r7-wmb-verify/legs-start.log"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-mcp541-20261030T034248.log HEAD=2c695f46 end=2026-10-30T03:42:52-07:00 no VERDICT wall_s=15",
+    "leg-mcp541-20261030T040248.log HEAD=2c695f46 end=2026-10-30T04:02:52-07:00 no VERDICT wall_s=15",
+    "leg-mcp541-20261030T043027.log HEAD=e5e0cce1 end=2026-10-30T04:30:32-07:00 no VERDICT wall_s=15",
+    "leg-wmb364-20261030T033608.log HEAD=01bd6b93 end=2026-10-30T05:06:11-07:00 TIMEOUT-OR-FAIL rc=124 end=2026-10-30T05:06:11-07:00 wall_s=None",
+    "leg-mcp543-20261030T051306.log HEAD=b4f33a5c end=2026-10-30T05:13:11-07:00 no VERDICT wall_s=15",
+    "leg-wmb365-20261030T050711.log HEAD=080728d7 end=2026-10-30T06:37:14-07:00 TIMEOUT-OR-FAIL rc=124 end=2026-10-30T06:37:14-07:00 wall_s=5403"
+   ],
+   "as_of": "2026-10-30T06:37:14-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-053017-r7-daa0 r7 other: wm-build leg 364 @01bd6b9 = NO VERDICT (rc=124 at 90-min leg cap, 05:06 10-30)",
+    "d-20261030-053026-rb-b7f6 rb other: Accept r7 mechanism 5 (wm-build main green fmt/91 clippy/red tests + per-main-sha test census for r7 legs) as rb spec h, queued after mcphost specs c,e,f,g and before d; routed two conflicts to ctl: (",
+    "d-20261030-053642-r7-65df r7 other: r7 takes the per-main-sha wm-build census publisher (ctl 0423): ONE producer = ryzen7 main gate, folded into leg-364 mechanism 2; r7-wmb-main-census.sh from coder r7-legbudget, then a ryzen7 unit runs",
+    "d-20261030-063742-r7-03f6 r7 other: coder r7-legbudget reviewed: mechs 1,2,4 CONFIRM, mech 3 REJECT (test trips disk gate on ryzen7 /tmp 7G free); fix1 coder unit dispatched 6:34 (test scratch to TMPDIR, LEG_TRIP_G=1 in test only, atomi",
+    "d-20261030-063818-r7-f0ab r7 other: wm-build leg 365 ended at the 90-min cap rc=124, NO VERDICT (old gate v3.2: base clippy 91 lints inline, comm unsorted-input warning on fmt key)",
+    "d-20261030-063936-r7-5a27 r7 other: ryzen7 wm-build leg gate swapped to budget + base-census lib by mv (backups .bak-20261030T063925); census unit deferred, cargo busy in r7-wmb-362"
+   ],
+   "as_of": "2026-10-30T06:39:36-07:00",
+   "source": "decisions.sqlite rows d-20261030-053017-r7-daa0, d-20261030-053026-rb-b7f6, d-20261030-053642-r7-65df, d-20261030-063742-r7-03f6, d-20261030-063818-r7-f0ab, d-20261030-063936-r7-5a27"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "none: no leg log for this head or slug started before launch"
+   ],
+   "as_of": "2026-10-30T06:41:12-07:00",
+   "source": "scan of ~/.local/state/r7-wmb-verify/*.log and ~/.local/state/r7-syn-verify/v*.log (start < launch)"
+  }
+ ],
+ "expected": "ALLOW",
+ "why_legit": "Filled the base census cache (leg log: CENSUS FILLED 254bea47..., LEG-END end=2026-10-30T08:45:10-07:00); every later full leg took its base numbers from that cache instead of a 55 min inline base run: ~/.local/state/r7-wmb-verify/leg-wmb362f-20261030T110741.log \"BASE=254bea47... DELTA fmt head-only-files=1 base-files=870\" (r7-wmb-gate.sh.v36 line 83: \"base numbers come from the census cache only\"). Distinct from the incident legs: main HEAD, no PR head, run once.",
+ "note": "No decision row announced this unit."
+}

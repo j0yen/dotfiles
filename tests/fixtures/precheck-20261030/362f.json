@@ -1,0 +1,170 @@
+{
+ "id": "362f",
+ "class": "relaunch",
+ "launch_ts": "2026-10-30T12:14:40-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00 (page 362f: relaunched 12:14:40)",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-wmb-362f -p RuntimeMaxSec=10h --setenv=WMB_NAME=362f --setenv=WMB_BRANCH=inner-suite-no-fail-fast --setenv=WMB_SHA=27dd207b --setenv=WMB_BASE=254bea47 --setenv=WMB_AFTER=<set> --description='PREMISE ... EXPIRES ...' ... <leg script not recoverable> (no WMB_FILTERS)",
+ "cmd_source": "journal --user -u r7-wmb-362f.service Started line + page 362f (unit env: no WMB_FILTERS); argv beyond these is not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-362f",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-362f -p RuntimeMaxSec=10h --setenv=WMB_NAME=362f --setenv=WMB_BRANCH=inner-suite-no-fail-fast --setenv=WMB_SHA=27dd207b --setenv=WMB_BASE=254bea47 --setenv=WMB_AFTER=<set> --description='PREMISE ... EXPIRES ...' ... <leg script not recoverable> (no WMB_FILTERS)",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "27dd207b",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T12:14:40-07:00",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE: wm-build#362 head 27dd207b full leg, relaunch under gate v3.7 4141d39d after v3.6 exit 1 MEASURED (ctl 7ca3) EXPIRES: <later-stamp elided>.",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journal --user -u r7-wmb-362f.service: Started line 2026-10-30T12:14:40-07:00"
+  },
+  {
+   "key": "unit_env",
+   "value": "WMB_NAME, WMB_BRANCH, WMB_SHA, WMB_BASE, WMB_AFTER set; NO WMB_FILTERS",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "page 362f (systemctl show of the relaunched unit)"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T08:41:29-07:00 Started",
+    "2026-10-30T08:44:57-07:00 stopped/exited",
+    "2026-10-30T08:44:57-07:00 Started",
+    "2026-10-30T08:49:43-07:00 stopped/exited",
+    "2026-10-30T08:49:43-07:00 stopped/exited",
+    "2026-10-30T09:50:13-07:00 Started",
+    "2026-10-30T10:47:45-07:00 stopped/exited",
+    "2026-10-30T10:47:45-07:00 stopped/exited",
+    "2026-10-30T11:07:11-07:00 Started",
+    "2026-10-30T12:12:21-07:00 stopped/exited",
+    "2026-10-30T12:12:21-07:00 stopped/exited",
+    "2026-10-30T12:14:40-07:00 Started"
+   ],
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journalctl --user -u r7-wmb-362f.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-363b since 2026-10-30T11:07:11-07:00: PREMISE: wm-build#363 head f637ddb6 full leg after 362f, gate v3.6 EXPIRES: <later-stamp elided>.",
+    "r7-syn-verify-465 since 2026-10-30T11:08:52-07:00: PREMISE: PR #465 380661c4 green under empty HOME + 9590c0e2 red, gate-line parity with master gate EXIT/EXPIRE",
+    "r7-wmb-rs363h1 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h1 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363h2 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h2 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363h3 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h3 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b1 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b1 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b2 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b2 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b3 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b3 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: <later-stamp elided>.",
+    "wm-build-inner503-a since 2026-10-30T11:32:58-07:00: [systemd-run] /home/jsy/.cargo/bin/wm-build drive --run 503 --state-dir /home/jsy/.local/state/wm-build --prd-",
+    "wm-build-inner508-a since 2026-10-30T11:48:59-07:00: [systemd-run] /home/jsy/.cargo/bin/wm-build drive --run 508 --state-dir /home/jsy/.local/state/wm-build --prd-"
+   ],
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@27dd207b: tests: fill suite_first_red and suite_fix_commit in every struct literal | 1 files +2/-0: tests/execerr_ac02_refuted_wins_exec_errors_listed_separately.rs | parent 4151149d"
+   ],
+   "as_of": "2026-10-30T09:38:07-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/27dd207b (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "wm-build#362 OPEN since 2026-10-30T00:08:15-07:00, branch inner-suite-no-fail-fast: inner: full suite no-fail-fast, unfiltered rerun, partial-suite red; missing contract-suit... (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "gh api repos/j0yen/wm-build/pulls/362 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "rb_publish_statement",
+   "value": "rb row 2026-10-30T09:42: head 27dd207b published by plain fast-forward, r7 sent both heads for leg relaunch",
+   "as_of": "2026-10-30T09:42:00-07:00",
+   "source": "page 362f (decisions.sqlite rb row dated 2026-10-30T09:42)"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T12:14:40-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-wmbcse-20261030T093533.log HEAD=8149e322 end=2026-10-30T10:36:15-07:00 VERDICT=MEASURED wall_s=3647",
+    "leg-wmb364t-20261030T103748.log HEAD=01bd6b93 end=2026-10-30T10:42:37-07:00 VERDICT=GREEN reason=fixonly wall_s=301",
+    "leg-wmb362f-20261030T104344.log HEAD=27dd207b end=2026-10-30T10:47:44-07:00 TIMEOUT-OR-FAIL rc=1 end=2026-10-30T10:47:44-07:00 wall_s=240",
+    "leg-wmb363b-20261030T104844.log HEAD=f637ddb6 end=2026-10-30T10:52:44-07:00 TIMEOUT-OR-FAIL rc=1 end=2026-10-30T10:52:44-07:00 wall_s=241",
+    "leg-stubtest-20261030T112028.log HEAD=unknown end=2026-10-30T11:20:43-07:00 TIMEOUT-OR-FAIL rc=7 end=2026-10-30T11:20:43-07:00 wall_s=15",
+    "leg-wmb362f-20261030T110741.log HEAD=27dd207b end=2026-10-30T12:12:07-07:00 VERDICT=MEASURED wall_s=3879"
+   ],
+   "as_of": "2026-10-30T12:12:07-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-084150-r7-80ca r7 other: r7 launched ryzen7 leg unit r7-wmb-362f: wm-build#362 fix4 HEAD 4151149d0cf490ae212b5c4e7ddbfeb0309b0cee on gate v3.4 (symlink ~/.local/bin/r7-wmb-gate.sh -> md5 4f7b8f9e), WMB_AFTER=r7-wmb-364t (seri",
+    "d-20261030-084505-r7-152a r7 other: ryzen7 leg queue reorder per ctl b89e: r7-wmb-362f WMB_AFTER r7-wmb-364t -> r7-wmb-363b; r7-wmb-364t WMB_AFTER r7-wmb-363b -> r7-wmb-362f (both stopped+relaunched in wait phase, same env/shape, 363b u",
+    "d-20261030-093705-rb-5390 rb other: launch coders innersuitefix5 (wm-build#362 E0063: fill suite_first_red/suite_fix_commit in every struct literal incl tests/) and redriveinnerfix1 (wm-build#363 head-only-fails act_every_journal_op_is_",
+    "d-20261030-094246-rb-559e rb other: published wm-build#362 fix5 27dd207b and #363 fix1 f637ddb6 by plain fast-forward (sonnet verifier), r7 sent both heads for leg relaunch",
+    "d-20261030-095053-r7-e8e7 r7 other: ryzen7 legs requeued on rb new heads: r7-wmb-362f head 27dd207b AFTER r7-wmb-364t; r7-wmb-363b head f637ddb6 AFTER r7-wmb-362f (chain cse -> 364t -> 362f -> 363b, one leg at a time); gate v3.5 header ",
+    "d-20261030-110956-r7-4049 r7 other: ryzen7 wm-build leg gate v3.5 -> v3.6 (md5 43f3ee08, backup r7-wmb-gate.sh.v35.20261030-110622): WMB_FILTERS/FIXONLY/BASE/AFTER default empty under set -u + EXIT trap prints VERDICT=RED reason=gate-ab"
+   ],
+   "as_of": "2026-10-30T11:09:56-07:00",
+   "source": "decisions.sqlite rows d-20261030-084150-r7-80ca, d-20261030-084505-r7-152a, d-20261030-093705-rb-5390, d-20261030-094246-rb-559e, d-20261030-095053-r7-e8e7, d-20261030-110956-r7-4049"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "leg-wmb362f-20261030T084727.log | same slug, other head: HEAD=4151149d start=2026-10-30T08:47:27-07:00 end=2026-10-30T08:49:31-07:00 VERDICT=RED reason=test-build-failed; wall_s=136",
+    "leg-wmb362f-20261030T104344.log | same head: HEAD=27dd207b start=2026-10-30T10:43:44-07:00 end=2026-10-30T10:47:44-07:00 TIMEOUT-OR-FAIL rc=1 end=2026-10-30T10:47:44-07:00; wall_s=240",
+    "leg-wmb362f-20261030T110741.log | same head: HEAD=27dd207b start=2026-10-30T11:07:41-07:00 end=2026-10-30T12:12:07-07:00 VERDICT=MEASURED; tests EXIT=101 passed=3354 failed=31; DELTA fmt head-only-files=1 base-files=870 | DELTA tests head-only-fails=1; test actor::tests::act_every_journal_op_is_classified ... FAILED; wall_s=3879"
+   ],
+   "as_of": "2026-10-30T12:12:07-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-wmb362f-20261030T084727.log; ~/.local/state/r7-wmb-verify/leg-wmb362f-20261030T104344.log; ~/.local/state/r7-wmb-verify/leg-wmb362f-20261030T110741.log"
+  }
+ ],
+ "expected": "BLOCK_OR_NEEDS_READ",
+ "note": "The seat row announcing this relaunch was written after the unit started and is excluded (row=null)."
+}

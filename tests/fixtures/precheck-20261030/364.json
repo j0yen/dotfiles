@@ -1,0 +1,146 @@
+{
+ "id": "364",
+ "class": "leg",
+ "launch_ts": "2026-10-30T01:51:36-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-wmb-364 -p RuntimeMaxSec=8h --setenv=WMB_SHA=01bd6b939ae07ed37deb37674e57b253a3fa10c4 --setenv=WMB_AFTER=r7-wmb-3632 --description='PREMISE rb lands #364 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 8h.' ... <leg script not recoverable>",
+ "cmd_source": "journal --user -u r7-wmb-364.service Started line (description) + page 364; argv beyond these is not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-364",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-364 -p RuntimeMaxSec=8h --setenv=WMB_SHA=01bd6b939ae07ed37deb37674e57b253a3fa10c4 --setenv=WMB_AFTER=r7-wmb-3632 --description='PREMISE rb lands #364 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 8h.' ... <leg script not recoverable>",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "01bd6b93",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T01:51:36-07:00",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "PREMISE rb lands #364 only on a ryzen7 verifier row at exact HEAD; EXPIRES RuntimeMaxSec 8h.",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journal --user -u r7-wmb-364.service: Started line 2026-10-30T01:51:36-07:00"
+  },
+  {
+   "key": "unit_env",
+   "value": "RuntimeMaxSec 8h; the leg lib waits in a start gate (PSI io/mem < 25 and avail >= 100 G) behind the running 3632 leg; WMB_* values unknown",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "page 364 (unit properties) + unit description"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T01:51:36-07:00 Started"
+   ],
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journalctl --user -u r7-wmb-364.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-dot-chain2 since 2026-10-29T23:44:07-07:00: [systemd-run] /home/jsy/.cache/r7-seat/r7-dot-chain2.sh.",
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "wm-build-inner506-a since 2026-10-29T23:54:26-07:00: [systemd-run] /home/jsy/.cargo/bin/wm-build drive --run 506 --state-dir /home/jsy/.local/state/wm-build --prd-",
+    "r7-mempsi-cordon since 2026-10-30T00:16:38-07:00: PREMISE mem PSI full avg300>30 sheds r7-wmb-m14 then m14g (ctl 5cf0); EXPIRES <later-stamp elided>.",
+    "r7-wmb-m14g3 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-wmb-m14g3.sh.",
+    "r7-wmb-3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-wmb-3632.sh.",
+    "r7-psi-cordon3632 since 2026-10-30T01:13:51-07:00: [systemd-run] /usr/bin/bash /home/jsy/.cache/r7-seat/r7-psi-cordon3632.sh."
+   ],
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@01bd6b93: CHANGELOG 0.77.110: dry-run runs every pre-existing refusal and fetches nothing the base dry-run did not | 1 files +1/-1: CHANGELOG.md | parent cf6ab0e1"
+   ],
+   "as_of": "2026-10-30T01:16:38-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/01bd6b93 (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "wm-build#364 OPEN (draft) since 2026-10-30T01:37:13-07:00, branch redrive-force-gate: redrive: --trust-gate-cache refusal + force-gate, dry-run writes nothing (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "gh api repos/j0yen/wm-build/pulls/364 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "leg_timeout_default",
+   "value": "unknown",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "r7-verify-leg.sh has no versioned copy that predates launch"
+  },
+  {
+   "key": "gate_script_md5",
+   "value": "unknown",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "no record of r7-wmb-gate.sh md5 at launch"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": "none",
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-003316-rb-346b rb other: launched rb-coder-redriveforce --no-cargo on brief coder-redriveforce.md sha 8976175a (Fable AGREE-WITH-EDITS, E1-E7 applied: attempt-keyed force predicate, skipped-force journal, plan printed on ever",
+    "d-20261030-005108-rb-a190 rb other: redrive-force-gate REFUTED by sonnet verifier (17 tests/ RedriveOpts literals miss trust_gate_cache = E0063 under cargo test; plan built after recreate/restore/redrive-forced journal so dry-run+refusa",
+    "d-20261030-011138-rb-d8cb rb other: redrive-force-gate repair 1 REFUTED (dry-run returns right after the plan, skipping base refusals; breaks psl_redrive_restores_prd_sync_leak i_dry_run_reports_would_restore and rw_redrive_wt_equals_or",
+    "d-20261030-013701-rb-6423 rb other: queued spec: CARGO_PROFILE_TEST_DEBUG=0 + CARGO_INCREMENTAL=0 in inner and gate env on both hosts, one generated contract + no-drift test (page 1312 mechanism 5); brief + Fable review next, coder afte",
+    "d-20261030-013730-rb-7bdf rb other: published redrive-force-gate 01bd6b9 as draft #364 (base #363 branch) and m1b-same-run-block 080728d as draft #365 (base main); compile+test asked of r7",
+    "d-20261030-015120-r7-dcd6 r7 other: r7 queues ryzen7 lib-based test legs r7-wmb-364 (wm-build#364 redrive-force-gate @01bd6b9, base redrive-inner-requires-coder) and r7-wmb-365 (#365 m1b-same-run-block @080728d, base origin/main, baseli"
+   ],
+   "as_of": "2026-10-30T01:51:20-07:00",
+   "source": "decisions.sqlite rows d-20261030-003316-rb-346b, d-20261030-005108-rb-a190, d-20261030-011138-rb-d8cb, d-20261030-013701-rb-6423, d-20261030-013730-rb-7bdf, d-20261030-015120-r7-dcd6"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "none: no leg log for this head or slug started before launch"
+   ],
+   "as_of": "2026-10-30T01:51:36-07:00",
+   "source": "scan of ~/.local/state/r7-wmb-verify/*.log and ~/.local/state/r7-syn-verify/v*.log (start < launch)"
+  }
+ ],
+ "expected": "BLOCK_OR_NEEDS_READ",
+ "note": "No decision row existed for this leg."
+}

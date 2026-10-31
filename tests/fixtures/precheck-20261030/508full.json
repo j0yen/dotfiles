@@ -1,0 +1,155 @@
+{
+ "id": "508full",
+ "class": "leg",
+ "launch_ts": "2026-10-30T14:04:06-07:00",
+ "launch_ts_source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00",
+ "seat": "r7",
+ "cmd": "systemd-run --user --unit=r7-wmb-508full --setenv=WMB_SHA=a0219f6188ef --setenv=WMB_BASE=254bea47 --setenv=WMB_AFTER=<508fix> --description='r7 508 full MEASURED leg on a0219f61 (wm-build#366) after 508fix. PREMISE: rb promotes only on GREEN MEASURED and fixonly cannot give that; ...' ... <leg script not recoverable>",
+ "cmd_source": "journal --user -u r7-wmb-508full.service Started line (description); argv beyond these is not recoverable",
+ "cmd_exact": false,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "r7-wmb-508full",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "not recorded: transient unit file no longer on disk, WorkingDirectory not in the journal line"
+  },
+  {
+   "key": "cmd",
+   "value": "systemd-run --user --unit=r7-wmb-508full --setenv=WMB_SHA=a0219f6188ef --setenv=WMB_BASE=254bea47 --setenv=WMB_AFTER=<508fix> --description='r7 508 full MEASURED leg on a0219f61 (wm-build#366) after 508fix. PREMISE: rb promotes only on GREEN MEASURED and fixonly cannot give that; ...' ... <leg script not recoverable>",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "head_sha",
+   "value": "a0219f61",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T14:04:06-07:00",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "unit_description",
+   "value": "r7 508 full MEASURED leg on a0219f61 (wm-build#366) after 508fix. PREMISE: rb promotes only on GREEN MEASURED and fixonly cannot give that; the full census also covers land/lockfile tests and clippy. EXPIRES <later-stamp elided>.",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journal --user -u r7-wmb-508full.service: Started line 2026-10-30T14:04:06-07:00"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T14:04:06-07:00 Started"
+   ],
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journalctl --user -u r7-wmb-508full.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: 2026-10-30T13:00.",
+    "r7-syn-verify-465b since 2026-10-30T12:38:51-07:00: PREMISE: PR #465 380661c4 serial gate lane (gate.yml:31) green under empty HOME, rc real via timeout -k 60 450",
+    "r7-wmb-508fix since 2026-10-30T13:54:36-07:00: PREMISE: wm-build receipt-version-only-reuse a0219f61 (rb 508 fix) passes check -D warnings, fmt, clippy and i"
+   ],
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "wm-build@a0219f61: gate+inner: a release commit that bumps only pyproject.toml/uv.lock versions keeps its parent's py receipts (run 508) | 3 files +397/-7: src/gate/mod.rs, src/inner/python.rs, src/land/lockfile.rs | parent 254bea47"
+   ],
+   "as_of": "2026-10-30T13:06:33-07:00",
+   "source": "gh api repos/j0yen/wm-build/commits/a0219f61 (committer date)"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "wm-build#366 OPEN since 2026-10-30T13:59:14-07:00, branch receipt-version-only-reuse: inner: keep py receipts fresh across version-only release commits (508) (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "gh api repos/j0yen/wm-build/pulls/366 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "base_census_cache",
+   "value": "census of BASE 254bea47 filled (CENSUS FILLED) and its directory exists; main red there: fmt 870 files, clippy 91 lints, base tests EXIT=101",
+   "as_of": "2026-10-30T08:45:10-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-census-254bea47aa2d8439759491d481ba1acf5c5fbd1c-20261030T074144.log"
+  },
+  {
+   "key": "gate_has_touched_module_stage",
+   "value": "unknown",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "no record of the gate script text at launch"
+  },
+  {
+   "key": "pre_push_check_of_head",
+   "value": "unknown: head was produced on RedBaron by rb's coder lane; no log of a touched-module cargo test --lib exists before launch",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "scan of leg logs for HEAD=a0219f61 with end <= launch: see prior_leg_log entries"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T14:04:06-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_leg_logs_ended_before_launch",
+   "value": [
+    "leg-wmbrs363h1-20261030T132529.log HEAD=f637ddb6 end=2026-10-30T13:29:53-07:00 VERDICT=GREEN reason=fixonly wall_s=271",
+    "leg-wmbrs363h2-20261030T133130.log HEAD=f637ddb6 end=2026-10-30T13:35:51-07:00 VERDICT=GREEN reason=fixonly wall_s=270",
+    "leg-wmbrs363h3-20261030T133730.log HEAD=f637ddb6 end=2026-10-30T13:41:46-07:00 VERDICT=GREEN reason=fixonly wall_s=270",
+    "leg-wmbrs363b1-20261030T134330.log HEAD=254bea47 end=2026-10-30T13:47:50-07:00 VERDICT=GREEN reason=fixonly wall_s=270",
+    "leg-wmbrs363b2-20261030T134930.log HEAD=254bea47 end=2026-10-30T13:53:39-07:00 VERDICT=GREEN reason=fixonly wall_s=255",
+    "leg-wmbrs363b3-20261030T135430.log HEAD=254bea47 end=2026-10-30T13:58:46-07:00 VERDICT=GREEN reason=fixonly wall_s=271"
+   ],
+   "as_of": "2026-10-30T13:58:46-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-*.log (LEG-END lines)"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261030-131049-r7-ad3f r7 other: 508 no redrive; successor after rb wm-build receipt-freshness fix; sandbox falsifier r7-falsify508 on copies",
+    "d-20261030-131927-rb-3927 rb other: ack r7 1:18 PM: 509 closed no-redrive and re-queued (PRDs 796e49e11), RB daemon may claim after 1069 leaves inner; 508 falsifier (re-stamped receipts at 1cfe74f pass rc=0) confirms the running wmb508f",
+    "d-20261030-132626-rb-70aa rb other: Three hand coders had already ended (wmb362fix 12:59, wmb508fix 13:06, pr536merge 13:13); my 1:14/1:19/1:21 STATUS lines called them running from no read. Results: (a) 536: coder stopped before commit",
+    "d-20261030-133103-rb-4654 rb other: ctl 5ee9 answers. (1) SPEC owner rb: rb seat status script check refuses a coder state line lacking a unit read (unit name, ActiveState, ExecMainExitTimestamp) + test with a stale running line; from n",
+    "d-20261030-134330-rb-8578 rb other: 362 red cause MEASURED (closes the unknown in 6b70): r7 362f leg on head 27dd207b vs base 254bea47 VERDICT=MEASURED red by delta = actor::tests::act_every_journal_op_is_classified head-only fail + rus",
+    "d-20261030-135924-rb-50fe rb other: Opened wm-build#366 (head a0219f61, receipt-version-only-reuse, no trailer) for 508; sent r7 the compile+test ask (-D warnings check, clippy, receipt filters, version-only fixture, falsify508). On r7 "
+   ],
+   "as_of": "2026-10-30T13:59:24-07:00",
+   "source": "decisions.sqlite rows d-20261030-131049-r7-ad3f, d-20261030-131927-rb-3927, d-20261030-132626-rb-70aa, d-20261030-133103-rb-4654, d-20261030-134330-rb-8578, d-20261030-135924-rb-50fe"
+  },
+  {
+   "key": "prior_leg_log",
+   "value": [
+    "leg-508fix-20261030T140006.log | same head: HEAD=a0219f61 started 2026-10-30T14:00:06-07:00; still running at launch (its end line is later)"
+   ],
+   "as_of": "2026-10-30T14:00:06-07:00",
+   "source": "~/.local/state/r7-wmb-verify/leg-508fix-20261030T140006.log"
+  }
+ ],
+ "expected": "BLOCK_OR_NEEDS_READ",
+ "note": "No decision row existed for this leg. The unit Started at this time and waited in its start gate; the leg proper began later."
+}

@@ -1,0 +1,157 @@
+{
+ "id": "503",
+ "class": "redrive",
+ "launch_ts": "2026-10-30T11:32:58-07:00",
+ "launch_ts_source": "journal --user -u wm-build-inner503-a.service Started line 2026-10-30T11:32:58-07:00 (the redrive starts this unit; row 334f was written 9 s earlier)",
+ "seat": "r7",
+ "cmd": "wm-build run redrive 503 --from land --operator r7",
+ "cmd_source": "row d-20261030-113249-r7-334f (what: \"redrive 503 --from land --operator r7\"); the wrapper r7-redrive.sh ssh argv is not recoverable",
+ "cmd_exact": false,
+ "row": {
+  "id": "d-20261030-113249-r7-334f",
+  "ts": "2026-10-30T11:32:49-07:00",
+  "what": "redrive 503 --from land --operator r7",
+  "why": "aide approvals #89: run 503 ended infra ci-log-truncated in land (CI-log wall, no code cause); both Depends-on in built-prds; end-hold lifted in the PRDs repo the same minute",
+  "evidence": "ryzen7 state.db steps: land:ci-wait done 319 s then land infra cause ci-log-truncated; land row prepared sha f85e1808862f79f1184fc7538b216ae825fd95f9"
+ },
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "ryzen7",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journal --user -u wm-build-inner503-a.service Started line 2026-10-30T11:32:58-07:00"
+  },
+  {
+   "key": "unit",
+   "value": "wm-build-inner503-a",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journal --user -u wm-build-inner503-a.service Started line 2026-10-30T11:32:58-07:00"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "not recorded"
+  },
+  {
+   "key": "cmd",
+   "value": "wm-build run redrive 503 --from land --operator r7",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "row d-20261030-113249-r7-334f"
+  },
+  {
+   "key": "head_sha",
+   "value": "f85e1808",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "row d-20261030-113249-r7-334f (\"land row prepared sha f85e1808\")"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T11:32:58-07:00",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journal --user -u wm-build-inner503-a.service Started line 2026-10-30T11:32:58-07:00"
+  },
+  {
+   "key": "unit_execstart",
+   "value": "wm-build drive --run 503 --state-dir /home/jsy/.local/state/wm-build --prd-dir /home/jsy/Documents/PRDs --config /home/jsy/.config/wm-build/config.toml (the unit the redrive starts, seen in the Started line)",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journal --user -u wm-build-inner503-a.service Started line 2026-10-30T11:32:58-07:00"
+  },
+  {
+   "key": "earlier_events_of_this_unit_name",
+   "value": [
+    "2026-10-30T11:32:58-07:00 Started"
+   ],
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journalctl --user -u wm-build-inner503-a.service"
+  },
+  {
+   "key": "units_with_journal_start_and_no_stop_at_launch",
+   "value": [
+    "r7-trio-yield since 2026-10-29T23:50:00-07:00: [systemd-run] /bin/bash /home/jsy/.cache/r7-seat/r7-trio-yield.sh.",
+    "r7-belltest-true-1263091 since 2026-10-30T09:49:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1263091 since 2026-10-30T09:49:59-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-dbg since 2026-10-30T09:50:16-07:00: PREMISE: t EXPIRES: n.",
+    "r7-belltest-true-1268614 since 2026-10-30T09:50:26-07:00: PREMISE: test EXPIRES: now.",
+    "r7-belltest-nolog-1268614 since 2026-10-30T09:50:28-07:00: PREMISE: test EXPIRES: now.",
+    "r7-wmb-362f since 2026-10-30T11:07:11-07:00: PREMISE: wm-build#362 head 27dd207b full leg, gate v3.6 after v3.5 WMB_FILTERS unbound abort EXPIRES: 2026-10-",
+    "r7-wmb-363b since 2026-10-30T11:07:11-07:00: PREMISE: wm-build#363 head f637ddb6 full leg after 362f, gate v3.6 EXPIRES: <later-stamp elided>.",
+    "r7-syn-verify-465 since 2026-10-30T11:08:52-07:00: PREMISE: PR #465 380661c4 green under empty HOME + 9590c0e2 red, gate-line parity with master gate EXIT/EXPIRE",
+    "r7-wmb-rs363h1 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h1 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363h2 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h2 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363h3 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363h3 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b1 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b1 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b2 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b2 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-rs363b3 since 2026-10-30T11:09:54-07:00: PREMISE: rb 9:42 ask, resume_skips solo repeat rs363b3 (3x head f637ddb6, 3x base 254bea4), fix-check only nev",
+    "r7-wmb-stubtest since 2026-10-30T11:20:28-07:00: PREMISE: falsifier for inner-exit guard EXPIRES: <later-stamp elided>."
+   ],
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "journalctl --user -t systemd (Started/Stopped/Consumed lines for r7-* and wm-build-inner*; a unit that ended without a journal line would show as active)"
+  },
+  {
+   "key": "run_503_history",
+   "value": "started 2026-10-27T18:57 on ryzen7 (driver_host=ryzen7, mode=daemon); inner done 2026-10-28T00:00; land attempt 1 started 2026-10-28T00:47 and ended infra: step 11640 wall 21600 s at 2026-10-28T06:47:34-07:00, step 11661 ci-log-truncated at 2026-10-28T06:47:51-07:00 (ci-red.json: \"static analysis + core suites\", parse truncated, main Green at ff8e2b68)",
+   "as_of": "2026-10-28T06:47:51-07:00",
+   "source": "page 503 (ryzen7 state.db steps/runs, read-only)"
+  },
+  {
+   "key": "land_config",
+   "value": "ryzen7 config.toml line 51 [land] precheck_wall_secs = 3600; max_runs_by_prefix mcphost-=0; cargo_jobs=3; slots=3; binary wm-build 0.77.109; daemon unit description \"orchestrator daemon (ryzen7, synthorg only)\"",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "page 503 bullet for 2026-10-30T11:32:58-07:00 (config read time not separately logged)"
+  },
+  {
+   "key": "standing_placement_rules",
+   "value": "approvals #49 and #54: mcphost builds go to RedBaron, mcphost test execution runs on orch from a RedBaron nextest archive, NO mcphost suite on ryzen7",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "page 503 question (quoted by r7 seat); approval dates not recoverable on ryzen7, rules named as standing"
+  },
+  {
+   "key": "pr_state",
+   "value": [
+    "mcphost#536 OPEN since 2026-10-28T00:53:37-07:00, branch wm-build/mcphost-synthetic-tenant-purge: loop: mcphost-synthetic-tenant-purge (no close/merge event on GitHub as of launch)"
+   ],
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "gh api repos/j0yen/mcphost/pulls/536 (created_at/closed_at/merged_at compared with launch; PR head moves after launch are not used)"
+  },
+  {
+   "key": "git_show_stat",
+   "value": [
+    "mcphost@f85e1808: chore: regen docs/openapi.json | 1 files +1/-1: docs/openapi.json | parent 34d01290"
+   ],
+   "as_of": "2026-10-28T00:53:16-07:00",
+   "source": "gh api repos/j0yen/mcphost/commits/f85e1808 (committer date)"
+  },
+  {
+   "key": "ci_check_runs_at_f85e1808",
+   "value": "completed before launch: contract suites=success (2026-10-28T01:16:25-07:00), static analysis=success, core suites shards 1,3,4,5=success, core suites shard 2/5=failure, static analysis + core suites=failure; sandbox suites success; 25 check-runs listed, none pending",
+   "as_of": "2026-10-28T01:22:16-07:00",
+   "source": "gh api repos/j0yen/mcphost/commits/f85e1808/check-runs (completed_at <= launch)"
+  },
+  {
+   "key": "precheck_contract_suite_wall_minutes",
+   "value": "unknown",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "mcphost wm-build-ci.toml was read from origin/main at analysis time; no launch-time copy"
+  },
+  {
+   "key": "mem_available",
+   "value": "unknown",
+   "as_of": "2026-10-30T11:32:58-07:00",
+   "source": "not logged at this minute"
+  },
+  {
+   "key": "recent_decision_rows_naming_head_or_slug",
+   "value": [
+    "d-20261029-111147-rb-6a20 rb other: reconciled queue-db-drift: mcphost-synthetic-tenant-purge state.db now blocked to match PRD file blocked (wm-build scan on RB)",
+    "d-20261029-120255-r7-d292 r7 other: synthorg PR #456 (chain-item: 4, cohort.py in-band -32600 refused + re-plant) full-tier verify green on head 7e0d674dfbd3c0789b5fdfb9924ee413121c4586: 7307 passed, 27 skipped, 5 xfailed, 0 FAILED/ERRO",
+    "d-20261029-165512-r7-defc r7 other: launch full-tier verify unit r7-syn-fv458 on ryzen7 for synthorg#458 head a4ad9c3d33dbee167503453008b5e1ebc96ed768 (fixture-drift item 6, coder r7-coder-fdvol)",
+    "d-20261029-213248-rb-8105 rb other: 5whysandrhyme on <later-clock elided> RB near-freeze filed: answers/2026-10-29-redbaron-unreachable-1719-link-stage-memory-stall-hdd-five-whys-rhyme.md; PREMISE CORRECTION: page says no memory ceiling on a running i",
+    "d-20261030-023656-r7-e76e r7 other: r7-mon-journal stall_note keys on the active step: coder jsonl age only for inner/coder step or no step child; gate/land/live judged by CPU+IO delta of the step unit; hermetic replay test of 506 at 2:"
+   ],
+   "as_of": "2026-10-30T02:36:56-07:00",
+   "source": "decisions.sqlite rows d-20261029-111147-rb-6a20, d-20261029-120255-r7-d292, d-20261029-165512-r7-defc, d-20261029-213248-rb-8105, d-20261030-023656-r7-e76e"
+  }
+ ],
+ "expected": "BLOCK_OR_NEEDS_READ"
+}

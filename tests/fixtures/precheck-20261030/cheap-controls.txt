@@ -1,0 +1,20 @@
+date	none
+md5sum ~/.cache/r7-seat/r7-wmb-gate.sh	none
+tail -c 2000 ~/.local/state/r7-wmb-verify/leg-wmb362f-20261030T110741.log	none
+systemctl --user show r7-wmb-362f.service -p ActiveState -p ExecMainStatus	none
+wm-decide record --agent r7 --kind other --what 'queued leg r7-wmb-362' --why 'rb 3:34 AM published' --evidence 'gh pr view 362'	none
+~/.local/bin/ctl-ask.sh 'is the 362 leg still wanted?'	none
+git -C ~/.cache/tmp/wmb362/w log -1 --stat	none
+wm-build runs	none
+gh pr view 362 --repo j0yen/wm-build --json headRefOid,state	none
+grep -n 'gh pr merge' ~/.local/bin/rb-merge.sh	none
+journalctl --user -u r7-wmb-364.service --since '2026-10-30 03:00' --no-pager | tail -n 20	none
+ssh ryzen7 bash -s <<'EOF'\ntail -c 500 ~/.local/state/r7-wmb-verify/legs-start.log\nEOF	none
+systemd-run --user --unit=r7-wmb-x --description='PREMISE x EXPIRES y' -- bash ~/.cache/r7-seat/x.sh	leg
+ssh ryzen7 bash -s <<'EOF'\nsystemd-run --user --unit=r7-wmb-foo -p RuntimeMaxSec=10h bash ~/.cache/r7-seat/r7-wmb-3632.sh\nEOF	leg
+ssh ryzen7 'export PATH=$HOME/.cargo/bin:$PATH; wm-build run redrive 503 --from land --operator r7'	relaunch
+git -C ~/wm-build fetch -q; gh pr merge 362 --repo j0yen/wm-build --squash	merge
+~/.local/bin/rb-merge.sh 546	merge
+ssh ryzen7 'wm-build run close 503 --outcome infra'	limit
+./scripts/deploy.sh --env prod mcphost v0.121.0	deploy
+systemctl --user set-property r7-wmb-362f.service MemoryMax=12G	limit

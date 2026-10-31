@@ -1,0 +1,117 @@
+{
+ "id": "oom",
+ "class": "other",
+ "launch_ts": "2026-10-30T11:49:08-07:00",
+ "launch_ts_source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)",
+ "seat": "unknown (issuer not identified; a non-pty ssh from carbon, no seat hook in path)",
+ "cmd": "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH; wm-build runs",
+ "cmd_source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)",
+ "cmd_exact": true,
+ "row": null,
+ "facts": [
+  {
+   "key": "hostname",
+   "value": "RedBaron",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "unit",
+   "value": "session-c648509.scope (user.slice/user-1000.slice, ssh login scope, no MemoryMax)",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "cwd",
+   "value": "unknown",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "not in the tailscaled session line"
+  },
+  {
+   "key": "cmd",
+   "value": "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH; wm-build runs",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "head_sha",
+   "value": "n/a",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "launch_ts",
+   "value": "2026-10-30T11:49:08-07:00",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "session_origin",
+   "value": "non-pty ssh from carbon over the tailnet (address and login redacted for the public repo); issuing process unidentified",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "redbaron journal: tailscaled sess-<UTC 2026-10-30T18:49:08Z> non-pty ssh line (via page oom, rb-sess-5e46.txt)"
+  },
+  {
+   "key": "wm_build_version",
+   "value": "wm-build 0.77.109 = origin/main 254bea4",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "page oom (binary RedBaron runs)"
+  },
+  {
+   "key": "host_memory",
+   "value": "30.7 GiB total; mem_used 9.3 G + swap 5-6 G before the read; inner wm-build-inner1069-a active and building (12 G class); io psi full avg10 88.8, load 13.5",
+   "as_of": "2026-10-30T11:49:00-07:00",
+   "source": "page oom (status.json / facts file, \"before the read\")"
+  },
+  {
+   "key": "active_inner_units",
+   "value": "wm-build-inner1069-a.service reported active by an ssh session at 2026-10-30T11:49:00-07:00",
+   "as_of": "2026-10-30T11:49:00-07:00",
+   "source": "page oom (rb-1149-all.txt)"
+  },
+  {
+   "key": "live_journal_size",
+   "value": "unknown at launch (journal.jsonl was last hand-rotated 2026-10-22T22:40:00-07:00 when the rotated copy held 837,404,410 B; the live file was not measured before the read)",
+   "as_of": "2026-10-22T22:40:00-07:00",
+   "source": "page oom (row 7ac3/1824 rotation bullet)"
+  },
+  {
+   "key": "reader_memory_model",
+   "value": "wm-build runs/status read the whole journal with read_to_string into a line Vec and a Vec<serde_json::Value> (state.rs, status.rs on origin/main 254bea4)",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "page oom (source read from origin/main 254bea4, which RedBaron runs)"
+  },
+  {
+   "key": "prior_incidents_same_reader",
+   "value": "2026-10-22T21:56 and 2026-10-22T22:08 raw status/runs died in r7 2 G scopes on ryzen7 (CONSTRAINT_MEMCG; 11.6 G RSS each); 2026-10-24 ryzen7 frozen; RB froze x3 2026-10-16/17",
+   "as_of": "2026-10-24T20:00:00-07:00",
+   "source": "page oom (ledger rows, memory prose)"
+  },
+  {
+   "key": "prose_rule_in_force",
+   "value": "interim rule \"no plain runs/status on any build host until JRS lands\" written as prose by ctl (row 1824); no hook or wrapper enforces it",
+   "as_of": "2026-10-22T22:40:00-07:00",
+   "source": "page oom (ctl 1824)"
+  },
+  {
+   "key": "deny_hook_pr",
+   "value": "j0yen/dotfiles#107 \"wm-build-status-gate: PreToolUse hook refusing top-level wm-build status|runs\" OPEN since 2026-10-24T20:02:46-07:00 (gated green 2026-10-24T20:09:58-07:00); hook files absent on dotfiles main, not installed on carbon or RedBaron",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "gh api repos/j0yen/dotfiles/pulls/107 (created_at; mergedAt null) + page oom"
+  },
+  {
+   "key": "capped_wrapper",
+   "value": "rb-wmb-capped.sh not present on RedBaron (its creation postdates the launch)",
+   "as_of": "2026-10-30T11:49:08-07:00",
+   "source": "page oom (file mtime, postdates the launch)"
+  },
+  {
+   "key": "jrs_coder_status",
+   "value": "branch jrs-bounded-journal-reads: two coder dispatches died on session limits, 8 ahead / 4 behind main, no PR opened",
+   "as_of": "2026-10-23T02:53:00-07:00",
+   "source": "page oom (gh pr list --head, verifier)"
+  }
+ ],
+ "expected": "DESIGNED_MISS",
+ "note": "No decision row existed. The issuing session is unidentified."
+}
