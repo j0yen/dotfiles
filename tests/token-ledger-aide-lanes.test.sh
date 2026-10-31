@@ -49,7 +49,9 @@ assert_not_contains "$(cat "$state/today-summary.txt")" "aide" "main-only day: n
 assert_not_contains "$(cat "$state/today-summary.txt")" "ALARM aide_lane" "main-only day (main 100%): no lane alarm"
 assert_eq "$(jq -r 'has("aide_lanes")' "$state/build-share.json")" "false" "main-only day: no aide_lanes field"
 cp "$state/today-summary.txt" "$work/new-summary.txt"; cp "$state/build-share.json" "$work/new-bs.json"
-git -C "$here/.." show origin/main:.local/bin/token-ledger >"$work/token-ledger.origin" 2>/dev/null || git -C "$here/.." show main:.local/bin/token-ledger >"$work/token-ledger.origin"
+# base = origin/main, else local main; self-comparison against HEAD is tautological (the main-only assertions would pass whatever the code does), so with neither ref a hermetic checkout must fail loudly, never fall back to HEAD or an empty script
+for ref in origin/main main; do git -C "$here/.." show "$ref:.local/bin/token-ledger" >"$work/token-ledger.origin" 2>/dev/null && break; done
+[ -s "$work/token-ledger.origin" ] || { echo "NOT OK - ledgerday: main-only day: no origin/main or main ref to read the base token-ledger from (hermetic checkout needs refs/remotes/origin/main)"; exit 1; }
 chmod +x "$work/token-ledger.origin"
 rm -f "$state"/today-summary.txt "$state"/build-share.json
 env AIDE_LANE_ALARM_PCT=50 "$work/token-ledger.origin" >/dev/null 2>&1
