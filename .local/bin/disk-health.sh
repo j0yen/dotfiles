@@ -44,7 +44,8 @@ import json, os, re, shutil, socket, subprocess, sys, time
 # block-device trouble only. A USB device resetting (carbon: usb 1-9 flapping) is counted apart in usb_resets_since_boot and never alarms;
 # "ata1: hard resetting link" is normal at every boot, so only a failed command / failed reset counts.
 BLKDEV = r"(?:sd[a-z]+\d*|nvme\d+(?:n\d+)?(?:p\d+)?|dm-\d+|md\d+|vd[a-z]+\d*|xvd[a-z]+\d*|mmcblk\d+(?:p\d+)?)"
-KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I/O error|blk_update_request|EXT4-fs error"
+KERNEL_RE = re.compile(r"I/O error\b.*\b" + BLKDEV + r"\b|\b" + BLKDEV + r"\b.*I/O error|blk_update_request|Buffer I/O|EXT4-fs error"
+                       r"|EXT4-fs warning\b.*\berror -5\b"
                        r"|XFS \([^)]*\):.*(?:error|corruption)|remounting filesystem read-only"
                        r"|\bata\d+(?:\.\d+)?: (?:failed command|exception Emask|COMRESET failed|reset failed)", re.I)
 USB_DTYPES = ("sntasmedia", "sntrealtek", "sat", "sntjmicron")   # tried after the plain call; the order is the coordinator's (RedBaron 0781:55af: sat fails, snt* pass)
@@ -243,6 +244,43 @@ def kernel_io(errors):
     return None, [], None
 
 
+RING_EVERY_S = 3600
+
+
+def red_reasons(doc):
+    r = []
+    if any(d.get("smart_health") == "FAILED" for d in doc.get("devices") or []):
+        r.append("smart-failed")
+    if (doc.get("kernel_io_errors_since_boot") or 0) > 0:
+        r.append("kernel-io")
+    if doc.get("max_bytes_level") == "red":
+        r.append("bytes-red")
+    return r
+
+
+def ring_eval(doc, state_path, now):
+    """A still-open RED re-rings every RING_EVERY_S (state file = last-ring epoch), not only on a new kind. -> (ring_due, reasons)."""
+    reasons = red_reasons(doc)
+    try:
+        with open(state_path) as f:
+            last = int(json.load(f).get("last_ring") or 0)
+    except Exception:
+        last = 0
+    if not reasons:
+        if last:
+            try:
+                os.remove(state_path)
+            except OSError:
+                pass
+        return False, reasons
+    if now - last < RING_EVERY_S:
+        return False, reasons
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+    with open(state_path, "w") as f:
+        json.dump({"last_ring": now, "reasons": reasons}, f)
+    return True, reasons
+
+
 def pct(s):
     m = re.match(r"(\d+)%", s or "")
     return int(m.group(1)) if m else None
@@ -340,8 +378,25 @@ def main(argv):
         except Exception:
             print("disk-health: no data (%s unreadable)" % out)
         return 0
+    if mode == "--grep-kernel":   # stdin lines -> the ones KERNEL_RE counts (tests)
+        for l in sys.stdin:
+            if KERNEL_RE.search(l):
+                sys.stdout.write(l)
+        return 0
+    state = os.environ.get("DISK_HEALTH_RING_STATE") or os.path.join(os.path.dirname(out), "disk-health-ring.json")
+    now = int(os.environ.get("DISK_HEALTH_NOW") or time.time())
+    if mode == "--ring-eval":   # argv[2] = a disk-health json; prints RING ... or quiet (tests)
+        with open(argv[2]) as f:
+            due, why = ring_eval(json.load(f), state, now)
+        print(("RING disk-health RED " + ",".join(why)) if due else "quiet")
+        return 0
     doc = collect()
+    due, why = ring_eval(doc, state, now)
+    doc["red"] = why
+    doc["ring_due"] = due
     write(doc, out)
+    if due:
+        print("RING disk-health RED " + ",".join(why))
     if mode == "--json":
         print(json.dumps(doc, indent=1))
     else:
@@ -586,9 +641,9 @@ sudoers() {
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
   --sudoers) sudoers; exit 0 ;;
-  ""|--json|--summary) ;;
+  ""|--json|--summary|--grep-kernel|--ring-eval) ;;
   *) echo "usage: disk-health.sh [--json|--summary|--sudoers|--selftest]" >&2; exit 64 ;;
 esac
 
 command -v python3 >/dev/null 2>&1 || { echo "disk-health: python3 missing" >&2; exit 1; }
-exec python3 -I -c "$PY" "$OUT" "${1:-}"
+exec python3 -I -c "$PY" "$OUT" "${1:-}" "${2:-}"
