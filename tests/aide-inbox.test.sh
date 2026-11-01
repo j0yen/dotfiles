@@ -2,6 +2,10 @@
 # aide inbox (10-23): seat-event.sh inbox-only seats + the aide-inbox.sh hook. Runs both selftests under a throwaway HOME and asserts
 # the hook is registered once under UserPromptSubmit and once under SessionStart, and that the seats.tsv row helper prints the documented row.
 set -uo pipefail
+# capability probe (first executable block): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment" "systemd-run --user --quiet true"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 here="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0

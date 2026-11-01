@@ -3,7 +3,7 @@
 # (premise + expiry in the unit Description/RuntimeMaxSec). Rings the seat when the turn ends.
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
-# gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
+# gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
 # spawn-hold 76, spec-lint 73, STEP 0 75.
 # env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests).
@@ -12,6 +12,9 @@ nocargo=0; args=(); for a in "$@"; do if [ "$a" = --no-cargo ]; then nocargo=1; 
 n="${args[0]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; pf="${args[1]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; D="$HOME/.cache/rb-seat/coders"
 model="${RB_CODER_MODEL:-sonnet}"; case "$model" in sonnet) effort=medium ;; opus) effort=high ;; *) echo "REFUSED model=$model (sonnet|opus)" >&2; exit 78 ;; esac
 hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="${RB_SPAWN_HOLD_EXTRA:-}"
+# host gate (aide A25, rb row d-20261031-152854-rb-9122; Joe 10-27 "Carbon is for administration and monitoring. Nothing should be built nor coded on carbon"):
+# a coder session runs on redbaron or ryzen7 only; any other host exits 79 before the OAuth source, every other gate and STEP 0.
+h="$(hostname -s 2>/dev/null)"; case "$h" in redbaron|ryzen7) ;; *) echo "REFUSED host=${h:-unknown} (rb-run-coder.sh runs on redbaron or ryzen7 only)" >&2; exit 79 ;; esac
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
 cd "$HOME"

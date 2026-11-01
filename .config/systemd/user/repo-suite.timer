@@ -1,0 +1,9 @@
+[Unit]
+Description=carbon/repo-suite poll, 10 min after the previous poll finished (carbon only; the service refuses to run on other hosts)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+
+[Install]
+WantedBy=timers.target
