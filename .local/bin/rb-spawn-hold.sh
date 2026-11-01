@@ -322,7 +322,7 @@ PY
   # a crash (incl. a failed state write) is blind: a spawn gate refuses. --exempt without --probe-only (the caller accepts blindness)
   # and --probe-only keep the old OK unknown / exit 0 ON PURPOSE.
   if [ "$probe" -eq 0 ] && [ -z "$exempt" ]; then echo "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo"; exit 76; fi
-  echo "OK unknown: decision engine failed source=unknown"; exit 0
+  echo "UNKNOWN unknown: decision engine failed source=unknown"; exit 0
 }
 line=$(printf '%s\n' "$decision" | sed -n 1p); act=$(printf '%s\n' "$decision" | sed -n 2p)
 

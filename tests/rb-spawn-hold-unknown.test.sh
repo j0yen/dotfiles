@@ -44,5 +44,12 @@ out=$(env HOME="$R/home" TMPDIR="$R" RB_SPAWN_HOLD_SSH="$R/ssh.killed" RB_SPAWN_
 go s ssh.rec
 cmd=$(cat "$R/cmd.txt" 2>/dev/null)
 [[ $cmd == *'rd runs ""; rd land ""'* && $cmd != *"wait"* && $cmd != *'"" &'* ]] && pass "(s) the four table reads are serial" || bad "(s) cmd=$cmd"
+# engine crash (state dir not writable), --probe-only: UNKNOWN, rc unchanged (0)
+if [ "$(id -u)" != 0 ]; then
+  RO=$R/ro; mkdir -p "$RO"; chmod 500 "$RO"
+  out=$(env HOME="$R/home" TMPDIR="$R" bash "$hold" --journal-file "$R/none.jsonl" --state-file "$RO/state.json" --now "$NOW" --no-flag --probe-only 2>/dev/null); rc=$?
+  chmod 700 "$RO"
+  [ "$rc" = 0 ] && [ "$out" = "UNKNOWN unknown: decision engine failed source=unknown" ] && pass "(x) engine crash -> $out" || bad "(x) rc=$rc out=$out"
+fi
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail
