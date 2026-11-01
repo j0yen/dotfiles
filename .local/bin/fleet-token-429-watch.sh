@@ -8,7 +8,7 @@
 #             OR (exactly 1 such seat AND a confirming haiku probe on the CURRENT token fails with a limit message),
 #             AND the earliest of those resets is more than 20 min away.
 #   CANDIDATE the next account in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/ring (ordered names, # comments) after the current one that has a store
-#             entry, skipping an account rotated away from < 6 h ago (floor) or whose rotations.log previous_reset_at is still in the future,
+#             entry, skipping an account rotated away from < 6 h ago by a 429 rotation (floor; a hand or schedule rotation leaves it eligible) or whose rotations.log previous_reset_at is still in the future,
 #             one BLOCKED (state file blocked-until-<account> = one epoch, set by ft_block / `fleet-token-store.sh block`; a limit whose reset is known),
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
 #   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the later of the limited seats' quota_wait_until and the reset
@@ -37,7 +37,7 @@ WP_LIB="${WP_LIB:-$(dirname "$SELF")/../lib/watcher-premise.sh}"
 if [ -r "$WP_LIB" ]; then . "$WP_LIB"; else wp_arm() { return 2; }; wp_gate() { return 1; }; wp_emit_write() { return 1; }; fi
 export WP_OWNER=aide
 MIN_AWAY=1200      # the earliest reset must be more than 20 min away
-FLOOR=21600        # never rotate back to an account rotated away from < 6 h ago
+FLOOR=21600        # never rotate back to an account a 429 rotation left < 6 h ago (hand/schedule rotations are exempt)
 FAIL_BACKOFF=1800  # a candidate whose rotation failed is skipped for 30 min
 ALARM_EVERY=1800
 
@@ -93,7 +93,7 @@ probe_reset() {
 
 # skip_reason <account> <now>: prints why the account must not be rotated to (empty = eligible)
 skip_reason() {
-  local c="$1" now="$2" line ts rs f last
+  local c="$1" now="$2" line ts rs f last tr
   [ -f "$FT_STORE/$c" ] || { echo "no store entry"; return; }
   last="$(ft_block_reason "$c" "$now")"
   if [ -n "$last" ]; then echo "$last"; return; fi
@@ -102,8 +102,9 @@ skip_reason() {
   line="$(grep -F " previous=$c " "$FT_ROTLOG" 2>/dev/null | tail -n1 || true)"
   [ -n "$line" ] || return 0
   ts="$(sed -nE 's/.* ts=([0-9]+) .*/\1/p' <<<"$line")"; rs="$(sed -nE 's/.* previous_reset_at=([0-9]+|null)$/\1/p' <<<"$line")"
+  tr="$(sed -nE 's/.* trigger=([^ ]+) .*/\1/p' <<<"$line")"
   if [[ "$rs" =~ ^[0-9]+$ ]] && [ "$rs" -gt "$now" ]; then echo "its limit resets $(ft_iso "$rs")"; return; fi
-  if [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago"; return; fi
+  if [ "$tr" = 429 ] && [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago"; return; fi
 }
 
 watch() {
@@ -265,6 +266,14 @@ EOF2
     printf '%s | ts=%s account=acctA previous=acctC by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 36000))" "$((NOW + 3600))" >>"$FT_ROTLOG"
     runw
     [ "$(tokj .account)" = acctD ]; ft_st_chk "acctB rotated away from 1 h ago (6 h floor) and acctC's reset is still in the future: both skipped -> acctD" $?
+    reset; seats 7200 7200 -
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=hand previous_reset_at=null\n' "$(ft_iso)" "$((NOW - 3600))" >"$FT_ROTLOG"
+    runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "hand rotation 1 h ago -> eligible" $?
+    reset; seats 7200 7200 -
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=schedule previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 3600))" "$((NOW + 3600))" >"$FT_ROTLOG"
+    runw
+    [ "$(tokj .account)" = acctC ]; ft_st_chk "schedule rotation 1 h ago with its reset still in the future -> skipped" $?
     reset; seats 7200 7200 -
     printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 36000))" "$((NOW - 100))" >"$FT_ROTLOG"
     runw
