@@ -18,10 +18,10 @@
 #   0 branch is not main/master [branch-protected] and does not start with `-` / has only [A-Za-z0-9._/-] [bad-branch]; the d-id is well formed [bad-confirm-id]; the db opens read-only [db-unreadable];
 #     HEAD resolves [not-a-repo]; ssh answers [ssh-failed rc=N]
 #   1 row <d-id> exists [no-row], agent = controller [wrong-agent], kind = verdict [kind-not-verdict], `what` starts with CONFIRM, case-sensitive [not-confirm]
-#   2 `what` names HEAD: the first 8 hex of the COMMIT or of the TREE sha as a WHOLE token [sha-not-named] (git am changes the commit sha; the tree is the stable name)
+#   2 `what` names HEAD: an 8-to-40 hex prefix of the COMMIT or TREE sha as a whole token [sha-not-named] (git am changes the commit sha; the tree is the stable name)
 #   2b row-to-branch binding: <branch> == `symbolic-ref --short HEAD` of the repo, unless `what` names <branch> as a whole word; a detached HEAD must be named too [branch-mismatch]
 #   3 not withdrawn/overridden: a LATER controller row naming the d-id (full, or its 4-hex suffix as a whole token) with WITHDRAWN|CORRECT|"Do NOT push" [withdrawn];
-#     a later controller "Do NOT push" naming an 8-hex of HEAD [do-not-push]; a later controller verdict CONFIRM naming <branch> but neither 8-hex of HEAD [superseded];
+#     a later controller "Do NOT push" naming an 8-to-40 hex prefix of HEAD [do-not-push]; a later controller verdict CONFIRM naming <branch> but no such prefix of HEAD [superseded];
 #     the row's own `regrade` JSON verdict CORRECT or DISAGREE [regrade-correct|regrade-disagree]
 #   4 fast-forward only: `git fetch origin refs/heads/<branch>` then origin tip is an ancestor of the sha captured once at the top [fetch-failed|non-ff]
 # Success: log `pushing` BEFORE the push, plain `git push origin <sha>:refs/heads/<branch>` (the sha captured once; never HEAD, never --force, never another refspec), then log `pushed` | `push-failed rc=N`.
@@ -34,6 +34,15 @@ sq() { sqlite3 -readonly -batch -noheader "$DB" "$1"; }   # read-only; the only 
 sqs() { printf '%s' "${1//\'/\'\'}"; }
 # tok <text> <hex>: <hex> is a WHOLE token in <text> (non-hex or edge on both sides), so `<8hex>9` does not name <8hex>
 tok() { printf '%s\n' "$1" | grep -Eq "(^|[^0-9a-f])$2([^0-9a-f]|\$)"; }
+# names_sha <text> <fullsha>: <text> holds a whole lowercase hex token (maximal [0-9a-f] run) of 8..40 chars that is a prefix of <fullsha>; fails closed unless <fullsha> is 40 or 64 lowercase hex
+names_sha() {
+  local t=$1 s=$2 w
+  [[ "$s" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+  while IFS= read -r w; do
+    [ "${#w}" -ge 8 ] && [ "${#w}" -le 40 ] && [ "${#w}" -le "${#s}" ] && [ "${s:0:${#w}}" = "$w" ] && return 0
+  done < <(printf '%s\n' "$t" | grep -Eo '[0-9a-f]+')
+  return 1
+}
 # word <text> <branch>: <branch> appears delimited by a char outside [A-Za-z0-9._/-]
 word() { local b; b=$(printf '%s' "$2" | sed 's/[][\.*^$+?(){}|/]/\\&/g'); printf '%s\n' "$1" | grep -Eq "(^|[^A-Za-z0-9._/-])$b([^A-Za-z0-9._/-]|\$)"; }
 
@@ -111,7 +120,7 @@ if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >
   [ "$kind" = verdict ] || refuse kind-not-verdict "$id kind=$kind"
   case "$what" in CONFIRM*) ;; *) refuse not-confirm "$id" ;; esac
   # 2. the row names what is pushed
-  tok "$what" "$h8" || tok "$what" "$t8" || refuse sha-not-named "$id names neither commit $h8 nor tree $t8"
+  names_sha "$what" "$head" || names_sha "$what" "$tree" || refuse sha-not-named "$id names neither commit $h8 nor tree $t8"
   # 2b. row-to-branch binding: the repo is ON <branch>, unless the row's `what` names <branch> as a whole word (a detached HEAD must be named too)
   [ "$sbr" = "$branch" ] || word "$what" "$branch" || refuse branch-mismatch "$id HEAD is on '${sbr:-detached}', not $branch, and the row does not name $branch"
   # 3. not withdrawn / overridden
@@ -121,9 +130,9 @@ if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >
     [ -n "$lid" ] || continue
     lwhat=$(sq "select what from decisions where id='$(sqs "$lid")'")
     if { case "$lwhat" in *"$id"*) true ;; *) tok "$lwhat" "$suffix" ;; esac; } && printf '%s\n' "$lwhat" | grep -Eq 'WITHDRAWN|CORRECT|Do NOT push'; then refuse withdrawn "$id by $lid"; fi
-    if printf '%s\n' "$lwhat" | grep -q 'Do NOT push' && { tok "$lwhat" "$h8" || tok "$lwhat" "$t8"; }; then refuse do-not-push "$lid names $h8/$t8"; fi
+    if printf '%s\n' "$lwhat" | grep -q 'Do NOT push' && { names_sha "$lwhat" "$head" || names_sha "$lwhat" "$tree"; }; then refuse do-not-push "$lid names $h8/$t8"; fi
     if [ "$(sq "select kind from decisions where id='$(sqs "$lid")'")" = verdict ]; then
-      case "$lwhat" in CONFIRM*) if word "$lwhat" "$branch" && ! tok "$lwhat" "$h8" && ! tok "$lwhat" "$t8"; then refuse superseded "$lid confirms a different sha for $branch"; fi ;; esac
+      case "$lwhat" in CONFIRM*) if word "$lwhat" "$branch" && ! names_sha "$lwhat" "$head" && ! names_sha "$lwhat" "$tree"; then refuse superseded "$lid confirms a different sha for $branch"; fi ;; esac
     fi
   done < <(sq "select id from decisions where $q order by ts")
   regrade=$(sq "select coalesce(regrade,'') from decisions where id='$id'")
