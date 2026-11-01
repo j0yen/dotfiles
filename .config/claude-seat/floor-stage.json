@@ -1,0 +1,7 @@
+{
+  "stage": 0,
+  "started": null,
+  "note": "M9 (decisions/2026-10-27-m9-seat-floor-cut-wwhtbt.md). stage = the highest SEAT_FLOOR_STAGE in force; 0 = measure only. expected_p50 = the floor the stage should hold (seat-floor-high fires at expected + 5000); baseline = corrected/n per seat when the stage started (filled by the stage owner).",
+  "expected_p50": {"ctl": 61000, "rb": 52400, "r7": 60500},
+  "baseline": {}
+}

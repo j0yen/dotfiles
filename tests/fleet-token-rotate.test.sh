@@ -47,7 +47,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 fi
 
 # seat-tick: quota_account recorded and stale waits ignored (cases live in its selftest)
-chk "seat-tick records quota_account and ignores a wait under another account" "grep -q 'quota_account:(if \$qa==\"\" then null else \$qa end)' '$bin/seat-tick.sh' && grep -q 'S_qw=\"\"; S_qa=\"\"; fi' '$bin/seat-tick.sh'"
+chk "seat-tick records quota_account and ignores a wait under another account" "grep -q 'quota_account:(if \$qa==\"\" then null else \$qa end)' '$bin/seat-tick.sh' && grep -q 'S_qw=\"\"; S_qa=\"\"; S_qk=\"\"; S_qpf=false; S_qpt=\"\"; fi' '$bin/seat-tick.sh'"
 chk "seat-tick selftest has the quota_account cases (a)-(h)" "[ \$(grep -c 'chk \"quota_account (' '$bin/seat-tick.sh') -ge 8 ]"
 if [ "${FLEET_TOKEN_TEST_SEAT_TICK:-}" = 1 ]; then
   if out="$(bash "$bin/seat-tick.sh" --selftest 2>&1)" && printf '%s\n' "$out" | grep -q '^SELFTEST PASS'; then ok "seat-tick.sh --selftest"; else bad "seat-tick.sh --selftest"; printf '%s\n' "$out" | grep '^FAIL' | head; fi

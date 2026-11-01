@@ -70,7 +70,7 @@ if [ -n "${EXPLOREFIRST_BUDGET_ASSERT:-}" ]; then
 elif [ -f "$HOME/.config/mcphost-explore/budget-assert" ]; then
   BUDGET_ASSERT="$(tr -d '\n' < "$HOME/.config/mcphost-explore/budget-assert")"
 else
-  BUDGET_ASSERT="calls<=3000,tokens_out<=600000"
+  BUDGET_ASSERT=""   # no default budget (Joe 11-01 #195 "no budget limit"; goal.md: the chain has no testing budget, Joe 10-19)
 fi
 SYSTEMCTL_UNIT="${EXPLOREFIRST_VIBELOOP_UNIT:-claude-vibeloop-work.service}"
 WORK="${EXPLOREFIRST_WORK:-}"
@@ -344,7 +344,7 @@ main() {
   log "explore stage ok: $explore_out"
 
   local budget_out
-  if ! budget_out="$(run_synthorg obs "$run_dir" --assert "$BUDGET_ASSERT" 2>&1)"; then
+  if [ -n "$BUDGET_ASSERT" ] && ! budget_out="$(run_synthorg obs "$run_dir" --assert "$BUDGET_ASSERT" 2>&1)"; then
     log "budget assert output: $budget_out"
     record_fail explore "budget assert exceeded ($BUDGET_ASSERT)"
     exit 1

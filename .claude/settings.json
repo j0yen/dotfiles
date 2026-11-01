@@ -24,6 +24,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "sonnet",
   "hooks": {
     "SessionStart": [
       {
@@ -320,6 +321,30 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/skill-marker.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-skill-router.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/owed-now.sh hook",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "Stop": [
@@ -376,6 +401,46 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aside-followup-stop.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/owed-now.sh hook",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-owed-stop.sh",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Notification": [
@@ -421,6 +486,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/fable-skill-spawn-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/scripts/spool-hook.sh start",
             "timeout": 5,
             "async": true
@@ -432,6 +502,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/agorabus-intent.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/carbon-no-build.sh",
             "timeout": 5
           }
         ]
@@ -459,6 +539,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/row-gate-guard.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/probe-gate.sh"
           },
           {
@@ -468,7 +552,24 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/merge-gate-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/cargo-block-carbon.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/land-push-gate.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/git-no-force-push.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-claim-gate.sh"
           },
           {
             "type": "command",
@@ -477,6 +578,16 @@
           {
             "type": "command",
             "command": "sh -c '[ -x \"$HOME/.claude/hooks/cargo-slot-gate.sh\" ] && exec \"$HOME/.claude/hooks/cargo-slot-gate.sh\"; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-page-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/wmb-agent-search-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -541,6 +652,11 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/analysis-page-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -556,6 +672,26 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/owed-now.sh guard",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|Agent|Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/answers-first.sh",
+            "timeout": 10
           }
         ]
       }
@@ -619,6 +755,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/config-reload-check.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-ask-inject.sh",
             "timeout": 10
           }
         ]
@@ -701,6 +847,15 @@
   "modelSettings": {
     "claude-fable-5": {
       "effortLevel": "high"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "xhigh"
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": "high"
+    },
+    "claude-fable-5-1": {
+      "effortLevel": "xhigh"
     }
   },
   "skipDangerousModePermissionPrompt": true,
