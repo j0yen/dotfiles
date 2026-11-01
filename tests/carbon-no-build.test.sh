@@ -54,10 +54,12 @@ dB 'uv run --frozen python -m pytest'
 dB 'python3 -m pytest tests'
 dB '/home/x/.venv/bin/pytest'
 dB 'wm-verify-run bash tests/x.test.sh'
-dB 'bash tests/foo.test.sh'
+aB 'bash tests/foo.test.sh'   # #180: one named unit test of a small change
+dB 'bash tests/a.test.sh tests/b.test.sh'
+dB 'bash tests/*.test.sh'
 dB 'for f in tests/*.test.sh; do bash "$f"; done'
 dB 'tests/run.sh'
-dB './tests/foo.test.sh'
+aB './tests/foo.test.sh'
 dB 'make test'
 dB 'FOO=1 make -j4'
 dB 'go build ./...'
@@ -72,10 +74,15 @@ dB 'cd /x && cargo test'
 dB 'rustc foo.rs'
 dB 'aide-verifier.sh launch v1 --repo o/r --suite "x"'
 dB 'systemd-run --user --unit u -p MemoryMax=2G cargo test'
-dB 'systemd-run --user --unit=u bash tests/foo.test.sh'
+aB 'systemd-run --user --unit=u bash tests/foo.test.sh'
 # ---- Bash gaps (binding amendment 3): one test per case
-dB 'git worktree add ../wt2 main'
-dB 'cat tests/a.test.sh | bash tests/b.test.sh'
+aB 'git worktree add ../wt2 main'   # #180: git plumbing for a small change
+aB 'git clone git@github.com:j0yen/x.git /tmp/x'
+aB 'python3 -m pytest tests/test_open_prs.py -q'
+aB 'pytest tests/test_a.py::TestX::test_y -x'
+dB 'pytest tests/test_a.py tests/test_b.py'
+dB 'pytest'
+aB 'cat tests/a.test.sh | bash tests/b.test.sh'
 dB 'timeout 60 pytest'
 dB 'nice -n 10 make'
 dB 'nohup pytest &'
@@ -133,13 +140,16 @@ allow_case "Write under ~/.config (as given)" "$(editj Write "$HOME/.config/foo/
 allow_case "Write of a file outside every git tree" "$(editj Write "$HOME/plain/x.txt")"
 allow_case "Edit of a queued PRD under ~/Documents/PRDs (a git tree; PRD amends are /dream work)" "$(editj Edit "$HOME/Documents/PRDs/build-queue/PRD-x.md")"
 allow_case "tilde-relative path to CLAUDE.md" "$(editj Edit "~/.claude/CLAUDE.md")"
-deny_case "Edit of ~/.claude/scripts/x.sh (symlinks into a git tree)" "$(editj Edit "$HOME/.claude/scripts/x.sh")"
-deny_case "Edit of a file in the dotfiles tree" "$(editj Edit "$HOME/dotfiles/.claude/scripts/x.sh")"
-deny_case "Write of a new file in the dotfiles tree" "$(editj Write "$HOME/dotfiles/new.sh")"
-deny_case "Edit in a worktree tests/x.test.sh" "$(editj Edit "$HOME/wt/foo/tests/x.test.sh")"
-deny_case "MultiEdit in a worktree" "$(editj MultiEdit "$HOME/wt/foo/tests/x.test.sh")"
+allow_case "Edit of ~/.claude/scripts/x.sh (symlink into a git tree; small-build file type, #180)" "$(editj Edit "$HOME/.claude/scripts/x.sh")"
+allow_case "Edit of a .sh file in the dotfiles tree (#180)" "$(editj Edit "$HOME/dotfiles/.claude/scripts/x.sh")"
+allow_case "Write of a new .sh file in the dotfiles tree (#180)" "$(editj Write "$HOME/dotfiles/new.sh")"
+allow_case "Edit in a worktree tests/x.test.sh (#180)" "$(editj Edit "$HOME/wt/foo/tests/x.test.sh")"
+allow_case "MultiEdit in a worktree (#180)" "$(editj MultiEdit "$HOME/wt/foo/tests/x.test.sh")"
+deny_case "Edit of a Rust source file in a git tree" "$(editj Edit "$HOME/dotfiles/src/lib.rs")"
+deny_case "Edit of Cargo.toml in a git tree" "$(editj Edit "$HOME/dotfiles/Cargo.toml")"
+deny_case "Write of an unlisted binary-type file in a git tree" "$(editj Write "$HOME/dotfiles/x.bin")"
 deny_case "NotebookEdit in a git tree" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":%s},"cwd":"%s"}' "$(jstr "$HOME/dotfiles/n.ipynb")" "$HOME")"
-deny_case "relative path resolved against cwd into a git tree" "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"tests/y.test.sh"},"cwd":"%s"}' "$HOME/wt/foo")"
+allow_case "relative path resolved against cwd into a git tree (#180)" "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"tests/y.test.sh"},"cwd":"%s"}' "$HOME/wt/foo")"
 
 # ---- 4. Agent
 deny_case "Agent coder" "$(agentj coder)"
