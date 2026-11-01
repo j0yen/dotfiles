@@ -501,6 +501,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/git-no-force-push.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/aide-claim-gate.sh"
           },
           {
