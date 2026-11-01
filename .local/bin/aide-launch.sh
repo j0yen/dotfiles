@@ -55,5 +55,12 @@ if [ "$LANE" != main ]; then
   fi
   set -- --disallowedTools ScheduleWakeup "$@"
 fi
+# Pre-accept the folder-trust dialog for $HOME (11-01 1:31 AM rehearsal relaunch sat at "No, exit" unattended, A292):
+# --dangerously-skip-permissions does not skip it, and an unattended relaunch has nobody to press a key.
+cj="${AIDE_CLAUDE_JSON:-$HOME/.claude.json}"
+if [ -f "$cj" ] && [ "$(jq -r --arg d "$HOME" '.projects[$d].hasTrustDialogAccepted // false' "$cj" 2>/dev/null)" != true ]; then
+  t="$(mktemp "$cj.aide.XXXXXX")" && jq --arg d "$HOME" '.projects[$d].hasTrustDialogAccepted = true' "$cj" > "$t" && [ -s "$t" ] && mv -f "$t" "$cj" \
+    && echo "aide-launch: trust pre-accepted for $HOME" >&2 || { rm -f "$t"; echo "aide-launch: WARN trust pre-accept failed ($cj)" >&2; }
+fi
 if [ "${AIDE_USE_AGENTNS:-0}" = 1 ] && command -v agentns-claude >/dev/null 2>&1; then exec agentns-claude --dangerously-skip-permissions "$@"; fi
 exec ${AIDE_CLAUDE_BIN:-"$HOME/.npm-global/bin/claude"} --dangerously-skip-permissions "$@"
