@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # never-ask-joe.sh: Stop + PreToolUse(AskUserQuestion) hook (approvals #80, Joe 10-29 10:47 PM "NEVER ASK ME AGAIN. RECORD IT. CODE IT. BUILD IT.").
 # Fleet seats act on their recommendation and report; they never end a turn on a question for Joe.
-# No-op unless WM_SEAT is non-empty (a plain session is never touched).
+# Stop runs for EVERY session (WM_SEAT empty = plain carbon session, logged as seat "plain"; A358, Joe 11-01 8:2x AM).
+# PreToolUse AskUserQuestion stays deny-only under a non-empty WM_SEAT.
 #   Stop: stop_hook_active=true -> exit 0 (no loop). Else the LAST assistant entry of the transcript, its text blocks only, is
 #         matched PER LINE against the ask shapes; a line that also states the not-done form is exempt. Any ask line -> block.
 #   PreToolUse AskUserQuestion: deny.
@@ -10,7 +11,7 @@
 # (default ~/.local/state/never-ask-joe). Message text beyond the matched phrase is never logged.
 set -euo pipefail
 
-[ -n "${WM_SEAT:-}" ] || exit 0
+SEAT="${WM_SEAT:-plain}"
 
 STATE_DIR="${NAJ_STATE_DIR:-$HOME/.local/state/never-ask-joe}"
 REASON='NEVER ASK JOE (approvals #80): do the recommended action now, log approve.sh (aide) or a DECISION row (seat), report what was done.'
@@ -18,7 +19,7 @@ ASK_RE='reply "?(yes|go)|say "?go|\bwant me to\b|\bshould I\b|\bshall I\b|(one|a
 EXEMPT_RE='not done|reported as not done|refused'
 
 log_fire() { # kind phrase
-  { mkdir -p "$STATE_DIR" && printf '%s | %s | %s | %s\n' "$(date -Is)" "$WM_SEAT" "$1" "$2" >>"$STATE_DIR/fires.log"; } 2>/dev/null || true
+  { mkdir -p "$STATE_DIR" && printf '%s | %s | %s | %s\n' "$(date -Is)" "$SEAT" "$1" "$2" >>"$STATE_DIR/fires.log"; } 2>/dev/null || true
 }
 
 input="$(cat)"
@@ -26,6 +27,7 @@ if ! jq -e . >/dev/null 2>&1 <<<"$input"; then log_fire stop parse-error; exit 0
 
 tool="$(jq -r '.tool_name // empty' <<<"$input")"
 if [ "$tool" = "AskUserQuestion" ]; then
+  [ -n "${WM_SEAT:-}" ] || exit 0
   log_fire askuser AskUserQuestion
   jq -nc --arg r "$REASON" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
   exit 0
