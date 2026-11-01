@@ -1312,6 +1312,12 @@ else
   if [ "$KIND" = event ]; then PROMPT="EVENT $stamp seat=$SEAT events_new=$EV_NEW"; else PROMPT="TICK $stamp seat=$SEAT tick=$n events_new=$EV_NEW"; fi
   PROMPT="$PROMPT"$'\n'"${pull_note}${goal_line}"$'\n'"$RULES_LINE"
 fi
+# A49 D1: this seat's owed/overdue follow-up ids on every rb/r7/ctl prompt (seat-owed.sh exits 0 always, <= 12 lines; absent helper = nothing added)
+OWED_BIN="${SEAT_OWED_BIN:-$HOME/.local/bin/seat-owed.sh}"
+if [ -x "$OWED_BIN" ]; then
+  OWED_BLOCK="$(timeout 30 "$OWED_BIN" "$SEAT" 2>/dev/null | head -n 12 | cut -c1-600)"
+  [ -n "$OWED_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$OWED_BLOCK"
+fi
 [ -n "$EV_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$EV_BLOCK"
 [ -n "$ASK_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$ASK_BLOCK"
 # follow-up tracker D1 (approvals #114): the seat's owed/overdue ids ride every prompt kind; silent when none are owed or `wm-decide followups` is unmeasured
