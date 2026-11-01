@@ -12,11 +12,19 @@
 #       UserPromptSubmit -> additionalContext listing the rows (the turn starts on them)
 #       Stop             -> {"decision":"block","reason":...} ONCE per turn (stop_hook_active false), so the turn works the rows before it ends;
 #                           the second Stop of the same turn passes (a bounded push, never a loop). A subagent (.agent_id set) is never blocked.
+#   owed-now.sh guard                         PreToolUse (Edit|Write|MultiEdit|Bash): DENIES a write that would add a DELAY row to open-asks.tsv
+#                                             (post-state minus pre-state, any owner), and a Bash command that names open-asks/seat-ask/seat-event/
+#                                             approve.sh or --due with a timestamp beyond now+grace and no waits-on= in the same command.
+#                                             The refusal is the rule's code form: a future due cannot be written without naming what it waits on
+#                                             (Joe 10-31 11:3x PM "use code to make this impossible moving forward").
+#       Stop             -> blocks up to OWED_NOW_STOP_MAX (3) times per turn (counter reset at UserPromptSubmit), not once.
 #   owed-now.sh --selftest                    run the cases in a throwaway dir
-# Env: OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15). Never fails a tool call: errors to stderr.
+# Env: OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
 set -u
 GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
 MAXR="${OWED_NOW_MAX_ROWS:-15}"; [[ "$MAXR" =~ ^[0-9]{1,3}$ ]] || MAXR=15
+STOPMAX="${OWED_NOW_STOP_MAX:-3}"; [[ "$STOPMAX" =~ ^[0-9]{1,2}$ ]] || STOPMAX=3
+STATE="${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"
 
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
@@ -24,7 +32,7 @@ lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   awk -F'\t' -v seat="$seat" -v now="$now" -v grace="$((GRACE * 60))" '
     $0 == "# CLOSED" { exit }
     /^#/ || NF < 7 { next }
-    $3 != seat { next }
+    seat != "-" && $3 != seat { next }
     $2 ~ /^(MET|DONE|CANCELLED|MOOT)/ { next }
     {
       due = $4; gsub(/T/, " ", due); gsub(/[+-][0-9][0-9]:?[0-9][0-9]$|Z$/, "", due)
@@ -46,7 +54,7 @@ seat_of() {   # seat_of <hook json>
 }
 
 hook() {
-  local in ev aid seat rows n body sha
+  local in ev aid seat rows n body sid cf
   in="$(cat)"; command -v jq >/dev/null 2>&1 || return 0
   ev="$(jq -r '.hook_event_name // empty' <<<"$in" 2>/dev/null)"; aid="$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)"
   [ -z "$aid" ] || return 0
@@ -58,18 +66,66 @@ hook() {
 $(printf '%s\n' "$rows" | head -n "$MAXR")"
   [ "$n" -le "$MAXR" ] || body="$body
 ... $((n - MAXR)) more: ~/.claude/hooks/owed-now.sh lint --seat $seat"
+  sid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$sid" =~ ^[A-Za-z0-9._-]+$ ]] || sid=nosid
+  mkdir -p "$STATE" 2>/dev/null; cf="$STATE/$sid.stops"
   if [ "$ev" = Stop ]; then
-    sha="$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)"; [ "$sha" = true ] && return 0
-    jq -cn --arg r "$body" '{decision:"block", reason:$r}'
+    n="$(cat "$cf" 2>/dev/null || echo 0)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    [ "$n" -lt "$STOPMAX" ] || return 0          # bounded push: STOPMAX blocks per turn, never a loop
+    echo $((n + 1)) >"$cf"
+    jq -cn --arg r "$body (Stop block $((n + 1))/$STOPMAX this turn)" '{decision:"block", reason:$r}'
   else
+    echo 0 >"$cf"
     jq -cn --arg r "$body" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
   fi
+}
+
+deny() { jq -cn --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}'; }
+
+guard() {   # PreToolUse: stdin hook json. Exit 0 silently unless the call would write a delay.
+  local in tool fp f post pre_ids added cmd ts e now
+  in="$(cat)"; command -v jq >/dev/null 2>&1 || return 0
+  tool="$(jq -r '.tool_name // empty' <<<"$in" 2>/dev/null)"; f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"; now="$(date +%s)"
+  case "$tool" in
+    Edit|Write|MultiEdit)
+      fp="$(jq -r '.tool_input.file_path // empty' <<<"$in" 2>/dev/null)"
+      [ "$(basename -- "$fp" 2>/dev/null)" = "$(basename -- "$f")" ] || return 0
+      post="$(mktemp -p "${TMPDIR:-$HOME/.cache}" owed-post.XXXXXX)" || return 0
+      OWED_IN="$in" OWED_CUR="$f" python3 -I - >"$post" 2>/dev/null <<'PYX' || { rm -f "$post"; return 0; }
+import json, os
+h = json.loads(os.environ["OWED_IN"]); ti = h.get("tool_input") or {}; tool = h.get("tool_name")
+cur = open(os.environ["OWED_CUR"], encoding="utf-8", errors="replace").read()
+if tool == "Write": out = ti.get("content") or ""
+else:
+    edits = [ti] if tool == "Edit" else (ti.get("edits") or []); out = cur
+    for e in edits:
+        o = e.get("old_string") or ""; n = e.get("new_string") or ""
+        if o: out = out.replace(o, n) if e.get("replace_all") else out.replace(o, n, 1)
+print(out, end="")
+PYX
+      pre_ids="$(OPEN_ASKS="$f" lint - "$now" | awk -F'\t' '$1=="DELAY"{print $2}')"
+      added="$(OPEN_ASKS="$post" lint - "$now" | awk -F'\t' -v pre="$pre_ids" 'BEGIN{n=split(pre,a,"\n"); for(i=1;i<=n;i++) seen[a[i]]=1} $1=="DELAY" && !seen[$2]')"
+      rm -f "$post"
+      [ -z "$added" ] && return 0
+      deny "owed-now: this write adds a row with a future due and no waits-on= (a delay). Do the work now, or put waits-on=<host|seat|person|event> in the what column naming what it waits for (Joe 10-31 11:1x PM, approvals #181/#182):
+$added" ;;
+    Bash)
+      cmd="$(jq -r '.tool_input.command // empty' <<<"$in" 2>/dev/null)"
+      grep -qE 'open-asks|seat-ask\.sh|seat-event\.sh|approve\.sh|--due' <<<"$cmd" || return 0
+      grep -q 'waits-on=' <<<"$cmd" && return 0
+      for ts in $(grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' <<<"$cmd" | sort -u); do
+        e="$(date -d "${ts/T/ }" +%s 2>/dev/null)" || continue
+        if [ "$e" -gt $((now + GRACE * 60)) ]; then
+          deny "owed-now: the command writes a future due ($ts) to an ask row without waits-on=. Do the work now, or add waits-on=<host|seat|person|event> to the same command (Joe 10-31 11:1x PM, approvals #181/#182)."; return 0
+        fi
+      done ;;
+  esac
+  return 0
 }
 
 selftest() {
   local d pass=0 fail=0 out rc
   d="$(mktemp -d -p "${TMPDIR:-$HOME/.cache}" owed-now.XXXXXX)"; trap 'rm -rf "$d"' RETURN
-  export OPEN_ASKS="$d/open-asks.tsv" SEATS_TABLE="$d/seats.tsv"; unset WM_SEAT
+  export OPEN_ASKS="$d/open-asks.tsv" SEATS_TABLE="$d/seats.tsv" OWED_NOW_STATE="$d/state"; unset WM_SEAT
   printf 'rb\t1\tsid-rb\n' >"$SEATS_TABLE"
   local now; now="$(date -d '2026-10-31 23:00' +%s)"
   printf '%s\n' '# open asks' \
@@ -96,14 +152,27 @@ selftest() {
   # hook modes (fake now = real now; A1 overdue regardless)
   out="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","stop_hook_active":false}' | hook)"
   t "$(jq -e '.decision=="block" and (.reason|test("OWED NOW"))' <<<"$out" >/dev/null && echo 0 || echo 1)" "Stop first sighting blocks for a seats.tsv seat"
-  out="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","stop_hook_active":true}' | hook)"
-  t "$([ -z "$out" ] && echo 0 || echo 1)" "Stop second sighting passes (bounded)"
   out="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","agent_id":"x","stop_hook_active":false}' | hook)"
   t "$([ -z "$out" ] && echo 0 || echo 1)" "subagent never blocked"
   out="$(WM_SEAT=aide hook <<<'{"hook_event_name":"UserPromptSubmit","session_id":"zz"}')"
   t "$(jq -e '.hookSpecificOutput.additionalContext|test("A1")' <<<"$out" >/dev/null && echo 0 || echo 1)" "UserPromptSubmit lists rows for WM_SEAT"
   out="$(printf '{"hook_event_name":"Stop","session_id":"nobody","stop_hook_active":false}' | hook)"
   t "$([ -z "$out" ] && echo 0 || echo 1)" "plain session (no seat) passes"
+  out="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-rb"}' | hook >/dev/null; for i in 1 2 3 4; do r="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","stop_hook_active":true}' | hook)"; [ -z "$r" ] && echo pass || jq -r '.decision' <<<"$r"; done | tr '\n' ' ')"
+  t "$([ "$out" = "block block block pass " ] && echo 0 || echo 1)" "Stop blocks 3x per turn then passes (got: $out)"
+  local nowiso; nowiso="$(date -d @"$now" '+%Y-%m-%dT%H:%M')"; local fut; fut="$(date -d @"$((now + 7200))" '+%Y-%m-%dT%H:%M')"
+  out="$(jq -cn --arg f "$OPEN_ASKS" --arg o $'A4\t2026-10-31T22:00\taide\t2026-10-31T23:05\tk\tc\twithin grace' --arg n "A9	2026-10-31T22:00	aide	$fut	k	c	new delay row" '{tool_name:"Edit",tool_input:{file_path:$f,old_string:$o,new_string:$n}}' | OWED_NOW_GRACE_MIN=10 guard)"
+  t "$(jq -e '.hookSpecificOutput.permissionDecision=="deny" and (.hookSpecificOutput.permissionDecisionReason|test("A9"))' <<<"$out" >/dev/null && echo 0 || echo 1)" "guard denies an Edit adding a future-due row without waits-on="
+  out="$(jq -cn --arg f "$OPEN_ASKS" --arg o $'A4\t2026-10-31T22:00\taide\t2026-10-31T23:05\tk\tc\twithin grace' --arg n "A9	2026-10-31T22:00	aide	$fut	k	c	new row waits-on=rb next tick" '{tool_name:"Edit",tool_input:{file_path:$f,old_string:$o,new_string:$n}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes an Edit whose future-due row carries waits-on="
+  out="$(jq -cn --arg f "$OPEN_ASKS" --arg o $'no marker' --arg n 'no marker waits-on=rb' '{tool_name:"Edit",tool_input:{file_path:$f,old_string:$o,new_string:$n}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes an Edit that only fixes existing DELAY rows"
+  out="$(jq -cn --arg c "printf 'A9\t$nowiso\taide\t$fut\tk\tc\tx\n' >> $OPEN_ASKS" '{tool_name:"Bash",tool_input:{command:$c}}' | guard)"
+  t "$(jq -e '.hookSpecificOutput.permissionDecision=="deny"' <<<"$out" >/dev/null && echo 0 || echo 1)" "guard denies a Bash append with a future due and no waits-on="
+  out="$(jq -cn --arg c "printf 'A9\t$nowiso\taide\t$fut\tk\tc\tx waits-on=r7 leg\n' >> $OPEN_ASKS" '{tool_name:"Bash",tool_input:{command:$c}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes the same Bash append with waits-on="
+  out="$(jq -cn '{tool_name:"Bash",tool_input:{command:"ls -la"}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard ignores an unrelated Bash command"
   echo "selftest: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
 }
 
@@ -112,6 +181,7 @@ case "${1:-hook}" in
         while [ $# -gt 0 ]; do case "$1" in --seat) seat="$2"; shift 2;; --now) now="$(date -d "$2" +%s)"; shift 2;; *) shift;; esac; done
         lint "$seat" "$now" ;;
   hook) hook ;;
+  guard) guard ;;
   --selftest) selftest ;;
-  *) echo "usage: owed-now.sh lint [--seat S] [--now ISO] | hook | --selftest" >&2; exit 2 ;;
+  *) echo "usage: owed-now.sh lint [--seat S|-] [--now ISO] | hook | guard | --selftest" >&2; exit 2 ;;
 esac
