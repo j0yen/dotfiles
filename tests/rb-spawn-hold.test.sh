@@ -233,8 +233,9 @@ shj() { # shj <state-file> [env assignments...]; sets sout src sext
 shj "$SH/s1.json"
 cmd=$(cat "$SH/cmd.log")
 ok=0; for t in runs land daemon builder; do [[ $cmd == *"--table \"\$t\""* || $cmd == *"rd $t "* ]] || ok=1; done
-[[ $cmd == *'rd runs ""; rd land ""'* && $cmd != *"wait"* && $cmd != *'"" &'* && $cmd == *'"op":"driver-adopted"'* && $cmd == *"grep -F"* && $cmd == *"mktemp -d"* && $cmd == *"rm -rf"* ]] || ok=1
-[ $ok = 0 ] && pass "(shj1) remote command names runs/land/daemon/builder, serial reads (no & no wait), driver-adopted grep -F filter, mktemp -d + rm -rf trap" || bad "(shj1) remote cmd: $cmd"
+[[ $cmd == *'rd runs ""; rd land ""; rd daemon'* && $cmd == *'; rd builder ""'* && $cmd == *'"op":"driver-adopted"'* && $cmd == *"grep -F"* && $cmd == *"mktemp -d"* && $cmd == *"rm -rf"* ]] || ok=1
+[[ $cmd == *"& wait"* || $cmd == *" & rd "* ]] && ok=1
+[ $ok = 0 ] && pass "(shj1) remote command names runs/land/daemon/builder as serial table reads, driver-adopted grep -F filter, mktemp -d + rm -rf trap" || bad "(shj1) remote cmd: $cmd"
 [ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=300 hand_slots=2 source=ssh walls=runs:2,land:2,daemon:2,builder:2" ]] \
   && pass "(shj2) framed tables parsed (### skipped), output line gains walls=: $sout" || bad "(shj2) rc=$src out=$sout"
 # (shj3) the ssh timeout is a named variable; a read that outlives it reads rc=124
