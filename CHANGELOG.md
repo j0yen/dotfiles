@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-01 — fleet-switch-joe-trigger (patch)
+
+`fleet-token-rotate.sh --trigger` also accepts `joe-<date-or-time>`
+(`^joe-[0-9A-Za-z:._-]+$`), recorded as given in token.json and rotations.log;
+anything else stays exit 64 and the usage text lists the forms (A362: a
+`--trigger reset-0220` call exited 64 at 2:21 AM and the fleet stayed on the old
+account). New `.local/bin/fleet-token-switch-at.sh <account> <HH:MM> [--by
+joe-<date>] [--dry-run]` arms one transient user unit
+`fleet-token-switch-at-<HHMM>` that runs the fleet account switch
+(`fleet-token-rotate.sh ... --trigger joe-<HHMM>`) and then the aide account
+switch (`aide-relaunch.sh`, no account argument); exit 2 when either script is
+absent. `tests/fleet-token-switch-at.test.sh` + two selftest cases.
+
 ## 2026-10-24 — repo-suite (minor)
 
 `.local/bin/repo-suite.sh TREE LABEL OUTDIR` runs a repo's `tests/*.test.sh`
