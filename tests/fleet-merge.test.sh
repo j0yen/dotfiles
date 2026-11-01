@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-merge.sh: eligibility, newer-block, gate refusal, dry-run, per-tick cap. All externals stubbed; mktemp HOME; no network.
+# fleet-merge.sh: eligibility, gh --limit, headless CONFIRM, real JSON-array shape, newer-block, gate refusal, dry-run, per-tick cap. All externals stubbed; mktemp HOME; no network.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 script="$here/.local/bin/fleet-merge.sh"
@@ -11,6 +11,7 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"
 cat > "$T/gh" <<'SH'
 #!/usr/bin/env bash
+echo "$*" >> "$STUB_GHARGS"
 cat "$STUB_PRS"
 SH
 cat > "$T/wmd" <<'SH'
@@ -25,9 +26,9 @@ echo "PASS stub"
 SH
 chmod +x "$T/gh" "$T/wmd" "$T/rbm"
 export FLEET_MERGE_GH="$T/gh" WM_DECIDE_BIN="$T/wmd" FLEET_MERGE_RB_MERGE="$T/rbm" FLEET_MERGE_STATE="$T/state"
-export FLEET_MERGE_REPOS="j0yen/dotfiles" STUB_PRS="$T/prs.json" STUB_ROWS="$T/rows.json" STUB_CALLS="$T/calls"
+export FLEET_MERGE_REPOS="j0yen/dotfiles" STUB_PRS="$T/prs.json" STUB_ROWS="$T/rows.json" STUB_CALLS="$T/calls" STUB_GHARGS="$T/ghargs"
 H1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; H2="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-reset() { rm -rf "$T/state" "$T/calls"; : > "$T/calls"; unset STUB_RC; }
+reset() { rm -rf "$T/state" "$T/calls"; : > "$T/calls"; : > "$T/ghargs"; unset STUB_RC; }
 row() { # id ts via what
   printf '{"id":"%s","ts":"%s","via":"%s","agent":"%s","kind":"verdict","what":"%s","evidence":""}' "$1" "$2" "$3" "$3" "$4"
 }
@@ -70,4 +71,23 @@ echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CO
 FLEET_MERGE_MAX=1 bash "$script" > /dev/null
 [ "$(cat "$T/calls")" = "d-1 7 j0yen/dotfiles" ] && ok e-only-older || bad e-only-older
 
+# (f) gh pr list is called with --limit 500
+reset
+echo "[{\"number\":7,\"headRefOid\":\"$H1\",\"title\":\"t\"}]" > "$T/prs.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM ok")]" > "$T/rows.json"
+bash "$script" > /dev/null
+grep -q -- '--limit 500' "$T/ghargs" && ok f-gh-limit-500 || bad f-gh-limit-500
+
+# (g) a CONFIRM row without a head matches no head; the receipt line names the reason
+reset
+printf '[{"id":"d-9","ts":"2026-11-01T01:00:00+00:00","via":"verifier","agent":"verifier","kind":"verdict","what":"CONFIRM dotfiles#7 no head named","evidence":""}]' > "$T/rows.json"
+out="$(bash "$script")"
+[ ! -s "$T/calls" ] && ok g-headless-not-called || bad g-headless-not-called
+printf '%s\n' "$out" | grep -q 'skip: confirm-without-head j0yen/dotfiles#7' && ok g-headless-reason || bad g-headless-reason
+
+# (h) real wm-decide list --json shape (pretty-printed array): observe row ignored, constructed CONFIRM found
+reset
+echo "[{\"number\":7,\"headRefOid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"title\":\"t\"}]" > "$T/prs.json"
+STUB_ROWS="$here/tests/fixtures/wm-decide-list-sample.json" bash "$script" > /dev/null
+[ "$(cat "$T/calls")" = "d-20261101-014500-verifier-dotfiles-7-c0de 7 j0yen/dotfiles" ] && ok h-fixture-confirm-found || bad h-fixture-confirm-found
 [ "$fail" = 0 ] && echo "ALL PASS fleet-merge" || { echo "FAILED fleet-merge"; exit 1; }

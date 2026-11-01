@@ -50,6 +50,9 @@ gated=0 merged=0 skipped=0 errors=0
 cat > "$work/plan.py" <<'PYEOF'
 import json, re, sys
 rows = json.load(open(sys.argv[1]))
+if isinstance(rows, dict):
+    rows = rows.get("rows") or rows.get("decisions") or []
+rows = [r for r in rows if isinstance(r, dict) and r.get("id")]
 prs = json.load(open(sys.argv[2]))
 repo = sys.argv[3]
 name = repo.split("/")[-1]
@@ -85,24 +88,40 @@ for r in rows:
 cl.sort()
 for p in sorted(prs, key=lambda p: int(p["number"])):
     n, head = int(p["number"]), (p.get("headRefOid") or "").lower()
-    sel, blocked = None, False
+    sel, blocked, nohead = None, False, False
     for ts, rid, (pn, h, w) in cl:
-        if pn != n or (h and not head.startswith(h) and not h.startswith(head)):
+        if pn != n:
+            continue
+        if not h:
+            if w in CONFIRM:
+                nohead = True
+            elif w in BLOCK:
+                blocked = True
+            continue
+        if not head or (not head.startswith(h) and not h.startswith(head)):
             continue
         if w in CONFIRM:
             sel, blocked = rid, False
         elif w in BLOCK:
             blocked = True
-    print("%d\t%s" % (n, sel if sel and not blocked else "skip"))
+    if sel and not blocked:
+        print("%d\t%s" % (n, sel))
+    elif nohead and not sel:
+        print("%d\tskip-nohead" % n)
+    else:
+        print("%d\tskip" % n)
 PYEOF
 
 for repo in "${repos[@]}"; do
-  if ! "$GH" pr list --repo "$repo" --state open --json number,headRefOid,title > "$work/prs.json"; then
+  if ! "$GH" pr list --repo "$repo" --state open --limit 500 --json number,headRefOid,title > "$work/prs.json"; then
     echo "fleet-merge: gh pr list $repo failed" >&2; errors=$((errors + 1)); continue
   fi
   python3 -I "$work/plan.py" "$work/rows.json" "$work/prs.json" "$repo" > "$work/plan.txt" || { echo "fleet-merge: plan failed for $repo" >&2; errors=$((errors + 1)); continue; }
   while IFS=$'\t' read -r pr vid; do
     [ -n "$pr" ] || continue
+    if [ "$vid" = skip-nohead ]; then
+      echo "skip: confirm-without-head $repo#$pr"; skipped=$((skipped + 1)); continue
+    fi
     if [ "$vid" = skip ]; then
       echo "skip no-confirm $repo#$pr"; skipped=$((skipped + 1)); continue
     fi
