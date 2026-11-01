@@ -56,6 +56,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         os.path.join(HOME, ".cache/tmp/claude-*/*"),
         os.path.join(HOME, ".config/systemd/user/*.d/*.conf"),
         os.path.join(HOME, ".config/*"),
+        # PRD amends are /dream work, not builds (r7 A321, 11-01 4:06 AM); prd-write-gate.sh still gates creation
+        os.path.join(HOME, "Documents/PRDs/*"),
     ]
     # fnmatch's * crosses '/', which is what the ** globs mean
     if any(fnmatch.fnmatchcase(given, g) for g in allow):
