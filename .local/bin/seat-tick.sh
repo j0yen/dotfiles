@@ -168,6 +168,21 @@ has_tty_or_tmux() {   # has_tty_or_tmux <pid>: 0 = tty (tty_nr != 0) or tmux anc
   return 1
 }
 
+# The aide seat is keyed on WM_SEAT=aide (set only by aide-launch.sh), never on any interactive claude: a plain carbon `claude` that holds a tty is Joe's own session (A276).
+# is_aide_holder <pid>: 0 unless SEAT is aide and the process environment names a different WM_SEAT; unreadable environ = cannot tell = holder. Selftest hook:
+# SEAT_GUARD_WMSEAT_OVERRIDE=<pid>:<value>[,...] decides for the listed pids (value `-` = unset), honoured only under SEAT_TICK_SELFTEST=1.
+is_aide_holder() {
+  local pid="$1" o ov val
+  [ "${SEAT:-}" = aide ] || return 0
+  if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_GUARD_WMSEAT_OVERRIDE:-}" ]; then
+    IFS=, read -ra ov <<<"$SEAT_GUARD_WMSEAT_OVERRIDE"
+    for o in "${ov[@]}"; do [ "${o%%:*}" = "$pid" ] && { [ "${o#*:}" = aide ]; return; }; done
+  fi
+  [ -r "/proc/$pid/environ" ] || return 0
+  val="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^WM_SEAT=//p' | tail -n1)" || return 0
+  [ "$val" = aide ]
+}
+
 # guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise.
 # Interactive = claude (not print-mode) WITH a controlling tty or a tmux ancestor. A non-print claude holding the SID with neither is noted and ignored.
 guard() {
@@ -177,7 +192,8 @@ guard() {
       cl="$(tr '\0' ' ' <"/proc/$OLD_PID/cmdline")"
       case "$cl" in
         *claude*) if is_print_mode "$cl"; then notes="old_pid $OLD_PID is a print-mode claude (not the interactive seat)"
-                  elif has_tty_or_tmux "$OLD_PID"; then echo "pid $OLD_PID alive: ${cl:0:80}"; return 1
+                  elif has_tty_or_tmux "$OLD_PID" && is_aide_holder "$OLD_PID"; then echo "pid $OLD_PID alive: ${cl:0:80}"; return 1
+                  elif has_tty_or_tmux "$OLD_PID"; then notes="old_pid $OLD_PID is not the aide (WM_SEAT is not aide): ignored"; old_noted=1
                   else notes="old_pid $OLD_PID alive without a tty: not an interactive seat, ignored"; old_noted=1; fi ;;
         *) notes="old_pid $OLD_PID alive but not claude" ;;
       esac
@@ -198,6 +214,10 @@ guard() {
         [ -e "$p/stat" ] || continue   # exited since the cmdline read
         if ! has_tty_or_tmux "$pid"; then
           [ -n "$old_noted" ] && [ "$pid" = "$OLD_PID" ] || notes="${notes:+$notes; }pid $pid holds the SID without a tty: not an interactive seat, ignored"
+          continue
+        fi
+        if ! is_aide_holder "$pid"; then
+          [ -n "$old_noted" ] && [ "$pid" = "$OLD_PID" ] || notes="${notes:+$notes; }pid $pid holds the SID but WM_SEAT is not aide: not the aide, ignored"
           continue
         fi
       fi
@@ -831,6 +851,14 @@ FAKE
   SEAT_GUARD_TTY_OVERRIDE="$pt1:1" "$SELF" nt --guard-check >/dev/null 2>&1; rc=$?
   has_tty_or_tmux "$pt1"; local want_real=$(( $? == 0 ? 4 : 0 ))   # no SEAT_TICK_SELFTEST: the override must be ignored, the real tty / tmux ancestry decides
   [ "$rc" = "$want_real" ]; chk "TTY GATE: SEAT_GUARD_TTY_OVERRIDE is ignored outside selftest mode (exit $rc, real ancestry says $want_real)" $?
+  # A276: the aide seat is keyed on WM_SEAT=aide. A plain interactive claude (tty, no WM_SEAT) holding the aide's SID is not the aide; the same holder with WM_SEAT=aide is. --guard-check only: no turn runs.
+  printf 'aide\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\n' "$FAKESID" >>"$SEATS_TABLE"
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:-" "$SELF" aide --guard-check >"$T/oa1" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "pid $pt1 holds the SID but WM_SEAT is not aide: not the aide, ignored" "$T/oa1"; chk "AIDE KEY: interactive claude (tty, no WM_SEAT, pid $pt1) holding the aide SID -> not refused ('$(head -c 100 "$T/oa1")')" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:aide" "$SELF" aide --guard-check >"$T/oa2" 2>&1; rc=$?
+  [ "$rc" = 4 ] && grep -q "pid $pt1 holds session $FAKESID" "$T/oa2"; chk "AIDE KEY: the same holder with WM_SEAT=aide -> refused, exit 4, names pid $pt1" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:-" "$SELF" nt --guard-check >"$T/oa3" 2>&1; rc=$?
+  [ "$rc" = 4 ]; chk "AIDE KEY: a non-aide seat keeps the old rule (interactive claude with a tty is refused even without WM_SEAT)" $?
   kill "$pt1"; wait "$pt1" 2>/dev/null; sleep 0.3
   # a decoy under a process whose comm is 'tmux' (a copy of bash named tmux) counts as tmux-hosted even with tty 0
   mkdir -p "$T/fakebin"; cp "$(command -v bash)" "$T/fakebin/tmux"
