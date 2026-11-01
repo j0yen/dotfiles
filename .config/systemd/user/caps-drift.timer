@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly: fleet caps registry drift check (P28 mechanism 3)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

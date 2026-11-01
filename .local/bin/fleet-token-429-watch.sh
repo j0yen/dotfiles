@@ -8,7 +8,7 @@
 #             OR (exactly 1 such seat AND a confirming haiku probe on the CURRENT token fails with a limit message),
 #             AND the earliest of those resets is more than 20 min away.
 #   CANDIDATE the next account in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/ring (ordered names, # comments) after the current one that has a store
-#             entry, skipping an account rotated away from < 6 h ago by a 429 rotation (floor; a hand or schedule rotation leaves it eligible) or whose rotations.log previous_reset_at is still in the future,
+#             entry, skipping an account whose rotations.log previous_reset_at is still in the future, or rotated away from < 6 h ago by a 429 rotation (floor; a hand or schedule rotation leaves it eligible) with no logged reset,
 #             one BLOCKED (state file blocked-until-<account> = one epoch, set by ft_block / `fleet-token-store.sh block`; a limit whose reset is known),
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
 #   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the later of the limited seats' quota_wait_until and the reset
@@ -104,7 +104,10 @@ skip_reason() {
   ts="$(sed -nE 's/.* ts=([0-9]+) .*/\1/p' <<<"$line")"; rs="$(sed -nE 's/.* previous_reset_at=([0-9]+|null)$/\1/p' <<<"$line")"
   tr="$(sed -nE 's/.* trigger=([^ ]+) .*/\1/p' <<<"$line")"
   if [[ "$rs" =~ ^[0-9]+$ ]] && [ "$rs" -gt "$now" ]; then echo "its limit resets $(ft_iso "$rs")"; return; fi
-  if [ "$tr" = 429 ] && [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago"; return; fi
+  # 11-01: the floor guards an account whose reset is UNKNOWN; a logged reset that has passed makes it eligible at once
+  # (3:1x AM 11-01: mcphost.dev reset 2:10 AM, rotated away 12:02 AM; the floor hid it and ctl/rb/r7 sat in a weekly quota-wait).
+  [[ "$rs" =~ ^[0-9]+$ ]] && return 0
+  if [ "$tr" = 429 ] && [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago (reset unknown)"; return; fi
 }
 
 watch() {
@@ -278,6 +281,10 @@ EOF2
     printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 36000))" "$((NOW - 100))" >"$FT_ROTLOG"
     runw
     [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 10 h ago with its reset in the past: eligible again" $?
+    reset; seats 7200 7200 -
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 3600))" "$((NOW - 100))" >"$FT_ROTLOG"
+    runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 1 h ago with its logged reset in the past: the 6 h floor does not apply" $?
     reset; seats 1100 1100 -; runw
     [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'is <= 20 min away' "$FT_STATE/429-watch.log"; ft_st_chk "earliest reset only 18 min away: no rotation" $?
     reset; seats 1300 1300 -; runw

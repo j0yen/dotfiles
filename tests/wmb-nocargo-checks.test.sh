@@ -1,41 +1,70 @@
 #!/usr/bin/env bash
-# wmb-nocargo-checks.sh: cargo-free mirror of wm-build act_every_journal_op_is_classified.
-# Fixtures are real wm-build files (tests/fixtures/wmb-nocargo-checks/README names the shas).
+# wmb-nocargo-checks.sh gate: synthetic wm-build trees under mktemp.
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
-chk="$here/.local/bin/wmb-nocargo-checks.sh"
-fx="$here/tests/fixtures/wmb-nocargo-checks"
+sut="$here/.local/bin/wmb-nocargo-checks.sh"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+export NOCARGO_MIN_LITERALS=0
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); echo "PASS $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL $1 ${2:-}"; }
-five='land-hold-mark-failed land-hold-release-failed land-held-armed land-held-stale land-held-unreadable'
+check() { if [ "$2" = 0 ]; then ok "$1"; else bad "$1" "${3:-}"; fi; }
 
-# (a) the script's own selftest
-out=$(HOME="$tmp" bash "$chk" --selftest 2>&1); rc=$?
-if [ "$rc" = 0 ] && [ "$out" = "SELFTEST PASS" ]; then ok "(a) --selftest passes"; else bad "(a) --selftest" "rc=$rc $out"; fi
+# mk DIR : clean tree (one operator op, one non-operator op, both written)
+mk() {
+    mkdir -p "$1/src/sub"
+    cat > "$1/src/actor.rs" <<'RS'
+pub const OPERATOR_OPS: &[&str] = &[
+    "run-paused",
+];
+pub const NON_OPERATOR_OPS: &[&str] = &[
+    "tick",
+];
+RS
+    printf '%s\n' 'fn a() { s.journal("runs", "run-paused", &j); }' > "$1/src/sub/a.rs"
+    printf '%s\n' 'fn b() { s.journal("daemon", "tick", &j); }' > "$1/src/b.rs"
+}
 
-# fixture tree: real actor.rs + the real fleet_hold.rs call sites + witness literals for OPERATOR_OPS
-mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/src/land"
-    cp "$fx/$1/actor.rs" "$tmp/t/src/actor.rs"
-    cp "$fx/ba5e1fa1/land/fleet_hold.rs" "$tmp/t/src/land/fleet_hold.rs"
-    cp "$fx/ba5e1fa1/witness.rs" "$tmp/t/src/witness.rs"; }
+mk "$tmp/clean"
+out=$(bash "$sut" "$tmp/clean"); rc=$?
+check "clean tree exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "rc=$rc $out"
+check "clean tree prints green" "$([ "$out" = "NOCARGO green ops=2" ] && echo 0 || echo 1)" "$out"
 
-# (b) ba5e1fa1 lists + five fleet_hold.rs ops: red, exactly the five
-mk ba5e1fa1
-out=$(HOME="$tmp" NOCARGO_MIN_LITERALS=1 bash "$chk" "$tmp/t" 2>&1); rc=$?
-got=$(printf '%s\n' "$out" | awk '$1=="UNCLASSIFIED"{print $2}' | sort | tr '\n' ' ')
-want=$(printf '%s\n' $five | sort | tr '\n' ' ')
-other=$(printf '%s\n' "$out" | grep -vc -e '^UNCLASSIFIED ' -e '^NOCARGO journal-ops red n=5$')
-if [ "$rc" = 1 ] && [ "$got" = "$want" ] && [ "$other" = 0 ]; then ok "(b) red, exactly the five ops"; else bad "(b) five ops" "rc=$rc got=[$got] other=$other"; fi
+mk "$tmp/unl"
+printf '%s\n' 'fn c() {' '    s.journal("runs",' '        "new-op", &j);' '    s.journal("runs", "new-op2", &j);' '}' > "$tmp/unl/src/sub/c.rs"
+out=$(bash "$sut" "$tmp/unl"); rc=$?
+check "unlisted literal exits 1" "$([ "$rc" = 1 ] && echo 0 || echo 1)" "rc=$rc"
+check "unlisted literal reported" "$(printf '%s\n' "$out" | grep -q '^UNCLASSIFIED new-op2 src/sub/c.rs:4$' && echo 0 || echo 1)" "$out"
+check "multi-line call matched like the Rust scan" "$(printf '%s\n' "$out" | grep -q '^UNCLASSIFIED new-op src/sub/c.rs:3$' && echo 0 || echo 1)" "$out"
 
-# (c) 254bea47 lists plus the five in NON_OPERATOR_OPS: green
-mk 254bea47
-extra=$(for o in $five; do printf '"%s", ' "$o"; done)
-sed -i "s/^pub const NON_OPERATOR_OPS: &\[&str\] = &\[\$/&\n    $extra/" "$tmp/t/src/actor.rs"
-out=$(HOME="$tmp" NOCARGO_MIN_LITERALS=1 bash "$chk" "$tmp/t" 2>&1); rc=$?
-case "$out" in *"NOCARGO journal-ops green literals="*) g=1;; *) g=0;; esac
-if [ "$rc" = 0 ] && [ "$g" = 1 ]; then ok "(c) green with the five classified"; else bad "(c) green" "rc=$rc $out"; fi
+mk "$tmp/both"
+sed -i 's/"tick",/"tick", "run-paused",/' "$tmp/both/src/actor.rs"
+out=$(bash "$sut" "$tmp/both"); rc=$?
+check "op in both lists exits 1 with BOTH-LISTS" "$([ "$rc" = 1 ] && printf '%s\n' "$out" | grep -q '^BOTH-LISTS run-paused$' && echo 0 || echo 1)" "rc=$rc $out"
 
-echo "$pass passed, $fail failed"
+mk "$tmp/dup"
+sed -i 's/"tick",/"tick", "tick",/' "$tmp/dup/src/actor.rs"
+out=$(bash "$sut" "$tmp/dup"); rc=$?
+check "duplicate exits 1 with DUPLICATE" "$([ "$rc" = 1 ] && printf '%s\n' "$out" | grep -q '^DUPLICATE NON_OPERATOR_OPS tick$' && echo 0 || echo 1)" "rc=$rc $out"
+
+mk "$tmp/stale"
+rm "$tmp/stale/src/sub/a.rs"
+out=$(bash "$sut" "$tmp/stale"); rc=$?
+check "stale operator op exits 1" "$([ "$rc" = 1 ] && printf '%s\n' "$out" | grep -q '^STALE-OPERATOR run-paused$' && echo 0 || echo 1)" "rc=$rc $out"
+
+mk "$tmp/noactor"; rm "$tmp/noactor/src/actor.rs"
+bash "$sut" "$tmp/noactor" >/dev/null 2>&1; rc=$?
+check "missing actor.rs exits 2" "$([ "$rc" = 2 ] && echo 0 || echo 1)" "rc=$rc"
+
+mk "$tmp/nolist"; printf '%s\n' 'pub const OPERATOR_OPS: &[&str] = &["run-paused"];' > "$tmp/nolist/src/actor.rs"
+bash "$sut" "$tmp/nolist" >/dev/null 2>&1; rc=$?
+check "missing list exits 2" "$([ "$rc" = 2 ] && echo 0 || echo 1)" "rc=$rc"
+
+bash "$sut" >/dev/null 2>&1; rc=$?
+check "no args exits 2" "$([ "$rc" = 2 ] && echo 0 || echo 1)" "rc=$rc"
+
+out=$(bash "$sut" --selftest); rc=$?
+check "--selftest exits 0" "$([ "$rc" = 0 ] && [ "$out" = "SELFTEST ok" ] && echo 0 || echo 1)" "rc=$rc $out"
+
+echo "pass=$pass fail=$fail"
 [ "$fail" = 0 ]

@@ -1,0 +1,10 @@
+[Unit]
+Description=carbon build-process sampler: count of cargo/rustc/pytest/wm-verify-run/tests/*.test.sh/tsc/make processes into ~/.cache/fleet-dash/carbon-build-procs.json (Joe 10-27, approvals #47)
+# carbon only: the file installs everywhere (install.sh links the whole tree), the unit runs on carbon.
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=60
+ExecStart=%h/.local/bin/carbon-build-procs.py

@@ -54,7 +54,11 @@ ENVSRC='set -a; for f in ~/.config/environment.d/*.conf; do [ -f "$f" ] && . "$f
 GC='git -c core.hooksPath=/dev/null'
 # an allowlisted push URL: github j0yen/*; a local absolute path only with RB_LAND_PUSH_TEST_ORIGIN=1 (tests)
 ORIGIN_RE='^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)j0yen/[A-Za-z0-9._-]+(\.git)?$'
-origin_ok() { [[ "$1" =~ $ORIGIN_RE ]] || { [ "${RB_LAND_PUSH_TEST_ORIGIN:-}" = 1 ] && [[ "$1" =~ ^/[A-Za-z0-9._/-]+$ ]]; }; }
+# exact-url allow (ctl ruling d-20261101-012229-controller-831e, 11-01): a repo whose directory basename is fleet-dash may push to the orch mirror
+# orch:mirrors/fleet-dash.git (exact string, no pattern; fleet-dash has no github remote); every other repo stays github j0yen/* only.
+FLEET_DASH_URL='orch:mirrors/fleet-dash.git'
+exact_ok() { local b; b=$(basename "${1%/}"); b="${b%.git}"; [ "$b" = fleet-dash ] && [ "$2" = "$FLEET_DASH_URL" ]; }   # $1=repo path, $2=push url
+origin_ok() { [[ "$1" =~ $ORIGIN_RE ]] || exact_ok "${2:-}" "$1" || { [ "${RB_LAND_PUSH_TEST_ORIGIN:-}" = 1 ] && [[ "$1" =~ ^/[A-Za-z0-9._/-]+$ ]]; }; }
 rsh() { if [ -n "$1" ]; then ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -- "$1" "$ENVSRC; $2" </dev/null; else bash -c "$2" </dev/null; fi; }
 
 USAGE="usage: rb-land-push.sh --confirm <d-id> --repo <git dir> --branch <branch> [--host <h>] [--check] | --selftest"
@@ -90,11 +94,11 @@ run_push() {
   # one round trip: HEAD sha + tree + current branch, then fetch origin's tip and the ancestor test, all on the sha captured here (TOCTOU: nothing below re-reads HEAD)
   local qr qb ic out irc
   qr=$(printf '%q' "$repo"); qb=$(printf '%q' "$branch")
-  ic="repo=$qr; branch=$qb; re=$(printf '%q' "$ORIGIN_RE"); tst=$(printf '%q' "${RB_LAND_PUSH_TEST_ORIGIN:-0}"); "'cd "$repo" 2>/dev/null || exit 0; sha=$(@G@ rev-parse --verify HEAD 2>/dev/null) || exit 0; tree=$(@G@ rev-parse --verify "HEAD^{tree}" 2>/dev/null) || exit 0;
+  ic="repo=$qr; branch=$qb; re=$(printf '%q' "$ORIGIN_RE"); fdu=$(printf '%q' "$FLEET_DASH_URL"); tst=$(printf '%q' "${RB_LAND_PUSH_TEST_ORIGIN:-0}"); "'cd "$repo" 2>/dev/null || exit 0; sha=$(@G@ rev-parse --verify HEAD 2>/dev/null) || exit 0; tree=$(@G@ rev-parse --verify "HEAD^{tree}" 2>/dev/null) || exit 0;
 echo "sha=$sha"; echo "tree=$tree"; echo "sbr=$(@G@ symbolic-ref --short -q HEAD 2>/dev/null)";
 purl=$(@G@ remote get-url --push origin 2>/dev/null); echo "purl=$purl"; inc=$(@G@ config --local --name-only --get-regexp "^include" 2>/dev/null | wc -l);
 inc=$((inc+0)); echo "inc=$inc";
-ok=0; if printf %s "$purl" | grep -Eq "$re"; then ok=1; elif [ "$tst" = 1 ] && printf %s "$purl" | grep -Eq "^/[A-Za-z0-9._/-]+$"; then ok=1; fi;
+ok=0; if printf %s "$purl" | grep -Eq "$re"; then ok=1; elif rb=$(basename "${repo%/}") && [ "${rb%.git}" = fleet-dash ] && [ "$purl" = "$fdu" ]; then ok=1; elif [ "$tst" = 1 ] && printf %s "$purl" | grep -Eq "^/[A-Za-z0-9._/-]+$"; then ok=1; fi;
 if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >/dev/null 2>&1; then echo "old=$(@G@ rev-parse --verify FETCH_HEAD 2>/dev/null)"; if @G@ merge-base --is-ancestor FETCH_HEAD "$sha" 2>/dev/null; then echo anc=yes; else echo anc=no; fi; else echo "old="; fi;'
   [ $check = 1 ] && ic="$ic"'if [ "$ok" = 1 ] && [ "$inc" = 0 ]; then lsr=$(@G@ ls-remote origin "refs/heads/$branch" 2>/dev/null); echo "lsrc=$?"; echo "lsr=$(printf %s "$lsr" | cut -f1)"; fi;'
   ic="${ic//@G@/$GC}"
@@ -107,7 +111,7 @@ if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >
   [[ "$head" =~ ^[0-9a-f]{40,64}$ ]] && [[ "$tree" =~ ^[0-9a-f]{40,64}$ ]] || refuse not-a-repo "$repo"
   local h8=${head:0:8} t8=${tree:0:8}
   # origin allowlist + no config includes: before any row check or push
-  origin_ok "$purl" || refuse origin-not-allowed "push url '$purl'"
+  origin_ok "$purl" "$repo" || refuse origin-not-allowed "push url '$purl'"
   [ "${inc:-0}" = 0 ] || refuse repo-config-include "$repo local config has include.* keys"
 
   # 1. the row
