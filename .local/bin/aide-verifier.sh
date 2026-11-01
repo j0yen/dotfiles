@@ -5,12 +5,14 @@
 #   The rb/r7 seats run their own claude on carbon too, so ROOM and systemd-run are unchanged; the verdict row still comes from the headless unit's own session (G7).
 #   Below, "aide" in unit/field names means <agent>; the cap looks at every (aide|rb|r7)-verifier-* unit.
 #   launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<G3 token line>' --suite '<ONE command for wm-verify-run>'
-#          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue] [--prio 0|1]
+#          [--clone-url URL] [--notes TEXT] [--expect TEXT] [--queue] [--prio 0|1] [--model sonnet|opus]
+#          LOG-ONLY: --log <abs path | redbaron:<abs path> | ryzen7:<abs path>> replaces --suite (exactly one of the two): the unit READS an existing wm-verify-run log (cp, or one scp -q), runs no suite,
+#          greps WM-VERIFY HEAD/EXIT=0/DIRTY=0 and attaches the copy as bundle.log. --model (default sonnet) sets the unit's claude model and the verdict row's --model; meta gets model= and log=.
 #       LINT (exit 2): name not [a-z0-9-]; head not 40 hex; --gated not d-YYYYMMDD-HHMMSS-<agent>-<4hex>; empty token (or one with " ` $ newline);
 #       empty suite; the rendered verdict --what lacking COMMIT=<head> or agent=verifier:<agent>-verifier-<name>;
 #       MERGE-GATE LINTS (AVL; each names the merge-gate rule, all failures printed, no bypass flag): G0 the --gated row does not exist; G6 the gated row names no
 #       agent=, or the verifier id equals its agent= / author= / agent column; G3 --repo has no repo_tokens entry or --suite lacks the prefix of a required
-#       `<prefix> EXIT=0` token (tokens without EXIT=0 print `lint: note:` and are checked from the log only); G1 --head != the live PR head (gh pr view;
+#       `<prefix> EXIT=0` token (tokens without EXIT=0 print `lint: note:` and are checked from the log only; any-of tokens, those holding merge-gate's ANY_OF separator, are body-only too: merge-gate g3_missing checks ANY_OF first); G1 --head != the live PR head (gh pr view;
 #       a gh failure refuses); KIND (V9) the --gated row's `what` must hold `GATED <repo>#<pr>` (word-bounded) and exactly one `COMMIT=<40 hex>` equal to --head
 #       (case-folded): a spawn/plan row or a stale GATED row is refused. KIND is STRICTER than merge-gate (which never reads the gated row's COMMIT=); its
 #       authority is the controller ruling ctl 12:59 + 1:11, 10-23, and its grammar is the one constant pair GATED_RE_FMT/COMMIT_TOKEN_RE below
@@ -38,6 +40,7 @@
 #       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
 #       must `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than SLOT_CEIL units are active or a unit's MemoryPeak tops PEAK_MB.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
+#       ON CARBON (`hostname -s` = carbon) a --suite launch exits 3 `carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)` right after the lints, before the fleet gate / any unit; a --log (LOG-ONLY) launch runs no suite and proceeds, since the GATED row, the verdict row and merge-gate all live in carbon's ledger; finish and watch are unaffected.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else
 #       `wm-decide merge-gate <verdict> --pr N --repo O/R`: PASS line -> gate.txt + GATE-PASS row + bell to ctl; anything else -> RETRACT correction row + bell, exit 5.
@@ -158,6 +161,25 @@ sum_current_mb() {
   echo "$sum"
 }
 
+step4_suite() {
+  cat <<'S4'
+4. Suite under the LIVE wrapper from inside the clone as ONE quoted string. The wrapper ~/.local/bin/wm-verify-run has NO --help flag: read its header first; it runs `bash -c` on its single argument and appends WM-VERIFY HEAD/CMD/DIRTY/EXIT lines; the log lands in ~/.local/state/swarm-decide/verify/. Shape:
+   cd $d/repo && ~/.local/bin/wm-verify-run {{SUITE_Q}}
+   The G3 token is `{{TOKEN}}`. How merge-gate G3 reads it (wm_decide/mergegate.py g3_missing): a token ending in ` EXIT=0` passes when the log's `WM-VERIFY EXIT=0` trailer is present AND the `WM-VERIFY CMD=` trailer contains the text before ` EXIT=0`, so it does NOT have to appear as a literal body line; any other token must appear in a body line. The wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}} If anything fails: STOP, report the failing names, record NO verdict.
+S4
+}
+# step4_log: the "fetch the log" variant of step 4 (launch --log): no suite runs on carbon; {{...}} placeholders are filled by render
+step4_log() {
+  cat <<'S4L'
+4. LOG-ONLY: the suite already ran on {{LOGHOST}} under wm-verify-run; you run NO suite. FORBIDDEN on carbon: pytest, uv, cargo, make, wm-verify-run (never call any of them).
+   a. Fetch the log: {{LOGFETCH}}
+      (this one command is the only remote command allowed; the no-ssh constraint below covers everything else).
+   b. Record it: `sha256sum {{DIR}}/bundle.log` and put the sha256 in the row evidence.
+   c. Check with SEPARATE greps, ALL required, each `grep -c` must print 1 or more: `grep -c '^WM-VERIFY HEAD={{HEAD}}$' {{DIR}}/bundle.log`; `grep -c '^WM-VERIFY EXIT=0$' {{DIR}}/bundle.log`; `grep -c '^WM-VERIFY DIRTY=0$' {{DIR}}/bundle.log`. Then print the line `grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log`.{{CMDCHECK}} The G3 token is `{{TOKEN}}`; merge-gate G3 reads it from these trailers.{{EXPECT}} If any check fails: STOP, report which, record NO verdict.
+   d. bundle.log IS the evidence bundle for step 5: add no extra files to it (skip the `cat` in 5a), attach it, quote from it, and say `log-only (suite ran on {{LOGHOST}} under wm-verify-run)` in the row what.
+S4L
+}
+
 default_template() {
   cat <<'TPL'
 You are a merge-gate VERIFIER running as your own headless claude session (systemd unit {{AGENT}}-verifier-{{NAME}} on carbon). Target: {{REPO}} PR {{PR}}, head {{HEAD}}{{NOTES}}. Scratch dir: {{DIR}}/ — everything you create goes there. GATED row to gate: {{GATED}}.
@@ -166,14 +188,18 @@ STEPS
 1. Refuse if `gh pr view {{PR}} --repo {{REPO}} --json headRefOid -q .headRefOid` != {{HEAD}} (report the real head, record no row).
 2. d=$(mktemp -d -p {{DIR}}); `git clone -q {{CLONE_URL}} $d/repo && git -C $d/repo checkout -q {{HEAD}}`; confirm `git rev-parse HEAD` equals {{HEAD}}.
 3. Attribution: `gh api repos/{{REPO}}/pulls/{{PR}}/commits --paginate -q '.[].commit.message'` and `gh pr view {{PR}} --repo {{REPO}} --json body -q .body`; grep each with the anchored case-insensitive regex `^[[:space:]]*(co-authored-by:|generated with)`; both counts must be 0.
-4. Suite under the LIVE wrapper from inside the clone as ONE quoted string. The wrapper ~/.local/bin/wm-verify-run has NO --help flag: read its header first; it runs `bash -c` on its single argument and appends WM-VERIFY HEAD/CMD/DIRTY/EXIT lines; the log lands in ~/.local/state/swarm-decide/verify/. Shape:
-   cd $d/repo && ~/.local/bin/wm-verify-run {{SUITE_Q}}
-   The G3 token is `{{TOKEN}}`: that literal line must appear in the log, the wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}} If anything fails: STOP, report the failing names, record NO verdict.
-5. ONE verdict row:
-   wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach <log path> --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} scope=suite recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: fresh clone == head; <N passed / 0 FAIL, from the log> via wm-verify-run ({{TOKEN}}); attribution 0/0" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
+{{STEP4}}
+5. EVIDENCE BUNDLE (write-time checks V1-V3 read it; the grader sees only its sha256, the last 20 lines and your quoted lines, so evidence missing from the attached file does not exist):
+   a. ONE artifact must contain ALL the evidence you cite: full per-test output, result.json content, mutation runs. Never `tail -N` or `grep` evidence down to a summary. Put extra evidence FIRST and the wm-verify-run log LAST so its WM-VERIFY trailer stays in the final lines: `cat <extra evidence files> <log path> > {{DIR}}/bundle.log` (just <log path> when there is no extra evidence). Attach the bundle, not the bare log.
+   b. QUOTE: copy 1 to 3 lines VERBATIM from the bundle (for example the suite's `ALL PASS files=N` line) and pass each as `--quote "<line>"`. Prove each with `grep -cF -- "<line>" {{DIR}}/bundle.log` (must print 1 or more) BEFORE recording. A quote is an exact substring of the WHOLE bundle, never a regex and never reworded.
+   c. SCOPE: if you ran a subset (`-k`, one file, one test, a path filter), say so in the what line (`scope=-k <expr>`); an undisclosed subset is a correction. No subset: write `scope=full`.
+   d. NEVER attach an artifact (same sha256) that is on a FAIL/BLOCK row to a PASS row: re-run and attach the new log. If the bundle shows a real step failure (`EXIT=<n>` with n>0, FAILED), do not record a PASS unless you also pass `--reconciles "<why it is right>"`.
+   e. FOLLOW-UPS: if the controller named required follow-up rows or checks in your launch notes, cite their ids in the what line (`follow-up=<id>`); never claim one you did not see.
+6. ONE verdict row:
+   wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach {{DIR}}/bundle.log --quote "<verbatim line 1>" [--quote "<verbatim line 2>"] --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} scope=suite recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: scope=<full|the -k/subset you ran>; fresh clone == head; <a count copied from one log line: write it as N passed (or ran=N pass=N) ONLY with an N that a log line shows as 'N passed', 'pass=N' or 'Ran N tests'; merge-gate G4 refuses any count claim it cannot find in the log, so if the log has no such line write 'all pass, 0 FAIL' and no number> via wm-verify-run ({{TOKEN}}); attribution 0/0{{LOGNOTE}}" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
    The 'ungradable:' line is informational; report any refusal verbatim.
 
-HARD CONSTRAINTS: never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
+HARD CONSTRAINTS: never kill by pattern: no pkill, no killall, no `kill` with a -f or name/pattern argument, no `pgrep|xargs kill` (a pkill -f 'wm-verify-run' hit every seat's suite on carbon, 10-24 11:05 PM); you may kill only PIDs you started yourself, or stop your own unit with `systemctl --user stop {{AGENT}}-verifier-{{NAME}}`; never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
 
 FINAL OUTPUT (plain text, at most 15 lines): head, attribution counts, test counts + the token line, then exactly `LOG: <absolute log path>` and `VERDICT: <verdict row id>` on their own lines, refusals.
 TPL
@@ -182,6 +208,9 @@ TPL
 # render <template-text>: substitute {{X}} with the launch variables (literal replacement, no shell evaluation of values)
 render() {
   local t="$1"
+  t="${t//'{{STEP4}}'/$STEP4_TXT}"
+  t="${t//'--via verifier --model sonnet --kind'/--via verifier --model $MODEL --kind}"
+  t="${t//'{{LOGHOST}}'/$LOGHOST}"; t="${t//'{{LOGFETCH}}'/$LOGFETCH}"; t="${t//'{{CMDCHECK}}'/$CMDCHECK}"; t="${t//'{{LOGNOTE}}'/$LOGNOTE}"
   t="${t//'{{AGENT}}'/$AGENT}"; t="${t//'{{NAME}}'/$NAME}"; t="${t//'{{REPO}}'/$REPO}"; t="${t//'{{PR}}'/$PR}"; t="${t//'{{HEAD}}'/$HEAD}"
   t="${t//'{{GATED}}'/$GATED}"; t="${t//'{{TOKEN}}'/$TOKEN}"; t="${t//'{{DIR}}'/$DIR}"
   t="${t//'{{CLONE_URL}}'/$CLONE_URL}"; t="${t//'{{SUITE_Q}}'/$SUITE_Q}"
@@ -191,7 +220,7 @@ render() {
 
 # ---- merge-gate launch lints (AVL) ----
 # Names the helper imports from the live merge-gate tree; `aide-verifier.sh --gate-names` prints them so tests/aide-verifier-gate-nodrift.test.sh checks the SAME list.
-GATE_NAMES="wm_decide.mergegate._agent_token wm_decide.mergegate.AGENT_RE wm_decide.mergegate.AUTHOR_RE wm_decide.mergegate.g3_missing wm_decide.mergegate.strip_attachments wm_decide.mergegate.contract.canon_agent"
+GATE_NAMES="wm_decide.mergegate._agent_token wm_decide.mergegate.AGENT_RE wm_decide.mergegate.AUTHOR_RE wm_decide.mergegate.g3_missing wm_decide.mergegate.ANY_OF wm_decide.mergegate.strip_attachments wm_decide.mergegate.contract.canon_agent"
 # L-KIND grammar (V9/W2/W4): ONE constant pair, passed to the helper and printed by `--gate-grammar` for the no-drift test. %s %s = re.escape(<repo>), <pr>;
 # <repo> is the exact owner/name string L-G3 looks up in repo_tokens. merge-gate has no GATED grammar, so there is nothing to import.
 GATED_RE_FMT='(^|\s)GATED %s#%s(\s|$)'
@@ -243,11 +272,11 @@ def lint_g3(mg, tokens):
     missing, problem = mg.g3_missing(list(tokens), [att], head)
     if problem:
         refuse("G3", problem)
-    bad = [t for t in missing if t.endswith(" EXIT=0")]
+    bad = [t for t in missing if t.endswith(" EXIT=0") and mg.ANY_OF not in t]  # any-of tokens are body-only (g3_missing checks ANY_OF first)
     if bad:
         refuse("G3", "--suite does not show the required token prefix(es) %s (the CMD of the log must contain each prefix)" % " | ".join(t[: -len(" EXIT=0")] for t in bad))
     for t in missing:
-        if not t.endswith(" EXIT=0"):
+        if not t.endswith(" EXIT=0") or mg.ANY_OF in t:
             note("%s is checked from the log only" % t)
 try:
     mg = importlib.import_module("wm_decide.mergegate")
@@ -313,23 +342,27 @@ gate_lint() {
 }
 
 cmd_launch() {
-  [ $# -ge 1 ] || die 2 "usage: launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<line>' --suite '<cmd>' [--clone-url URL] [--notes T] [--expect T] [--queue] [--prio 0|1]"
+  [ $# -ge 1 ] || die 2 "usage: launch <name> --repo O/R --pr N --head <40-hex> --gated <d-id> --token '<line>' (--suite '<cmd>' | --log <path|host:path>) [--model sonnet|opus] [--clone-url URL] [--notes T] [--expect T] [--queue] [--prio 0|1] [--timeout 60..7200]"
   NAME="$1"; shift
-  REPO=""; PR=""; HEAD=""; GATED=""; TOKEN=""; SUITE=""; CLONE_URL=""; NOTES=""; EXPECT=""; QUEUE=0; PRIO=""
+  REPO=""; PR=""; HEAD=""; GATED=""; TOKEN=""; SUITE=""; LOG=""; MODEL="sonnet"; CLONE_URL=""; NOTES=""; EXPECT=""; QUEUE=0; PRIO=""; VTIMEOUT=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --queue) QUEUE=1; shift; continue ;;
-      --repo|--pr|--head|--gated|--token|--suite|--clone-url|--notes|--expect|--prio)
+      --repo|--pr|--head|--gated|--token|--suite|--log|--model|--clone-url|--notes|--expect|--prio|--timeout)
         [ $# -ge 2 ] || die 2 "$1 needs a value" ;;
       *) die 2 "unknown argument: $1" ;;
     esac
     case "$1" in
       --repo) REPO="$2" ;; --pr) PR="$2" ;; --head) HEAD="$2" ;; --gated) GATED="$2" ;; --token) TOKEN="$2" ;;
-      --suite) SUITE="$2" ;; --clone-url) CLONE_URL="$2" ;; --notes) NOTES="$2" ;; --expect) EXPECT="$2" ;; --prio) PRIO="$2" ;;
+      --suite) SUITE="$2" ;; --log) LOG="$2" ;; --model) MODEL="$2" ;; --clone-url) CLONE_URL="$2" ;; --notes) NOTES="$2" ;; --expect) EXPECT="$2" ;; --prio) PRIO="$2" ;; --timeout) VTIMEOUT="$2" ;;
     esac
     shift 2
   done
   # ---- LINT ----
+  # unit timeout: --timeout, else AIDE_VERIFIER_TIMEOUT_S (outside the selftest, where that name is the command timeout), else 2400
+  if [ -z "$VTIMEOUT" ] && [ "${AIDE_VERIFIER_SELFTEST:-}" != 1 ]; then VTIMEOUT="${AIDE_VERIFIER_TIMEOUT_S:-}"; fi
+  [ -n "$VTIMEOUT" ] || VTIMEOUT=2400
+  [[ "$VTIMEOUT" =~ ^[0-9]{1,4}$ ]] && [ "$VTIMEOUT" -ge 60 ] && [ "$VTIMEOUT" -le 7200 ] || die 2 "lint: --timeout must be an integer from 60 to 7200 seconds (got '$VTIMEOUT')"
   [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die 2 "lint: name must match [a-z0-9][a-z0-9-]{0,30}: '$NAME'"
   [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die 2 "lint: --repo must be OWNER/NAME"
   [[ "$PR" =~ ^[0-9]+$ ]] || die 2 "lint: --pr must be a number"
@@ -337,7 +370,28 @@ cmd_launch() {
   [[ "$GATED" =~ ^d-[0-9]{8}-[0-9]{6}-[a-z0-9]+-[0-9a-f]{4}$ ]] || die 2 "lint: --gated must look like d-YYYYMMDD-HHMMSS-<agent>-<4hex>"
   [ -n "${TOKEN//[[:space:]]/}" ] || die 2 "lint: --token (the G3 token line) is empty"
   case "$TOKEN" in *'"'*|*'`'*|*'$'*|*$'\n'*) die 2 "lint: --token must not contain \" \` \$ or a newline" ;; esac
+  case "$MODEL" in sonnet) MODEL_ID=claude-sonnet-5-5 ;; opus) MODEL_ID=claude-opus-5-5 ;; *) die 2 "lint: --model must be sonnet or opus (got '$MODEL')" ;; esac
+  if [ -n "$LOG" ] && [ -n "$SUITE" ]; then die 2 "lint: --log and --suite are mutually exclusive"; fi
+  if [ -z "$LOG" ] && [ -z "$SUITE" ]; then die 2 "lint: give exactly one of --suite '<cmd>' or --log <path>"; fi
+  LOGHOST=""; LOGFETCH=""; CMDCHECK=""; LOGNOTE=""
+  if [ -n "$LOG" ]; then
+    local lpath
+    case "$LOG" in
+      redbaron:*|ryzen7:*) LOGHOST="${LOG%%:*}"; lpath="${LOG#*:}" ;;
+      *) LOGHOST="local"; lpath="$LOG" ;;
+    esac
+    [[ "$lpath" =~ ^/[A-Za-z0-9._/+@%=,-]+$ ]] || die 2 "lint: --log must be an absolute path (optionally redbaron: or ryzen7: prefixed) of [A-Za-z0-9._/+@%=,-] only (got '$LOG')"
+    if [ "$LOGHOST" = local ]; then LOGFETCH="cp $lpath {{DIR}}/bundle.log"; else LOGFETCH="scp -q $LOGHOST:$lpath {{DIR}}/bundle.log"; fi
+    LOGFETCH="${LOGFETCH//'{{DIR}}'/$ROOT/$NAME}"
+    SUITE="${TOKEN% EXIT=0}"   # the G3 lint compares the token prefix with the suite CMD; in log mode the CMD is the log's own trailer, which the prompt checks (CMDCHECK)
+    [ "$SUITE" = "$TOKEN" ] || CMDCHECK=" The CMD line must contain \`$SUITE\` (check it with \`grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log | grep -cF -- '$SUITE'\`, 1 or more)."
+    LOGNOTE="; log-only (suite ran on $LOGHOST under wm-verify-run)"
+    STEP4_TXT="$(step4_log)"
+  else
+    STEP4_TXT="$(step4_suite)"
+  fi
   [ -n "${SUITE//[[:space:]]/}" ] || die 2 "lint: --suite is empty"
+  [ -n "$LOG" ] || [ "$(hostname -s 2>/dev/null)" != carbon ] || die 3 "carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)"   # carbon-no-build (Joe 10-27, approvals #47): before the fleet gate, any clone or unit
   [ -z "$PRIO" ] || [[ "$PRIO" =~ ^[01]$ ]] || die 2 "lint: --prio must be 0 or 1"
   [ -n "$CLONE_URL" ] || CLONE_URL="https://github.com/$REPO.git"
   [ -d "$ROOT/$NAME" ] && [ -e "$ROOT/$NAME/state" ] && die 2 "lint: name '$NAME' already used ($ROOT/$NAME/state exists)"
@@ -392,6 +446,7 @@ cmd_launch() {
       breaker_scan
       if [ "$B_TRIP" = 1 ]; then
         seat="${WM_SEAT:-rb}"
+        [ "$seat" = aide ] && [ -n "${WM_AIDE_LANE:-}" ] && [ "$WM_AIDE_LANE" != main ] && seat="aide:$WM_AIDE_LANE"   # a lane-launched verifier bells its lane (aide-lanes 10-27)
         local btxt="aide-verifier: 429 breaker TRIPPED (trip id $B_KEY = mtime of the newest result.json under $ROOT with api_error_status 429, newer than $TOKEN_FILE, no later non-429 result): verifier launches refuse (exit 10) until the token file is re-touched, a non-429 result lands, or the half-open probe (429 older than 30 min, 0 active) passes"
         bell_once r7 "$B_KEY" "$btxt"
         [ "$seat" = r7 ] || bell_once "$seat" "$B_KEY" "$btxt"
@@ -435,12 +490,14 @@ cmd_launch() {
     echo 'set -a; . "$OAUTH"; set +a'
     printf 'D=%q\n' "$DIR"
     echo 'cd "$D" || exit 70'
-    printf 'exec timeout 2400 %q -p --dangerously-skip-permissions --model claude-sonnet-5-5 --output-format json "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$claude"
+    printf 'exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-%s}" %q -p --dangerously-skip-permissions --disallowedTools %q --settings "$D/settings.json" --model %s --output-format json "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$VTIMEOUT" "$claude" 'Bash(pkill:*) Bash(killall:*)' "$MODEL_ID"
   } >"$DIR/launch.sh"
   chmod 755 "$DIR/launch.sh"
-  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" >"$DIR/meta"
+  # mechanical guard: a PreToolUse Bash hook scoped to this unit only (settings file passed by launch.sh), plus the deny rules above
+  jq -n --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$h}]}]}}' >"$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
+  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\nlog=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$LOG" >"$DIR/meta"
   # ---- start ----
-  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
@@ -465,7 +522,8 @@ cmd_finish() {
   agent="$(meta_get "$d" agent)"; [ -n "$agent" ] || agent="$AGENT"   # the agent the unit was launched under
   unit="$agent-verifier-$name"
   [ -n "$pr" ] || pr="$(meta_get "$d" pr)"; [ -n "$repo" ] || repo="$(meta_get "$d" repo)"
-  local head gated; head="$(meta_get "$d" head)"; gated="$(meta_get "$d" gated)"
+  local head gated tmo; head="$(meta_get "$d" head)"; gated="$(meta_get "$d" gated)"
+  tmo="timeout_s=$(meta_get "$d" timeout_s)"; [ "$tmo" != "timeout_s=" ] || tmo="timeout_s=2400(default,unrecorded)"   # reported on every finish path
   [[ "$pr" =~ ^[0-9]+$ ]] && [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die 2 "need --pr N --repo O/R (not in meta)"
   if [ -e "$d/finished" ] && [ "$again" != 1 ]; then
     echo "already finished: $(cat "$d/finished") (no second bell; --again to redo)"
@@ -477,7 +535,7 @@ cmd_finish() {
   text="$(jq -r '.result // ""' "$d/result.json" 2>/dev/null)"
   verdict="$(printf '%s\n' "$text" | grep -oE "d-[0-9]{8}-[0-9]{6}-$agent-[0-9a-f]{4}" | grep -vxF "$gated" | tail -n1)"
   if [ "$iserr" = true ] || [ -z "$verdict" ]; then
-    echo "aide-verifier: NO verdict row id in the verifier's result (is_error=$iserr); NOT belling. Final text:" >&2
+    echo "aide-verifier: NO verdict row id in the verifier's result (is_error=$iserr, $tmo); NOT belling. Final text:" >&2
     printf '%s\n' "$text" | head -n 40 | redact >&2
     exit 4
   fi
@@ -496,13 +554,13 @@ cmd_finish() {
       --what "GATE-PASS $repo#$pr $verdict: $pass" \
       --why "aide-verifier.sh finish: merge-gate PASS for verifier unit $unit" \
       --evidence "$pass; $log" --reverse-text "none (gate record)" >/dev/null 2>"$d/record.err" || recrc=$?
-    "$BELL" ctl "$agent EVENT MERGE-OK $repo#$pr head $head row $verdict gates $gated (own-session unit $unit): $pass; log $log" >/dev/null 2>&1
+    "$BELL" ctl "$agent EVENT MERGE-OK $repo#$pr head $head row $verdict gates $gated (own-session unit $unit): $pass; log $log; $tmo" >/dev/null 2>&1
     if [ "$recrc" != 0 ]; then
-      echo "$(iso) PASS rc=7 $verdict" >"$d/finished"
+      echo "$(iso) PASS rc=7 $verdict $tmo" >"$d/finished"
       echo "aide-verifier: gate PASSED and ctl belled, but the GATE-PASS row failed to record (rc=$recrc): $(head -c 200 "$d/record.err" | redact)" >&2
       echo "$pass"; exit 7
     fi
-    echo "$(iso) PASS rc=0 $verdict" >"$d/finished"
+    echo "$(iso) PASS rc=0 $verdict $tmo" >"$d/finished"
     echo "$pass"; exit 0
   fi
   reason="$(printf '%s\n' "$out" | grep -m1 -E '^G[0-9]+ FAIL')"
@@ -513,8 +571,8 @@ cmd_finish() {
     --what "RETRACT $verdict: merge-gate $reason" \
     --why "aide-verifier.sh finish: merge-gate refused the verifier's MERGE-OK for $repo#$pr" \
     --evidence "$reason; $log" --reverse-text "none (retraction)" >/dev/null 2>"$d/record.err" || echo "aide-verifier: RETRACT row failed to record: $(head -c 200 "$d/record.err" | redact)" >&2
-  "$BELL" ctl "$agent EVENT MERGE-GATE FAIL $repo#$pr head $head row $verdict gates $gated (unit $unit): $reason; MERGE-OK RETRACTED; log $log" >/dev/null 2>&1
-  echo "$(iso) FAIL rc=5 $verdict" >"$d/finished"
+  "$BELL" ctl "$agent EVENT MERGE-GATE FAIL $repo#$pr head $head row $verdict gates $gated (unit $unit): $reason; MERGE-OK RETRACTED; log $log; $tmo" >/dev/null 2>&1
+  echo "$(iso) FAIL rc=5 $verdict $tmo" >"$d/finished"
   echo "FAIL $reason" >&2
   exit 5
 }
@@ -588,6 +646,7 @@ from . import contract
 AGENT_RE = re.compile(r"\bagent=([A-Za-z0-9:._-]+)")
 AUTHOR_RE = re.compile(r"\bauthor=([A-Za-z0-9:._-]+)")
 COMMIT_RE = re.compile(r"\bCOMMIT=([0-9A-Fa-f]{12,40})\b")
+ANY_OF = " || "
 def strip_attachments(evidence):
     out, skip = [], False
     for ln in (evidence or "").splitlines():
@@ -603,7 +662,9 @@ def _agent_token(row, rx=AGENT_RE):
 def g3_missing(tokens, atts, commit):
     missing = []
     for tok in tokens:
-        if tok.endswith(" EXIT=0"):
+        if ANY_OF in tok:
+            ok = any(a["trailer"].get("EXIT") == "0" and any(alt in ln for alt in tok.split(ANY_OF) for ln in a["body"]) for a in atts)
+        elif tok.endswith(" EXIT=0"):
             ok = any(a["trailer"].get("EXIT") == "0" and tok[:-7] in (a["trailer"].get("CMD") or "") for a in atts)
         else:
             ok = any(tok in ln for a in atts for ln in a["body"])
@@ -612,12 +673,12 @@ def g3_missing(tokens, atts, commit):
 F
     [ -z "${3:-}" ] || sed -i 's/^def _agent_token/def _agent_token_renamed/' "$1/wm_decide/mergegate.py"
   }
-  local TOK='{"j0yen/dotfiles": ["tests/*.test.sh EXIT=0"], "j0yen/synthorg": ["pytest EXIT=0"], "j0yen/mcphost": ["-D warnings EXIT=0", "clippy delta=0", "cargo test EXIT=0"]}'
+  local TOK='{"j0yen/dotfiles": ["tests/*.test.sh EXIT=0"], "j0yen/synthorg": ["pytest EXIT=0"], "j0yen/mcphost": ["-D warnings EXIT=0", "clippy delta=0", "cargo test EXIT=0"], "j0yen/wm-build": ["-D warnings EXIT=0", "clippy delta=0", "test result: || cargo test EXIT=0"]}'
   mkgate "$T/gate" "$TOK"
   export AIDE_VERIFIER_GATE_ROOT="$T/gate"
   mkdir -p "$T/home/wintermute/swarm-decide"; cp -r "$T/gate/." "$T/home/wintermute/swarm-decide/"; mkgate "$T" "$TOK"   # decoys: the old default root and the tree next to fake-wmd must never be used
   local G0=d-20261023-055215-aide-0001 GB=d-20261023-055216-aide-0002 GC=d-20261023-055217-aide-0003 GD=d-20261023-055218-aide-0004 GE=d-20261023-055219-aide-0005 GF=d-20261023-055220-aide-0006 GN=d-20261023-055221-aide-0007
-  local GS=d-20261023-055222-aide-0008 GM=d-20261023-055223-aide-0009 GU=d-20261023-055224-aide-000a GV=d-20261023-055225-aide-000b
+  local GS=d-20261023-055222-aide-0008 GM=d-20261023-055223-aide-0009 GU=d-20261023-055224-aide-000a GV=d-20261023-055225-aide-000b GW=d-20261023-055226-aide-000c
   local K1=d-20261023-055231-aide-0101 K2=d-20261023-055232-aide-0102 K4=d-20261023-055234-aide-0104 K6=d-20261023-055236-aide-0106 K7=d-20261023-055237-aide-0107
   local K8=d-20261023-055238-aide-0108 K9=d-20261023-055239-aide-0109 K10=d-20261023-055240-aide-010a K11=d-20261023-055241-aide-010b K12=d-20261023-055242-aide-010c
   local OLD=1111111111111111111111111111111111111111
@@ -642,6 +703,7 @@ F
  {"id":"$GS","agent":"aide","what":"GATED j0yen/synthorg#7 COMMIT=$H agent=coder:s","why":"","evidence":""},
  {"id":"$GM","agent":"aide","what":"GATED j0yen/mcphost#7 COMMIT=$H agent=coder:m","why":"","evidence":""},
  {"id":"$GU","agent":"aide","what":"GATED j0yen/unknown#7 COMMIT=$H agent=coder:u","why":"","evidence":""},
+ {"id":"$GW","agent":"aide","what":"GATED j0yen/wm-build#7 COMMIT=$H agent=coder:w","why":"","evidence":""},
  {"id":"$GV","agent":"aide","what":"GATED j0yen/live2only#7 COMMIT=$H agent=coder:l","why":"","evidence":""},
  {"id":"$K1","agent":"aide","kind":"plan","what":"PLAN j0yen/dotfiles#7 COMMIT=$H agent=coder:x","why":"","evidence":""},
  {"id":"$K2","agent":"aide","what":"GATED j0yen/dotfiles#8 COMMIT=$H agent=coder:x","why":"","evidence":""},
@@ -739,6 +801,11 @@ F
   [ "$rc" = 3 ] && [[ "$out" != *"lint:"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (g): a correct launch passes every gate lint and reaches the room stage (exit 3, no lint line)" $?
   out="$(FAKE_ROOM=no L gl-h --repo j0yen/mcphost --pr 7 --head "$H" --gated "$GM" --token 't' --suite 'cargo test -D warnings; echo clippy delta=0')"; rc=$?
   [ "$rc" = 3 ] && [[ "$out" == *"lint: note: clippy delta=0 is checked from the log only"* ]] && [[ "$out" != *"lint: G3"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (h): a non-EXIT token prints the note and does not refuse" $?
+  rm -f "$T"/home/.local/state/verifier-cap/queue/*   # the rc 3 of (g)/(h) leaves its ticket; a wm-build launch (prio 0) must not wait behind it
+  out="$(FAKE_ROOM=no L gl-h2 --repo j0yen/wm-build --pr 7 --head "$H" --gated "$GW" --token 't' --suite 'cargo clippy -D warnings; echo clippy delta=0')"; rc=$?
+  [ "$rc" = 3 ] && [ "$(grep -c 'lint: note:' <<<"$out")" = 2 ] && [[ "$out" == *"lint: note: test result: || cargo test EXIT=0 is checked from the log only"* ]] && [[ "$out" != *"lint: G3"* ]] && [ ! -e "$T/sdrun.log" ]; chk "gate lint (h2): an any-of token is body-only: a wm-build suite with -D warnings passes G3 with two notes" $?
+  out="$(L gl-h3 --repo j0yen/wm-build --pr 7 --head "$H" --gated "$GW" --token 't' --suite 'cargo test; echo clippy delta=0')"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"lint: G3"* ]] && [[ "$out" == *"prefix(es) -D warnings ("* ]] && [[ "$(grep 'lint: G3' <<<"$out")" != *"test result:"* ]] && none gl-h3; chk "gate lint (h3): a wm-build suite without -D warnings -> exit 2, G3 naming only -D warnings" $?
   # C1: negative controls replaying the real misses (each gated row's `what` is copied verbatim from the ledger row named at its definition)
   kref c1-e2f0 "$RE2F0" "no GATED token for j0yen/dotfiles#7";            chk "gate lint (C1/e2f0): the real kind=plan row e2f0 as --gated -> exit 2, no GATED token" $?
   kref c1-0a48 "$R0A48" "no GATED token for j0yen/dotfiles#7";            chk "gate lint (C1/0a48): the real coder-spawn row 0a48 as --gated -> exit 2, no GATED token" $?
@@ -804,6 +871,7 @@ F
   echo "rb-verifier-other.service" >"$T/active"
   out="$(L cap1 "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 0 ] && [ "$out" = aide-verifier-cap1 ] && [ "$(wc -l <"$T/sdrun.log")" = 1 ]; chk "(a) 1 active of 2 -> launches ($out)" $?
+  grep -q -- "-p CPUWeight=20 -p Nice=10 -p IOWeight=20" "$T/sdrun.log"; chk "(a) the unit launch carries CPUWeight=20 Nice=10 IOWeight=20" $?
   ask="$(cat "$T/room.log")"; [ "$ask" = 2048 ]; chk "(a) room asked for PEAK_MB 1024 x (1 active + 1) - Σ MemoryCurrent 0 ([not set]) = $ask MB" $?
   : >"$T/active"; rm -f "$T/room.log"; L cap0 "${A[@]}" --head "$H" >/dev/null
   ask="$(cat "$T/room.log")"; [ "$ask" = 1024 ]; chk "(a) 0 active -> room asked for PEAK_MB 1024 ($ask)" $?
@@ -901,6 +969,10 @@ F
   [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 2 ]; chk "(3) the same trip id again: exit 10 and NO second bell" $?
   rm -f "$T/bell.log"; out="$(WM_SEAT=aide AIDE_VERIFIER_DIR="$T/avb1" L v3e1c "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q '^aide-verifier|aide aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) a different launching seat (WM_SEAT=aide) is belled once for the same trip id (r7 already was)" $?
+  rm -f "$T/bell.log"; out="$(WM_SEAT=aide WM_AIDE_LANE=build AIDE_VERIFIER_DIR="$T/avb1" L v3e1d "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && grep -q '^aide-verifier|aide:build aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) lane launch (WM_SEAT=aide WM_AIDE_LANE=build) bells aide:build once, never main aide" $?
+  rm -f "$T/bell.log" "$BS"; out="$(WM_SEAT=aide WM_AIDE_LANE=main AIDE_VERIFIER_DIR="$T/avb1" L v3e1e "${A[@]}" --head "$H")"; rc=$?
+  [ "$rc" = 10 ] && [ "$(wc -l <"$T/bell.log")" = 2 ] && ! grep -q 'aide:main' "$T/bell.log" && grep -q '^aide-verifier|aide aide-verifier: 429 breaker TRIPPED' "$T/bell.log"; chk "(3) WM_AIDE_LANE=main bells aide exactly as before" $?
   touch "$TK"   # the token is re-minted AFTER the 429
   out="$(AIDE_VERIFIER_DIR="$T/avb1" L v3e2 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 0 ]; chk "(7e) token file re-touched after the 429 -> launches" $?
   touch -d '2 hours ago' "$TK"; r429 "$T/avb2" old429 '3 minutes ago'; rok "$T/avb2" newer-ok '1 minute ago'
@@ -965,7 +1037,7 @@ F
   out="$(L ok1 "${A[@]}" --head "$H" --notes 'a "quoted" note; $(not run)' --expect '663 tests')"; rc=$?
   local D="$T/av/ok1"
   [ "$rc" = 0 ] && [ "$out" = aide-verifier-ok1 ]; chk "launch ok: exit 0, prints the unit name" $?
-  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, HOME, PATH, launch.sh" $?
+  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, CPUWeight, Nice, IOWeight, HOME, PATH, launch.sh" $?
   grep -q "$H" "$D/prompt.md" && grep -q "$G" "$D/prompt.md" && grep -qF 'tests/*.test.sh EXIT=0' "$D/prompt.md" && grep -q 'HARD CONSTRAINTS' "$D/prompt.md" \
     && grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$D/prompt.md" && grep -q 'wm-verify-run' "$D/prompt.md" && grep -qF '$(not run)' "$D/prompt.md" \
     && grep -q -- "--what \"MERGE-OK j0yen/dotfiles#7 COMMIT=$H agent=verifier:aide-verifier-ok1 scope=suite recorded_by=unit:aide-verifier-ok1 session=own-headless-claude-p" "$D/prompt.md" \
@@ -973,6 +1045,18 @@ F
   [ -x "$D/launch.sh" ] && grep -q 'aide-verifier-ok1' "$D/launch.sh" && bash -n "$D/launch.sh"; chk "launch.sh is executable, names the unit, parses" $?
   grep -q '"$(cat "$D/prompt.md")"' "$D/launch.sh" && ! grep -qE 'bash -c|sh -c' "$D/launch.sh" && ! grep -qE ' -c ' "$T/sdrun.log"; chk "the prompt is read from the file by launch.sh, never passed through bash -c" $?
   grep -q ' launched unit=aide-verifier-ok1 ' "$D/state"; chk "state has a launched line" $?
+  # ---- unit timeout + kill guard (TKG) ----
+  grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-2400}" ' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh runs timeout with AIDE_VERIFIER_TIMEOUT_S default 2400, meta timeout_s=2400" $?
+  out="$(L tkg5 "${A[@]}" --head "$H" --timeout 5400)"; rc=$?
+  grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-5400}" ' "$T/av/tkg5/launch.sh" && grep -q '^timeout_s=5400$' "$T/av/tkg5/meta" && [ "$rc" = 0 ]; chk "TKG timeout: --timeout 5400 reaches the timeout command and meta" $?
+  rm -f "$T/sdrun.log"; out="$(L tkg6 "${A[@]}" --head "$H" --timeout 99999)"; rc=$?
+  [ "$rc" = 2 ] && [[ "$out" == *"60 to 7200"* ]] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/av/tkg6" ]; chk "TKG timeout: --timeout 99999 -> exit 2, nothing started" $?
+  out="$(L tkg7 "${A[@]}" --head "$H" --timeout 59)"; rc=$?; [ "$rc" = 2 ]; chk "TKG timeout: --timeout 59 -> exit 2" $?
+  out="$(L tkg8 "${A[@]}" --head "$H" --timeout abc)"; rc=$?; [ "$rc" = 2 ]; chk "TKG timeout: --timeout abc -> exit 2" $?
+  printf '{"is_error":false,"result":"no id"}' >"$T/av/tkg5/result.json"; out="$("$SELF" finish tkg5 2>&1)"
+  [[ "$out" == *"timeout_s=5400"* ]]; chk "TKG timeout: finish reports the recorded timeout_s (exit-4 message)" $?
+  grep -qF -- '--disallowedTools Bash\(pkill:\*\)\ Bash\(killall:\*\) --settings "$D/settings.json"' "$D/launch.sh" && grep -q 'verifier-kill-guard.sh' "$D/settings.json" && jq -e '.hooks.PreToolUse[0].matcher == "Bash"' "$D/settings.json" >/dev/null; chk "TKG guard: launch.sh denies Bash(pkill:*) and Bash(killall:*) and loads the unit-scoped settings.json hook" $?
+  grep -q 'never kill by pattern' "$D/prompt.md" && grep -q 'systemctl --user stop aide-verifier-ok1' "$D/prompt.md"; chk "TKG guard: prompt forbids pkill/killall/kill by pattern, allows own PIDs and own unit stop" $?
   out="$(L ok1 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 2 ]; chk "a reused name is refused" $?
   FAKE_SDRUN_FAIL=1 L sdf "${A[@]}" --head "$H" >/dev/null; rc=$?
   [ "$rc" = 1 ] && grep -q launch-failed "$T/av/sdf/state"; chk "systemd-run failure -> exit 1, state records it" $?
@@ -995,6 +1079,7 @@ F
     && grep -q '; log /x/verify/' "$T/bell.log" && ! grep -q 'zzzzzz' "$T/bell.log"; chk "finish PASS: exactly one bell (source aide) carrying the PASS line and log" $?
   out="$("$SELF" finish ok1 2>&1)"; rc=$?
   [ "$rc" = 0 ] && [ "$(wc -l <"$T/bell.log")" = 1 ] && [[ "$out" == "already finished"* ]]; chk "a second finish is a no-op (no second bell)" $?
+  grep -q "PASS rc=0 $V timeout_s=2400\$" "$D/finished" && grep -q "; timeout_s=2400\$" "$T/bell.log"; chk "TKG timeout: a PASS finish records timeout_s in the finished file and the bell" $?
 
   L ok2 "${A[@]}" --head "$H" >/dev/null; D="$T/av/ok2"; rm -f "$T/bell.log" "$T/wmd.log"
   printf '{"is_error":false,"result":"LOG: /x/verify/b.log\\nVERDICT: %s"}' "$V" >"$D/result.json"

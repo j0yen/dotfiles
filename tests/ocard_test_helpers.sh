@@ -4,6 +4,7 @@
 # (state.db, journal, binary, fake proc/systemctl/agorabus), a synthorg chain
 # dir and an operator cache dir, then points the scripts at them via env.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEN="$ROOT/.claude/scripts/operator-status-gen.sh"
@@ -75,6 +76,9 @@ IN
   export WM_BUILD_STATE_DIR="$work/state" OPERATOR_WM_BIN="$work/bin/wm-build" OPERATOR_PROC_ROOT="$work/proc"
   export SYNTHORG_STATE_DIR="$work/syn" OPERATOR_CACHE_DIR="$work/cache" WM_BUILD_CONFIG="$work/config.toml"
   : >"$WM_BUILD_CONFIG"
+  # fleet-dash status.json: fresh ts + the fleet-wide queue object the card reads
+  export OPERATOR_FLEET_STATUS="$work/fleet-status.json"
+  printf '{"ts":%s,"queue":{"queue_total":12,"queue_ready":5,"building":2,"blocked":3,"parked":2}}\n' "$(date +%s)" >"$OPERATOR_FLEET_STATUS"
   export PATH="$work/bin:$PATH"
   export HOME="$work/home"; mkdir -p "$HOME"
 }

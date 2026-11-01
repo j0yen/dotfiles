@@ -1,0 +1,11 @@
+#!/bin/bash
+# pre-push (r7 coder-clone launcher, ctl df62 five whys 10-23): refuse a push whose new commits carry a Co-Authored-By / "Generated with
+# Claude" line. Seals the paths commit-msg does not run on (cherry-pick, rebase, am of pre-rule commits = the 3fb7f467/8c1c8df5/c2118652 class).
+RE='^[[:space:]]*co-authored-by:|generated with \[?claude'; z=0000000000000000000000000000000000000000; bad=
+while read -r lr ls rr rs; do
+  [ "$ls" = "$z" ] && continue
+  if [ "$rs" = "$z" ]; then range=("$ls" --not --remotes); else range=("$rs..$ls"); fi
+  for c in $(git rev-list "${range[@]}" 2>/dev/null); do git log -1 --format=%B "$c" | grep -qiE "$RE" && bad="$bad ${c:0:12}"; done
+done
+[ -z "$bad" ] && exit 0
+echo "pre-push: REFUSED, attribution trailer in:$bad (re-commit clean: git commit --amend or a clean re-commit; never force-push without Joe)" >&2; exit 1

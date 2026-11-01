@@ -26,6 +26,8 @@ printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1" in
   merge-gate) echo "PASS verdict=$2 pr=$5#$4 oid=$STUB_OID"; exit 0 ;;
   merge-done) exit 0 ;;
+  list) # main's VIA-NOT-VERIFIER read (wmd-row-lib.sh): one via=verifier row per id in STUB_VIDS
+        j=""; for i in $STUB_VIDS; do j="$j${j:+,}{\"id\":\"$i\",\"kind\":\"verdict\",\"via\":\"verifier\"}"; done; echo "[$j]" ;;
 esac
 S
 cat > "$tmp/gh" <<'S'
@@ -65,6 +67,7 @@ case_run() {
   mkdir -p "$st"
   ids="$(python3 -I "$fx/mkledger.py" "$st" "{\"repo\":\"$repo\",\"pr\":$pr,\"suffix\":\"$(( ++caseno ))\"${CASE_COMMIT:+,\"commit\":\"$CASE_COMMIT\"},\"rows\":$rows,\"brief_in\":$bin,\"brief_tok\":\"$btok\"}")" || { bad "$name: ledger fixture failed"; return 1; }
   G="${ids%% *}"; rest="${ids#* }"; V="${rest%% *}"; rowids=(${rest#* })
+  export STUB_VIDS="$V d-20261024-000000-r7-ffff"   # the ffff id is case (h3)'s verdict that is absent from the ledger but still a via=verifier row
   : > "$tmp/calls"
   WM_DECIDE_STATE="$st" bash "$wrap" "$V" "$pr" "$repo" >"$tmp/out" 2>"$tmp/err"; rc=$?
   err="$(cat "$tmp/err")"
@@ -142,6 +145,7 @@ case_run m8 $REPO 4 "[]"; PR=4; : > "$tmp/calls"
 # an ADV-PASS for #43 (m7 ledger rows retargeted by hand: same ledger, PR 4 asked)
 python3 -I "$fx/mkledger.py" "$tmp/st-m9" "{\"repo\":\"$REPO\",\"pr\":43,\"suffix\":\"91\",\"rows\":[$(adv "$PASSW")]}" >/dev/null
 V9="$(python3 -I -c 'import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute("select id from decisions where id like \"%bb91\"").fetchone()[0])' "$tmp/st-m9/decisions.sqlite")"
+export STUB_VIDS="$STUB_VIDS $V9"
 : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-m9" bash "$wrap" "$V9" 4 $REPO >/dev/null 2>"$tmp/err"; rc=$?; G=$(sed -n 's/^ADV-MISSING \([^ ]*\) .*/\1/p' "$tmp/err"); PR=4
 check "$rc:$(merged):$(grep -c "^ADV-MISSING $G $REPO#4\$" "$tmp/err")" "4:0:1" "(m9) an ADV-PASS for #43 does not satisfy PR #4 (ADV-MISSING)"
 PR=434
