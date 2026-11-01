@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-27 — verifier-load-guard-skip (minor)
+
+`aide-verifier.sh finish` never reports green when pytest skipped tests via
+SYNTHORG_LOAD_GUARD (origin: synthorg#443, merged on a load-guard SKIPPED line).
+Before merge-gate it scans the whole log (ANSI and CR stripped) with the
+load-guard regex (built-in default; the live swarm-decide
+`gen/merge-gate.json` key `load_guard_skip_re` wins; `--guard-skip-re` prints
+it, exit 2 when grep -E rejects it). A green verdict (MERGE-OK/CONFIRM) with
+K > 0 skips is retracted: a `CORRECT-RETRACT <verdict>` verdict row (gates =
+the verdict id, `--model deterministic`) first, then `finished` =
+`GUARD-SKIP rc=12 ...` (no FAIL; `RETRACT-FAILED` when the row write fails),
+bell `EVENT GUARD-SKIP`, exit 12. `launch` gains a load gate
+(`load1 + 2 x running verifier units < MAX_LOAD`, default nproc-3, exit 13;
+`--queue` waits under the lock, bounded by AIDE_VERIFIER_LOAD_WAIT_S, exit 6)
+and exports `PYTEST_ADDOPTS=... -rs` into the unit. `hand-pr-land-driver.sh`
+relaunches a GUARD-SKIP head (newest unit, none active) as the next attempt,
+rings `guardskip-cap` at MAX_LAUNCHES (cause: load), treats launch rc 13 as
+transient (no attempt consumed), and never merges a head whose newest finished
+unit is GUARD-SKIP. Tests: `tests/aide-verifier.test.sh`,
+`tests/hand-pr-land-driver.test.sh`, `tests/aide-verifier-guard-skip-nodrift.test.sh`.
+
 ## 2026-10-24 — seat-tick-strict-stophook (patch)
 
 `.local/bin/seat-tick.sh` `stop_hook_lines` counts only user messages whose
