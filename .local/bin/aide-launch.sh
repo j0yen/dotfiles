@@ -17,7 +17,10 @@ while :; do   # --account and --lane, either order, before the claude args
     *) break ;;
   esac
 done
-[[ "$LANE" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "aide-launch: bad lane name '$LANE' (^[A-Za-z0-9_-]{1,32}\$)" >&2; exit 64; }
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+for _l in "${AIDE_LANE_LIB:-}" "$(dirname "$_self")/../lib/aide-lane.sh" "$HOME/.local/lib/aide-lane.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+type aide_lane_valid >/dev/null 2>&1 || { echo "aide-launch: aide-lane.sh lib not found (AIDE_LANE_LIB, ../lib, ~/.local/lib)" >&2; exit 1; }
+aide_lane_valid "$LANE" || { echo "aide-launch: bad lane name '$LANE' ($AIDE_LANE_RE)" >&2; exit 64; }
 if [ -n "$ACCT" ]; then
   f="${XDG_CONFIG_HOME:-$HOME/.config}/fleet-token/store/$ACCT"
   [ -r "$f" ] || { echo "aide-launch: no store entry '$ACCT' (fleet-token-store.sh add $ACCT)" >&2; exit 64; }
@@ -54,6 +57,13 @@ if [ "$LANE" != main ]; then
     fi
   fi
   set -- --disallowedTools ScheduleWakeup "$@"
+fi
+# Pre-accept the folder-trust dialog for $HOME (11-01 1:31 AM rehearsal relaunch sat at "No, exit" unattended, A292):
+# --dangerously-skip-permissions does not skip it, and an unattended relaunch has nobody to press a key.
+cj="${AIDE_CLAUDE_JSON:-$HOME/.claude.json}"
+if [ -f "$cj" ] && [ "$(jq -r --arg d "$HOME" '.projects[$d].hasTrustDialogAccepted // false' "$cj" 2>/dev/null)" != true ]; then
+  t="$(mktemp "$cj.aide.XXXXXX")" && jq --arg d "$HOME" '.projects[$d].hasTrustDialogAccepted = true' "$cj" > "$t" && [ -s "$t" ] && mv -f "$t" "$cj" \
+    && echo "aide-launch: trust pre-accepted for $HOME" >&2 || { rm -f "$t"; echo "aide-launch: WARN trust pre-accept failed ($cj)" >&2; }
 fi
 if [ "${AIDE_USE_AGENTNS:-0}" = 1 ] && command -v agentns-claude >/dev/null 2>&1; then exec agentns-claude --dangerously-skip-permissions "$@"; fi
 exec ${AIDE_CLAUDE_BIN:-"$HOME/.npm-global/bin/claude"} --dangerously-skip-permissions "$@"
