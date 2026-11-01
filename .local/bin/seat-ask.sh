@@ -20,7 +20,7 @@ type seat_stamp_apply >/dev/null 2>&1 || { echo "seat-ask: seat-time-stamp.sh li
 selftest() {
   local T fail=0 out rc; T="$(mktemp -d)"; trap 'rm -rf "$T"' RETURN
   chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
-  export SEAT_ASK_TEST=1 EVENTS_DIR="$T/ev" SEATS_TABLE="$T/seats.tsv" SEATS_TABLE_REAL="$T/real-seats.tsv" EVENT_SOURCE=selftest SEAT_TICK_SELFTEST=1 SEAT_STAMP_NOW="9:07 PM" SEAT_ASK_DRY=1 SEAT_ASK_TICK_BIN="$T/fake-tick"
+  export ASK_CHECK_LINT_DIR="$T/lint" SEAT_ASK_TEST=1 EVENTS_DIR="$T/ev" SEATS_TABLE="$T/seats.tsv" SEATS_TABLE_REAL="$T/real-seats.tsv" EVENT_SOURCE=selftest SEAT_TICK_SELFTEST=1 SEAT_STAMP_NOW="9:07 PM" SEAT_ASK_DRY=1 SEAT_ASK_TICK_BIN="$T/fake-tick"
   printf '# t\ntst\trb\tsid-x\t20\t100\t^x\t-\nr7\tr7\tsid-r\t20\t100\t^r\t-\nzed\trb\tsid-z\t20\t100\t^z\t-\n' >"$SEATS_TABLE"
   printf '# real\nzed\trb\tsid-z\t20\t100\t^z\t-\n' >"$SEATS_TABLE_REAL"
   local J="$EVENTS_DIR/tst-events.json" pre="systemd-run --user --collect --unit seat-ask-tst-"
@@ -69,6 +69,8 @@ selftest() {
 [ "${1:-}" = "--selftest" ] && { selftest; exit $?; }
 [ $# -ge 2 ] || { echo 'usage: seat-ask.sh <seat> "<text>"' >&2; exit 64; }
 seat="$1"; shift
+# A254: a source-shaped done-check on a page/tile/dashboard/prod ask is refused (exit 2) before anything starts
+"$(dirname "$SELF")/ask-check-lint.sh" --text "$*" || exit $?
 # TEST GUARD (header): refuse a real seat / a live OnFailure= from a test run before anything is counted or started
 if [ "${SEAT_ASK_TEST:-}" = 1 ] || { [ -n "${SEAT_ASK_TICK_BIN:-}" ] && [ "$SEAT_ASK_TICK_BIN" != "$HOME/.local/bin/seat-tick.sh" ]; }; then
   if [ "${SEAT_ASK_DRY:-${CTL_ASK_DRY:-}}" != 1 ]; then
