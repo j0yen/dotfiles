@@ -1,0 +1,5 @@
+OK testhost ok-mono.timer
+OK testhost ok-cal.timer
+OK testhost ok-startup.timer
+FAIL testhost bad-active-only.timer no start trigger (has: OnUnitActiveUSec=3min)
+FAIL testhost bad-nothing.timer no start trigger (has: nothing)

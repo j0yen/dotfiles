@@ -1,0 +1,26 @@
+Id=ok-mono.timer
+UnitFileState=enabled
+TimersMonotonic={ OnUnitActiveUSec=30min ; next_elapse=29min }
+TimersMonotonic={ OnBootUSec=5min ; next_elapse=5min }
+
+Id=ok-cal.timer
+UnitFileState=enabled
+TimersCalendar={ OnCalendar=*-*-* 03:00:00 ; next_elapse=Sun 2026-10-25 03:00:00 PDT }
+
+Id=ok-startup.timer
+UnitFileState=enabled-runtime
+TimersMonotonic={ OnStartupUSec=1min ; next_elapse=1min }
+
+Id=bad-active-only.timer
+UnitFileState=enabled
+TimersMonotonic={ OnUnitActiveUSec=3min ; next_elapse=n/a }
+
+Id=bad-nothing.timer
+UnitFileState=enabled
+
+Id=disabled-bad.timer
+UnitFileState=disabled
+TimersMonotonic={ OnUnitActiveUSec=3min ; next_elapse=n/a }
+
+Id=transient-bad.timer
+UnitFileState=transient

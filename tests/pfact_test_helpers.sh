@@ -3,6 +3,7 @@
 # Builds a throwaway PRD repo whose commit times are relative to now, plus a
 # state.db with the verbatim runs/decisions columns the hook reads.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="$ROOT/.claude/hooks/park-fresh-fact.sh"

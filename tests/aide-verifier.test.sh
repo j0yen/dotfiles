@@ -14,7 +14,7 @@ last=$(printf '%s\n' "$out" | tail -n1)
 if [ $rc = 0 ] && [[ $last =~ ^selftest:\ ([0-9]+)/([0-9]+)\ passed$ ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] && [ "${BASH_REMATCH[2]}" -ge 90 ] \
    && ! printf '%s\n' "$out" | grep -q '^FAIL'; then pass "selftest ($last)"; else bad "selftest rc=$rc"; printf '%s\n' "$out" | grep -v '^PASS' | tail -n 20; fi
 # AVL: the launch lints G0/G3/G6/G1/KIND each have their named case in the selftest output
-for c in '(a)' '(b)' '(c)' '(d)' '(e)' '(f)' '(g)' '(h)' '(V1): the gated row'"'"'s author=' '(V1): the gated row'"'"'s agent column' '(V2)' '(V4)' '(V6): --head' '(V6): a gh failure' '(V8): AIDE_VERIFIER_GATE_ROOT unset' '(k1)' '(k2)' '(k3)' '(k4)' '(k5)' '(k6/W1)' '(k7/W2)' '(k8/W2)' '(k9/W3)' '(k10/W5)' '(k11/W5)' '(k12/W2)' '(C1/e2f0)' '(C1/0a48)' '(C1/864d)' '(C1/pos)' '(C1/rr)' '(C2/rc2)' '(C2/term)' '(C2/rc6)' '(C2/rc0)' '(s1)' '(s2)' '(s3)' '(s4/X1)' '(s5/X2)'; do
+for c in '(a)' '(b)' '(c)' '(d)' '(e)' '(f)' '(g)' '(h)' '(h2)' '(h3)' '(V1): the gated row'"'"'s author=' '(V1): the gated row'"'"'s agent column' '(V2)' '(V4)' '(V6): --head' '(V6): a gh failure' '(V8): AIDE_VERIFIER_GATE_ROOT unset' '(k1)' '(k2)' '(k3)' '(k4)' '(k5)' '(k6/W1)' '(k7/W2)' '(k8/W2)' '(k9/W3)' '(k10/W5)' '(k11/W5)' '(k12/W2)' '(C1/e2f0)' '(C1/0a48)' '(C1/864d)' '(C1/pos)' '(C1/rr)' '(C2/rc2)' '(C2/term)' '(C2/rc6)' '(C2/rc0)' '(s1)' '(s2)' '(s3)' '(s4/X1)' '(s5/X2)'; do
   printf '%s\n' "$out" | grep -qF "PASS gate lint $c" && pass "selftest case: gate lint $c" || bad "selftest case missing or failing: gate lint $c"
 done
 # AVL mutations: each edit to a COPY of the script must make the named selftest case FAIL (so the case is not vacuous)
@@ -75,6 +75,7 @@ import re
 from . import contract
 AGENT_RE = re.compile(r"\bagent=([A-Za-z0-9:._-]+)")
 AUTHOR_RE = re.compile(r"\bauthor=([A-Za-z0-9:._-]+)")
+ANY_OF = " || "
 def strip_attachments(evidence):
     return evidence or ""
 def _agent_token(row, rx=AGENT_RE):
@@ -114,5 +115,13 @@ out=$(vl fail1); rc=$?
 grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$script" && pass "script carries the anchored attribution regex" || bad "anchored attribution regex missing"
 grep -q 'merge-gate' "$script" && pass "script calls merge-gate" || bad "merge-gate missing"
 grep -qF -- '--agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates' "$script" && pass "prompt template records the verdict row shape" || bad "verdict row shape missing"
+# V1-V3 evidence-bundle contract (swarm-decide verdict write-time checks): one bundle, verbatim quotes, disclosed scope, no FAIL-row artifact reuse, follow-ups
+grep -qF -- '--attach {{DIR}}/bundle.log' "$script" && pass "template attaches ONE bundle" || bad "template does not attach the bundle"
+grep -qF -- '--quote "<verbatim line 1>"' "$script" && pass "template passes --quote lines" || bad "template has no --quote"
+grep -qF -- 'grep -cF' "$script" && pass "template proves each quote with grep -F before recording" || bad "template has no quote proof"
+grep -qF -- 'Never `tail -N`' "$script" && pass "template forbids tailing the evidence" || bad "template allows tailing"
+grep -qF -- 'scope=full' "$script" && grep -qF -- 'an undisclosed subset is a correction' "$script" && pass "template requires a scope statement" || bad "template has no scope rule"
+grep -qF -- 'NEVER attach an artifact (same sha256) that is on a FAIL/BLOCK row' "$script" && pass "template forbids FAIL-row artifact reuse" || bad "template lacks the reuse rule"
+grep -qF -- 'follow-up=<id>' "$script" && pass "template cites controller follow-ups" || bad "template lacks follow-ups"
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail
