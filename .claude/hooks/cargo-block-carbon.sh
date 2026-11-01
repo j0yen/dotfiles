@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# hostname guard (tracked in dotfiles; carbon-only hook): silent no-op on every other node
+[ "$(hostname -s)" = carbon ] || exit 0
 # cargo-block-carbon.sh — PreToolUse hook (Bash), ALL models: carbon never
 # compiles Rust (14 G RAM, tmpfs /tmp 7 G — the 10-07 death). Added
 # 2026-10-13 9:1x pm PDT when the `op` seat moved to carbon (Joe "move op

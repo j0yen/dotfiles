@@ -1,0 +1,12 @@
+#!/bin/bash
+# commit-msg (r7 coder-clone launcher, ctl df62 CONFIRM-WITH 10-23): strip Co-Authored-By / "Generated with Claude" lines from every
+# coder commit message. Wired by run-coder.sh through GIT_CONFIG_COUNT core.hooksPath (env-level: survives the coder's own HOME change).
+# Fleet rule: NO attribution trailers (Joe 10-22). Strips rather than refuses so a coder never loops on a rejected commit; logs each strip.
+f=$1; [ -f "$f" ] || exit 0
+n=$(grep -ciE '^[[:space:]]*co-authored-by:|generated with \[?claude' "$f" || true)
+if [ "${n:-0}" -gt 0 ]; then
+  grep -viE '^[[:space:]]*co-authored-by:|generated with \[?claude' "$f" > "$f.strip" && mv "$f.strip" "$f"
+  echo "commit-msg: stripped $n attribution line(s)" >&2
+  echo "$(date -Is) stripped=$n repo=$(git rev-parse --show-toplevel 2>/dev/null)" >> "${R7_GIT_HOOK_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/r7-git-hooks-strip.log}" 2>/dev/null || true
+fi
+exit 0

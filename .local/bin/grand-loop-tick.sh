@@ -27,7 +27,7 @@
 #   GRAND_LOOP_LOG       default $HOME/brain/journal/grand-loop.log
 #   GRAND_LOOP_HOST      default "hub" — the --host mcphost-deploy is called with
 #   GRAND_LOOP_EXCLUDE_PREFIXES   default "harness-,probe-"
-#   GRAND_LOOP_MAX_TICKS_PER_DAY  default 4
+#   GRAND_LOOP_MAX_TICKS_PER_DAY  default 0 = no daily cap (Joe 11-01 #195 "stop using rationing limits")
 set -uo pipefail
 # Appended, not overridden: a caller (a test, or a future wrapper) may have
 # already put a stand-in `mcphost-deploy` earlier on PATH; under systemd
@@ -56,7 +56,7 @@ ENV_FILE="${GRAND_LOOP_ENV:-$HOME/.config/grand-loop/env}"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 GRAND_LOOP_EXCLUDE_PREFIXES="${GRAND_LOOP_EXCLUDE_PREFIXES:-harness-,probe-}"
-GRAND_LOOP_MAX_TICKS_PER_DAY="${GRAND_LOOP_MAX_TICKS_PER_DAY:-4}"
+GRAND_LOOP_MAX_TICKS_PER_DAY="${GRAND_LOOP_MAX_TICKS_PER_DAY:-0}"
 HOST="${GRAND_LOOP_HOST:-hub}"
 
 # ---- flock: a second start exits 0 within 2s, no ledger line (AC2) --------
@@ -88,7 +88,7 @@ fi
 # ---- daily MEASURE cap (AC8) — MEASURE-OK forces past it, like STOP -------
 if [ "$measure_ok" = 0 ]; then
   measured_today="$(count_reached_measure_today "$LEDGER" "$today")"
-  if [ "$measured_today" -ge "$GRAND_LOOP_MAX_TICKS_PER_DAY" ]; then
+  if [ "$GRAND_LOOP_MAX_TICKS_PER_DAY" -gt 0 ] && [ "$measured_today" -ge "$GRAND_LOOP_MAX_TICKS_PER_DAY" ]; then
     bl_phase "$STATE" IDLE "skip: daily cap ($measured_today/$GRAND_LOOP_MAX_TICKS_PER_DAY)"
     echo "skip: daily cap ($measured_today/$GRAND_LOOP_MAX_TICKS_PER_DAY)"
     log "skip: daily cap ($measured_today/$GRAND_LOOP_MAX_TICKS_PER_DAY)"
