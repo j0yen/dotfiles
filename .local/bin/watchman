@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# watchman: shim for /usr/bin/watchman (wmg, 10-24; incident 10-20 14:39:39: a client added /home/jsy, 12 s later the 65536 inotify watches were gone).
+# Installed as ~/.local/bin/watchman (dotfiles install.sh symlinks it; ~/.local/bin precedes /usr/bin in tmux seats, coders, user units, aide).
+#   1. IDENTIFIES the client: appends ONE JSON line to ${XDG_STATE_HOME:-~/.local/state}/watchman-guard/clients.jsonl before the exec:
+#      ts, pid (== the server log's pid=N), ppid chain (3 levels of /proc/<p>/cmdline), cwd, argv, kind. Never env. Secrets are replaced by
+#      <REDACTED> BEFORE the write, then each cmdline/argv item is cut to 200 chars. Rotates at 5 MB, keeping clients.jsonl.1.
+#   2. REFUSES (the ONLY non-pass outcome in this file): a CLI client whose root is a DENY member. Command = `watch`, `watch-project`, `trigger`,
+#      `state-enter`, `state-leave` or `subscribe` (the commands that auto-watch an unwatched root, probed on a private server 10-24); root = the next
+#      non-dash token. Refuse iff `realpath -m <root>` is byte-equal to a line of ~/.config/watchman-guard/deny.list (EQUALITY, never a prefix: descendants
+#      pass). Refusal = exit 1, `watchman-guard: refused root <p>` on stderr, a row with kind=refused.
+#   3. FAILS OPEN: no `set -e`, every logging statement ends `|| true`, a missing lib / deny file / failed realpath = straight exec. `-j`/`--json-command`/
+#      `--server-encoding` stdin modes pass through unrefused (kind=json-stdin) and this script never reads stdin. Unparsable argv = kind=unparsed, pass.
+#   LIBRARY clients (pywatchman, fb-watchman) run the binary only for `get-sockname` (kind=get-sockname) and then talk on the socket: logged, NOT refusable
+#   here. watchman-root-guard.sh (the 1-min sweeper) is the only enforcement for them.
+# Env (tests): WG_REAL (the real binary, default /usr/bin/watchman)  WG_LIB  WG_DENY  XDG_STATE_HOME. Never sources anything but the lib.
+REAL=${WG_REAL:-/usr/bin/watchman}
+
+wg_shim_read_ppid() { # PID -> RP (parent pid), "" when unreadable
+  local st rest
+  RP=""
+  st=$(< "/proc/$1/stat") 2>/dev/null || return 0
+  rest=${st##*) }
+  read -r _ RP _ <<< "$rest"
+  return 0
+}
+
+wg_shim_log() { # KIND ROOT REFUSED(0|1) -- argv in "${ARGV[@]}"
+  local kind=$1 root=$2 refused=$3 p parts=() pp_json="" cmdl="" cwd ts i first=1 argv_json="" row
+  local cmds=() pids=()
+  p=$PPID
+  for i in 1 2 3; do
+    [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null || break
+    parts=()
+    mapfile -d '' -t parts < "/proc/$p/cmdline" 2>/dev/null || true
+    cmdl="${parts[*]}"
+    pids+=("$p"); cmds+=("$cmdl")
+    wg_shim_read_ppid "$p"; p=$RP
+  done
+  cwd=$PWD
+  wg_redact_many "$cwd" "$root" "${cmds[@]}" "${ARGV[@]}"
+  local r_cwd=${REDACTED[0]} r_root=${REDACTED[1]}
+  local nc=${#cmds[@]} k
+  for ((k = 0; k < nc; k++)); do
+    wg_json_esc "${REDACTED[k+2]}"
+    [ -n "$pp_json" ] && pp_json+=","
+    pp_json+="{\"pid\":${pids[k]},\"cmd\":\"$REPLY\"}"
+  done
+  for ((k = nc + 2; k < ${#REDACTED[@]}; k++)); do
+    wg_json_esc "${REDACTED[k]}"
+    [ -n "$argv_json" ] && argv_json+=","
+    argv_json+="\"$REPLY\""
+  done
+  printf -v ts '%(%Y-%m-%dT%H:%M:%S%z)T' -1 || ts=""
+  wg_json_esc "$r_cwd"; local j_cwd=$REPLY
+  row="{\"ts\":\"$ts\",\"pid\":$$,\"ppids\":[$pp_json],\"cwd\":\"$j_cwd\",\"argv\":[$argv_json],\"kind\":\"$kind\""
+  if [ -n "$root" ]; then wg_json_esc "$r_root"; row+=",\"root\":\"$REPLY\""; fi
+  [ "$refused" = 1 ] && row+=",\"refused\":true"
+  row+="}"
+  wg_append_row "$row" || true
+  return 0
+}
+
+ARGV=("$@")
+LIB=""
+for _l in "${WG_LIB:-}" "$HOME/.local/lib/watchman-guard-lib.sh"; do
+  [ -n "$_l" ] && [ -r "$_l" ] && { LIB=$_l; break; }
+done
+[ -n "$LIB" ] || exec "$REAL" "$@"
+. "$LIB" 2>/dev/null || exec "$REAL" "$@"
+
+KNOWN=" watch watch-project trigger state-enter state-leave subscribe get-sockname watch-del watch-del-all watch-list version get-pid clock find query since log log-level shutdown-server unsubscribe trigger-del trigger-list flush-subscriptions get-config list-capabilities debug-ageout debug-contenthash debug-drop-privs debug-get-subscriptions debug-poison debug-recrawl debug-set-subscriptions-paused debug-show-cursors "
+REFUSE=" watch watch-project trigger state-enter state-leave subscribe "
+cmd=""; root=""; kind="unparsed"; jsonmode=0; pos=()
+for t in "$@"; do
+  case "$t" in
+    -j|--json-command|--server-encoding|--server-encoding=*) jsonmode=1 ;;
+    --*) ;;
+    -[!-]*j*) jsonmode=1 ;;
+    -*) ;;
+    *) pos+=("$t") ;;
+  esac
+done
+for ((i = 0; i < ${#pos[@]}; i++)); do
+  case "$KNOWN" in *" ${pos[i]} "*) cmd=${pos[i]}; root=${pos[i+1]-}; break ;; esac
+done
+
+real=""; refused=0
+if [ "$jsonmode" = 1 ]; then
+  kind="json-stdin"; root=""
+elif [ -z "$cmd" ]; then
+  kind="unparsed"; root=""
+elif [ "$cmd" = get-sockname ]; then
+  kind="get-sockname"; root=""
+elif [ "${REFUSE#*" $cmd "}" != "$REFUSE" ]; then
+  if [ -n "$root" ]; then
+    kind="watch"
+    real=$(realpath -m -- "$root" 2>/dev/null) || real=""
+    if [ -n "$real" ] && wg_load_deny && wg_is_denied "$real"; then refused=1; kind="refused"; fi
+  else
+    kind="unparsed"
+  fi
+else
+  kind="other"; root=""
+fi
+
+wg_shim_log "$kind" "${real:-$root}" "$refused" 2>/dev/null || true
+if [ "$refused" = 1 ]; then
+  echo "watchman-guard: refused root $real" >&2
+  exit 1
+fi
+exec "$REAL" "$@"

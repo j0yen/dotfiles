@@ -3,16 +3,21 @@
 # (premise + expiry in the unit Description/RuntimeMaxSec). Rings the seat when the turn ends.
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
-# gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
-# spawn-hold 76, spec-lint 73, STEP 0 75, room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; runs last, just before `claude -p`).
+# gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
+# spawn-hold 76, spec-lint 73, STEP 0 75, room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; runs last, just before `claude -p`; shares exit 78 with the model gate, told apart by the REFUSED text).
+# env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests),
 # RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read).
 set -uo pipefail
 nocargo=0; args=(); for a in "$@"; do if [ "$a" = --no-cargo ]; then nocargo=1; else args+=("$a"); fi; done
 n="${args[0]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; pf="${args[1]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; D="$HOME/.cache/rb-seat/coders"
+model="${RB_CODER_MODEL:-sonnet}"; case "$model" in sonnet) effort=medium ;; opus) effort=high ;; *) echo "REFUSED model=$model (sonnet|opus)" >&2; exit 78 ;; esac
 hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="${RB_SPAWN_HOLD_EXTRA:-}"
+# host gate (aide A25, rb row d-20261031-152854-rb-9122; Joe 10-27 "Carbon is for administration and monitoring. Nothing should be built nor coded on carbon"):
+# a coder session runs on redbaron or ryzen7 only; any other host exits 79 before the OAuth source, every other gate and STEP 0.
+h="$(hostname -s 2>/dev/null)"; case "$h" in redbaron|ryzen7) ;; *) echo "REFUSED host=${h:-unknown} (rb-run-coder.sh runs on redbaron or ryzen7 only)" >&2; exit 79 ;; esac
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
 cd "$HOME"
 # empty-prompt gate (rb 10-23 12:5x AM: a failed sed left clp2.prompt at 0 bytes and the unit started anyway).
 [ "$(wc -c < "$pf" 2>/dev/null || echo 0)" -ge 200 ] || { echo "REFUSED empty-prompt $pf" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED empty-prompt" || true; exit 74; }
@@ -67,6 +72,6 @@ if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
   echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
 fi
 echo "$room_l1 $room_tail" > "$D/$n.room"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ROOM $room_l1 $room_tail" || true
-claude -p --dangerously-skip-permissions --model sonnet "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
+claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc

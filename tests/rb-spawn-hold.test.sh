@@ -67,7 +67,7 @@ run c2 $R/c2.jsonl ""; expect "(c2) refuse 29 min old" 76 "HOLD run=1039 refusal
 run d $R/d.jsonl ""; expect "(d) no rows" 0 "OK "
 
 # (e1) read failure, no prior hold -> OK unknown
-run e1 $R/missing.jsonl ""; expect "(e1) read failure, no prior state" 0 "OK unknown: "
+run e1 $R/missing.jsonl ""; expect "(e1) read failure, no prior state" 0 "UNKNOWN unknown: "
 [ "$(field source)" = unknown ] && pass "(e1) source=unknown" || bad "(e1) source $(field source)"
 # (e2) read failure, prior HOLD read 5 min ago -> HOLD stale-ssh, read_at not advanced
 prev='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null}'
@@ -78,7 +78,7 @@ prevu='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-
 run e2b $R/missing.jsonl "$prevu"; [ "$(field unknown_since)" = 2026-10-23T09:25:00Z ] && pass "(e2b) unknown_since carried across failed reads" || bad "(e2b) unknown_since $(field unknown_since)"
 # (e3) read failure, prior HOLD read 31 min ago -> stickiness expired
 prev3='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T08:50:00Z","read_at":"2026-10-23T08:59:00Z","source":"ssh","hand_slots":2,"parts":[],"exempt":null}'
-run e3 $R/missing.jsonl "$prev3" --probe-only; expect "(e3) read failure, prior HOLD 31 min old (timer)" 0 "OK unknown: "
+run e3 $R/missing.jsonl "$prev3" --probe-only; expect "(e3) read failure, prior HOLD 31 min old (timer)" 0 "UNKNOWN unknown: "
 # shu2: the same 31 min old good read, a spawn gate: blind since that read (08:59), 1860 s >= BLIND_S
 run e3b $R/missing.jsonl "$prev3"; expect "(e3b) read failure, prior HOLD 31 min old, spawn gate" 76 "HOLD unknown-blind unknown_since=2026-10-23T08:59:00Z age_s=1860 "
 
@@ -239,13 +239,14 @@ shj() { # shj <state-file> [env assignments...]; sets sout src sext
 shj "$SH/s1.json"
 cmd=$(cat "$SH/cmd.log")
 ok=0; for t in runs land daemon builder; do [[ $cmd == *"--table \"\$t\""* || $cmd == *"rd $t "* ]] || ok=1; done
-[[ $cmd == *"wait"* && $cmd == *'"op":"driver-adopted"'* && $cmd == *"grep -F"* && $cmd == *"mktemp -d"* && $cmd == *"rm -rf"* && $cmd == *"&"* ]] || ok=1
-[ $ok = 0 ] && pass "(shj1) remote command names runs/land/daemon/builder, parallel '&' + wait, driver-adopted grep -F filter, mktemp -d + rm -rf trap" || bad "(shj1) remote cmd: $cmd"
+[[ $cmd == *'rd runs ""; rd land ""; rd daemon'* && $cmd == *'; rd builder ""'* && $cmd == *'"op":"driver-adopted"'* && $cmd == *"grep -F"* && $cmd == *"mktemp -d"* && $cmd == *"rm -rf"* ]] || ok=1
+[[ $cmd == *"& wait"* || $cmd == *" & rd "* ]] && ok=1
+[ $ok = 0 ] && pass "(shj1) remote command names runs/land/daemon/builder as serial table reads, driver-adopted grep -F filter, mktemp -d + rm -rf trap" || bad "(shj1) remote cmd: $cmd"
 [ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=300 hand_slots=2 source=ssh walls=runs:2,land:2,daemon:2,builder:2" ]] \
   && pass "(shj2) framed tables parsed (### skipped), output line gains walls=: $sout" || bad "(shj2) rc=$src out=$sout"
 # (shj3) the ssh timeout is a named variable; a read that outlives it reads rc=124
 shj "$SH/s3.json" SHJ_SLEEP=5 RB_SPAWN_HOLD_TIMEOUT_S=1
-[ "$src" = 0 ] && [[ $sout == "OK unknown: ssh redbaron journal failed: "*"rc=124 source=unknown" ]] && pass "(shj3) 1-s timeout vs sleeping ssh -> $sout" || bad "(shj3) rc=$src out=$sout"
+[ "$src" = 0 ] && [[ $sout == "UNKNOWN unknown: ssh redbaron journal failed: "*"rc=124 source=unknown" ]] && pass "(shj3) 1-s timeout vs sleeping ssh -> $sout" || bad "(shj3) rc=$src out=$sout"
 # (shj4) one table read fails: the whole read is a failure, and the stale-ssh fallback runs (the survivors are NOT parsed as a picture)
 prev4='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null}'
 printf '%s\n' "$prev4" > "$SH/s4.json"
@@ -255,7 +256,7 @@ shj "$SH/s4.json" SHJ_RC_daemon=3
 printf '%s\n' "$prev4" > "$SH/s4b.json"; shj "$SH/s4b.json" SHJ_RC_daemon=3 SHJ_EXIT0=1
 [ "$src" = 76 ] && [[ $sout == "HOLD run=1039 refusal=max-units age_s=600 hand_slots=2 source=stale-ssh" ]] && pass "(shj4b) daemon frame rc=3 though ssh exit 0 -> parser still counts the read failed: $sout" || bad "(shj4b) rc=$src out=$sout"
 rm -f "$SH/s5.json"; shj "$SH/s5.json" SHJ_RC_land=3 SHJ_EXIT0=1
-[ "$src" = 0 ] && [[ $sout == "OK unknown: ssh journal table read failed: land rc=3"* ]] && [ "$(python3 -I -c 'import json;print(json.load(open("'$SH'/s5.json"))["source"])')" = unknown ] \
+[ "$src" = 0 ] && [[ $sout == "UNKNOWN unknown: ssh journal table read failed: land rc=3"* ]] && [ "$(python3 -I -c 'import json;print(json.load(open("'$SH'/s5.json"))["source"])')" = unknown ] \
   && pass "(shj5) a failed table with no prior HOLD -> OK unknown (not a clean OK): $sout" || bad "(shj5) rc=$src out=$sout"
 cp "$SH/rows.keep" "$SH/rows.jsonl"
 # (shj6) the REAL remote script, run under dash by a local fake ssh, with a stub wm-build (one row per table; the daemon table has a
@@ -281,7 +282,7 @@ if command -v dash >/dev/null 2>&1; then
   [ "$src" = 76 ] && [[ $sout == "HOLD run=7 refusal=budget age_s=120 hand_slots=1 source=ssh walls=runs:"* ]] && [ -z "$(ls -A "$SH/rtmp" | grep -v '^rb-spawn-hold\.')" ] \
     && pass "(shj6) real remote script under dash: 4 tables read, HOLD decided, empty daemon-filter match (grep rc 1) ok, remote mktemp -d removed: $sout" || bad "(shj6) rc=$src out=$sout rtmp=$(ls "$SH/rtmp")"
   rm -f "$SH/s7.json"; sout=$(env HOME="$SH/rhome" XDG_CONFIG_HOME="$SH/rhome/.config" TMPDIR="$SH/rtmp" SHJ_TS="$ts" SHJ_FAIL_TABLE=land RB_SPAWN_HOLD_SSH="$SH/ssh.dash" bash "$hold" --state-file "$SH/s7.json" --now "$NOW" --no-flag 2>/dev/null); src=$?
-  [ "$src" = 0 ] && [[ $sout == "OK unknown: ssh redbaron journal failed:"*"rc=1 source=unknown" ]] && pass "(shj7) real remote script, land read rc=5 -> remote exits non-zero -> OK unknown: $sout" || bad "(shj7) rc=$src out=$sout"
+  [ "$src" = 0 ] && [[ $sout == "UNKNOWN unknown: ssh redbaron journal failed:"*"rc=1 source=unknown" ]] && pass "(shj7) real remote script, land read rc=5 -> remote exits non-zero -> UNKNOWN unknown: $sout" || bad "(shj7) rc=$src out=$sout"
 else
   bad "(shj6) dash missing"
 fi
@@ -300,7 +301,7 @@ useed() { printf '{"active":false,"run_id":null,"refusal":null,"refused_at":null
 oneline() { [[ $out != *$'\n'* ]]; }
 BLINDFIX="source=unknown fix: ssh redbaron journal read or --no-cargo"
 # (u1) fresh unknown (300 s) non-exempt -> OK unknown, rc 0
-run u1 $MISSING "$(useed 300)"; expect "(u1) unknown 300 s, non-exempt" 0 "OK unknown: "
+run u1 $MISSING "$(useed 300)"; expect "(u1) unknown 300 s, non-exempt" 0 "UNKNOWN unknown: "
 # (u2) aged unknown (660 s) non-exempt -> HOLD unknown-blind, rc 76; the state keeps source=unknown + the seeded unknown_since; no flag, no ssh
 run u2 $MISSING "$(useed 660)"; expect "(u2) unknown 660 s, non-exempt" 76 "HOLD unknown-blind unknown_since=$(isoago 660) age_s=660 $BLINDFIX"
 oneline && [ "$out" = "HOLD unknown-blind unknown_since=$(isoago 660) age_s=660 $BLINDFIX" ] && pass "(u2) the HOLD line is exact (G8) and the only stdout line" || bad "(u2) line: $out"
@@ -311,11 +312,11 @@ u2o=$(RB_SPAWN_HOLD_SSH=$R/u2.ssh CARGO_SLOT_HAND_DIR=$U2H "$hold" --journal-fil
 [ $u2rc = 76 ] && [[ $u2o == "HOLD unknown-blind "* ]] && [ ! -e "$U2H/HAND-YIELD" ] && [ ! -s "$R/u2.sshlog" ] && pass "(u2) flag logic live (no --no-flag): rc=76, HAND-YIELD absent, no ssh call (act=none: source stays unknown)" || bad "(u2) rc=$u2rc flag=$(ls $U2H) ssh=$(cat $R/u2.sshlog)"
 # (u3) boundary exactly 600 s -> HOLD, rc 76; 599 s -> OK
 run u3 $MISSING "$(useed 600)"; expect "(u3) boundary 600 s" 76 "HOLD unknown-blind unknown_since=$(isoago 600) age_s=600 "
-run u3b $MISSING "$(useed 599)"; expect "(u3b) 599 s" 0 "OK unknown: "
+run u3b $MISSING "$(useed 599)"; expect "(u3b) 599 s" 0 "UNKNOWN unknown: "
 # (u4) aged unknown + --probe-only (the timer) -> rc 0; (u5) --probe-only --exempt X (the --no-cargo path) -> rc 0; (u5b) --exempt alone never refuses (G1)
-run u4 $MISSING "$(useed 660)" --probe-only; expect "(u4) aged unknown, --probe-only" 0 "OK unknown: "
-run u5 $MISSING "$(useed 660)" --probe-only --exempt X; expect "(u5) aged unknown, --probe-only --exempt X" 0 "OK unknown: "
-run u5b $MISSING "$(useed 660)" --exempt X; expect "(u5b) aged unknown, --exempt X alone" 0 "OK unknown: "
+run u4 $MISSING "$(useed 660)" --probe-only; expect "(u4) aged unknown, --probe-only" 0 "UNKNOWN unknown: "
+run u5 $MISSING "$(useed 660)" --probe-only --exempt X; expect "(u5) aged unknown, --probe-only --exempt X" 0 "UNKNOWN unknown: "
+run u5b $MISSING "$(useed 660)" --exempt X; expect "(u5b) aged unknown, --exempt X alone" 0 "UNKNOWN unknown: "
 # (u6) stale-ssh branch (a prior good read) is byte-for-byte what PR #52 did: stdout, rc and the state file, probe and not
 prev6='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:20:00Z","read_at":"2026-10-23T09:25:00Z","source":"ssh","hand_slots":2,"parts":["hand-1:hand:5"],"exempt":null,"unknown_since":null}'
 prev6u='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:00:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"2026-10-23T09:00:00Z"}'
@@ -332,25 +333,25 @@ done; done
 printf '%s\n' "$prev6" > "$R/u6.new.json"; "$hold" --journal-file $MISSING --state-file "$R/u6.new.json" --now "$NOW" --no-flag >/dev/null 2>&1
 [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["unknown_since"])' "$R/u6.new.json")" = "$(isoago 300)" ] && pass "(u6) prior good read at 09:25 -> unknown_since = that read_at (shu2)" || bad "(u6) unknown_since after a good prev"
 # (u7) first failure, no prior state -> unknown_since = now, OK unknown, rc 0
-run u7 $MISSING ""; expect "(u7) first failure, no state" 0 "OK unknown: "
+run u7 $MISSING ""; expect "(u7) first failure, no state" 0 "UNKNOWN unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(u7) unknown_since = now" || bad "(u7) unknown_since $(field unknown_since)"
 # (u8) heal: aged unknown + a good read -> no carried unknown_since; the next failure restarts the clock at now
 run u8 $R/d.jsonl "$(useed 660)"; expect "(u8) good read heals" 0 "OK "
 u8st=$(cat "$st"); [ "$(field source)" = file ] && [ "$(field unknown_since)" = null ] && pass "(u8) healed state: non-unknown source, unknown_since null" || bad "(u8) state $u8st"
-run u8b $MISSING "$u8st"; expect "(u8) failure after heal" 0 "OK unknown: "
+run u8b $MISSING "$u8st"; expect "(u8) failure after heal" 0 "UNKNOWN unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(u8) unknown_since = now after the heal" || bad "(u8) unknown_since $(field unknown_since)"
 # (u9) stale-ssh whose good-read time is past the window -> the blind clock dates from that last good read (shu2; was the carried unknown_since)
 prev9=$(printf '{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"%s","read_at":"%s","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"%s"}' "$(isoago 2400)" "$(isoago 2000)" "$(isoago 900)")
 run u9 $MISSING "$prev9"; expect "(u9) stale-ssh expired, read_at 2000 s old, unknown_since 900 s old" 76 "HOLD unknown-blind unknown_since=$(isoago 2000) age_s=2000 "
 # (G2) an unparseable unknown_since restarts the clock, never a traceback
-run g2a $MISSING '{"source":"unknown","unknown_since":"not-a-time","read_at":"x","active":false}'; expect "(G2) unparseable unknown_since" 0 "OK unknown: "
+run g2a $MISSING '{"source":"unknown","unknown_since":"not-a-time","read_at":"x","active":false}'; expect "(G2) unparseable unknown_since" 0 "UNKNOWN unknown: "
 [ "$(field unknown_since)" = "$NOW" ] && pass "(G2) unknown_since reset to now" || bad "(G2) unknown_since $(field unknown_since)"
 # (u10) corrupt state, non-exempt non-probe -> HOLD state-unreadable, rc 76, the corrupt file is left alone; (u11) --probe-only -> rc 0 and the file parses afterwards
 run u10 $MISSING '{not json'; expect "(u10) corrupt state, non-exempt" 76 "HOLD unknown-blind state-unreadable fix: ssh redbaron journal read or --no-cargo"
 oneline && [ "$(cat "$st")" = '{not json' ] && pass "(u10) one stdout line; the corrupt file is not rewritten (that would restart the clock)" || bad "(u10) st=$(cat "$st") out=$out"
-run u11 $MISSING '{not json' --probe-only; expect "(u11) corrupt state, --probe-only" 0 "OK unknown: "
+run u11 $MISSING '{not json' --probe-only; expect "(u11) corrupt state, --probe-only" 0 "UNKNOWN unknown: "
 python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["source"]=="unknown" and d["unknown_since"]' "$st" && pass "(u11) the state file parses afterwards (source=unknown, unknown_since set)" || bad "(u11) state: $(cat "$st")"
-run u10b $MISSING '{not json' --exempt X; expect "(u10b) corrupt state, --exempt alone" 0 "OK unknown: "
+run u10b $MISSING '{not json' --exempt X; expect "(u10b) corrupt state, --exempt alone" 0 "UNKNOWN unknown: "
 run u10c $MISSING '[1,2]'; expect "(u10c) state is a JSON array (not an object)" 76 "HOLD unknown-blind state-unreadable"
 
 # --- (u12-u15) rb-run-coder.sh: any rc but 0/76 refuses (G10); first line matching ^(HOLD|OK|REFUSED), else the first non-empty line (H3) ---
@@ -384,9 +385,9 @@ if [ "$(id -u)" = 0 ]; then echo "SKIP: (u16/u17) running as root (chmod 500 doe
   [ $u16rc = 76 ] && [ "$u16o" = "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo" ] && [[ $u16o != *$'\n'* ]] && [ ! -s "$R/u16.err" ] \
     && pass "(u16) engine crash, non-exempt -> rc=76, the HOLD line is the ONLY output (stderr empty): $u16o" || bad "(u16) rc=$u16rc out=[$u16o] err=[$(head -c 200 "$R/u16.err")]"
   u17o=$("$hold" --journal-file $MISSING --state-file "$RO/state.json" --now "$NOW" --no-flag --probe-only 2>/dev/null); u17rc=$?
-  [ $u17rc = 0 ] && [ "$u17o" = "OK unknown: decision engine failed source=unknown" ] && pass "(u17) engine crash under --probe-only -> rc=0: $u17o" || bad "(u17) rc=$u17rc out=[$u17o]"
+  [ $u17rc = 0 ] && [ "$u17o" = "UNKNOWN unknown: decision engine failed source=unknown" ] && pass "(u17) engine crash under --probe-only -> rc=0: $u17o" || bad "(u17) rc=$u17rc out=[$u17o]"
   u17b=$("$hold" --journal-file $MISSING --state-file "$RO/state.json" --now "$NOW" --no-flag --exempt X 2>/dev/null); u17brc=$?
-  [ $u17brc = 0 ] && [[ $u17b == "OK unknown: decision engine failed"* ]] && pass "(u17b) H4: engine crash with --exempt alone stays OK unknown, rc=0 (exempt = the caller accepts blindness)" || bad "(u17b) rc=$u17brc out=[$u17b]"
+  [ $u17brc = 0 ] && [[ $u17b == "UNKNOWN unknown: decision engine failed"* ]] && pass "(u17b) H4: engine crash with --exempt alone stays OK unknown, rc=0 (exempt = the caller accepts blindness)" || bad "(u17b) rc=$u17brc out=[$u17b]"
   chmod 700 "$RO"
 fi
 
@@ -404,12 +405,12 @@ gprev() {
 run s2a $MISSING "$(gprev ssh 601 null false)"; expect "(s2a) last good read 601 s ago + failing call" 76 "HOLD unknown-blind unknown_since=$(isoago 601) age_s=601 "
 [ "$(field unknown_since)" = "$(isoago 601)" ] && [ "$(field read_at)" = "$NOW" ] && pass "(s2a) written unknown_since == the fixture read_at ($(isoago 601)), read_at is now" || bad "(s2a) state $(cat "$st")"
 # (s2b) 599 s -> OK unknown, rc 0
-run s2b $MISSING "$(gprev ssh 599 null false)"; expect "(s2b) last good read 599 s ago + failing call" 0 "OK unknown: "
+run s2b $MISSING "$(gprev ssh 599 null false)"; expect "(s2b) last good read 599 s ago + failing call" 0 "UNKNOWN unknown: "
 [ "$(field unknown_since)" = "$(isoago 599)" ] && pass "(s2b) unknown_since == the fixture read_at" || bad "(s2b) unknown_since $(field unknown_since)"
 # (s2c) the same 601 s state never refuses --probe-only (the timer) or --exempt X --probe-only (--no-cargo) or --exempt alone
-run s2c1 $MISSING "$(gprev ssh 601 null false)" --probe-only; expect "(s2c) 601 s, --probe-only" 0 "OK unknown: "
-run s2c2 $MISSING "$(gprev ssh 601 null false)" --exempt X; expect "(s2c) 601 s, --exempt X" 0 "OK unknown: "
-run s2c3 $MISSING "$(gprev ssh 601 null false)" --probe-only --exempt X; expect "(s2c) 601 s, --probe-only --exempt X" 0 "OK unknown: "
+run s2c1 $MISSING "$(gprev ssh 601 null false)" --probe-only; expect "(s2c) 601 s, --probe-only" 0 "UNKNOWN unknown: "
+run s2c2 $MISSING "$(gprev ssh 601 null false)" --exempt X; expect "(s2c) 601 s, --exempt X" 0 "UNKNOWN unknown: "
+run s2c3 $MISSING "$(gprev ssh 601 null false)" --probe-only --exempt X; expect "(s2c) 601 s, --probe-only --exempt X" 0 "UNKNOWN unknown: "
 # (s2d) a good read after the 601 s-old OK -> OK, unknown_since null (a good read resets the clock)
 run s2d $R/d.jsonl "$(gprev ssh 601 null false)"; expect "(s2d) good read after a 601 s-old OK" 0 "OK "
 [ "$(field unknown_since)" = null ] && pass "(s2d) unknown_since null after the good read" || bad "(s2d) unknown_since $(field unknown_since)"
@@ -424,6 +425,39 @@ codeonly=$(sed -n "/<<'PY'\$/,/^PY\$/p" "$hold" | sed -E 's/^[[:space:]]*#.*$//;
 run s2g $MISSING "$(gprev x 601 null false nosource)"; expect "(s2g) no-source prev, read_at 601 s" 76 "HOLD unknown-blind unknown_since=$(isoago 601) age_s=601 "
 # the unknown branch keeps the earlier of the two: a prev unknown whose read_at is later than unknown_since still dates from unknown_since
 run s2h $MISSING "$(printf '{"active":false,"read_at":"%s","source":"unknown","unknown_since":"%s"}' "$(isoago 50)" "$(isoago 700)")"; expect "(s2h) unknown prev: the earlier unknown_since wins" 76 "HOLD unknown-blind unknown_since=$(isoago 700) age_s=700 "
+
+# --- local read on the target host + one in-call retry (ctl 9d62/7066) ---
+LT=$R/local; mkdir -p "$LT"
+# stub local runner: ignores the script, emits good empty frames; fails the first $LL_FAILS calls (counter file)
+cat > "$LT/local.stub" <<'STUB'
+#!/bin/sh
+echo x >> "$LL_LOG"; n=$(wc -l < "$LL_LOG")
+if [ "$n" -le "${LL_FAILS:-0}" ]; then echo "boom" >&2; exit 1; fi
+for t in runs land daemon builder; do echo "### table=$t rc=0 wall_s=1"; done
+STUB
+chmod +x "$LT/local.stub"
+lrun() { # lrun <name> <fails> <prev-json> [args...]; sets lout lrc lst lcalls
+  local nm=$1 fails=$2 prev=$3; shift 3; lst=$LT/$nm.json; : > "$LT/$nm.log"
+  [ -z "$prev" ] || printf '%s\n' "$prev" > "$lst"
+  lout=$(env HOME="$LT/home" TMPDIR="$LT" RB_SPAWN_HOLD_LOCAL=1 RB_SPAWN_HOLD_LOCAL_CMD="$LT/local.stub" RB_SPAWN_HOLD_RETRY_S=0 LL_LOG="$LT/$nm.log" LL_FAILS=$fails \
+    "$hold" --state-file "$lst" --now "$NOW" --no-flag "$@" 2>/dev/null); lrc=$?
+  lcalls=$(wc -l < "$LT/$nm.log")
+}
+lfield() { python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v) if not isinstance(v,str) else v)' "$lst" "$1"; }
+iso_ago() { date -u -d "$NOW - $1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
+lprev() { printf '{"active":false,"run_id":null,"refusal":null,"refused_at":null,"read_at":"%s","source":"%s","hand_slots":0,"parts":[],"exempt":null,"unknown_since":%s}' "$(iso_ago "$1")" "$2" "$3"; }
+# (l1) RB_SPAWN_HOLD_LOCAL=1 takes the local path and a good read clears unknown
+lrun l1 0 "$(lprev 100 unknown "\"$(iso_ago 900)\"")"
+[ "$lcalls" = 1 ] && [ "$lrc" = 0 ] && [[ $lout == OK* ]] && [ "$(lfield source)" = ssh ] && [ "$(lfield unknown_since)" = null ] && pass "(l1) local path taken, source=ssh, unknown_since cleared: $lout" || bad "(l1) calls=$lcalls rc=$lrc out=$lout st=$(cat "$lst")"
+# (l2) idle 77 min, first read fails, retry succeeds -> no refusal
+lrun l2 1 "$(lprev 4620 ssh null)"
+[ "$lcalls" = 2 ] && [ "$lrc" = 0 ] && [[ $lout == OK* ]] && pass "(l2) idle gap + one failure + retry ok -> exit 0: $lout" || bad "(l2) calls=$lcalls rc=$lrc out=$lout"
+# (l3) both attempts fail after the idle gap -> unchanged refusal
+lrun l3 2 "$(lprev 4620 ssh null)"
+[ "$lcalls" = 2 ] && [ "$lrc" = 76 ] && [[ $lout == "HOLD unknown-blind"* ]] && pass "(l3) both fail -> exit 76: $lout" || bad "(l3) calls=$lcalls rc=$lrc out=$lout"
+# (l4) probe-only and exempt do not retry
+lrun l4 2 "$(lprev 4620 ssh null)" --probe-only; [ "$lcalls" = 1 ] && [ "$lrc" = 0 ] && pass "(l4) --probe-only: no retry" || bad "(l4) calls=$lcalls rc=$lrc"
+lrun l4b 2 "$(lprev 4620 ssh null)" --exempt x; [ "$lcalls" = 1 ] && pass "(l4b) --exempt: no retry" || bad "(l4b) calls=$lcalls"
 
 [ $fail -eq 0 ] && echo "ALL PASS ($npass checks)" || echo "FAILED"
 exit $fail

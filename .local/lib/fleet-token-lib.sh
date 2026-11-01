@@ -43,16 +43,18 @@ FT_LA_TZ="America/Los_Angeles"
 # ft_la_iso <epoch>: 2026-10-26T21:00-07:00 (LA time, offset included)
 ft_la_iso() { TZ="$FT_LA_TZ" date -d "@$1" '+%Y-%m-%dT%H:%M%:z'; }
 
-# ft_parse_la_date <string>: prints an epoch, returns 1 when the string is not a date. The ONE parser (watcher, store CLI, rotate), always
-# America/Los_Angeles. Accepted: a bare epoch (9+ digits); a 429 reset text ("resets" prefix, "(America/Los_Angeles)" suffix and commas are dropped):
+# ft_parse_la_date <string> [now_epoch]: prints an epoch, returns 1 when the string is not a date. The ONE parser (watcher, store CLI, rotate, seat-tick),
+# always America/Los_Angeles (FT_LA_TZ: a "(Europe/Berlin)" suffix is DROPPED, not honoured). now = the optional 2nd argument (a plain epoch: a caller with its own
+# clock, e.g. seat-tick's selftest, passes it) else ft_now (FLEET_TOKEN_NOW_EPOCH in a selftest). Accepted: a bare epoch (9+ digits); a 429 reset text
+# (everything up to and including "resets" is dropped, so a whole "You've hit your weekly limit · resets Oct 26, 9pm" line parses; "(America/Los_Angeles)" and commas are dropped):
 #   weekly  "Oct 26, 9pm" / "Oct 26 9:30 pm"  no year: the current LA year, +1 year when that is < now - 1 day
 #   session "3:30pm"                          today, +1 day when that is < now
 # anything else goes to date -d in LA ("2026-10-26 21:00").
 ft_parse_la_date() {
   local s now y ep mon day h m ap today
-  s="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | sed -E 's/\([^)]*\)//g; s/[,.]|\xc2\xb7/ /g; s/^[[:space:]]*resets?[[:space:]]+//; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  s="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | sed -E 's/\([^)]*\)//g; s/[,.]|\xc2\xb7/ /g; s/^.*[[:space:]]resets?[[:space:]]+//; s/^[[:space:]]*resets?[[:space:]]+//; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
   [ -n "$s" ] || return 1
-  now="$(ft_now)"
+  now="${2:-}"; [[ "$now" =~ ^[0-9]+$ ]] || now="$(ft_now)"
   if [[ "$s" =~ ^[0-9]{9,}$ ]]; then printf '%s\n' "$s"; return 0; fi
   if [[ "$s" =~ ^([a-z]{3,9})\ ([0-9]{1,2})\ ([0-9]{1,2})(:([0-9]{2}))?\ ?(am|pm)$ ]]; then
     mon="${BASH_REMATCH[1]}"; day="${BASH_REMATCH[2]}"; h="${BASH_REMATCH[3]}"; m="${BASH_REMATCH[5]:-00}"; ap="${BASH_REMATCH[6]}"
@@ -74,6 +76,18 @@ ft_parse_la_date() {
   [[ "$ep" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$ep"
 }
+
+# ft_limit_line <file>: the line of the last 2 KB of a failed turn's output that carries the plan-limit text (claude -p prints only its final message):
+# the last line with a "resets <word>", else the last "hit your session|usage|weekly limit" line; nothing when neither is there. It only FINDS the line,
+# ft_parse_la_date decides whether it holds a date (prose such as "resets are fine" is a line but not a date).
+ft_limit_line() {
+  local l
+  l="$(tail -c 2048 "$1" 2>/dev/null | grep -Ei 'resets?[[:space:]]+[A-Za-z0-9]' | tail -n1 || true)"
+  [ -n "$l" ] || l="$(tail -c 2048 "$1" 2>/dev/null | grep -Ei 'hit your (session|usage|weekly) limit' | tail -n1 || true)"
+  printf '%s\n' "$l"
+}
+# ft_limit_word <file>: session | usage | weekly (the word in "hit your <word> limit", lower case), nothing when the phrase is absent
+ft_limit_word() { tail -c 2048 "$1" 2>/dev/null | grep -Eio 'hit your (session|usage|weekly) limit' | tail -n1 | awk '{print tolower($3)}' || true; }
 
 # ft_blocked_until <account>: the stored epoch (active or not), nothing when absent, unreadable or not a number
 ft_blocked_until() {

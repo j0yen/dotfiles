@@ -1,0 +1,7 @@
+[Unit]
+Description=fleet-merge: run rb-merge.sh for every open PR whose gate passes (A13)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fleet-merge.sh
+TimeoutStartSec=900
