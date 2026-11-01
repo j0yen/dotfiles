@@ -179,7 +179,7 @@ C166	r7-tmp-target-reap AGE_MIN	120	ryzen7	~/.local/bin/r7-tmp-target-reap.sh:12
 C167	r7-verify-leg knobs	START 100G ; TRIP 60G ; PSI 25 ; TIMEOUT 5400 ; JOBS 4	ryzen7	~/.local/bin/r7-verify-leg.sh:8	memory	none found	KEEP	r7	-
 C168	r7-verify-leg LEG_BUDGET_S	4800 s	ryzen7	~/.local/bin/r7-verify-leg.sh:15	hang-guard	none found	KEEP	r7	-
 C169	WPA_TIMEOUT	120	ryzen7,orch	~/.local/bin/watcher-lib-postapply.sh:19	hang-guard	none found	KEEP	r7	-
-C170	vibeloop MAX_COST_USD_PER_DAY	value in ~/.config/vibeloop/limits (unread)	ryzen7,orch	~/.local/bin/vibeloop-ctl:146 ; vibeloop-digest.sh:88	rationing	none found	DROP	aide A298	daily cost cap (#195 "no budget limit")
+C170	vibeloop MAX_COST_USD_PER_DAY	key absent on RedBaron limits file, unenforced (rb 2:03 AM PST 11-01)	redbaron	~/.local/bin/vibeloop-ctl:146 ; vibeloop-digest.sh:88	rationing	none found	DROP	aide A298	daily cost cap (#195 "no budget limit"); A306 MET rb d-20261101-020051-rb-d715
 C171	mcphost-binary-for-sha CARGO_BUILD_JOBS	3	orch	~/.local/bin/mcphost-binary-for-sha:164	memory	none found	KEEP	rb	-
 C172	max_runs (orch)	4	orch	~/.config/wm-build/config.toml:5 ; limits.lock:6	leased-box	Joe 10-07 "max_runs=4" (cpx62 coder box)	DEAD	rb A295	orch daemon inactive since 10-08; orch never compiles
 C173	orch-operator cadence / timeout	30 min / 3300	orch	orch-operator.timer:6 ; .service:8	cadence	none found	CHECK	rb	is the unit enabled? if so, 30 min predates #151 max speed
@@ -189,7 +189,7 @@ C176	MCPHOST_DEPLOY_GATE_BUDGET_S	600	orch	mcphost-deploy-on-land.service.d/gate
 C177	synthorg-chain-shadow TimeoutStartSec	5400	orch	synthorg-chain-shadow.service:15	hang-guard	none found	KEEP	rb	-
 C178	synthorg-chain-on-deploy TimeoutStartSec	1200	orch	synthorg-chain-on-deploy.service:14	hang-guard	none found	KEEP	rb	-
 C179	claude-quota-watch RECOVERY_TIMEOUT	1200	orch	~/.local/bin/claude-quota-watch.sh:20	hang-guard	none found	KEEP	rb	-
-C180	vibeloop MAX_CYCLES_PER_DAY	16	orch	~/.local/bin/claude-vibeloop-headless.sh:9	rationing	none found	DROP	aide A298	daily count cap (#195)
+C180	vibeloop MAX_CYCLES_PER_DAY	100000 on RedBaron (was 120; reader has no unlimited sentinel, 0 blocks all)	redbaron	~/.local/bin/claude-vibeloop-headless.sh:9	rationing	none found	DROP	aide A298	daily count cap (#195); A306 MET rb d-20261101-020051-rb-d715
 C181	vibeloop CAP_SECS / WATCHDOG_SECS	9600 / 1200	orch	claude-vibeloop-headless.sh:72 ; claude-vibeloop-tick.sh:28	hang-guard	none found	KEEP	rb	-
 # RULE-LEVEL CAPS (stated in CLAUDE.md / goal.md / playbook; enforcement named in enforced_at)
 R001	open-PR cap	none (was ≤ 30 fleet / ≤ 8 per repo, #153)	fleet	none (pr-wip gate SPEC A40 dropped)	rationing	Joe 11-01 1:5x AM "MERGE THEM ALL NOW. NOT SLOW DOWN FIXES", approvals #194	VOID	-	CLAUDE.md + goal.md updated 11-01; dotfiles#181
