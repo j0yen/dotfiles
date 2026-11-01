@@ -11,6 +11,8 @@ caps-drift.sh reports any entry still present. Regenerate caps-digest.md after a
 """
 import importlib.util, os, sys
 
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("caps_drift", os.path.join(HERE, "caps-drift.py"))
 caps_drift = importlib.util.module_from_spec(_spec)

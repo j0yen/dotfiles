@@ -18,6 +18,8 @@ Output: DRIFT/UNKNOWN lines, then `caps.drift count=<n> first=<id>`.
 """
 import datetime, importlib.util, json, os, re, socket, sys
 
+sys.dont_write_bytecode = True  # the loader below must not leave __pycache__ beside the script
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("caps_lint", os.path.join(HERE, "caps-lint.py"))
 caps_lint = importlib.util.module_from_spec(_spec)
