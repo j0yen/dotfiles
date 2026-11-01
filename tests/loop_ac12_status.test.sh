@@ -59,8 +59,16 @@ assert_contains "$tmr_txt" "RandomizedDelaySec=300" "unit: RandomizedDelaySec=30
 assert_contains "$tmr_txt" "Persistent=true" "unit: Persistent=true"
 assert_contains "$tmr_txt" "Unit=grand-loop.service" "unit: timer points at the service"
 if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify "$svc" >/dev/null 2>&1
-  assert_eq "$?" "0" "unit: grand-loop.service passes systemd-analyze verify"
+  # The unit's %h/.local/bin/grand-loop-tick.sh must resolve and be
+  # executable, so verify under a throwaway HOME that links the repo's script
+  # instead of depending on the ambient ~/.local/bin.
+  verify_home="$(mktemp -d)"
+  mkdir -p "$verify_home/.local/bin"
+  ln -s "$repo_root/.local/bin/grand-loop-tick.sh" "$verify_home/.local/bin/grand-loop-tick.sh"
+  HOME="$verify_home" systemd-analyze verify "$svc" >/dev/null 2>&1
+  verify_rc="$?"
+  rm -rf "$verify_home"
+  assert_eq "$verify_rc" "0" "unit: grand-loop.service passes systemd-analyze verify"
 fi
 
 exit $fail

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# wrapper kept so the controller's existing instructions work: ctl-sweep.sh [--ask "<text>"|--status|--guard-check|--selftest] = seat-tick.sh ctl ...
+exec "$HOME/.local/bin/seat-tick.sh" ctl "$@"

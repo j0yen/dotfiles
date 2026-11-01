@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-check the shared watcher lib and its consumers' --selftest, write ~/.local/state/watchers/_lib.json
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=900
+ExecStart=%h/.local/bin/watcher-lib-postapply.sh

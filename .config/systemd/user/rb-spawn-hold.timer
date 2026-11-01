@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 2 min: refresh the rb coder spawn-hold state (CSH; enabled on carbon only)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

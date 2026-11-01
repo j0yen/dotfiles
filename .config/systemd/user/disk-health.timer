@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 15 min: collect disk health (fleet-dash disk.health + disk-health alarm read the file)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

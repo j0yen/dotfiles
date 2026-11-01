@@ -1,0 +1,4 @@
+[Unit]
+OnBootSec=1min
+[Timer]
+OnUnitActiveSec=5min

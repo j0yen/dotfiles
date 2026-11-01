@@ -1,0 +1,11 @@
+[Unit]
+Description=Every 30 min: r7 ryzen7 hand cargo-target purge (acts only while the ~/hand filesystem is >= 85% used)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

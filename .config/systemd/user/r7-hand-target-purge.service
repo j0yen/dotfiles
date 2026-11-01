@@ -1,0 +1,18 @@
+[Unit]
+Description=r7 ryzen7 hand cargo-target purge (PREMISE ~/hand fs >= 85%, EXPIRES 2026-11-06; deletes idle ~/hand/*/target only)
+
+[Service]
+# Type=simple, not oneshot: systemd ignores RuntimeMaxSec= for oneshot, and the 30-min cap is the point
+Type=simple
+# user units have no login PATH or fleet token: wm-build builder cargo-jobs list needs both, and the script fails closed without them
+Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/bin
+EnvironmentFile=-%h/.config/environment.d/*.conf
+Nice=19
+IOSchedulingClass=idle
+# a kill mid-rm of a renamed target.purging.* dir is harmless: it is no cargo target, and the next armed tick sweeps it; SIGTERM logs `interrupted`
+RuntimeMaxSec=1800
+TimeoutStartSec=300
+TimeoutStopSec=60
+# selftest first (fail closed: a red selftest blocks the purge); state + last.json live in ~/.local/state/r7-hand-target-purge/
+ExecStartPre=/bin/bash %h/.local/bin/r7-hand-target-purge.sh --selftest
+ExecStart=/bin/bash %h/.local/bin/r7-hand-target-purge.sh

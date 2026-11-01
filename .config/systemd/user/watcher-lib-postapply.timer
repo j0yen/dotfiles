@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly: re-run the watcher lib post-apply check (retries a failed check; sees consumers fixed outside dotfiles)
+
+[Timer]
+# Persistent= only applies to OnCalendar= timers, so the hourly cadence is a calendar one.
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

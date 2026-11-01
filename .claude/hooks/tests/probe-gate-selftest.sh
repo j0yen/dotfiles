@@ -6,14 +6,25 @@
 
 set -uo pipefail
 
-HOOK="${HOME}/.claude/hooks/probe-gate.sh"
+HOOK="${PROBE_GATE_HOOK:-$(cd "$(dirname "$0")/.." && pwd)/probe-gate.sh}"
 JQ=$(command -v jq) || { echo "probe-gate-selftest: jq not found"; exit 1; }
+
+# Hermetic environment: probe-gate.sh § 1b exempts the aide (WM_SEAT=aide),
+# so a run inside the aide would pass every call through and the BLOCK cases
+# below would not test the gate. Pin the environment: no seat, no tmux
+# (PROBE_GATE_HOSTNAME kept for older cases); the § 1b cases at the end
+# override these per case via CASE_ENV.
+unset WM_SEAT TMUX
+export PROBE_GATE_HOSTNAME=selftest-not-carbon
 
 WORKDIR=$(mktemp -d /tmp/probe-gate-selftest.XXXXXX)
 trap 'rm -rf "$WORKDIR"' EXIT
 
 FAIL=0
 PASS=0
+# Per-case extra env (NAME=VALUE words, or -u NAME) applied on top of the
+# pinned environment above; empty for the ordinary cases.
+CASE_ENV=(PROBE_GATE_HOSTNAME=selftest-not-carbon)
 
 # add_line TRANSCRIPT MODEL TOOL_USE_ID SIDECHAIN(true|false)
 add_line() {
@@ -39,7 +50,7 @@ run_case() {
         '{tool_name:$tool, tool_input:{command:$cmd}, session_id:$sid, transcript_path:$tp, tool_use_id:$tid}')
 
     local out got_exit
-    out=$(printf '%s' "$input" | "$HOOK" 2>&1)
+    out=$(printf '%s' "$input" | env "${CASE_ENV[@]}" "$HOOK" 2>&1)
     got_exit=$?
 
     if [ "$got_exit" -eq "$want_exit" ]; then
@@ -106,6 +117,21 @@ run_case "tool_use_id_not_found" "ssh orch df" "toolu_missing" 0
 #     tool_use_id or transcript.
 add_line "$WORKDIR/flag_escape.jsonl" "claude-fable-5-1" "toolu_10" false
 run_case "touch_allow_flag_always_allowed" "touch ~/.claude/.allow-fable-bash" "toolu_missing" 0
+
+# 11-15. § 1b aide exemption, proven explicitly (all fable + a probe that is
+#     denied elsewhere). WM_SEAT=aide (aide-launch.sh) -> pass-through; a plain
+#     carbon session (no marker), a seat, a tmux session, another host -> gated.
+add_line "$WORKDIR/aide_exempt.jsonl" "claude-fable-5-1" "toolu_11" false
+CASE_ENV=(-u TMUX PROBE_GATE_HOSTNAME=carbon WM_SEAT=aide)
+run_case "aide_marker_exempt" 'ssh orch "df -h"' "toolu_11" 0 "aide_exempt"
+CASE_ENV=(-u WM_SEAT -u TMUX PROBE_GATE_HOSTNAME=carbon)
+run_case "plain_carbon_no_marker_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
+CASE_ENV=(-u TMUX PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl)
+run_case "aide_carbon_with_seat_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
+CASE_ENV=(-u WM_SEAT PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0)
+run_case "aide_carbon_with_tmux_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
+CASE_ENV=(-u WM_SEAT -u TMUX PROBE_GATE_HOSTNAME=redbaron)
+run_case "aide_other_host_gated" 'ssh orch "df -h"' "toolu_11" 2 "aide_exempt"
 
 echo "probe-gate-selftest: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

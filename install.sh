@@ -33,6 +33,12 @@ link() {
   if [[ -L "$dst" ]] && [[ "$(readlink "$dst")" == "$src" ]]; then
     return 0
   fi
+  # dst already IS src through a parent-directory symlink (e.g. ~/.config/claude-seat -> dotfiles/.config/claude-seat):
+  # linking would replace the real file inside the repo with a symlink to itself (10-22: three seat settings files
+  # became "Too many levels of symbolic links" and every seat tick lost its --settings). Same inode = nothing to do.
+  if [[ -e "$dst" ]] && [[ "$(readlink -f "$dst" 2>/dev/null)" == "$(readlink -f "$src")" ]]; then
+    return 0
+  fi
   if [[ -e "$dst" || -L "$dst" ]]; then   # -L: a dangling symlink still occupies the path
     if [[ $DRY -eq 1 ]]; then
       printf 'would back up: %s -> %s.bak.%s\n' "$dst" "$dst" "$ts"
@@ -81,4 +87,36 @@ if [[ $DRY -eq 0 && -x "$wg" ]]; then
   fi
 fi
 
+# fleet-sync post-apply check of the shared watcher lib: writes ~/.local/state/watchers/_lib.json
+# (sha, bash -n, source test, every discovered consumer's --selftest). Its exit code is install.sh's, so
+# fleet-sync reports "post-apply FAILED" when the lib or a consumer is broken; the links above are already in place.
+post_rc=0
+postapply="$repo_root/.local/bin/watcher-lib-postapply.sh"
+if [[ -x "$postapply" ]]; then
+  if [[ $DRY -eq 1 ]]; then
+    printf 'would run: %s\n' "$postapply"
+  else
+    "$postapply" || post_rc=$?
+  fi
+fi
+
+# live-clone guard: install the refusing pre-commit hook into each repo listed in ~/.config/live-clone-guard/repos
+# (see README.md § Live-clone guard). No config = silent no-op; a failure here never fails the install.
+lcg="$home/.local/bin/live-clone-guard.sh"
+if [[ $DRY -eq 0 && -x "$lcg" ]]; then
+  "$lcg" ensure || true
+fi
+
+# protected-hooks check: summa + wintermute hooks (.claude/protected-hooks.txt) must still be wired in the installed settings.json
+# unless Joe's approval is in ~/.claude/state/approvals.log. A failure makes install.sh exit non-zero (links are already in place).
+phc="$home/.claude/hooks/protected-hooks-check.sh"
+if [[ -x "$phc" && -r "$home/.claude/settings.json" ]]; then
+  if [[ $DRY -eq 1 ]]; then
+    printf 'would run: %s %s\n' "$phc" "$home/.claude/settings.json"
+  else
+    "$phc" "$home/.claude/settings.json" || { post_rc=$?; printf 'protected-hooks-check FAILED (rc=%s)\n' "$post_rc" >&2; }
+  fi
+fi
+
 printf 'done.\n'
+exit "$post_rc"

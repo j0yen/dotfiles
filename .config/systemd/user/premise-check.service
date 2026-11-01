@@ -1,0 +1,9 @@
+[Unit]
+Description=Run recorded operator premise checks of landed creative PRDs
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/premise-check.sh
+Nice=10
+MemoryMax=1500M
+TimeoutStartSec=55min

@@ -1,22 +1,22 @@
 {
   "SessionStart": [
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/skills/self-review/scripts/check-review-due.sh",
+    "/home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/skills/self-review/scripts/check-review-due.sh",
     "/home/jsy/.claude/scripts/ctrace-session-start.sh",
-    "/home/jsy/.claude/scripts/recall-session-start.sh",
-    "/home/jsy/.claude/scripts/scratch-tools-start.sh",
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/claude-self-start.sh",
+    "/home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/scripts/recall-session-start.sh",
+    "/home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/scripts/scratch-tools-start.sh",
+    "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/claude-self-start.sh",
     "/home/jsy/.claude/scripts/agorabus-session-start.sh",
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/learning-candidates-start.sh",
-    "/home/jsy/.claude/scripts/agentns-activation-check.sh",
-    "/home/jsy/.claude/hooks/interactive-gate.sh sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'",
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/beacon-session-start.sh",
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/hooks/token-ledger-banner.sh",
-    "/home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/grand-loop-banner-start.sh",
-    "sh -c 'case \"$(hostname 2>/dev/null)\" in *carbon*) echo \"CARBON IS A LAPTOP (Joe 10-05/10-07): terminal only. Operator seat = orch (ssh -t orch tmux attach). Do not start loops, timers, or runbooks that need carbon. Memory: feedback_move_everything_off_carbon_laptop_20261007\";; esac; exit 0'",
+    "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/learning-candidates-start.sh",
+    "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/scripts/agentns-activation-check.sh",
+    "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh sh -c 'command -v roundtable-sessionstart >/dev/null 2>&1 && exec roundtable-sessionstart || exit 0'",
+    "/home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/scripts/beacon-session-start.sh",
+    "/home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/hooks/interactive-gate.sh /home/jsy/.claude/hooks/token-ledger-banner.sh",
     "/home/jsy/.claude/scripts/resource-guard-start.sh",
     "/home/jsy/.claude/hooks/peon-ping/peon.sh",
-    "/home/jsy/.claude/scripts/summa-candidates-start.sh",
-    "/home/jsy/.claude/scripts/summa-vault-sync.sh"
+    "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/scripts/summa-candidates-start.sh",
+    "/home/jsy/.claude/scripts/summa-vault-sync.sh",
+    "/home/jsy/.claude/hooks/adhd-always-on.sh",
+    "sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec \"$HOME/.claude/hooks/model-role-check.sh\"; exit 0'"
   ],
   "UserPromptSubmit": [
     "/home/jsy/.claude/hooks/peon-ping/peon.sh",
@@ -27,6 +27,7 @@
     "/home/jsy/.claude/scripts/summa-lookup-inject.sh",
     "/home/jsy/.claude/hooks/dream-marker.sh",
     "/home/jsy/.claude/hooks/agorabus-intent.sh",
-    "/home/jsy/.claude/hooks/agorabus-overlap.sh"
+    "/home/jsy/.claude/hooks/agorabus-overlap.sh",
+    "sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec \"$HOME/.claude/hooks/model-role-check.sh\"; exit 0'"
   ]
 }

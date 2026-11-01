@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# operator-status-card.sh [--json | --section runs|queue|chain|siblings|daemon|config]
+# operator-status-card.sh [--json | --section runs|queue|seats|timers|floor|chain|siblings|daemon|config]
 # SessionStart banner (PRD dotfiles-operator-status-card R3/R6): renders the
 # generated status.json as a <= 25-line card, regenerating it when older than
 # 60 s. Fail-open: always exits 0.
@@ -54,10 +54,7 @@ render_runs() {
 }
 render_queue() {
   if ! src_ok queue; then echo "queue: ?"; return; fi
-  local adm skp
-  adm=$(j '.queue.admitted|length')
-  skp=$(j '.queue.skipped | map({r:(.reason|split(":")[0]), n:(.slugs|length)}) | group_by(.r) | map("\(.[0].r) \(map(.n)|add)") | join(", ")')
-  echo "queue: admit $adm${skp:+, $skp}"
+  j '"queue: \(.queue.queue_total // "?") (building \(.queue.building // "?"), ready \(.queue.queue_ready // "?")" + (if .queue.blocked != null then ", blocked \(.queue.blocked)" else "" end) + (if .queue.parked != null then ", parked \(.queue.parked)" else "" end) + ")"'
 }
 render_decisions() {
   src_ok decisions || { echo "decisions: ?"; return; }
@@ -67,10 +64,10 @@ render_seats() {
   # per seat: corrected/n over its last 20 own decisions (mixed models), the current-model run when it is under 20 rows, the hold or flag state; then every seat-* / verifier-rate alarm
   if [ ! -r "$fleet_sj" ] || ! jq -e '.decisions.per_agent' "$fleet_sj" >/dev/null 2>&1; then echo "seats: ?"; return; fi
   echo "seats (corrected/n last 20, share):"
-  local name c n share thr flag held exp nc model since status line
-  while IFS=$'\t' read -r name c n share thr flag held exp nc model since status; do
-    line="  $name $c/$n $share"
-    [ "$thr" = true ] && line="$line at threshold"
+  local name c n share thr flag held exp nc model since status jt line
+  while IFS=$'\t' read -r name c n share thr flag held exp nc model since status jt; do
+    # swarm-decide judged_text ("unmeasured (judged k/n)") = fewer than MIN_JUDGED judged rows in the window: print it in place of the share
+    if [ "$jt" != "-" ]; then line="  $name $c/$n $jt"; else line="  $name $c/$n $share"; [ "$thr" = true ] && line="$line at threshold"; fi
     if [ "$status" = unmeasured ] && [ "$nc" != "?" ]; then line="$line ($nc on $model since $(t "$since"), unmeasured until 20)"
     elif [ "$nc" != "?" ] && [ "$model" != "?" ]; then line="$line ($nc on $model since $(t "$since"))"; fi
     if [ "$held" != "-" ]; then line="$line · held until $held"
@@ -79,8 +76,21 @@ render_seats() {
     echo "$line"
   done < <(jq -r --arg seats "$seats" '.decisions.per_agent as $p | ($seats|split(" "))[] | select($p[.] != null) | . as $k | $p[$k] |
     [$k, (.corrected_all // .corrected20 // "?"), (.n20_all // .n20 // "?"), (.share // "n/a"), (.share == 0.25), (.upgrade_flag // "null"), (.held_until // "-"),
-     ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
+     ((.hold_expired // false) or (.hold_expired_flag_up // false)), (.n_current // "?"), (.current_model // "?"), (.current_since // "?"), (.status // "?"), (.judged_text // "-")] | map(tostring) | join("\t")' "$fleet_sj" 2>/dev/null)
   jq -r '(.alarms // []) | map(select((.text // "") | test("^(seat-|verifier-rate)"))) | .[0:6][] | "  " + .text' "$fleet_sj" 2>/dev/null
+}
+render_timers() {
+  # fleet-dash status.json `timers_stalled` (user timers with no NEXT / stale LAST / inactive, all three hosts; five-whys 2026-10-24): ok, the stalled list, or ? when the field is absent
+  if [ ! -r "$fleet_sj" ] || ! jq -e 'has("timers_stalled")' "$fleet_sj" >/dev/null 2>&1; then echo "timers: ?"; return; fi
+  if jq -e '.timers_stalled | length == 0' "$fleet_sj" >/dev/null 2>&1; then echo "timers: ok"; return; fi
+  jq -r '.timers_stalled | "timers: STALLED " + (length|tostring) + " (" + ([.[0:6][] | "\(.host) \(.unit) \(.reason)"] | join(", ")) + ")"' "$fleet_sj" 2>/dev/null | cut -c1-400 || echo "timers: ?"
+}
+render_floor() {
+  # M9 seat floor (seat-floor-probe.sh -> seat-floor.json): post-compaction context floor p50 of the last 5 boundaries per seat + SessionStart hook cancellations in 24 h;
+  # prints nothing until the probe has run (a host without the probe keeps today's card).
+  local ff="${OPERATOR_SEAT_FLOOR:-$HOME/.cache/fleet-dash/seat-floor/seat-floor.json}"
+  [ -r "$ff" ] && jq -e '.seats | length > 0' "$ff" >/dev/null 2>&1 || return 0
+  jq -r '"floor (p50 last 5): " + ([.seats | to_entries[] | "\(.key) \(if .value.floor_p50 == null then "?" else ((.value.floor_p50 / 1000 * 10 | round) / 10 | tostring) + "K" end)\(if (.value.compact_hook_cancelled_24h // 0) > 0 then " (" + (.value.compact_hook_cancelled_24h | tostring) + " hook cancels 24h)" else "" end)"] | join(" · ")) + " · stage " + ((.stage // 0) | tostring)' "$ff" 2>/dev/null | cut -c1-240
 }
 render_chain() {
   if ! src_ok chain; then echo "chain: not on this host ($(j '.chain.host // empty' | grep . || echo "$chain_host"))"; return; fi
@@ -109,13 +119,13 @@ render_config() {
 
 if [ "$mode" = section ]; then
   case "$section" in
-    runs|queue|seats|chain|siblings|daemon|config) "render_$section" ;;
+    runs|queue|seats|timers|floor|chain|siblings|daemon|config) "render_$section" ;;
     *) echo "operator card: unknown section '$section'" ;;
   esac
   exit 0
 fi
 
 echo "operator card ($(j '.host // "?"'))"
-render_runs; render_queue; render_decisions; render_seats; render_chain; render_siblings; render_daemon; render_config
+render_runs; render_queue; render_decisions; render_seats; render_timers; render_floor; render_chain; render_siblings; render_daemon; render_config
 echo "status.json generated ${age}s ago"
 exit 0

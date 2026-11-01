@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# seat-gh-scope-check -- C2: prove the gh shim directory is on the SEATS' PATH and NOT on wm-build.service's.
+#   live (default): for each host in ${SCOPE_HOSTS:-redbaron ryzen7}: `ssh HOST systemctl --user show wm-build.service -p Environment` must NOT contain the shim dir;
+#                   for each seat in ${SCOPE_SEATS:-rb r7} (tmux sessions on this host): the claude process under the pane must have the shim dir in its PATH.
+#   --selftest:     the same two predicates against fixtures (one clean + one dirty unit environment, one with + one without the shim dir in a seat PATH).
+# Read-only. Prints one line per read (quote them in the PR). Exit 0 iff every check holds; any read that fails (ssh down, no pane) is a FAIL, never a skip.
+set -uo pipefail
+SHIM_DIR="${SEAT_SHIM_DIR:-$HOME/.local/seat-bin}"
+
+unit_env_clean() {   # $1 = the `systemctl show -p Environment` text
+  case "$1" in *Environment=*) ;; *) return 2 ;; esac
+  case "$1" in *"$SHIM_DIR"*) return 1 ;; esac
+  return 0
+}
+seat_path_has() {    # $1 = a PATH string
+  case ":$1:" in *":$SHIM_DIR:"*) return 0 ;; esac
+  return 1
+}
+descendant_claude() {  # $1 = pid; prints the pid of the first claude/node descendant (or the pid itself)
+  local p="$1" c k
+  c="$(cat "/proc/$p/comm" 2>/dev/null)"
+  case "$c" in claude|node) printf '%s' "$p"; return 0 ;; esac
+  for k in $(pgrep -P "$p" 2>/dev/null); do
+    descendant_claude "$k" && return 0
+  done
+  return 1
+}
+
+rc=0
+if [ "${1:-}" = "--selftest" ]; then
+  SHIM_DIR=/home/x/.local/seat-bin
+  t() { local want="$1" got="$2" what="$3"; if [ "$want" = "$got" ]; then echo "ok   $what"; else echo "FAIL $what (want $want got $got)"; rc=1; fi; }
+  unit_env_clean "Environment=PATH=/home/x/.cargo/bin:/home/x/.local/bin:/usr/bin TMPDIR=/t"; t 0 $? "clean wm-build.service Environment passes"
+  unit_env_clean "Environment=PATH=/home/x/.local/seat-bin:/usr/bin"; t 1 $? "Environment containing the shim dir fails"
+  unit_env_clean ""; t 2 $? "an empty read fails closed"
+  seat_path_has "/home/x/.local/seat-bin:/usr/bin"; t 0 $? "seat PATH with the shim dir passes"
+  seat_path_has "/home/x/.local/bin:/usr/bin"; t 1 $? "seat PATH without the shim dir fails"
+  seat_path_has "/home/x/.local/seat-bin-old:/usr/bin"; t 1 $? "a prefix-lookalike dir does not count"
+  exit $rc
+fi
+
+for h in ${SCOPE_HOSTS:-redbaron ryzen7}; do
+  out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$h" 'systemctl --user show wm-build.service -p Environment' 2>&1)"
+  unit_env_clean "$out"; r=$?
+  echo "$h wm-build.service: $(printf '%s' "$out" | sed -E 's/sk-ant[A-Za-z0-9_-]*/[redacted]/g' | head -c 400) -> $([ $r = 0 ] && echo CLEAN || echo "FAIL($r)")"
+  [ $r = 0 ] || rc=1
+done
+for s in ${SCOPE_SEATS:-rb r7}; do
+  pp="$(tmux list-panes -t "$s" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  cp=""; [ -z "$pp" ] || cp="$(descendant_claude "$pp")"
+  path="$( [ -z "$cp" ] || tr '\0' '\n' < "/proc/$cp/environ" 2>/dev/null | sed -n 's/^PATH=//p')"
+  if [ -n "$path" ] && seat_path_has "$path"; then echo "seat $s (pid $cp): PATH contains $SHIM_DIR -> HAS"; else echo "seat $s (pid ${cp:-none}): PATH ${path:+head=$(printf '%s' "$path" | cut -c1-80)...} does not contain $SHIM_DIR -> FAIL"; rc=1; fi
+done
+exit $rc

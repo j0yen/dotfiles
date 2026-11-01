@@ -1,0 +1,11 @@
+[Unit]
+Description=operator seat %i tick every 20 min (seat-tick@%i.service; cadence = tick_min in ~/.claude/state/seats.tsv)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

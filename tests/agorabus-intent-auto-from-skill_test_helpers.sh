@@ -26,6 +26,10 @@ intent_setup() {
   export FAKE_AGORABUS_CALLS="$calls"
   export CLAUDE_AGORABUS_SID="claude-test-sid"
   export AGORABUS_INTENT_STATE_DIR="$work/state"
+  # The hook's real 100 ms budget skips/kills agorabus calls under CPU load
+  # (flaky "intent set recorded"); these tests assert calls, not latency, so
+  # widen it. ac04 (the latency test) unsets this to exercise the default.
+  export AGORABUS_INTENT_BUDGET_MS=10000
   export PATH="$work/bin:$PATH"
   sid="$CLAUDE_AGORABUS_SID"
   cwd="$work/proj"; mkdir -p "$cwd"

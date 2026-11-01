@@ -6,6 +6,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/agorabus-intent-auto-from-skill_test_helpers.sh"
 intent_setup
+unset AGORABUS_INTENT_BUDGET_MS # this test asserts the production 100 ms budget
 
 # Minimal PATH: only the tools the hook needs, never agorabus.
 mini="$work/mini"; mkdir -p "$mini"
