@@ -138,7 +138,7 @@ watch() {
     [ "$anywait" = 0 ] || { stamp_ok no-current "$ALARM_EVERY" && ft_alarm "a seat is quota-waiting but $FT_TOKJSON is missing, so the account in use is unknown: run fleet-token-store.sh current <account>"; }
     exit 0
   fi
-  [ "${#limited[@]}" -ge 1 ] || exit 0
+  [ "${#limited[@]}" -ge 1 ] || { ft_status_write ""; exit 0; }
   if [ $(( minreset - now )) -le "$MIN_AWAY" ]; then
     wlog "limit on ${limited[*]} (account $cur) but the earliest reset $(ft_iso "$minreset") is <= 20 min away: no rotation"; exit 0
   fi
@@ -181,10 +181,14 @@ watch() {
     skipped="$skipped $name($why);"
   done
   if [ -z "$cand" ]; then
+    local since; since="$(jq -r '.no_candidate_since // empty' "$FT_DASH/fleet-token-status.json" 2>/dev/null || true)"
+    [[ "$since" =~ ^[0-9]+$ ]] || since="$now"
+    ft_status_write "$since"
     wlog "limit on ${limited[*]} (account $cur) and no candidate:${skipped:- ring empty or unreadable}"
     stamp_ok no-candidate "$ALARM_EVERY" && ft_alarm "limit hit on account $cur ($evidence) and NO rotation candidate in the ring:${skipped:- ring empty or unreadable}; add an account (fleet-token-store.sh add <account>) or wait for a reset"
     exit 0
   fi
+  ft_status_write ""
   wlog "TRIGGER: $evidence -> rotating to $cand"
   local rc=0
   if wp_gate && wp_emit_write rotate "carbon token.json account=$cur" "TOKEN ROTATE to $cand (429, by fleet-token-429-watch)" \
@@ -194,6 +198,7 @@ watch() {
   else
     wlog "rotate to $cand NOT done: the watcher lib refused the write (disarmed or the decision row could not be appended)"
   fi
+  ft_status_write ""   # re-read token.json: the account follows the rotation
   exit 0
 }
 
@@ -295,6 +300,19 @@ EOF2
     export FLEET_TOKEN_NOW_EPOCH=$((NOW + 1900)); seats 7200 7200 -; runw
     [ "$(grep -c 'NO rotation candidate' "$FT_DASH/ctl-events.log")" = 2 ]; ft_st_chk "no candidate, 32 min after the first: a second ALARM" $?
     export FLEET_TOKEN_NOW_EPOCH=$NOW
+    # A381: every ALARM also rings the aide inbox; the dash status file carries account + no_candidate_since
+    grep -q '^aide ALARM fleet-token: limit hit on account acctA.*NO rotation candidate' "$FAKE_LOG_DIR/aidebell.log"; ft_st_chk "no-candidate ALARM also lands in the aide inbox" $?
+    reset; rm -f "$FT_DASH/fleet-token-status.json"; seats 7200 7200 -; rm -f "$FT_STORE/acctB" "$FT_STORE/acctC" "$FT_STORE/acctD"; runw
+    [ "$(jq -r .account "$FT_DASH/fleet-token-status.json")" = acctA ] && [ "$(jq -r .no_candidate_since "$FT_DASH/fleet-token-status.json")" = "$NOW" ]; ft_st_chk "status file: account=acctA, no_candidate_since=now" $?
+    export FLEET_TOKEN_NOW_EPOCH=$((NOW + 240)); seats 7200 7200 -; runw
+    [ "$(jq -r .no_candidate_since "$FT_DASH/fleet-token-status.json")" = "$NOW" ]; ft_st_chk "status file: no_candidate_since keeps the first epoch on later runs" $?
+    ft_st_store acctB "$c-2"; runw
+    [ "$(jq -r .no_candidate_since "$FT_DASH/fleet-token-status.json")" = null ] && [ "$(jq -r .account "$FT_DASH/fleet-token-status.json")" = acctB ]; ft_st_chk "status file: a candidate found clears no_candidate_since, account follows the rotation" $?
+    export FLEET_TOKEN_NOW_EPOCH=$NOW
+    # time guard (10-24 stale block / 11-01 floor): a logged reset ahead blocks, the same row after that reset is a candidate (no floor over a known reset)
+    reset
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 60))" "$((NOW + 600))" >"$FT_ROTLOG"
+    [ "$(skip_reason acctB "$NOW")" = "its limit resets $(ft_iso "$((NOW + 600))")" ] && [ -z "$(skip_reason acctB "$((NOW + 601))")" ]; ft_st_chk "time guard: reset 10 min ahead blocks; 1 s after that reset (rotated away 11 min ago) acctB is a candidate" $?
 
     # 6. token.json missing
     reset; seats 7200 7200 -; rm -f "$FT_TOKJSON"; runw; runw
