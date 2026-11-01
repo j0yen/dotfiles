@@ -5,10 +5,12 @@
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
 # spawn-hold 76, spec-lint 73, STEP 0 75.
+# env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests).
 set -uo pipefail
 nocargo=0; args=(); for a in "$@"; do if [ "$a" = --no-cargo ]; then nocargo=1; else args+=("$a"); fi; done
 n="${args[0]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; pf="${args[1]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; D="$HOME/.cache/rb-seat/coders"
+model="${RB_CODER_MODEL:-sonnet}"; case "$model" in sonnet) effort=medium ;; opus) effort=high ;; *) echo "REFUSED model=$model (sonnet|opus)" >&2; exit 78 ;; esac
 hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="${RB_SPAWN_HOLD_EXTRA:-}"
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
@@ -41,6 +43,6 @@ for sp in $(grep -oE '[~/A-Za-z0-9_.-]+\.spec\.md' "$pf" | sed "s|^~|$HOME|" | s
   # STEP 0 gate (rb 10-23 1:4x AM, ctl d2ec / Fable 5538): a spec with a PREMISE-UNVERIFIED bullet forces a STEP 0 verify in the prompt.
   if grep -q 'PREMISE-UNVERIFIED' "$sp" && ! grep -q 'STEP 0' "$pf"; then echo "REFUSED step0-missing $sp has PREMISE-UNVERIFIED but $pf has no STEP 0" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED step0-missing" || true; exit 75; fi
 done
-claude -p --dangerously-skip-permissions --model sonnet "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
+claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc

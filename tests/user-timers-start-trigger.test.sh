@@ -191,8 +191,10 @@ rm "$U/a.timer.d/60-dangling.conf"; mkdir -p "$T/elsewhere"; echo '[Timer]' >"$T
 out="$(live_dropins "$H" "$T/al.txt")"; rc=$?
 [ "$rc" = 1 ] && printf '%s' "$out" | grep -q '^FAIL a.timer.d/70-foreign.conf is a symlink outside dotfiles'; chk "(c) fixture: a symlink to somewhere other than dotfiles FAILS" $?
 # the real live dir
+# LIVE-HOST check: reads the real ~/.config, so it runs only with DOTFILES_LIVE_CHECKS=1 (the fixture cases above prove the detector).
 lh="${TIMERS_LIVE_HOME:-$HOME}"
-if [ -d "$lh/.config/systemd/user" ]; then
+if [ "${DOTFILES_LIVE_CHECKS:-}" != 1 ]; then echo "SKIP live: $lh/.config/systemd/user drop-in check (set DOTFILES_LIVE_CHECKS=1)"
+elif [ -d "$lh/.config/systemd/user" ]; then
   out="$(live_dropins "$lh" "$FX/live-dropin-allowlist.txt")"; rc=$?
   chk "(c) live $lh/.config/systemd/user/*.d/*.conf: all symlinks into dotfiles or allowlisted" "$rc"
   [ "$rc" = 0 ] || printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/    /'
@@ -211,7 +213,8 @@ TIMERS_LIVE_SHOW_FILE="$T/ok-show.txt" "$LIVE" >/dev/null 2>&1; chk "(b) fixture
 mkdir -p "$T/nosys"; printf '#!/bin/sh\nexit 1\n' >"$T/nosys/systemctl"; chmod +x "$T/nosys/systemctl"
 got="$(PATH="$T/nosys:$PATH" "$LIVE" 2>&1)"; rc=$?
 [ "$rc" = 0 ] && printf '%s' "$got" | grep -q '^SKIP .* systemctl --user unavailable'; chk "(b) fixture: systemctl --user unavailable prints SKIP, exit 0" $?
-if timeout 10 systemctl --user show-environment >/dev/null 2>&1; then
+if [ "${DOTFILES_LIVE_CHECKS:-}" != 1 ]; then echo "SKIP live: systemctl --user timer check (set DOTFILES_LIVE_CHECKS=1)"
+elif timeout 10 systemctl --user show-environment >/dev/null 2>&1; then
   got="$("$LIVE" 2>&1)"; rc=$?
   chk "(b) live: every enabled user timer on this host shows a start trigger ($(printf '%s\n' "$got" | grep -c '^OK ') ok)" "$rc"
   [ "$rc" = 0 ] || printf '%s\n' "$got" | grep '^FAIL' | sed 's/^/    /'

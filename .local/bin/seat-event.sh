@@ -14,6 +14,8 @@
 #   session on carbon, not a unit) is one: a wake would run `claude -p --resume` against the live session, which the guard refuses. The aide reads its
 #   log through the UserPromptSubmit/SessionStart hook .claude/hooks/aide-inbox.sh. The row to add by hand (seats.tsv is a hand file; tab-separated):
 #       aide<TAB>inbox<TAB>-<TAB>0<TAB>0<TAB>-<TAB>-          printed by `seat-event.sh --inbox-row aide`, so: seat-event.sh --inbox-row aide >> ~/.claude/state/seats.tsv
+#   LANES (aide-lanes 10-27): a lane of the aide is the seat `aide:<lane>` (`seat-event.sh --inbox-row aide:build`), appended to $EVENTS_DIR/aide-<lane>-events.log
+#   and read by aide-inbox.sh under WM_AIDE_LANE=<lane>; `seat-event.sh aide` keeps writing aide-events.log only.
 #   SEAT_EVENT_NOWAKE=1: append (and debounce) only, never wake (seat-tick-failed.sh for ctl: a failing ctl tick must not spawn another ctl tick).
 # Env: EVENTS_DIR (default FLEET_DASH_DIR or ~/.cache/fleet-dash) EVENT_SOURCE EVENT_DEBOUNCE_S SEATS_TABLE SEAT_EVENT_TICK_BIN SEAT_EVENT_DRY=1 (print the spawn command, run nothing)
 # This script never runs claude and never touches a unit it did not create; the only thing it starts is the transient seat-event-* unit.
@@ -151,7 +153,7 @@ selftest() {
 
 [ "${1:-}" = "--selftest" ] && { selftest; exit $?; }
 if [ "${1:-}" = "--inbox-row" ]; then   # the seats.tsv row for an inbox-only seat; the operator appends it (we never edit the hand file)
-  [[ "${2:-}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'usage: seat-event.sh --inbox-row <seat>' >&2; exit 64; }
+  [[ "${2:-}" =~ ^[A-Za-z0-9_:-]+$ ]] || { echo 'usage: seat-event.sh --inbox-row <seat>' >&2; exit 64; }
   printf '%s\tinbox\t-\t0\t0\t-\t-\n' "$2"; exit 0
 fi
 [ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --inbox-row <seat>  |  seat-event.sh --selftest' >&2; exit 64; }
@@ -161,7 +163,8 @@ LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
 [ -n "$LINE" ] || { echo 'seat-event: empty line' >&2; exit 2; }
 DIR="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
 ( umask 077; mkdir -p "$DIR" ) || exit 1
-LOG="$DIR/$SEAT-events.log"; JSON="$DIR/$SEAT-events.json"
+# aide lanes (10-27): `aide:<lane>` is a seat name; its files map `:` -> `-` (aide-build-events.log), `aide` itself is unchanged
+LOG="$DIR/${SEAT//:/-}-events.log"; JSON="$DIR/${SEAT//:/-}-events.json"
 SRC="$(seat_stamp_source)"
 seat_stamp_apply "$SRC" "$LINE"; STAMPED="$SEAT_STAMPED"; TYPED="$SSP_TYPED"
 

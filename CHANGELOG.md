@@ -15,6 +15,12 @@ worktree under `~/.local/state/repo-suite/wt/`, logs to
 `~/.cache/fleet-dash/repo-suite.json` carries `{repo: {sha, state, age_s, pass,
 fail, ts, unseen, unseen_oldest_s}}`. Both scripts have a hermetic `--selftest`;
 `tests/repo-suite.test.sh` runs them.
+## 2026-10-24 — seat-tick-strict-stophook (patch)
+
+`.local/bin/seat-tick.sh` `stop_hook_lines` counts only user messages whose
+text/content starts with `Stop hook feedback:` (was: any line containing `Stop
+hook`, which false-alarmed `ctl stop-hook bounces=4` with no goal set). The
+ALARM text no longer asserts a /goal is live. `tests/seat-tick-stophook-strict.test.sh`.
 
 ## 2026-10-11 — dotfiles-config-edit-reload-check (patch)
 
