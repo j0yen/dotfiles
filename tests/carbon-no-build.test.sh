@@ -131,6 +131,7 @@ allow_case "Write of a scratchpad file" "$(editj Write "$HOME/.cache/tmp/claude-
 allow_case "Write of a systemd drop-in" "$(editj Write "$HOME/.config/systemd/user/x.service.d/10.conf")"
 allow_case "Write under ~/.config (as given)" "$(editj Write "$HOME/.config/foo/bar.json")"
 allow_case "Write of a file outside every git tree" "$(editj Write "$HOME/plain/x.txt")"
+allow_case "Edit of a queued PRD under ~/Documents/PRDs (a git tree; PRD amends are /dream work)" "$(editj Edit "$HOME/Documents/PRDs/build-queue/PRD-x.md")"
 allow_case "tilde-relative path to CLAUDE.md" "$(editj Edit "~/.claude/CLAUDE.md")"
 deny_case "Edit of ~/.claude/scripts/x.sh (symlinks into a git tree)" "$(editj Edit "$HOME/.claude/scripts/x.sh")"
 deny_case "Edit of a file in the dotfiles tree" "$(editj Edit "$HOME/dotfiles/.claude/scripts/x.sh")"

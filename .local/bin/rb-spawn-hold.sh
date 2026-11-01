@@ -12,13 +12,13 @@
 #   --exempt NAME     record `exempt` = NAME in the state file (rb-run-coder.sh --no-cargo)
 #   --selftest        stub-only checks (never real ssh, never the real hand dir): the six watcher-premise cases; prints
 #                     `SELFTEST PASS rb-spawn-hold.sh` (exit 0) or `SELFTEST FAIL ...` (exit 1); the service runs it as ExecStartPre
-# env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 45; a timeout reads `rc=124` in the failure text),
+# env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 120; a timeout reads `rc=124` in the failure text),
 #      RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_LOCAL=1 (or host == `hostname -s`: run the read locally, no ssh), RB_SPAWN_HOLD_RETRY_S (spawn-gate retry delay, default 5), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
 #      CARGO_SLOT_HAND_DIR (default /mnt/data/hand on the host; the HAND-YIELD flag lives there)
 #      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
 # HAND-YIELD writes carry a premise (watcher-premise.sh): ARM = wp_gate && wp_emit_write && ssh write, only on a state change
 #   (flag absent, or ours and < 10 min from expiry); CLEAR is never gated (a flag we wrote we can always remove) but still emits.
-# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0;
+# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0, or `UNKNOWN unknown: <err> source=unknown` exit 0 (journal unread);
 #   an ssh read appends ` walls=runs:<s>,land:<s>,daemon:<s>,builder:<s>` (per-table remote wall seconds).
 #
 # HOLD iff EITHER
@@ -28,7 +28,7 @@
 #   leading: a `release-mem-queued` run (< 30 min old) with no later grant/drop while any via=hand cargo job is held.
 # Journal window: the last 60 min (the spec says 30; hand slots taken before the 30 min mark must still count as held).
 # Read failure: previous file HOLD and its read_at < 30 min old -> stay HOLD with source=stale-ssh (read_at is NOT advanced,
-#   so the stickiness cannot renew itself); otherwise `OK unknown: <err>` with source=unknown.
+#   so the stickiness cannot renew itself); otherwise `UNKNOWN unknown: <err>` with source=unknown (exit 0 as before; a caller matching OK* must not launch on it).
 # Blind (shu, ctl a43d: the gate failed OPEN): a non-probe, non-exempt call whose source=unknown has lasted >= BLIND_S (600 s) since unknown_since
 #   (shu2: unknown_since = the earliest of the carried unknown_since and the previous state's read_at, i.e. the clock starts at the LAST
 #   GOOD journal read, not at the first failing call)
@@ -121,7 +121,8 @@ if [ -n "$jf" ]; then
   cp -- "$jf" "$jfile" 2>"$tmpd/err" || rerr="journal file unreadable: $(head -c 120 "$tmpd/err" | tr '\n' ' ')"
 else
   since=$(date -u -d "@$((now_epoch - 3600))" +%Y-%m-%dT%H:%M:%SZ)
-  # shj: one `wm-build journal --table <t>` read per table the predicate uses, in parallel inside one ssh session (POSIX sh on the
+  # shser (rb 11-01 4:0x AM): serial table reads; parallel peaked ~4 x 2.2 GB RSS and was OOM-killed 10:26Z onward
+  # shj: one `wm-build journal --table <t>` read per table the predicate uses, one after another inside one ssh session (POSIX sh on the
   # host). runs = release-mem*/update, land = land-cargo-granted, daemon = driver-adopted (filtered remote-side: it is 3 MB/h),
   # builder = cargo-jobs-taken/released/reaped (the leading HOLD's held hand jobs). Each table prints `### table=<t> rc=<n> wall_s=<n>`
   # before its rows; grep rc 1 (no match) is success, rc >= 2 is a failure. An ssh timeout kill can leak the remote mktemp -d.
@@ -132,14 +133,14 @@ rd() { t=$1; s=$(date +%s)
   if [ $rc -eq 0 ] && [ -n "$2" ]; then grep -F -- "$2" "$d/$t.raw" >"$d/$t.out"; g=$?; [ $g -le 1 ] || rc=$((100+g))
   elif [ $rc -eq 0 ]; then mv -- "$d/$t.raw" "$d/$t.out"; else : >"$d/$t.out"; head -c 200 "$d/$t.err" >&2; fi
   echo "$rc $(( $(date +%s) - s ))" >"$d/$t.hdr"; }
-rd runs "" & rd land "" & rd daemon '\''"op":"driver-adopted"'\'' & rd builder "" & wait
+rd runs ""; rd land ""; rd daemon '\''"op":"driver-adopted"'\''; rd builder ""
 bad=0
 for t in runs land daemon builder; do
   if [ -r "$d/$t.hdr" ]; then read -r rc w <"$d/$t.hdr"; else rc=255; w=0; : >"$d/$t.out"; fi
   printf "### table=%s rc=%s wall_s=%s\n" "$t" "$rc" "$w"; cat "$d/$t.out"; [ "$rc" -eq 0 ] || bad=1
 done
 exit $bad'
-  timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-45}"
+  timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-120}"
   # on the target host itself sshd may be down: run the same script locally (source_kind stays ssh, so every downstream check is unchanged)
   local_run=0
   if [ -z "${RB_SPAWN_HOLD_SSH:-}" ] && { [ "${RB_SPAWN_HOLD_LOCAL:-}" = 1 ] || [ "$host" = "$(hostname -s 2>/dev/null)" ]; }; then local_run=1; fi
@@ -249,7 +250,7 @@ if rerr:
         line = "HOLD run=%s refusal=%s age_s=%d hand_slots=%s source=stale-ssh" % (out.get("run_id"), out.get("refusal"), age, out.get("hand_slots"))
     else:
         out["source"] = "unknown"; out["unknown_since"] = blind_origin()
-        line = "OK unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
+        line = "UNKNOWN unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
         age_s = int((now - pts(out["unknown_since"])).total_seconds())
         # fail-closed (shu): only a spawn gate refuses; --probe-only (timer) and --exempt (--no-cargo) accept blindness.
         # source stays "unknown" below, so act=none and an unknown-blind HOLD never touches the HAND-YIELD flag.
@@ -322,7 +323,7 @@ PY
   # a crash (incl. a failed state write) is blind: a spawn gate refuses. --exempt without --probe-only (the caller accepts blindness)
   # and --probe-only keep the old OK unknown / exit 0 ON PURPOSE.
   if [ "$probe" -eq 0 ] && [ -z "$exempt" ]; then echo "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo"; exit 76; fi
-  echo "OK unknown: decision engine failed source=unknown"; exit 0
+  echo "UNKNOWN unknown: decision engine failed source=unknown"; exit 0
 }
 line=$(printf '%s\n' "$decision" | sed -n 1p); act=$(printf '%s\n' "$decision" | sed -n 2p)
 
