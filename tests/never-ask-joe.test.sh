@@ -58,7 +58,7 @@ expect "block: hold on a different line than the not-done clause" block rb "$(t 
 # allows
 expect "allow: not-done form same line" allow rb "$(t "Not done: raising the cost limit needs Joe's word (seared class)")"
 expect "allow: plain STATUS"            allow rb "$(t $'STATUS 10:52 PM\nTask: hook build.\nState: tests green.\nNext: commit.')"
-expect "allow: WM_SEAT unset"           allow -  "$(t 'Want me to redrive 1068?')"
+expect "block: WM_SEAT unset (A358)"    block plain "$(t 'Want me to redrive 1068?')"
 expect "allow: stop_hook_active"        allow rb "$(t 'Should I merge?')" true
 expect "allow: not-done form with stays as-is" allow rb "$(t 'Not done: raising the idle limit stays as-is until you say otherwise (seared class)')"
 expect "allow: the way you want it"            allow rb "$(t 'Pushed the fix the way you want it.')"
