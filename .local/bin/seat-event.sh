@@ -14,6 +14,7 @@
 #   session on carbon, not a unit) is one: a wake would run `claude -p --resume` against the live session, which the guard refuses. The aide reads its
 #   log through the UserPromptSubmit/SessionStart hook .claude/hooks/aide-inbox.sh. The row to add by hand (seats.tsv is a hand file; tab-separated):
 #       aide<TAB>inbox<TAB>-<TAB>0<TAB>0<TAB>-<TAB>-          printed by `seat-event.sh --inbox-row aide`, so: seat-event.sh --inbox-row aide >> ~/.claude/state/seats.tsv
+#   Lanes SELF-REGISTER: aide:<lane> with lane matching $AIDE_LANE_RE (.local/lib/aide-lane.sh, shared with aide-launch.sh) needs no row; an explicit row still wins; aide:main and bare aide need the row as before.
 #   LANES (aide-lanes 10-27): a lane of the aide is the seat `aide:<lane>` (`seat-event.sh --inbox-row aide:build`), appended to $EVENTS_DIR/aide-<lane>-events.log
 #   and read by aide-inbox.sh under WM_AIDE_LANE=<lane>; `seat-event.sh aide` keeps writing aide-events.log only.
 #   SEAT_EVENT_NOWAKE=1: append (and debounce) only, never wake (seat-tick-failed.sh for ctl: a failing ctl tick must not spawn another ctl tick).
@@ -25,10 +26,14 @@ SEATS="${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}"
 DEBOUNCE="${EVENT_DEBOUNCE_S:-600}"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 for _l in "${SEAT_STAMP_LIB:-}" "$(dirname "$SELF")/../lib/seat-time-stamp.sh" "$HOME/.local/lib/seat-time-stamp.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+for _l in "${AIDE_LANE_LIB:-}" "$(dirname "$SELF")/../lib/aide-lane.sh" "$HOME/.local/lib/aide-lane.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+type aide_lane_valid >/dev/null 2>&1 || { echo "seat-event: aide-lane.sh lib not found (AIDE_LANE_LIB, ../lib, ~/.local/lib)" >&2; exit 1; }
 type seat_stamp_apply >/dev/null 2>&1 || { echo "seat-event: seat-time-stamp.sh lib not found (SEAT_STAMP_LIB, ../lib, ~/.local/lib)" >&2; exit 1; }
 
 known_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{exit !f}' "$SEATS" 2>/dev/null; }
-inbox_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s && $2=="inbox" {f=1} END{exit !f}' "$SEATS" 2>/dev/null; }
+inbox_seat() { awk -F'\t' -v s="$1" '!/^[[:space:]]*(#|$)/ && $1==s && $2=="inbox" {f=1} END{exit !f}' "$SEATS" 2>/dev/null || { ! known_seat "$1" && self_lane "$1"; }; }
+# aide:<lane> (lane != main, valid per aide-lane.sh) self-registers as an inbox seat: same as the --inbox-row aide:<lane> row, no seats.tsv edit. An explicit row wins (awk ran first).
+self_lane() { [[ "$1" == aide:* ]] && [ "$1" != aide:main ] && aide_lane_valid "${1#aide:}"; }
 
 # bump <key> [<set key> <value>]: counters in <seat>-events.json, tmp+mv, caller holds the events lock
 bump() {
@@ -158,7 +163,7 @@ if [ "${1:-}" = "--inbox-row" ]; then   # the seats.tsv row for an inbox-only se
 fi
 [ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --inbox-row <seat>  |  seat-event.sh --selftest' >&2; exit 64; }
 SEAT="$1"; shift
-known_seat "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
+known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
 [ -n "$LINE" ] || { echo 'seat-event: empty line' >&2; exit 2; }
 DIR="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"

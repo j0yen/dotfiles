@@ -419,5 +419,38 @@ run s2g $MISSING "$(gprev x 601 null false nosource)"; expect "(s2g) no-source p
 # the unknown branch keeps the earlier of the two: a prev unknown whose read_at is later than unknown_since still dates from unknown_since
 run s2h $MISSING "$(printf '{"active":false,"read_at":"%s","source":"unknown","unknown_since":"%s"}' "$(isoago 50)" "$(isoago 700)")"; expect "(s2h) unknown prev: the earlier unknown_since wins" 76 "HOLD unknown-blind unknown_since=$(isoago 700) age_s=700 "
 
+# --- local read on the target host + one in-call retry (ctl 9d62/7066) ---
+LT=$R/local; mkdir -p "$LT"
+# stub local runner: ignores the script, emits good empty frames; fails the first $LL_FAILS calls (counter file)
+cat > "$LT/local.stub" <<'STUB'
+#!/bin/sh
+echo x >> "$LL_LOG"; n=$(wc -l < "$LL_LOG")
+if [ "$n" -le "${LL_FAILS:-0}" ]; then echo "boom" >&2; exit 1; fi
+for t in runs land daemon builder; do echo "### table=$t rc=0 wall_s=1"; done
+STUB
+chmod +x "$LT/local.stub"
+lrun() { # lrun <name> <fails> <prev-json> [args...]; sets lout lrc lst lcalls
+  local nm=$1 fails=$2 prev=$3; shift 3; lst=$LT/$nm.json; : > "$LT/$nm.log"
+  [ -z "$prev" ] || printf '%s\n' "$prev" > "$lst"
+  lout=$(env HOME="$LT/home" TMPDIR="$LT" RB_SPAWN_HOLD_LOCAL=1 RB_SPAWN_HOLD_LOCAL_CMD="$LT/local.stub" RB_SPAWN_HOLD_RETRY_S=0 LL_LOG="$LT/$nm.log" LL_FAILS=$fails \
+    "$hold" --state-file "$lst" --now "$NOW" --no-flag "$@" 2>/dev/null); lrc=$?
+  lcalls=$(wc -l < "$LT/$nm.log")
+}
+lfield() { python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v) if not isinstance(v,str) else v)' "$lst" "$1"; }
+iso_ago() { date -u -d "$NOW - $1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
+lprev() { printf '{"active":false,"run_id":null,"refusal":null,"refused_at":null,"read_at":"%s","source":"%s","hand_slots":0,"parts":[],"exempt":null,"unknown_since":%s}' "$(iso_ago "$1")" "$2" "$3"; }
+# (l1) RB_SPAWN_HOLD_LOCAL=1 takes the local path and a good read clears unknown
+lrun l1 0 "$(lprev 100 unknown "\"$(iso_ago 900)\"")"
+[ "$lcalls" = 1 ] && [ "$lrc" = 0 ] && [[ $lout == OK* ]] && [ "$(lfield source)" = ssh ] && [ "$(lfield unknown_since)" = null ] && pass "(l1) local path taken, source=ssh, unknown_since cleared: $lout" || bad "(l1) calls=$lcalls rc=$lrc out=$lout st=$(cat "$lst")"
+# (l2) idle 77 min, first read fails, retry succeeds -> no refusal
+lrun l2 1 "$(lprev 4620 ssh null)"
+[ "$lcalls" = 2 ] && [ "$lrc" = 0 ] && [[ $lout == OK* ]] && pass "(l2) idle gap + one failure + retry ok -> exit 0: $lout" || bad "(l2) calls=$lcalls rc=$lrc out=$lout"
+# (l3) both attempts fail after the idle gap -> unchanged refusal
+lrun l3 2 "$(lprev 4620 ssh null)"
+[ "$lcalls" = 2 ] && [ "$lrc" = 76 ] && [[ $lout == "HOLD unknown-blind"* ]] && pass "(l3) both fail -> exit 76: $lout" || bad "(l3) calls=$lcalls rc=$lrc out=$lout"
+# (l4) probe-only and exempt do not retry
+lrun l4 2 "$(lprev 4620 ssh null)" --probe-only; [ "$lcalls" = 1 ] && [ "$lrc" = 0 ] && pass "(l4) --probe-only: no retry" || bad "(l4) calls=$lcalls rc=$lrc"
+lrun l4b 2 "$(lprev 4620 ssh null)" --exempt x; [ "$lcalls" = 1 ] && pass "(l4b) --exempt: no retry" || bad "(l4b) calls=$lcalls"
+
 [ $fail -eq 0 ] && echo "ALL PASS ($npass checks)" || echo "FAILED"
 exit $fail

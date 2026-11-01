@@ -84,13 +84,13 @@ if ! printf '%s' "$MODEL_LC" | grep -qE '(^|-)(opus|fable)($|-)'; then
     exit 0
 fi
 
-# --- 1b. Aide exemption (Joe 2026-10-22 4:3x PM "yes, exempt the aide") ---
-# The aide is Joe's interactive channel on carbon, started ONLY by
-# aide-launch.sh, which exports WM_SEAT=aide (Joe 2026-10-23 12:3x PM: a plain
-# `claude` on carbon is Joe's own non-fleet session, never the aide). The same
-# marker drives the AIDE CARD (seat-context-start.sh), the aide inbox and the
-# ledger tag. Every seat (rb/r7/ctl) and every plain session stays gated.
-if [ "${WM_SEAT:-}" = aide ]; then
+# --- 1b. Joe's own sessions are exempt ---------------------------------------
+# Aide (Joe 2026-10-22 4:3x PM "yes, exempt the aide"): started ONLY by
+# aide-launch.sh, which exports WM_SEAT=aide. Plain sessions (no WM_SEAT, Joe's
+# own `claude`) exempt since 2026-11-01 (approvals #195 "stop using rationing
+# limits"; the gate saved tokens only, and a gated plain session wrote script
+# files around it, adding steps). Only fleet seats (WM_SEAT=rb/r7/ctl/...) stay gated.
+if [ -z "${WM_SEAT:-}" ] || [ "${WM_SEAT:-}" = aide ]; then
     exit 0
 fi
 
