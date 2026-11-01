@@ -17,7 +17,8 @@ cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1" in
-  list) printf '%s\n' "${STUB_ROWS:-[]}"; exit 0 ;;
+  list) # main's rb-merge.sh reads the verdict row ($STUB_V, via=verifier) from the same list as the chain-guard handoff row
+    python3 -I -c 'import json,os; r=json.loads(os.environ.get("STUB_ROWS") or "[]"); r.append({"id":os.environ["STUB_V"],"via":"verifier"}); print(json.dumps(r))'; exit 0 ;;
   merge-gate) echo "PASS verdict=$2 pr=$5#$4 oid=$STUB_OID"; exit 0 ;;
   merge-done) exit 0 ;;
 esac
@@ -35,6 +36,7 @@ S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
 export STUB_LOG="$tmp" STUB_OID="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
 V=d-20261027-210000-r7-abcd; H=d-20261027-212000-aide-1234
+export STUB_V="$V"
 REFUSED='rb-merge: REFUSED discovery chain PR j0yen/synthorg#449 needs WM_SEAT=aide or --handoff <aide d-id> (approval 51)'
 row() { printf '[{"id":"%s","agent":"%s","what":"%s"}]' "$H" "$1" "$2"; }
 run() { : > "$tmp/calls"; "$@" >/dev/null 2>"$tmp/err"; rc=$?; }

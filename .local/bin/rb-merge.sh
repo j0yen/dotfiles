@@ -28,11 +28,6 @@ exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
 
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/wmd-row-lib.sh"
-wmd_fetch "$WM_DECIDE" || { echo "rb-merge.sh: cannot read the verdict row $v; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
-row="$(wmd_pick "$v")" || { echo "rb-merge.sh: verdict row $v could not be selected; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
-via="$(wmd_field "$row" via)"
-[ "$via" = verifier ] || { echo "VIA-NOT-VERIFIER verdict=$v via=$via" >&2; exit 3; }
 # DISCOVERY CHAIN GUARD (r7 9:26 PM, ctl 382b, approval 51): r7 merged synthorg #449 from its own seat; r7 verifies and gates, the AIDE runs this script.
 # A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
 CHAIN_REPOS=(j0yen/synthorg)   # the ONE place the discovery chain repos are listed (no other dotfiles script keeps this set: hand-pr-land-driver HPLD_REPOS is the wider hand-PR set)
@@ -67,6 +62,11 @@ sys.exit(1)' "$handoff" "$pr" "$nrepo"; then return 0; fi
   exit 3
 }
 chain_guard
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/wmd-row-lib.sh"
+wmd_fetch "$WM_DECIDE" || { echo "rb-merge.sh: cannot read the verdict row $v; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
+row="$(wmd_pick "$v")" || { echo "rb-merge.sh: verdict row $v could not be selected; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
+via="$(wmd_field "$row" via)"
+[ "$via" = verifier ] || { echo "VIA-NOT-VERIFIER verdict=$v via=$via" >&2; exit 3; }
 
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams
