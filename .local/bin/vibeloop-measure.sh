@@ -59,7 +59,7 @@ NOISE_FLOOR="$PRD_DIR/vibeloop/noise-floor.json"
 NOISE_FLOOR_SEED_2="${NOISE_FLOOR_SEED_2:-17}"
 NOISE_FLOOR_SEED_3="${NOISE_FLOOR_SEED_3:-42}"
 [ -f "$HOME/.config/vibeloop/limits" ] && { set -a; . "$HOME/.config/vibeloop/limits"; set +a; }
-MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-3}"
+MAX_MEASURES_PER_DAY="${MAX_MEASURES_PER_DAY:-0}"   # 0 = no daily cap (Joe 11-01 #195 "stop using rationing limits")
 VIBELOOP_KEEP_TENANTS="${VIBELOOP_KEEP_TENANTS:-0}"  # P1 req 7: debug switch, keeps a run's tenants on the hub
 # PRD-mcphost-baseline-anchor: set by a future candidate-run trigger — no invocation path in
 # this script sets it yet (every run today is a "plain" comparable run against the deployed
@@ -212,7 +212,7 @@ since24=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
 # req 2/4: sum sessions_spent (a missing field reads as 0), not lines — a
 # refusal or a skip that opens no session must not bind the daily cap.
 runs24=$(awk -v s="$since24" '$1 > s' "$MLEDGER" 2>/dev/null | grep -o 'sessions_spent=[0-9]*' | awk -F= '{sum+=$2} END{print sum+0}')
-[ "$runs24" -ge "$MAX_MEASURES_PER_DAY" ] && { log "skip: daily cap ($runs24/$MAX_MEASURES_PER_DAY)"; exit 0; }
+[ "$MAX_MEASURES_PER_DAY" -gt 0 ] && [ "$runs24" -ge "$MAX_MEASURES_PER_DAY" ] && { log "skip: daily cap ($runs24/$MAX_MEASURES_PER_DAY)"; exit 0; }
 git -C "$PRD_DIR" pull -q --ff-only >/dev/null 2>&1
 # --- what is built vs what is deployed ---
 git -C "$CRATE" pull -q --ff-only >/dev/null 2>&1
