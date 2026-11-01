@@ -13,8 +13,10 @@
 #   disk-health.sh --selftest   fake smartctl/nvme/lsblk/df/journalctl/sudo on a sandbox PATH; exits 1 on any failure
 #
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
-#        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot, kernel_io_last,
-#        usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct},
+#        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot (info only),
+#        kernel_io_errors_6h / kernel_io_errors_24h (block-device error lines timestamped inside the window; null + kernel_window_unfiltered
+#        true when the log has untimestamped lines), kernel_io_last_error_age_s, kernel_io_last, missing_devices:[{uuid, mount}] (fstab UUID= non-noauto
+#        entries absent from /dev/disk/by-uuid), usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct},
 #        mounts:[{mount, fs, bytes_pct, inode_pct, bytes_level: ok|yellow|red}] (every real filesystem + tmpfs /tmp),
 #        max_bytes_level: ok|yellow|red (the worst mount), errors:[...]}
 #   bytes_level: yellow at BYTES_YELLOW_PCT (85), red at BYTES_RED_PCT (92); fleet-dash disk_health.py raises the same thresholds as alarms.
@@ -32,14 +34,16 @@
 #   real run asks for a password), so the rule spells out every device path. Re-render when a disk is added. A sudo'd run that still says
 #   "interactive authentication is required" is classified needs-sudo, not error.
 #
-# ENV  DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
+#   expected_mounts_configured: true when .config/disk-health/expected-mounts.json has this host's key (host -> [mountpoints]); each expected mountpoint
+#        absent from /proc/self/mounts is a missing_devices {mount, reason:"not-mounted"}. false (file missing/unparseable, host key absent) = nothing was checked: consumers show YELLOW, never green.
+# ENV  DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_JOURNAL_FILE / DISK_HEALTH_NOW / DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR (test seams), DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
 
 OUT=${DISK_HEALTH_OUT:-$HOME/.cache/fleet-dash/disk-health.json}
 export PATH="$PATH:${DISK_HEALTH_EXTRA_PATH-/usr/sbin:/sbin:/usr/local/sbin}"
 
 read -r -d '' PY <<'PY_EOF'
-import json, os, re, shutil, socket, subprocess, sys, time
+import datetime, json, os, re, shutil, socket, subprocess, sys, time
 
 # block-device trouble only. A USB device resetting (carbon: usb 1-9 flapping) is counted apart in usb_resets_since_boot and never alarms;
 # "ata1: hard resetting link" is normal at every boot, so only a failed command / failed reset counts.
@@ -231,16 +235,112 @@ def smart_device(d, prefix, have_sudo, errors):
     return row
 
 
+WINDOW_6H_S = 6 * 3600
+WINDOW_24H_S = 24 * 3600
+DMESG_ISO_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:[.,]\d+)?(?:[+-]\d\d:?\d\d|Z))\s")
+
+
+def _line_ts(line, source):
+    """epoch seconds of one kernel log line, or None. journalctl -o short-unix: '1792903707.123456 host kernel: ...'; dmesg --time-format=iso: '2026-10-24T21:41:26,123456-07:00 ...'."""
+    if source == "journal":
+        m = re.match(r"^(\d{9,11})(?:\.\d+)?\s", line)
+        return float(line.split(None, 1)[0]) if m else None
+    m = DMESG_ISO_RE.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(m.group(1).replace(",", ".").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def kernel_io(errors):
-    """-> (block-device error count or None, last 3 matching lines, usb reset count or None). journalctl -k -b first, dmesg when the journal is unreadable/empty."""
-    for cmd in (["journalctl", "-k", "-b", "--no-pager", "-q"], ["dmesg"]):
-        rc, out, err = run(cmd)
+    """-> dict {since_boot, h6, h24, last_age_s, last, usb_resets, unfiltered} or None when no kernel log is readable.
+    since_boot = block-device error lines in the whole boot (info only). h6/h24 = those lines timestamped within the last 6 h / 24 h; filtered HERE
+    by line timestamp (journalctl -k -b -o short-unix, else dmesg --time-format=iso). When any line carries no parseable timestamp the window cannot
+    be trusted: h6/h24 are None and unfiltered is True (never the since-boot number). DISK_HEALTH_JOURNAL_FILE (a short-unix text file) replaces journalctl for tests."""
+    now = float(os.environ.get("DISK_HEALTH_NOW") or time.time())
+    jf = os.environ.get("DISK_HEALTH_JOURNAL_FILE")
+    cmds = [("journal", ["journalctl", "-k", "-b", "-o", "short-unix", "--no-pager", "-q"]), ("dmesg", ["dmesg", "--time-format=iso"]), ("dmesg", ["dmesg"])]
+    for source, cmd in cmds:
+        if jf and source == "journal":
+            try:
+                rc, out = 0, open(jf).read()
+            except OSError:
+                rc, out = 1, ""
+        else:
+            rc, out, err = run(cmd)
         lines = [l for l in out.splitlines() if l.strip()]
-        if rc == 0 and lines:
-            hits = [l for l in lines if KERNEL_RE.search(l)]
-            return len(hits), [h.strip()[:200] for h in hits[-3:]], sum(1 for l in lines if USB_RESET_RE.search(l))
+        if rc != 0 or not lines:
+            continue
+        hits = [l for l in lines if KERNEL_RE.search(l)]
+        usb = sum(1 for l in lines if USB_RESET_RE.search(l))
+        stamped = [(l, _line_ts(l, source)) for l in hits]
+        unfiltered = any(_line_ts(l, source) is None for l in lines)
+        res = {"since_boot": len(hits), "last": [h.strip()[:200] for h in hits[-3:]], "usb_resets": usb, "unfiltered": unfiltered,
+               "h6": None, "h24": None, "last_age_s": None}
+        if not unfiltered:
+            ages = [now - t for _, t in stamped]
+            res["h6"] = sum(1 for a in ages if a <= WINDOW_6H_S)
+            res["h24"] = sum(1 for a in ages if a <= WINDOW_24H_S)
+            res["last_age_s"] = int(min(ages)) if ages else None
+        return res
     errors.append("kernel-log-unreadable")
-    return None, [], None
+    return None
+
+
+def this_host():
+    return os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0]
+
+
+def mounted_points():
+    """-> set of mountpoints from /proc/self/mounts (DISK_HEALTH_MOUNTS_FILE is the test seam); None when unreadable."""
+    try:
+        txt = open(os.environ.get("DISK_HEALTH_MOUNTS_FILE") or "/proc/self/mounts").read()
+    except OSError:
+        return None
+    return {ln.split()[1].replace("\\040", " ") for ln in txt.splitlines() if len(ln.split()) > 1}
+
+
+def expected_mounts(errors):
+    """-> (configured, [{mount, reason:'not-mounted'}]). DISK_HEALTH_EXPECTED_FILE (default: .config/disk-health/expected-mounts.json beside the
+    dotfiles, resolved by the wrapper) maps host -> mountpoints. A missing/unparseable file or an absent host key is configured=False (never a pass);
+    a host key with [] is configured with nothing to check."""
+    path = os.environ.get("DISK_HEALTH_EXPECTED_FILE")
+    try:
+        mp = json.load(open(path))[this_host()]
+        if not isinstance(mp, list) or not all(isinstance(m, str) for m in mp):
+            raise ValueError("bad shape")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False, []
+    live = mounted_points()
+    if live is None and mp:
+        errors.append("mounts-unreadable")
+    return True, [{"mount": m, "reason": "not-mounted"} for m in mp if live is None or m not in live]
+
+
+def missing_devices(errors):
+    """-> [{uuid, mount}] for /etc/fstab UUID= entries (noauto excluded) with no /dev/disk/by-uuid link: an expected drive that is gone.
+    DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR are the test seams. An unreadable fstab or by-uuid dir adds 'fstab-unreadable' and yields []."""
+    fstab = os.environ.get("DISK_HEALTH_FSTAB") or "/etc/fstab"
+    byuuid = os.environ.get("DISK_HEALTH_BYUUID_DIR") or "/dev/disk/by-uuid"
+    try:
+        lines = open(fstab).read().splitlines()
+        present = {n.lower() for n in os.listdir(byuuid)}
+    except OSError:
+        errors.append("fstab-unreadable")
+        return []
+    out = []
+    for ln in lines:
+        p = ln.split("#", 1)[0].split()
+        if len(p) < 2 or not p[0].upper().startswith("UUID="):
+            continue
+        if "noauto" in (p[3].split(",") if len(p) > 3 else []):
+            continue
+        u = p[0][5:].strip("\"'")
+        if u.lower() not in present:
+            out.append({"uuid": u, "mount": p[1]})
+    return out
 
 
 def pct(s):
@@ -294,12 +394,17 @@ def collect():
         if not ok:
             errors.append("needs-sudo")
     rows = [smart_device(d, prefix, ok, errors) for d in devs]
-    kcount, klast, usb_resets = kernel_io(errors)
+    k = kernel_io(errors) or {"since_boot": None, "last": [], "usb_resets": None, "unfiltered": False, "h6": None, "h24": None, "last_age_s": None}
+    configured, missing = expected_mounts(errors)
+    have = {m["mount"] for m in missing}
+    missing += [m for m in missing_devices(errors) if m["mount"] not in have]
     inode, byts, mounts = df_max(errors)
     errors = list(dict.fromkeys(errors))
-    return {"host": os.environ.get("DISK_HEALTH_HOST") or socket.gethostname().split(".")[0],
+    return {"host": this_host(),
             "ts": now, "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-            "devices": rows, "kernel_io_errors_since_boot": kcount, "kernel_io_last": klast, "usb_resets_since_boot": usb_resets,
+            "devices": rows, "kernel_io_errors_since_boot": k["since_boot"], "kernel_io_errors_6h": k["h6"], "kernel_io_errors_24h": k["h24"],
+            "kernel_io_last_error_age_s": k["last_age_s"], "kernel_window_unfiltered": k["unfiltered"], "kernel_io_last": k["last"],
+            "usb_resets_since_boot": k["usb_resets"], "missing_devices": missing, "expected_mounts_configured": configured,
             "max_inode_pct": inode, "max_bytes_pct": byts,
             "mounts": mounts, "max_bytes_level": bytes_level(byts["pct"]) if byts else "ok", "errors": errors}
 
@@ -321,10 +426,12 @@ def summary(doc):
     us = sum(d.get("unsafe_shutdowns") or 0 for d in devs)
     age = int(time.time()) - int(doc.get("ts") or 0)
     inode, byts = doc.get("max_inode_pct"), doc.get("max_bytes_pct")
-    return "disk-health %s age %dm: smart %s x%d | media_errors %d | unsafe_shutdowns %d | kernel_io %s | usb_resets %s | inode max %s | bytes max %s | errors %s" % (
+    return "disk-health %s age %dm: smart %s x%d | media_errors %d | unsafe_shutdowns %d | kernel_io %s | usb_resets %s | io_6h %s | missing %d | inode max %s | bytes max %s | errors %s" % (
         doc.get("host"), age // 60, worst, len(devs), me, us,
         "n/a" if doc.get("kernel_io_errors_since_boot") is None else doc["kernel_io_errors_since_boot"],
         "n/a" if doc.get("usb_resets_since_boot") is None else doc["usb_resets_since_boot"],
+        "n/a" if doc.get("kernel_io_errors_6h") is None else doc["kernel_io_errors_6h"],
+        len(doc.get("missing_devices") or []),
         "%s%% %s" % (inode["pct"], inode["mount"]) if inode else "n/a",
         "%s%% %s (%s)" % (byts["pct"], byts["mount"], doc.get("max_bytes_level") or bytes_level(byts["pct"])) if byts else "n/a",
         ",".join(doc.get("errors") or []) or "none")
@@ -431,6 +538,13 @@ F
   }
   printf 'Oct 22 kernel: Linux version\nOct 22 kernel: EXT4-fs (sda1): mounted\nOct 22 kernel: nvme0n1: ok\n' >"$fx/journal.clean"
 
+  stamp() { # stamp <file> <age_s>: rewrite the 'Oct NN ... kernel: ' prefixes into journalctl -o short-unix lines <age_s> old (the real window filter reads these)
+    local t=$(( $(date +%s) - $2 ))
+    sed -E "s/^Oct [0-9]+( [0-9:]+)?( [a-z0-9]+)? kernel: /$t.000000 fx kernel: /" "$1" >"$1.s" && mv "$1.s" "$1"
+  }
+  mkdir -p "$fx/byuuid"; : >"$fx/fstab"
+  stamp "$fx/journal.clean" 60
+
   jq_() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
   check() { # check <name> <file> <python expr that must be True>
     n=$((n + 1))
@@ -438,7 +552,7 @@ F
   }
   go() { # go <outfile> [VAR=val ...]  (sandbox PATH, fixtures in $fx)
     local o=$1; shift
-    env -i HOME="$d" PATH="$bin" FAKE_DIR="$fx" DISK_HEALTH_OUT="$o" DISK_HEALTH_HOST=fx DISK_HEALTH_EXTRA_PATH= "$@" "$BASH" "$self" >"$o.stdout" 2>"$o.stderr"
+    env -i HOME="$d" PATH="$bin" FAKE_DIR="$fx" DISK_HEALTH_OUT="$o" DISK_HEALTH_HOST=fx DISK_HEALTH_EXTRA_PATH= DISK_HEALTH_FSTAB="$fx/fstab" DISK_HEALTH_BYUUID_DIR="$fx/byuuid" "$@" "$BASH" "$self" >"$o.stdout" 2>"$o.stderr"
     echo $? >"$o.rc"
   }
 
@@ -460,6 +574,7 @@ F
   check "healthy: usb answered by -d sntasmedia only, recorded in source" "$d/c1.json" "d['devices'][2]['smart_health']=='PASSED' and d['devices'][2]['source']=='smartctl:sntasmedia'"
   n=$((n + 1)); got=$(grep '^sdb' "$fx/calls.log" | tr '\n' ','); if [ "$got" = "sdb plain,sdb.sntasmedia," ]; then echo "  ok   usb order: plain then sntasmedia, stops at the first verdict"; else echo "  FAIL usb order: $got"; fails=$((fails + 1)); fi
   check "healthy: kernel io 0" "$d/c1.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[] and d['usb_resets_since_boot']==0"
+  check "healthy: window fields 0/0, age null, filtered, no missing devices" "$d/c1.json" "d['kernel_io_errors_6h']==0 and d['kernel_io_errors_24h']==0 and d['kernel_io_last_error_age_s'] is None and d['kernel_window_unfiltered'] is False and d['missing_devices']==[]"
   check "healthy: max inode /tmp 42 (overlay + vfat dash ignored)" "$d/c1.json" "d['max_inode_pct']=={'mount':'/tmp','pct':42}"
   check "healthy: max bytes /mnt/data 87 (overlay ignored)" "$d/c1.json" "d['max_bytes_pct']=={'mount':'/mnt/data','pct':87}"
   check "healthy: no errors" "$d/c1.json" "d['errors']==[] and d['host']=='fx' and isinstance(d['ts'],int)"
@@ -498,10 +613,12 @@ F
     'Oct 22 kernel: EXT4-fs error (device sda1): ext4_find_entry' 'Oct 22 kernel: ata1.00: failed command: READ DMA' 'Oct 22 kernel: ata1: hard resetting link' \
     'Oct 22 kernel: usb 2-1: reset high-speed USB device number 3 using xhci_hcd' 'Oct 22 kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' \
     'Oct 22 kernel: usb 2-2: device descriptor read/64, error -71' 'Oct 22 kernel: normal line' >"$fx/journal"
+  stamp "$fx/journal" 300
   go "$d/c2.json"
   check "failed: sda FAILED" "$d/c2.json" "d['devices'][1]['smart_health']=='FAILED' and d['devices'][1]['reallocated']==12 and d['devices'][1]['pending']==3"
   check "failed: nvme media_errors 5 unsafe 296" "$d/c2.json" "d['devices'][0]['media_errors']==5 and d['devices'][0]['unsafe_shutdowns']==296"
   check "failed: kernel io 4 block lines (blk_update, Buffer I/O, EXT4-fs, ata failed command); ata hard reset + usb lines excluded" "$d/c2.json" "d['kernel_io_errors_since_boot']==4 and len(d['kernel_io_last'])==3"
+  check "failed: all 4 lines are 5 min old -> 6h 4, 24h 4, last age ~300 s" "$d/c2.json" "d['kernel_io_errors_6h']==4 and d['kernel_io_errors_24h']==4 and 295<=d['kernel_io_last_error_age_s']<=330 and d['kernel_window_unfiltered'] is False"
   check "failed: usb resets counted apart (2), not in the io count" "$d/c2.json" "d['usb_resets_since_boot']==2"
   check "failed: /tmp inodes 100" "$d/c2.json" "d['max_inode_pct']=={'mount':'/tmp','pct':100}"
   env -i HOME="$d" PATH="$bin" DISK_HEALTH_OUT="$d/c2.json" "$BASH" "$self" --summary >"$d/c2.sum" 2>&1
@@ -510,8 +627,41 @@ F
   # ---- case 2b: carbon shape -- only a USB device flapping: no disk I/O error, so nothing for the alarm; resets still counted
   printf '%s\n' 'Oct 22 23:48 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' 'Oct 22 23:54 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' \
     'Oct 23 00:00 carbon kernel: usb 1-9: reset full-speed USB device number 5 using xhci_hcd' 'Oct 23 kernel: usb 3-1: reset SuperSpeed USB device number 2 using xhci_hcd' >"$fx/journal"
+  stamp "$fx/journal" 120
   go "$d/c2b.json"
   check "usb-only flapping: kernel_io 0, usb_resets 4" "$d/c2b.json" "d['kernel_io_errors_since_boot']==0 and d['kernel_io_last']==[] and d['usb_resets_since_boot']==4"
+
+  # ---- case 2c: the 6 h window -- an I/O error 8 h old counts for since-boot and 24h but NOT 6h; one 2 h old counts for 6h
+  old=$(( $(date +%s) - 8 * 3600 )); new=$(( $(date +%s) - 2 * 3600 ))
+  printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 9\n%s.000000 fx kernel: normal line\n' "$old" "$new" >"$fx/journal"
+  go "$d/c2c.json"
+  check "window: old error (8 h) -> since_boot 1, 6h 0, 24h 1, age ~8 h" "$d/c2c.json" "d['kernel_io_errors_since_boot']==1 and d['kernel_io_errors_6h']==0 and d['kernel_io_errors_24h']==1 and 28790<=d['kernel_io_last_error_age_s']<=28830"
+  printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 9\n%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 10\n' "$old" "$new" >"$fx/journal"
+  go "$d/c2d.json"
+  check "window: plus a 2 h old error -> since_boot 2, 6h 1, 24h 2" "$d/c2d.json" "d['kernel_io_errors_since_boot']==2 and d['kernel_io_errors_6h']==1 and d['kernel_io_errors_24h']==2"
+  printf 'Oct 22 kernel: blk_update_request: I/O error, dev sdb, sector 9\n' >"$fx/journal"
+  go "$d/c2e.json"
+  check "window: an untimestamped journal line -> 6h null + unfiltered true" "$d/c2e.json" "d['kernel_io_errors_since_boot']==1 and d['kernel_io_errors_6h'] is None and d['kernel_window_unfiltered'] is True"
+  # journal empty -> dmesg --time-format=iso fallback; its lines carry ISO stamps and are filtered like the journal's
+  : >"$fx/journal"; printf '2026-10-24T21:41:26,123456-07:00 blk_update_request: I/O error, dev sdb, sector 9\n' >"$fx/dmesg"
+  go "$d/c2f.json" DISK_HEALTH_NOW=1792903000
+  check "dmesg ISO fallback is filtered by timestamp (line at 1792903286, NOW 1792903000 -> inside 6 h)" "$d/c2f.json" "d['kernel_io_errors_6h']==1 and d['kernel_window_unfiltered'] is False"
+  go "$d/c2g.json" DISK_HEALTH_NOW=1793000000
+  check "dmesg ISO fallback: NOW a day+ later -> 6h 0, 24h 0, since_boot 1" "$d/c2g.json" "d['kernel_io_errors_6h']==0 and d['kernel_io_errors_24h']==0 and d['kernel_io_errors_since_boot']==1"
+  rm -f "$fx/dmesg"
+
+  # ---- case 2h: missing_devices -- fstab UUID entries (noauto excluded) absent from /dev/disk/by-uuid
+  cp "$fx/journal.clean" "$fx/journal"
+  printf '%s\n' '# comment' 'UUID=AAAA-1111 /mnt/data ext4 defaults,nofail 0 2' 'UUID=bbbb-2222 /mnt/usb ext4 defaults 0 2' 'UUID=cccc-3333 /mnt/off ext4 noauto,user 0 0' '/dev/sda1 /boot/efi vfat defaults 0 1' >"$fx/fstab"
+  : >"$fx/byuuid/aaaa-1111"
+  go "$d/c2h.json"
+  check "missing_devices: only the absent non-noauto UUID (case-insensitive match for the present one)" "$d/c2h.json" "d['missing_devices']==[{'uuid':'bbbb-2222','mount':'/mnt/usb'}]"
+  : >"$fx/byuuid/bbbb-2222"
+  go "$d/c2i.json"
+  check "missing_devices: all present -> []" "$d/c2i.json" "d['missing_devices']==[]"
+  go "$d/c2j.json" DISK_HEALTH_FSTAB="$fx/nonexistent"
+  check "missing_devices: unreadable fstab -> [] + fstab-unreadable in errors" "$d/c2j.json" "d['missing_devices']==[] and 'fstab-unreadable' in d['errors']"
+  : >"$fx/fstab"; rm -f "$fx/byuuid"/*
 
   # ---- case 3: needs-sudo (sudo -n fails) + journal empty -> dmesg fallback; the file is still written whole
   df_i 42 >"$fx/df.i"; : >"$fx/journal"; printf 'kernel: EXT4-fs error (device sda1): ext4_find_entry\n' >"$fx/dmesg"
@@ -519,6 +669,7 @@ F
   check "needs-sudo: every device unavailable + source needs-sudo" "$d/c3.json" "len(d['devices'])==3 and all(x['smart_health']=='unavailable' and x['source']=='needs-sudo' and x['media_errors'] is None for x in d['devices'])"
   check "needs-sudo: errors names it, file still has kernel + df" "$d/c3.json" "'needs-sudo' in d['errors'] and d['max_inode_pct']['pct']==42 and d['max_bytes_pct']['pct']==87"
   check "needs-sudo: dmesg fallback counted EXT4-fs error" "$d/c3.json" "d['kernel_io_errors_since_boot']==1 and d['usb_resets_since_boot']==0"
+  check "dmesg fallback without timestamps: 6h/24h null + kernel_window_unfiltered true, never the since-boot number" "$d/c3.json" "d['kernel_io_errors_6h'] is None and d['kernel_io_errors_24h'] is None and d['kernel_window_unfiltered'] is True"
   [ "$(cat "$d/c3.json.rc")" = 0 ] || { echo "  FAIL needs-sudo exit rc=$(cat "$d/c3.json.rc")"; fails=$((fails + 1)); }
 
   # ---- case 3b: narrow sudoers (no `sudo -n true`, only the fixed command lines): the full-line `-l` probe must find the grant
@@ -591,4 +742,8 @@ case "${1:-}" in
 esac
 
 command -v python3 >/dev/null 2>&1 || { echo "disk-health: python3 missing" >&2; exit 1; }
+if [ -z "${DISK_HEALTH_EXPECTED_FILE:-}" ]; then # sandbox PATHs may lack readlink/dirname: bash-only fallback
+  me=${BASH_SOURCE[0]}; me=$(readlink -f "$me" 2>/dev/null || printf '%s' "$me")
+  export DISK_HEALTH_EXPECTED_FILE=${me%/*}/../../.config/disk-health/expected-mounts.json
+fi
 exec python3 -I -c "$PY" "$OUT" "${1:-}"
