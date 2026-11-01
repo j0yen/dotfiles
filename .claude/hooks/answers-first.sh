@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # answers-first.sh: Joe 10-31 11:5x PM "always answers first then action" (approvals #185, CLAUDE.md § Output ANSWERS FIRST).
 # PreToolUse on the aide (WM_SEAT=aide): when the newest Joe message in the transcript contains a question mark and no assistant
-# text has been emitted after it, the tool call is denied with the reason "answer first". Sweep prompts and seat lines never count.
+# text has been emitted after it (12:1x AM: any Joe message, not only a question), the tool call is denied with the reason "answer first". Sweep prompts and seat lines never count.
 set -u
 [ "${WM_SEAT:-}" = aide ] || [ "${ANSWERS_FIRST_FORCE:-}" = 1 ] || exit 0
 if [ "${1:-}" = --selftest ]; then
@@ -14,7 +14,9 @@ if [ "${1:-}" = --selftest ]; then
   r=$(printf '{"transcript_path":"%s","tool_name":"Bash"}' "$t" | ANSWERS_FIRST_FORCE=1 bash "$0"); [ -z "$r" ] && echo "PASS sweep prompt exempt" || { echo "FAIL 3: $r"; exit 1; }
   printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"ok?"}]}}' >> "$t"
   r=$(printf '{"transcript_path":"%s","tool_name":"Bash"}' "$t" | ANSWERS_FIRST_FORCE=1 bash "$0"); [ -z "$r" ] && echo "PASS tool_result ignored" || { echo "FAIL 4: $r"; exit 1; }
-  rm -rf "$d"; echo "selftest: 4 PASS"; exit 0
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"i expect you to respond"}}' >> "$t"
+  r=$(printf '{"transcript_path":"%s","tool_name":"Bash"}' "$t" | ANSWERS_FIRST_FORCE=1 bash "$0"); echo "$r" | grep -q '"deny"' && echo "PASS statement-no-reply denies" || { echo "FAIL 5: $r"; exit 1; }
+  rm -rf "$d"; echo "selftest: 5 PASS"; exit 0
 fi
 inp=$(cat); tp=$(printf '%s' "$inp" | python3 -I -c 'import sys,json; print(json.load(sys.stdin).get("transcript_path",""))' 2>/dev/null)
 [ -n "$tp" ] && [ -f "$tp" ] || exit 0
@@ -31,10 +33,9 @@ for ln in open(sys.argv[1],encoding="utf-8",errors="replace"):
         else: txt=""
         txt=txt.strip()
         if not txt or txt.startswith(("AIDE SWEEP","<system-reminder>","[Monitor","<task-notification","[SYSTEM")): continue
-        if "?" in txt: q=txt[:80]; answered=False
-        else: q=None
+        q=txt[:80]; answered=False   # Joe 11-01 12:1x AM: every Joe message, question or statement, gets a reply first
     elif t=="assistant" and q is not None:
         if isinstance(c,list) and any(isinstance(x,dict) and x.get("type")=="text" and x.get("text","").strip() for x in c): answered=True
 if q is not None and not answered:
-    print(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"answer first (Joe 10-31 #185): reply to '%s' in text before any tool call" % q}}))
+    print(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"answer first (Joe 10-31 #185): reply to Joe's message '%s' in text before any tool call" % q}}))
 PY
