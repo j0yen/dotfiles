@@ -35,7 +35,7 @@ echo "gh $*" >>"$T/calls.log"
 case "$1 $2" in
   "pr list") f="$T/prs-$(echo "$4" | tr / -).json"; [ -f "$f" ] && cat "$f" || echo '[]' ;;
   "pr view") cat "$T/state-$3" 2>/dev/null || { echo "no such pr" >&2; exit 1; } ;;
-  "api repos/"*) echo tests/foo_test.py ;;
+  "api repos/"*) printf "modified\ttests/foo_test.py\n" ;;
   *) echo "stub gh: unexpected $*" >&2; exit 9 ;;
 esac
 E
