@@ -160,7 +160,7 @@ selftest() {
   t "$([ -z "$out" ] && echo 0 || echo 1)" "plain session (no seat) passes"
   out="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-rb"}' | hook >/dev/null; for i in 1 2 3 4; do r="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","stop_hook_active":true}' | hook)"; [ -z "$r" ] && echo pass || jq -r '.decision' <<<"$r"; done | tr '\n' ' ')"
   t "$([ "$out" = "block block block pass " ] && echo 0 || echo 1)" "Stop blocks 3x per turn then passes (got: $out)"
-  local nowiso; nowiso="$(date -d @"$now" '+%Y-%m-%dT%H:%M')"; local fut; fut="$(date -d @"$((now + 7200))" '+%Y-%m-%dT%H:%M')"
+  local nowiso; nowiso="$(date -d @"$now" '+%Y-%m-%dT%H:%M')"; local fut; fut="$(date -d @"$(( $(date +%s) + 7200 ))" '+%Y-%m-%dT%H:%M')"   # guard reads the real clock, so the future due must be real-future (fixed fut went past at 1:00 AM 11-01)
   out="$(jq -cn --arg f "$OPEN_ASKS" --arg o $'A4\t2026-10-31T22:00\taide\t2026-10-31T23:05\tk\tc\twithin grace' --arg n "A9	2026-10-31T22:00	aide	$fut	k	c	new delay row" '{tool_name:"Edit",tool_input:{file_path:$f,old_string:$o,new_string:$n}}' | OWED_NOW_GRACE_MIN=10 guard)"
   t "$(jq -e '.hookSpecificOutput.permissionDecision=="deny" and (.hookSpecificOutput.permissionDecisionReason|test("A9"))' <<<"$out" >/dev/null && echo 0 || echo 1)" "guard denies an Edit adding a future-due row without waits-on="
   out="$(jq -cn --arg f "$OPEN_ASKS" --arg o $'A4\t2026-10-31T22:00\taide\t2026-10-31T23:05\tk\tc\twithin grace' --arg n "A9	2026-10-31T22:00	aide	$fut	k	c	new row waits-on=rb next tick" '{tool_name:"Edit",tool_input:{file_path:$f,old_string:$o,new_string:$n}}' | guard)"
