@@ -17,7 +17,10 @@ while :; do   # --account and --lane, either order, before the claude args
     *) break ;;
   esac
 done
-[[ "$LANE" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "aide-launch: bad lane name '$LANE' (^[A-Za-z0-9_-]{1,32}\$)" >&2; exit 64; }
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+for _l in "${AIDE_LANE_LIB:-}" "$(dirname "$_self")/../lib/aide-lane.sh" "$HOME/.local/lib/aide-lane.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+type aide_lane_valid >/dev/null 2>&1 || { echo "aide-launch: aide-lane.sh lib not found (AIDE_LANE_LIB, ../lib, ~/.local/lib)" >&2; exit 1; }
+aide_lane_valid "$LANE" || { echo "aide-launch: bad lane name '$LANE' ($AIDE_LANE_RE)" >&2; exit 64; }
 if [ -n "$ACCT" ]; then
   f="${XDG_CONFIG_HOME:-$HOME/.config}/fleet-token/store/$ACCT"
   [ -r "$f" ] || { echo "aide-launch: no store entry '$ACCT' (fleet-token-store.sh add $ACCT)" >&2; exit 64; }
