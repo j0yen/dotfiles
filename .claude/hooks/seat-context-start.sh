@@ -39,12 +39,15 @@ timers_check() {
   return 0
 }
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; timers_check; exit 0 ;; *) sess="" ;; esac
+# A49 D1: the seat's owed follow-ups, one line (never blocks: 8 s cap inside the helper, prints `unknown (<reason>)` on any failure).
+followups_line() { local h; h="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-followups.sh"; [ -x "$h" ] && "$h" line 2>/dev/null; return 0; }
+case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; followups_line; timers_check; exit 0 ;; *) sess="" ;; esac
 if [ -z "$sess" ]; then
   [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
 fi
 case "$sess" in rb|r7|ctl) ;; *) exit 0 ;; esac
+export WM_SEAT="$sess"
 goal="$HOME/Notes/wiki/goal.md"
 play="$HOME/Notes/wiki/playbooks/fleet-operations.md"
 # M9 stage 1 (decisions/2026-10-27-m9-seat-floor-cut-wwhtbt.md, mechanism 1; OFF unless seat_floor_stage_on 1, i.e. SEAT_FLOOR_STAGE>=1 or floor-stage.json .stage>=1):
@@ -65,6 +68,7 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
     h=$(printf '%s' "$stage_txt" | sha256sum | cut -c1-12); hf="$HOME/.cache/claude-seat/$sess.stage-hash"
     if [ "$src" = resume ] && [ "$(cat "$hf" 2>/dev/null)" = "$h" ]; then
       echo "=== goal.md § Stage unchanged since this seat's last tick (hash $h); playbook ~/Notes/wiki/playbooks/fleet-operations.md · handoff ~/.claude/projects/-home-jsy/memory/handoff-$role-*.md ==="
+      followups_line
       exit 0
     fi
     mkdir -p "${hf%/*}" 2>/dev/null; printf '%s\n' "$h" >"$hf" 2>/dev/null
@@ -85,9 +89,11 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
         [ -z "$tl" ] || { echo "=== TIMERS: user timer(s) without a start trigger (status.json timers_no_start_trigger) ==="; printf '%s\n' "$tl"; }
       fi
     } | head -c 4096
+    followups_line
     exit 0
   fi
 fi
+followups_line
 echo "=== goal.md § Stage (seat $sess; read goal.md after a ff-only pull before acting on it) ==="
 if [ -r "$goal" ]; then
   awk '/^## Stage/{p=1} p&&/^## /&&!/^## Stage/{exit} p' "$goal"
