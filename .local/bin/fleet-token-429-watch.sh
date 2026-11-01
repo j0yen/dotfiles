@@ -106,7 +106,10 @@ skip_reason() {
   # 11-01: the floor guards an account whose reset is UNKNOWN; a logged reset that has passed makes it eligible at once
   # (3:1x AM 11-01: mcphost.dev reset 2:10 AM, rotated away 12:02 AM; the floor hid it and ctl/rb/r7 sat in a weekly quota-wait).
   [[ "$rs" =~ ^[0-9]+$ ]] && return 0
-  if [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago (reset unknown)"; return; fi
+  # 11-01 (A262): the floor applies only when the logged rotation away had trigger=429 (the account hit its limit);
+  # a hand/reset rotation says nothing about quota (8:56 PM 10-31: the 5:20 PM hand rotation hid jyen.pm).
+  grep -q ' trigger=429 ' <<<"$line" || return 0
+  if [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago (reset unknown, trigger=429)"; return; fi
 }
 
 watch() {
@@ -276,6 +279,10 @@ EOF2
     printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 3600))" "$((NOW - 100))" >"$FT_ROTLOG"
     runw
     [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 1 h ago with its logged reset in the past: the 6 h floor does not apply" $?
+    reset; seats 7200 7200 -
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=hand previous_reset_at=null\n' "$(ft_iso)" "$((NOW - 3600))" >"$FT_ROTLOG"
+    runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 1 h ago by a hand rotation (trigger=hand): the 6 h floor does not apply" $?
     reset; seats 1100 1100 -; runw
     [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'is <= 20 min away' "$FT_STATE/429-watch.log"; ft_st_chk "earliest reset only 18 min away: no rotation" $?
     reset; seats 1300 1300 -; runw
