@@ -12,7 +12,7 @@
 #   --exempt NAME     record `exempt` = NAME in the state file (rb-run-coder.sh --no-cargo)
 #   --selftest        stub-only checks (never real ssh, never the real hand dir): the six watcher-premise cases; prints
 #                     `SELFTEST PASS rb-spawn-hold.sh` (exit 0) or `SELFTEST FAIL ...` (exit 1); the service runs it as ExecStartPre
-# env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 45; a timeout reads `rc=124` in the failure text),
+# env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 120; a timeout reads `rc=124` in the failure text),
 #      RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_LOCAL=1 (or host == `hostname -s`: run the read locally, no ssh), RB_SPAWN_HOLD_RETRY_S (spawn-gate retry delay, default 5), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
 #      CARGO_SLOT_HAND_DIR (default /mnt/data/hand on the host; the HAND-YIELD flag lives there)
 #      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
@@ -121,7 +121,8 @@ if [ -n "$jf" ]; then
   cp -- "$jf" "$jfile" 2>"$tmpd/err" || rerr="journal file unreadable: $(head -c 120 "$tmpd/err" | tr '\n' ' ')"
 else
   since=$(date -u -d "@$((now_epoch - 3600))" +%Y-%m-%dT%H:%M:%SZ)
-  # shj: one `wm-build journal --table <t>` read per table the predicate uses, in parallel inside one ssh session (POSIX sh on the
+  # shser (rb 11-01 4:0x AM): serial table reads; parallel peaked ~4 x 2.2 GB RSS and was OOM-killed 10:26Z onward
+  # shj: one `wm-build journal --table <t>` read per table the predicate uses, one after another inside one ssh session (POSIX sh on the
   # host). runs = release-mem*/update, land = land-cargo-granted, daemon = driver-adopted (filtered remote-side: it is 3 MB/h),
   # builder = cargo-jobs-taken/released/reaped (the leading HOLD's held hand jobs). Each table prints `### table=<t> rc=<n> wall_s=<n>`
   # before its rows; grep rc 1 (no match) is success, rc >= 2 is a failure. An ssh timeout kill can leak the remote mktemp -d.
@@ -132,14 +133,14 @@ rd() { t=$1; s=$(date +%s)
   if [ $rc -eq 0 ] && [ -n "$2" ]; then grep -F -- "$2" "$d/$t.raw" >"$d/$t.out"; g=$?; [ $g -le 1 ] || rc=$((100+g))
   elif [ $rc -eq 0 ]; then mv -- "$d/$t.raw" "$d/$t.out"; else : >"$d/$t.out"; head -c 200 "$d/$t.err" >&2; fi
   echo "$rc $(( $(date +%s) - s ))" >"$d/$t.hdr"; }
-rd runs "" & rd land "" & rd daemon '\''"op":"driver-adopted"'\'' & rd builder "" & wait
+rd runs ""; rd land ""; rd daemon '\''"op":"driver-adopted"'\''; rd builder ""
 bad=0
 for t in runs land daemon builder; do
   if [ -r "$d/$t.hdr" ]; then read -r rc w <"$d/$t.hdr"; else rc=255; w=0; : >"$d/$t.out"; fi
   printf "### table=%s rc=%s wall_s=%s\n" "$t" "$rc" "$w"; cat "$d/$t.out"; [ "$rc" -eq 0 ] || bad=1
 done
 exit $bad'
-  timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-45}"
+  timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-120}"
   # on the target host itself sshd may be down: run the same script locally (source_kind stays ssh, so every downstream check is unchanged)
   local_run=0
   if [ -z "${RB_SPAWN_HOLD_SSH:-}" ] && { [ "${RB_SPAWN_HOLD_LOCAL:-}" = 1 ] || [ "$host" = "$(hostname -s 2>/dev/null)" ]; }; then local_run=1; fi
