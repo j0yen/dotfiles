@@ -24,7 +24,7 @@ set -u
 GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
 MAXR="${OWED_NOW_MAX_ROWS:-15}"; [[ "$MAXR" =~ ^[0-9]{1,3}$ ]] || MAXR=15
 STOPMAX="${OWED_NOW_STOP_MAX:-3}"; [[ "$STOPMAX" =~ ^[0-9]{1,2}$ ]] || STOPMAX=3
-STATE="${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"
+state_dir() { printf "%s" "${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"; }
 
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
@@ -67,7 +67,7 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
   [ "$n" -le "$MAXR" ] || body="$body
 ... $((n - MAXR)) more: ~/.claude/hooks/owed-now.sh lint --seat $seat"
   sid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$sid" =~ ^[A-Za-z0-9._-]+$ ]] || sid=nosid
-  mkdir -p "$STATE" 2>/dev/null; cf="$STATE/$sid.stops"
+  local st; st="$(state_dir)"; mkdir -p "$st" 2>/dev/null; cf="$st/$sid.stops"
   if [ "$ev" = Stop ]; then
     n="$(cat "$cf" 2>/dev/null || echo 0)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
     [ "$n" -lt "$STOPMAX" ] || return 0          # bounded push: STOPMAX blocks per turn, never a loop
