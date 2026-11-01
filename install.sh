@@ -101,6 +101,28 @@ host_sets_tmpdir() {
   return 1
 }
 
+# Retired paths (fleet-sync P28 mechanism 5): fleet-sync records a path deleted on origin/main in retired.tsv
+# (source<TAB>path<TAB>sha<TAB>time) and hands its location to the post step as FLEET_SYNC_RETIRED. A retired path that a
+# stale tree still holds is not (re)linked; already-linked host files are left alone (report only, never deleted).
+# Unset/empty FLEET_SYNC_RETIRED and no default file = behaviour unchanged. A malformed row is ignored with a WARN.
+declare -A retired=()
+retired_file="${FLEET_SYNC_RETIRED:-}"
+if [[ -z "$retired_file" ]]; then
+  retired_file="${XDG_STATE_HOME:-$home/.local/state}/fleet-sync-retired/retired.tsv"
+fi
+if [[ -f "$retired_file" ]]; then
+  lineno=0
+  while IFS=$'\t' read -r r_src r_path r_rest || [[ -n "${r_src:-}" ]]; do
+    lineno=$((lineno + 1))
+    [[ -z "${r_src:-}" || "${r_src:0:1}" == "#" ]] && continue
+    if [[ -z "${r_path:-}" || "$r_path" == /* || "$r_path" == *..* ]]; then
+      printf 'WARN malformed retired row %s:%s ignored\n' "$retired_file" "$lineno" >&2
+      continue
+    fi
+    retired["$r_path"]=1
+  done < "$retired_file"
+fi
+
 # report_stale <rel>: report-only. A deleted/renamed-away path whose $HOME dst is still a symlink into this repo.
 report_stale() {
   skip_rel "$1" >/dev/null && return 0
@@ -115,6 +137,10 @@ skip_rel() {
   case "$1" in
     .git/*|.gitignore|README.md|install.sh) return 0 ;;
   esac
+  if [[ -n "${retired[$1]:-}" ]]; then
+    printf 'SKIP retired %s\n' "$1"
+    return 0
+  fi
   if [[ "$1" =~ $skip_pattern ]]; then
     printf 'skip (claude-self or local-only): %s\n' "$1"
     return 0
@@ -167,6 +193,10 @@ if [[ $paths_from_ok -eq 0 ]]; then
     case "$rel" in
       .git/*|.gitignore|README.md|install.sh) continue ;;
     esac
+    if [[ -n "${retired[$rel]:-}" ]]; then
+      printf 'SKIP retired %s\n' "$rel"
+      continue
+    fi
     if [[ "$rel" =~ $skip_pattern ]]; then
       printf 'skip (claude-self or local-only): %s\n' "$rel"
       continue
