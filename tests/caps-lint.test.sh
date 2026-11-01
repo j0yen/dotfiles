@@ -8,6 +8,8 @@ L="$here/.local/bin/caps-lint.py"; T="$here/.config/fleet/caps.tsv"
 python3 -I -c 'import ast,sys;ast.parse(open(sys.argv[1]).read())' "$L" && ok "caps-lint.py parses" || bad "caps-lint.py parse"
 if out="$(python3 -I "$L" "$T" 2>&1)"; then ok "caps.tsv lints clean ($(printf '%s\n' "$out" | head -1))"; else bad "caps.tsv has violations"; printf '%s\n' "$out" | grep '^VIOLATION' | head -5; fi
 grep -q $'^# id\t.*\tpremise\texpires\tapplied_by$' "$T" && ok "caps.tsv header carries the v2 columns" || bad "caps.tsv header lacks premise/expires/applied_by"
+G="$here/.local/bin/caps-digest.py"; M="$here/.config/fleet/caps-digest.md"
+if out="$(python3 -I "$G" "$T" "$M" --check 2>&1)"; then ok "caps-digest.md matches caps.tsv"; else bad "caps-digest.md drifted: $out (regenerate: python3 -I $G $T $M)"; fi
 tmp="$(mktemp)"
 printf '# id\tname\tvalue\thost\tenforced_at\tclass\tsource\tverdict\towner\tnote\tpremise\texpires\tapplied_by\n' > "$tmp"
 printf 'X1\tseat tick\t90 min\tcarbon\tx.conf:1\trationing\tJoe\tKEEP\taide\t-\tquota\t\t\n' >> "$tmp"
