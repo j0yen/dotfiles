@@ -178,7 +178,7 @@ selftest() {
 
 case "${1:-hook}" in
   lint) shift; seat="${WM_SEAT:-}"; now="$(date +%s)"
-        while [ $# -gt 0 ]; do case "$1" in --seat) seat="$2"; shift 2;; --now) now="$(date -d "$2" +%s)"; shift 2;; *) shift;; esac; done
+        while [ $# -gt 0 ]; do case "$1" in --seat) seat="$2"; shift 2;; --now) [ -n "${2:-}" ] || { echo "owed-now.sh: --now needs an ISO time (a bare --now would loop forever)" >&2; exit 2; }; now="$(date -d "$2" +%s)" || exit 2; shift 2;; *) shift;; esac; done
         lint "$seat" "$now" ;;
   hook) hook ;;
   guard) guard ;;
