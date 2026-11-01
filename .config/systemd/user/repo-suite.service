@@ -1,0 +1,14 @@
+[Unit]
+Description=carbon/repo-suite: run the hermetic suite on every unseen origin/main and open-PR sha of j0yen/dotfiles and j0yen/vibecode-kit, post the commit status (decisions/2026-10-24-dotfiles-vibecode-kit-decisions-graded-wwhtbt.md mechanisms 4+5)
+
+[Service]
+Type=oneshot
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=4G
+TimeoutStartSec=40min
+# Carbon only: install.sh links this file on every node, but a unit that is not enabled elsewhere must also refuse to run there by hand.
+ExecCondition=/usr/bin/bash -c '[ "$(hostname -s)" = carbon ]'
+# ROOM: MemAvailable minus the suite's measured peak (1.5 G; falsifier 10-24: 1.35 GB per run) keeps >= 3 G for the seats. Exit 3 = skipped, not failed.
+ExecCondition=/usr/bin/bash -lc '%h/.local/bin/carbon-room.sh 1536'
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/repo-suite-poll.sh"

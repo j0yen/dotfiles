@@ -1,0 +1,16 @@
+# watchman-guard DENY list: roots watchman must never watch. ONE file, read by the shim (.local/bin/watchman, refuses CLI watch commands)
+# and the sweeper (.local/bin/watchman-root-guard.sh, watch-del on a listed root) through .local/lib/watchman-guard-lib.sh.
+# Matching is EQUALITY ONLY: a root is refused iff `realpath -m <root>` is byte-equal to a line below. Descendants pass
+# (/home/jsy/.claude, /home/jsy/Documents/PRDs/build-queue stay watchable); every ancestor of a member is already listed.
+# Incident: 2026-10-20 14:39:39 a client added /home/jsy; 12 s later the inotify limit (65536) was gone (pytest tmp churn under ~/.cache/tmp).
+# Q1 ruling (Fable 10-24): ~/.cache, ~/.cache/tmp and /tmp stay. ~/.cache/tmp/jsy-state is watchman's own state+log dir, and the 10-20 exhaustion
+# line was ~/.cache/tmp/pytest-of-jsy/...; none of the three is a plausible project root. No additions without an incident log line.
+# One absolute path per line; '#' starts a comment; no globs, no ~, no $HOME.
+/
+/home
+/home/jsy
+/home/jsy/.local
+/home/jsy/.local/state
+/home/jsy/.cache
+/home/jsy/.cache/tmp
+/tmp
