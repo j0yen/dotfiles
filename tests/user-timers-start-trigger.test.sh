@@ -16,7 +16,7 @@
 #      (default: the real user's ~/wintermute/swarm-decide/units when it exists).
 # Run: bash tests/user-timers-start-trigger.test.sh
 set -uo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # resolve the ~/tests symlink: root must be the dotfiles checkout, or every path under $HOME passes the (c) check
 FX="$root/tests/fixtures/timers"; LIVE="$root/.local/bin/timers-start-trigger-live.sh"
 fail=0
 ok()   { echo "PASS $1"; }
