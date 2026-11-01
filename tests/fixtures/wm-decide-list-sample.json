@@ -1,0 +1,37 @@
+[
+  {
+    "id": "d-20261025-014720-coder-hand-pr-land-driver-f03e",
+    "ts": "2026-10-25T01:47:20-07:00",
+    "agent": "coder:hand-pr-land-driver",
+    "via": "hand-pr-land-driver",
+    "model": null,
+    "kind": "observe",
+    "target": null,
+    "what": "HPLD LAUNCH j0yen/synthorg#438 k=launch:j0yen/synthorg#438:2684cd55e417:2 name=hpl-syn-438-2684cd5-2 tier=fast gated=d-20261025-010308-r7-a58e",
+    "why": "hand-pr-land-driver (five-whys 2026-10-24-wo16-3of7 mechanism 1): a hand PR must not wait for a keystroke",
+    "evidence": "tick 2026-10-25 01:47:20; head 2684cd55e417ec86ffa217155a486e9655cd95e4",
+    "reverse": {"text": "none (observation row)"},
+    "rule_ids": ["no-rule"],
+    "first_verdict": {"by": "controller", "model": null, "verdict": "ESCALATE", "note": "UNVERIFIED", "ts": "2026-10-30T19:09:01-07:00"},
+    "regrade": {"by": "fable-regrader", "model": "claude-fable-5-1", "verdict": "CORRECT", "result": "RESOLVED", "reason": "relaunch with no blocker check", "batch": "b-20261031-092419", "ts": "2026-10-31T09:28:07-07:00"},
+    "regrade_attempts": 0
+  },
+  {
+    "id": "d-20261101-014500-verifier-dotfiles-7-c0de",
+    "ts": "2026-11-01T01:45:00-07:00",
+    "agent": "verifier:fixture",
+    "via": "verifier",
+    "model": null,
+    "kind": "verdict",
+    "target": null,
+    "what": "CONFIRM dotfiles#7 diff matches the PR title",
+    "why": "constructed fixture row in the shape of the real wm-decide list --json output",
+    "evidence": "COMMIT=cccccccccccccccccccccccccccccccccccccccc",
+    "gates": {"G1": "COMMIT=cccccccccccccccccccccccccccccccccccccccc"},
+    "reverse": {"text": "none (verdict row)"},
+    "rule_ids": ["no-rule"],
+    "first_verdict": null,
+    "regrade": null,
+    "regrade_attempts": 0
+  }
+]
