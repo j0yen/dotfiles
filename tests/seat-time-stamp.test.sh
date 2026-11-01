@@ -3,6 +3,10 @@
 # leading clock label. Runs both selftests under a throwaway HOME, then drives both scripts with a fixed fake clock (SEAT_STAMP_NOW, honoured only
 # under SEAT_TICK_SELFTEST=1) and asserts the typed time never reaches the stored events.log line or the --ask argv the seat reads.
 set -u
+# capability probe (first executable block): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment" "systemd-run --user --quiet true"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EV="$here/.local/bin/seat-event.sh"; ASK="$here/.local/bin/seat-ask.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT

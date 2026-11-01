@@ -6,7 +6,7 @@
 #
 #   live-clone-guard.sh install <repo-path> [--env NAME]   write/refresh <repo>/.git/hooks/pre-commit (idempotent)
 #   live-clone-guard.sh ensure                             install for every path in ${XDG_CONFIG_HOME:-$HOME/.config}/live-clone-guard/repos
-#   live-clone-guard.sh check <repo-path>                  report pre-commit/post-merge/post-rewrite/post-checkout; exit 0 if all in place
+#   live-clone-guard.sh check <repo-path>                  report pre-commit/post-merge/post-rewrite/post-checkout; exit 0 if all in place AND live (core.hooksPath chains), else 1
 #   live-clone-guard.sh --selftest
 #
 # A repo whose root has an executable install.sh that supports --link-only ("a pull IS an install") also gets post-merge,
@@ -14,12 +14,18 @@
 # ${XDG_STATE_HOME:-$HOME/.local/state}/live-clone-guard/postmerge.log. They never fail the git command. `git reset --hard`
 # fires no hook (fleet-sync's install stamp covers it).
 #
-# Exit: install 3 = a foreign hook is present (left untouched). Per-repo line:
-#   live-clone-guard: <path> installed|already|skipped-missing|refused-foreign-hook
+# core.hooksPath: with it set, git never reads <repo>/.git/hooks/, so our hook is INERT unless <hooksPath>/pre-commit
+# chains to it. A chaining pre-commit carries the line `# live-clone-guard-chain` (build-skill's scripts/repo-hooks/pre-commit
+# does) and must be executable. check says `inert: ...` (exit 1) for a repo that sets hooksPath without such a chain.
+#
+# Exit: install 3 = a foreign pre-commit hook is present (left untouched). ensure 3 = a foreign hook somewhere,
+#   6 = a repo is inert-hookspath (6 wins over 3). Per-repo line:
+#   live-clone-guard: <path> installed|already|skipped-missing|refused-foreign-hook|inert-hookspath
 # and one `live-clone-guard: <path> <hook> installed|already|refused-foreign-hook` line per post hook.
 set -u
 
 MARKER='# live-clone-guard'
+CHAIN_MARKER='# live-clone-guard-chain'
 DEFAULT_ENV=LIVE_CLONE_COMMIT
 
 die() { echo "live-clone-guard: $*" >&2; exit 2; }
@@ -34,9 +40,7 @@ repo_info() {
   [ "$(basename "$common")" = .git ] || return 1          # bare / unusual layouts: not a live clone
   LIVE=$(dirname "$common")
   COMMON_HOOKS="$common/hooks"
-  # where git will actually run hooks from (core.hooksPath, local or global, wins over <common>/hooks)
-  HOOKDIR=$(git -C "$LIVE" rev-parse --git-path hooks 2>/dev/null) || HOOKDIR="$COMMON_HOOKS"
-  case "$HOOKDIR" in /*) ;; *) HOOKDIR="$LIVE/$HOOKDIR" ;; esac
+  HOOKDIR="$COMMON_HOOKS"   # hooks are written here; a core.hooksPath that skips them is reported by hookspath_inert (chain check)
   return 0
 }
 
@@ -128,6 +132,17 @@ HOOK
 
 is_ours() { [ -f "$1" ] && grep -q "^$MARKER" "$1"; }
 
+# hookspath_inert <repo-path> : returns 0 and sets HP (resolved dir) when core.hooksPath is set and <HP>/pre-commit
+# is not an executable file carrying CHAIN_MARKER (so git never reaches the repo hook); returns 1 otherwise.
+hookspath_inert() {
+  local p="$1" hp top
+  hp=$(git -C "$p" config --type=path --get core.hooksPath 2>/dev/null) && [ -n "$hp" ] || return 1
+  case "$hp" in /*) ;; *) top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || top="$p"; hp="$top/$hp" ;; esac
+  HP="$hp"
+  [ -x "$hp/pre-commit" ] && [ -f "$hp/pre-commit" ] && grep -q "^$CHAIN_MARKER" "$hp/pre-commit" && return 1
+  return 0
+}
+
 # install_one <repo-path> <env-name> ; prints the status word on stdout, returns 0, 3 (foreign) or 1 (not a repo)
 install_one() {
   local p="$1" env="$2" hook new
@@ -207,7 +222,8 @@ cmd_ensure() {
     fi
     st=$(install_one "$p" "$DEFAULT_ENV"); rc=$?
     [ $rc -eq 1 ] && st=skipped-missing
-    [ $rc -eq 3 ] && worst=3
+    [ $rc -eq 3 ] && [ $worst -eq 0 ] && worst=3
+    if [ $rc -eq 0 ] && hookspath_inert "$p"; then st=inert-hookspath; worst=6; fi
     echo "live-clone-guard: $p $st"
     [ $rc -eq 1 ] || install_post_hooks "$p" || worst=3
   done < "$cfg"
@@ -219,7 +235,12 @@ cmd_ensure() {
 cmd_check() {
   [ $# -eq 1 ] || die "usage: check <repo-path>"
   repo_info "$1" || return 1
-  local bad=0 hk hook st want_post=0 hp hpd
+  local bad=0 hk hook st want_post=0
+  if hookspath_inert "$1"; then
+    echo "inert: core.hooksPath=$HP and $HP/pre-commit does not chain to the repo hook" >&2
+    echo "live-clone-guard: $LIVE RED core.hooksPath=$HP resolves away from ${COMMON_HOOKS} and does not chain"
+    return 1
+  fi
   supports_link_only "$LIVE" && want_post=1
   for hk in pre-commit $POST_HOOKS; do
     hook="$HOOKDIR/$hk"
@@ -230,13 +251,6 @@ cmd_check() {
     else st=ok; fi
     echo "live-clone-guard: $LIVE $hk $st"
   done
-  if hp=$(git -C "$LIVE" config --get core.hooksPath 2>/dev/null) && [ -n "$hp" ]; then
-    hpd=$(cd "$LIVE" 2>/dev/null && cd "$hp" 2>/dev/null && pwd -P) || hpd="$hp"
-    if [ "$hpd" != "$(cd "$COMMON_HOOKS" 2>/dev/null && pwd -P || echo "$COMMON_HOOKS")" ]; then
-      echo "live-clone-guard: $LIVE RED core.hooksPath=$hp resolves to $hpd, not $COMMON_HOOKS"
-      bad=1
-    fi
-  fi
   return $bad
 }
 
@@ -303,6 +317,38 @@ live-clone-guard: $fresh installed" ]; then ok "ensure prints installed / skippe
   "$self" check "$live" >/dev/null && ok "check: installed -> 0" || bad "check installed"
   "$self" check "$foreign" >/dev/null && bad "check foreign should be 1" || ok "check: foreign hook -> 1"
   mk "$t/plain"; "$self" check "$t/plain" >/dev/null && bad "check plain should be 1" || ok "check: no hook -> 1"
+
+  # --- core.hooksPath: the repo hook is inert unless <hooksPath>/pre-commit chains to it ---
+  local hp="$t/hp" hpr="$t/hpr" hpw="$t/hpw"
+  mkdir -p "$hp"; mk "$hpr"; hpr=$(cd "$hpr" && pwd -P)
+  git -C "$hpr" config core.hooksPath "$hp"
+  "$self" install "$hpr" >/dev/null 2>&1
+  out=$("$self" check "$hpr" 2>&1); rc=$?
+  { [ $rc -eq 1 ] && grep -qF "inert: core.hooksPath=$hp and $hp/pre-commit does not chain to the repo hook" <<<"$out"; } && ok "check: hooksPath set, no pre-commit in it -> 1 (inert message)" || bad "check inert (missing) rc=$rc out=$out"
+  git -C "$hpr" commit -q --allow-empty -m nochain 2>/dev/null && ok "(premise) without the chain the commit in the live clone is NOT refused" || bad "premise: commit refused without a chain"
+  printf '#!/bin/sh\nexit 0\n' > "$hp/pre-commit"; chmod 755 "$hp/pre-commit"
+  "$self" check "$hpr" >/dev/null 2>&1; rc=$?
+  [ $rc -eq 1 ] && ok "check: hooksPath pre-commit without the marker -> 1" || bad "check inert (no marker) rc=$rc"
+  printf '#!/bin/sh\n# live-clone-guard-chain\nexit 0\n' > "$hp/pre-commit"; chmod 644 "$hp/pre-commit"
+  "$self" check "$hpr" >/dev/null 2>&1; rc=$?
+  [ $rc -eq 1 ] && ok "check: marked but non-executable hooksPath pre-commit -> 1" || bad "check inert (not exec) rc=$rc"
+  printf '#!/bin/sh\n# live-clone-guard-chain\nh="$(git rev-parse --git-common-dir)/hooks/pre-commit"\n[ -x "$h" ] && exec "$h" "$@"\nexit 0\n' > "$hp/pre-commit"; chmod 755 "$hp/pre-commit"
+  "$self" check "$hpr" >/dev/null 2>&1; rc=$?
+  [ $rc -eq 0 ] && ok "check: hooksPath pre-commit carrying the marker -> 0" || bad "check chained rc=$rc"
+  out=$(git -C "$hpr" commit --allow-empty -m viachain 2>&1); rc=$?
+  { [ $rc -eq 1 ] && grep -qF "$hpr" <<<"$out"; } && ok "commit in the live clone is refused through the chain" || bad "chain commit rc=$rc out=$out"
+  git -C "$hpr" worktree add -q "$hpw" -b hpfeat 2>/dev/null
+  git -C "$hpw" commit -q --allow-empty -m hpwt 2>/dev/null && ok "worktree commit still accepted through the chain" || bad "chain worktree commit refused"
+  printf '%s\n' "$hpr" > "$cfg/live-clone-guard/repos"
+  out=$(XDG_CONFIG_HOME="$cfg" "$self" ensure 2>/dev/null); rc=$?
+  { [ $rc -eq 0 ] && [ "$out" = "live-clone-guard: $hpr already" ]; } && ok "ensure: chained hooksPath repo reports already (exit 0)" || bad "ensure chained rc=$rc out=$out"
+  printf '#!/bin/sh\nexit 0\n' > "$hp/pre-commit"
+  out=$(XDG_CONFIG_HOME="$cfg" "$self" ensure 2>/dev/null); rc=$?
+  { [ $rc -eq 6 ] && [ "$out" = "live-clone-guard: $hpr inert-hookspath" ]; } && ok "ensure: hooksPath without a chain prints inert-hookspath, exit 6" || bad "ensure inert rc=$rc out=$out"
+  git -C "$hpr" config --unset core.hooksPath
+  "$self" check "$hpr" >/dev/null 2>&1 && ok "check: hooksPath unset -> 0 (unchanged)" || bad "check unset hooksPath"
+  out=$(XDG_CONFIG_HOME="$cfg" "$self" ensure 2>/dev/null); rc=$?
+  { [ $rc -eq 0 ] && [ "$out" = "live-clone-guard: $hpr already" ]; } && ok "ensure: hooksPath unset -> already, exit 0 (unchanged)" || bad "ensure unset rc=$rc out=$out"
 
   echo "selftest: $pass passed, $fail failed"
   [ $fail -eq 0 ]

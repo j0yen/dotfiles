@@ -13,7 +13,7 @@
 #   --selftest        stub-only checks (never real ssh, never the real hand dir): the six watcher-premise cases; prints
 #                     `SELFTEST PASS rb-spawn-hold.sh` (exit 0) or `SELFTEST FAIL ...` (exit 1); the service runs it as ExecStartPre
 # env: RB_SPAWN_HOLD_TIMEOUT_S (ssh journal-read timeout, default 45; a timeout reads `rc=124` in the failure text),
-#      RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
+#      RB_SPAWN_HOLD_HOST (default redbaron), RB_SPAWN_HOLD_LOCAL=1 (or host == `hostname -s`: run the read locally, no ssh), RB_SPAWN_HOLD_RETRY_S (spawn-gate retry delay, default 5), RB_SPAWN_HOLD_SSH (ssh command; default `ssh -o BatchMode=yes -o ConnectTimeout=8`),
 #      CARGO_SLOT_HAND_DIR (default /mnt/data/hand on the host; the HAND-YIELD flag lives there)
 #      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
 # HAND-YIELD writes carry a premise (watcher-premise.sh): ARM = wp_gate && wp_emit_write && ssh write, only on a state change
@@ -140,7 +140,18 @@ for t in runs land daemon builder; do
 done
 exit $bad'
   timeout_s="${RB_SPAWN_HOLD_TIMEOUT_S:-45}"
-  timeout "$timeout_s" "${ssh_cmd[@]}" "$host" "$remote" >"$jfile" 2>"$tmpd/err"; src_rc=$?
+  # on the target host itself sshd may be down: run the same script locally (source_kind stays ssh, so every downstream check is unchanged)
+  local_run=0
+  if [ -z "${RB_SPAWN_HOLD_SSH:-}" ] && { [ "${RB_SPAWN_HOLD_LOCAL:-}" = 1 ] || [ "$host" = "$(hostname -s 2>/dev/null)" ]; }; then local_run=1; fi
+  read_once() {
+    if [ "$local_run" -eq 1 ]; then
+      if [ -n "${RB_SPAWN_HOLD_LOCAL_CMD:-}" ]; then timeout "$timeout_s" "$RB_SPAWN_HOLD_LOCAL_CMD" "$remote" >"$jfile" 2>"$tmpd/err"; src_rc=$?   # tests only
+      else timeout "$timeout_s" sh -c "$remote" >"$jfile" 2>"$tmpd/err"; src_rc=$?; fi
+    else timeout "$timeout_s" "${ssh_cmd[@]}" "$host" "$remote" >"$jfile" 2>"$tmpd/err"; src_rc=$?; fi
+  }
+  read_once
+  # a spawn gate (not --probe-only, not --exempt) retries a failed read once before the rerr path
+  if [ "$src_rc" -ne 0 ] && [ "$probe" -eq 0 ] && [ -z "$exempt" ]; then sleep "${RB_SPAWN_HOLD_RETRY_S:-5}"; read_once; fi
   if [ "$src_rc" -ne 0 ]; then
     rerr="ssh $host journal failed: $(head -c 120 "$tmpd/err" | tr '\n' ' ') rc=$src_rc"
   fi

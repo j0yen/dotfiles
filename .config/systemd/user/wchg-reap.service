@@ -1,0 +1,8 @@
+[Unit]
+Description=Reap idle/scratch/gone wchg watchman roots and LRU-cap the rest (bounds the carbon watchman inotify use; Joe 2026-10-27)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/.local/bin/wchg-reap
