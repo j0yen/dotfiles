@@ -153,6 +153,16 @@ git -C "$T/wto" remote set-url origin "$T/origin.git"; git -C "$T/wto" remote se
 refused "(h) a hostile pushurl is the one checked (git remote get-url --push)" origin-not-allowed "$ID"; REPO="$T/wt"
 out=$(env -u RB_LAND_PUSH_TEST_ORIGIN bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
 [ $rc = 2 ] && [[ "$out" == "REFUSED origin-not-allowed"* ]] && ok "(h) a local-path push url is refused without RB_LAND_PUSH_TEST_ORIGIN=1" || bad "local origin not refused: rc=$rc out=$out"
+# (h2) exact-url allow (ctl ruling d-20261101-012229-controller-831e): a repo whose dir basename is fleet-dash may push to orch:mirrors/fleet-dash.git;
+#      the same url under any other basename, and any near-miss of the url under fleet-dash, stay origin-not-allowed
+git clone -q "$T/origin.git" "$T/fleet-dash" 2>/dev/null; git -C "$T/fleet-dash" remote set-url --push origin orch:mirrors/fleet-dash.git
+REPO="$T/fleet-dash"; out=$(bash "$wrap" --confirm "$ID" --repo "$REPO" --branch "$B" "${XA[@]}" 2>&1); rc=$?
+[[ "$out" != *"origin-not-allowed"* ]] && ok "(h2) fleet-dash + orch:mirrors/fleet-dash.git passes the origin allow (got: ${out%%$'\n'*})" || bad "(h2) exact fleet-dash url refused: $out"
+git -C "$T/fleet-dash" remote set-url --push origin orch:mirrors/fleet-dash;                            refused "(h2) fleet-dash + near-miss url (no .git)" origin-not-allowed "$ID"
+git -C "$T/fleet-dash" remote set-url --push origin orch:mirrors/fleet-dash.git/;                       refused "(h2) fleet-dash + near-miss url (trailing slash)" origin-not-allowed "$ID"
+git clone -q "$T/origin.git" "$T/fleet-dashx" 2>/dev/null; git -C "$T/fleet-dashx" remote set-url --push origin orch:mirrors/fleet-dash.git
+REPO="$T/fleet-dashx";                                                                                  refused "(h2) exact url under another basename (fleet-dashx)" origin-not-allowed "$ID"
+REPO="$T/wt"
 # (i) repo prefix allowlist (--host mode only)
 REPO=/usr/local/src/x;                                                                                  refused "(i) --host repo outside RB_LAND_PUSH_REPO_PREFIXES" repo-not-allowed "$ID"
 REPO="$T/../x";                                                                                         refused "(i) a .. component is refused" repo-not-allowed "$ID"
