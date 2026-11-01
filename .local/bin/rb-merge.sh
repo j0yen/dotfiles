@@ -10,6 +10,8 @@
 # All three checks (pre-merge commits, post-merge message, body strip) match a LINE that STARTS with `co-authored-by:` or `generated with` (case-insensitive, leading blanks ok); prose that mentions the phrase passes.
 # BEFORE the merge, once the gate passes, every commit on the PR branch is read (pulls/N/commits): a trailer in any branch commit exits 3 ATTRIBUTION-BRANCH <sha...> with NO merge
 # (the branch owner re-commits clean); an unreadable list fails closed (ATTRIBUTION-UNCHECKED). RB_MERGE_ALLOW_BRANCH_TRAILERS=1 bypasses it (Joe-authorized legacy branches only) with a stderr note.
+# BEFORE the gate and any gh call, the verdict row must carry via=verifier (ctl c246: d-20261029-143838-r7-d24b was recorded agent=r7 with no --via and passed). Else exit 3 VIA-NOT-VERIFIER.
+# `via` is caller-supplied at record time (wm-decide sets via = via or agent), so this stops honest-caller mistakes, not a forged --via; real provenance belongs in wm-decide (frozen, out of scope). No bypass env var.
 # After the merge the merge commit's message is re-read; a hit prints ATTRIBUTION-LANDED <oid> on stderr and exits 3 (the merge already happened; this makes it loud, it does not revert).
 set -euo pipefail
 usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name> [--handoff <aide d-id>]" >&2; exit 64; }
@@ -19,6 +21,10 @@ if [ $# -eq 5 ] && [ "$4" = "--handoff" ]; then handoff="$5"; set -- "$1" "$2" "
 v="$1"; pr="$2"; repo="$3"
 case "$pr" in ''|*[!0-9]*) echo "rb-merge.sh: pr must be a number, got '$pr'" >&2; usage ;; esac
 case "$repo" in */*) ;; *) echo "rb-merge.sh: repo must be owner/name, got '$repo'" >&2; usage ;; esac
+# Every call logs to ~/.cache/rb-seat/merge-logs/ (ctl 10-22 11:28 PM: a merge-done row cites this log).
+RB_MERGE_LOG_DIR="${RB_MERGE_LOG_DIR:-$HOME/.cache/rb-seat/merge-logs}"; mkdir -p "$RB_MERGE_LOG_DIR"
+LOG="$RB_MERGE_LOG_DIR/rb-merge-${repo//\//_}-$pr-$(date +%Y%m%dT%H%M%S).log"; echo "rb-merge.sh v=$v pr=$pr repo=$repo at $(date -Is)" >"$LOG"
+exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
 
@@ -57,9 +63,15 @@ sys.exit(1)' "$handoff" "$pr" "$nrepo"; then return 0; fi
 }
 chain_guard
 
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/wmd-row-lib.sh"
+wmd_fetch "$WM_DECIDE" || { echo "rb-merge.sh: cannot read the verdict row $v; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
+row="$(wmd_pick "$v")" || { echo "rb-merge.sh: verdict row $v could not be selected; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
+via="$(wmd_field "$row" via)"
+[ "$via" = verifier ] || { echo "VIA-NOT-VERIFIER verdict=$v via=$via" >&2; exit 3; }
+
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
 gate_out="$("$WM_DECIDE" merge-gate "$v" --pr "$pr" --repo "$repo")"   # set -e: rc 2 ends the script here; stdout is held, stderr streams
-oid="$(printf '%s\n' "$gate_out" | sed -n 's/^PASS .* oid=\([0-9a-f]\{40\}\)$/\1/p')"
+oid="$(printf '%s\n' "$gate_out" | sed -n 's/^PASS .* oid=\([0-9a-f]\{40\}\)\( .*\)\{0,1\}$/\1/p')"
 [ -n "$oid" ] || { echo "rb-merge.sh: the gate returned 0 but printed no full 40-hex oid; refusing to merge" >&2; exit 3; }
 printf '%s\n' "$gate_out"
 if [ "${RB_MERGE_ALLOW_BRANCH_TRAILERS:-}" = 1 ]; then

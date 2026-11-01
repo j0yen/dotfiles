@@ -17,7 +17,7 @@ cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1" in
-  list) printf '%s\n' "${STUB_ROWS:-[]}"; exit 0 ;;
+  list) STUB_ROWS="${STUB_ROWS:-[]}" python3 -I -c 'import json,os; r=json.loads(os.environ["STUB_ROWS"]); r.append({"id":"d-20261027-210000-r7-abcd","agent":"r7","via":"verifier"}); print(json.dumps(r))'; exit 0 ;;
   merge-gate) echo "PASS verdict=$2 pr=$5#$4 oid=$STUB_OID"; exit 0 ;;
   merge-done) exit 0 ;;
 esac
