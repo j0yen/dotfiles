@@ -20,6 +20,8 @@ grep -Eq -- "--on-calendar=[0-9]{4}-[0-9]{2}-[0-9]{2}\\\\? 09:30:00" <<<"$out" &
 grep -q -- '--trigger' <<<"$out" && grep -q 'joe-0930' <<<"$out" && grep -q 'joe-20261101' <<<"$out" && ok "trigger joe-0930 and --by joe-20261101 present" || bad "trigger/by"
 r="$(grep -ob 'fleet-token-rotate.sh' <<<"$out" | tail -1 | cut -d: -f1)"; a="$(grep -ob 'aide-relaunch.sh' <<<"$out" | tail -1 | cut -d: -f1)"
 [ -n "$r" ] && [ -n "$a" ] && [ "$r" -lt "$a" ] && ok "fleet account switch listed before aide account switch" || bad "step order"
+grep -Fq -- '\"\$5\"\ \"\$2\"\ \"\$6\"' <<<"$out" && ok "aide step runs relaunch with the account (\$2, same as fleet step) as first argument, then the reason (\$6)" || bad "aide step argv ($out)"
+grep -Eq -- 'rotate\.sh acctB joe-20261101 joe-0930 .*aide-relaunch\.sh joe-switch-at-0930 *$' <<<"$out" && ok "argv tail: rotate account acctB feeds \$2; reason joe-switch-at-0930 is \$6" || bad "argv tail ($out)"
 [ ! -e "$t/ran.log" ] && ok "dry-run ran no stub" || bad "dry-run ran a stub"
 # arm path with the systemd-run stub
 bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && grep -q 'STUB-RAN systemd-run' "$t/ran.log" && ok "armed through the systemd-run stub" || bad "arm via stub"

@@ -2,7 +2,7 @@
 # fleet-token-switch-at.sh <account> <HH:MM> [--by joe-<date>] [--dry-run]
 # Arms ONE transient user timer unit (fleet-token-switch-at-<HHMM>) that runs, in order, at the next HH:MM (today, else tomorrow):
 #   1. fleet account switch: fleet-token-rotate.sh <account> --by <by> --trigger joe-<HHMM>
-#   2. aide account switch:  aide-relaunch.sh (it takes no account argument here; the relaunch picks up the account the rotation placed)
+#   2. aide account switch:  aide-relaunch.sh <account> joe-switch-at-<HHMM> (account = required first argument, same account as step 1; the rest is the free-text reason)
 # Refuses with exit 2, arming nothing, when fleet-token-rotate.sh or aide-relaunch.sh cannot be found. --dry-run prints the systemd-run command only.
 # Exit: 0 armed / dry-run printed, 2 a step's script is absent, 64 usage.
 set -euo pipefail
@@ -34,8 +34,8 @@ if [ "$(date +%s)" -ge "$(date -d "$day $hhmm:00" +%s)" ]; then day="$(date -d '
 cal="$day $hhmm:00"
 unit="fleet-token-switch-at-$tag"
 cmd=(systemd-run --user --on-calendar="$cal" --unit="$unit" --collect
-     /usr/bin/env bash -c 'set -e; "$1" "$2" --by "$3" --trigger "$4" && echo "fleet account switch done"; "$5" && echo "aide account switch done"' fleet-token-switch-at
-     "$rotate" "$acct" "$by" "joe-$tag" "$relaunch")
+     /usr/bin/env bash -c 'set -e; "$1" "$2" --by "$3" --trigger "$4" && echo "fleet account switch done"; "$5" "$2" "$6" && echo "aide account switch done"' fleet-token-switch-at
+     "$rotate" "$acct" "$by" "joe-$tag" "$relaunch" "joe-switch-at-$tag")
 if [ "$dry" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; exit 0; fi
 "${cmd[@]}"
 echo "armed $unit for $cal: fleet account switch to $acct (by $by), then aide account switch"
