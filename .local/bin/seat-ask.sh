@@ -79,6 +79,9 @@ if [ "${SEAT_ASK_TEST:-}" = 1 ] || { [ -n "${SEAT_ASK_TICK_BIN:-}" ] && [ "$SEAT
   fi
 fi
 awk -F'\t' -v s="$seat" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{exit !f}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" || { echo "seat-ask: unknown seat '$seat'" >&2; exit 64; }
+# #113 refusal (A53): an ask that gates work on 0 open runs / an idle host is refused, shared patterns in .config/wm-guards
+for _l in "${ZERO_GUARD_LIB:-}" "$(dirname "$SELF")/../lib/zero-open-runs-guard.sh" "$HOME/.local/lib/zero-open-runs-guard.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+if type zero_open_runs_refuse >/dev/null 2>&1; then zero_open_runs_refuse "$*" || { echo "seat-ask: refused" >&2; exit 66; }; fi
 # stamp the text (row d335) and count it; the stamped text is what the seat reads
 seat_stamp_apply "$(seat_stamp_source)" "$*"; text="$SEAT_STAMPED"; typed="$SSP_TYPED"
 dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
