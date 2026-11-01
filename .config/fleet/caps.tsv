@@ -1,0 +1,217 @@
+# FLEET CAPS — one row per cap, limit, budget, cadence or threshold the fleet enforces or states (plain carbon session 11-01 1:1x AM PST, Joe 11-01 "find and consolidate all of them into a single file so we can manage it better", approvals #195).
+# Sources: host reads 11-01 1:3x-1:4x AM of carbon, redbaron, ryzen7, orch (config.toml, limits.lock, systemd units + drop-ins, ~/.local/bin, ~/.claude/hooks, fleet-dash) + CLAUDE.md, goal.md, the playbook, decision pages, memory.
+# class: memory | disk | hang-guard | cadence | safety | alarm | display | expiry | compaction | routing | leased-box | rationing | money | target
+# verdict: KEEP = stays, class is not rationing · DROP = remove now (owner column names the open-asks row) · DEAD = the file applies to no unit or daemon, remove it · VOID = Joe voided the value, no live enforcement should remain · CHECK = owner names the class: rationing → DROP, anything else → KEEP with the measured reason
+# RULES (#195): no rationing limits and no budget limit; a cap whose only reason is saving tokens or spend is DROP. Leased-box caps are DROP (only permanent Hetzner boxes since 10-11). Memory, disk, hang-guard and safety caps stay with their measured reason.
+# A host-local rename (.off-by-N) does not remove a tracked drop-in: fleet-sync re-links it from ~/dotfiles (orch 60-quota-stretch.conf re-linked 10-31 10:32 PM PDT). A cap is removed by deleting it in the tracked file.
+# id	name	value	host	enforced_at	class	source	verdict	owner	note
+C001	seat compaction window (ctl/rb/r7)	240000 × 50 % = 120K	carbon	~/.config/claude-seat/settings.json:7 ; ctl-settings.json:3	compaction	Joe 10-26 10:5x PM "yes, set 120K", approvals #32	KEEP	aide	matches CLAUDE.md
+C002	aide + plain compaction window	360000 × 50 % = 180K	carbon	~/.claude/settings.local.json:78	compaction	Joe 10-23 11:3x AM "yes"	KEEP	aide	matches CLAUDE.md
+C003	CLAUDE_AUTOCOMPACT_PCT_OVERRIDE	50	carbon,redbaron	~/.config/claude-seat/settings.json:8 ; ~/.claude/settings.json:3	compaction	approvals #32	KEEP	aide	threshold = window × pct
+C004	seat max_turns	ctl 60 ; rb 80 ; r7 80	carbon	~/.claude/state/seats.tsv:7-9	hang-guard	#50 seat max_turns	KEEP	aide	bounds one seat turn
+C005	seat timeout_sec	ctl 14400 ; rb 3600 ; r7 3600	carbon	~/.claude/state/seats.tsv:7-9	hang-guard	none found	KEEP	aide	seat-tick CAP = 95 % of it
+C006	seat-tick@.service TimeoutStartSec	14400	carbon,ryzen7,orch	~/.config/systemd/user/seat-tick@.service:15	hang-guard	none found	KEEP	aide	-
+C007	seat tick cadence	base 20 min	carbon,ryzen7,orch	~/.config/systemd/user/seat-tick@.timer:6	cadence	Joe 10-31 5:4x PM "go max speed now", approvals #151	KEEP	aide	the only live cadence once C007a/C007b are gone
+C007a	seat-tick 50-drain-brake.conf	30 min	ryzen7,orch (tracked in dotfiles)	~/.config/systemd/user/seat-tick@.timer.d/50-drain-brake.conf:7	rationing	quota era, voided #151	DEAD	r7 A294 ; rb A295	tracked file removed in dotfiles#181; hosts remove the dangling link
+C007b	seat-tick 60-quota-stretch.conf	90 min	ryzen7,orch (tracked in dotfiles)	~/.config/systemd/user/seat-tick@.timer.d/60-quota-stretch.conf:6	rationing	#35, voided #151	DEAD	r7 A294 ; rb A295	fleet-sync re-linked it on orch 10-31 10:32 PM PDT; tracked file removed in dotfiles#181
+C008	seat-tick ALARM_AT	3	carbon	~/.local/bin/seat-tick.sh:88	alarm	none found	KEEP	aide	-
+C009	seat-tick EV_MAX	40	carbon,ryzen7,orch	~/.local/bin/seat-tick.sh:93	safety	none found	KEEP	aide	prompt size bound
+C010	seat-tick lock wait	60 s	carbon	~/.local/bin/seat-tick.sh:41	hang-guard	none found	KEEP	aide	-
+C011	seat-tick CAP	95 % of timeout_sec	carbon,ryzen7,orch	~/.local/bin/seat-tick.sh:1331	hang-guard	none found	KEEP	aide	-
+C012	SEAT_EXIT_DANCE_MAX	150	carbon	~/.local/bin/seat-exit.sh:19	hang-guard	none found	KEEP	aide	-
+C013	seat-turn-budget	deny at deadline ; Agent lead 600 s	carbon	~/.claude/hooks/seat-turn-budget.sh:19-28	hang-guard	none found	KEEP	aide	time budget, not token budget
+C014	output-cap inline threshold	2048 bytes	carbon	~/.claude/hooks/output-cap.sh:145	compaction	CLAUDE.md "> 2 KB to a file"	KEEP	aide	context hygiene, not rationing
+C015	aide-inbox MAXLEN	2000	carbon	~/.claude/hooks/aide-inbox.sh:19	safety	none found	KEEP	aide	-
+C016	owed-now MAXR	15	carbon	~/.claude/hooks/owed-now.sh:25	display	approvals #181	KEEP	aide	-
+C017	owed-now STOPMAX	3	carbon	~/.claude/hooks/owed-now.sh:26	safety	approvals #181	CHECK	aide	CLAUDE.md says "Stop blocks once per turn"; script allows 3; align one to the other
+C018	gates-banner stale age	600 s	carbon	~/.claude/hooks/gates-banner.sh:18	alarm	none found	KEEP	aide	-
+C019	spawn-spec MAX_PATHS	5	carbon	~/.claude/hooks/agent-spawn-spec-lint.sh:35	safety	none found	KEEP	aide	-
+C020	spawn-spec MAX_BYTES	1 MiB	carbon	~/.claude/hooks/agent-spawn-spec-lint.sh:36	safety	none found	KEEP	aide	-
+C021	protected-hooks MIN_TIMEOUT	10 s	carbon	~/.claude/hooks/protected-hooks-check.sh:9	safety	none found	KEEP	aide	-
+C022	settings.json hook timeouts	1-30 s	carbon	~/.claude/settings.json:80	hang-guard	none found	CHECK	aide	some below C021's 10 s minimum; name which hooks are protected
+C023	prd-write-gate DREAM_TTL_MIN	180 min	carbon	~/.claude/hooks/prd-write-gate.sh:22	safety	none found	KEEP	aide	-
+C024	park-fresh-fact WINDOW_MIN	60 min	carbon	~/.claude/hooks/park-fresh-fact.sh:18	alarm	none found	KEEP	aide	-
+C025	seat-context-start freshness	300 s	carbon	~/.claude/hooks/seat-context-start.sh:83	alarm	none found	KEEP	aide	-
+C026	Fable grader cadence	15 min	carbon,ryzen7,orch	~/.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf:5	cadence	approvals #62, restarted under #145	KEEP	aide	-
+C026a	regrade 60-quota-stretch.conf	60 min	ryzen7,orch (tracked in dotfiles)	~/.config/systemd/user/swarm-decide-regrade.timer.d/60-quota-stretch.conf:6	rationing	#35, set aside by #62	DEAD	r7 A294 ; rb A295	tracked file removed in dotfiles#181
+C026b	grader batch	100 rows	carbon	swarm-decide wm_decide/regrade.py MAX_BATCH	rationing→throughput	Joe 10-31 10:2x PM "grade 100 per turn"	KEEP	rb	larger batch = throughput; confirm 100 is live (CLAUDE.md still says "rb, due 12:30 AM")
+C027	regrade MemoryMax	1500M	carbon	~/.config/systemd/user/swarm-decide-regrade.service:11	memory	none found	KEEP	aide	-
+C028	regrade TimeoutStartSec	3660 s	carbon	~/.config/systemd/user/swarm-decide-regrade.service:12	hang-guard	Joe 10-24 "remove daily cap"	KEEP	aide	3600 s hang guard + margin
+C029	seat-model hold (opus seats)	expires 2026-11-02	carbon	~/.config/wm-decide/seat-model-hold.json:7	expiry	approvals #155/#156	KEEP	aide	-
+C030	seat-model hold (aide)	expires 2026-11-07	carbon	~/.config/wm-decide/seat-model-hold.json:31	expiry	approvals #191	KEEP	aide	-
+C031	429-watch MIN_AWAY	1200 s	carbon,ryzen7,orch	~/.local/bin/fleet-token-429-watch.sh:39	safety	none found	KEEP	aide	account failover ring, not rationing
+C032	429-watch FLOOR	21600 s	carbon,ryzen7,orch	~/.local/bin/fleet-token-429-watch.sh:40	safety	none found	KEEP	aide	no flap back to a depleted account
+C033	FLEET_TOKEN_STORE_MAX_DAYS	30 d	carbon	~/.local/bin/fleet-token-429-watch.sh:56	expiry	none found	KEEP	aide	-
+C034	TOKEN_LEDGER_SSH_TIMEOUT	carbon 120 ; default 30	carbon,ryzen7,orch	token-ledger.service.d/ssh-timeout.conf:4 ; ~/.local/bin/token-ledger:85	hang-guard	none found	KEEP	aide	-
+C035	land-red-hold bounds	64 MiB / 7200 s / 300 s / 5400 s / 86400 s / 3 tries	carbon,ryzen7,orch	~/.local/bin/land-red-hold.sh:66	hang-guard	none found	KEEP	r7	bounded retries, compatible with #194
+C036	aide-verifier CMD_TIMEOUT_S	120 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:64	hang-guard	none found	KEEP	aide	-
+C037	aide-verifier VTIMEOUT	2400 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:341	hang-guard	none found	KEEP	aide	-
+C038	aide-verifier QUEUE_MAX_S	3600 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:38,388	hang-guard	none found	KEEP	aide	-
+C039	aide-verifier WATCH_MAX_S	3000 s	carbon	~/.local/bin/aide-verifier.sh:539	hang-guard	none found	KEEP	aide	-
+C040	verifier-cap-watch CAP / PEAK_MB	4 / 1024	carbon,ryzen7,orch	~/.local/bin/verifier-cap-watch.sh:23-24	memory	none found	KEEP	r7	-
+C041	verifier-cap-watch EXPIRES	2026-11-06T00:00-07:00	carbon,ryzen7,orch	~/.config/systemd/user/verifier-cap-watch.service:11	expiry	watcher premise+expiry rule	KEEP	r7	-
+C042	grand-loop MAX_TICKS_PER_DAY	4	carbon,ryzen7,orch	~/.local/bin/grand-loop-tick.sh:59 ; grand-loop-status:39	rationing	none found; Joe 09-12 "remove daily cap"	DROP	aide A298	daily count cap with no memory or safety reason (#195)
+C043	grand-loop MEASURE_BUDGET_S	4800 s	carbon,ryzen7,orch	~/.local/bin/grand-loop-demand.sh:53	hang-guard	none found	KEEP	aide	time bound
+C044	vibeloop-measure MAX_MEASURES_PER_DAY	3	carbon,ryzen7,orch	~/.local/bin/vibeloop-measure.sh:62	rationing	none found	DROP	aide A298	daily count cap (#195)
+C045	premise-check MAX	4 PRDs per sweep	carbon	~/.local/bin/premise-check.sh:15	display	none found	KEEP	aide	-
+C046	R7_WAKE_MAX	6 per hour	carbon,ryzen7,orch	~/.local/bin/r7-watch-lib.sh:20	safety	none found	KEEP	r7	wake storm bound
+C047	r7-hand-target-purge IDLE_H	48 h	carbon	~/.local/bin/r7-hand-target-purge.sh:32	disk	none found	KEEP	r7	-
+C048	r7-mcp-gate SLOT_GB / WAIT_MIN	12.5 GB / 90 min	carbon,ryzen7,orch	~/.local/bin/r7-mcp-gate.sh:10	memory	none found	KEEP	r7	equals mem_caps land 12.5
+C049	pressure-guard HOLD_MIN	30 min	carbon,ryzen7,orch	~/.local/bin/ryzen7-pressure-guard.sh:24 ; r7-pressure-shed.sh:45	memory	none found	KEEP	r7	-
+C050	pressure-guard HOT	SWAPPCT 80 ; AVAIL 20	carbon	~/.local/bin/ryzen7-pressure-guard.sh:127	memory	none found	KEEP	r7	-
+C051	rb-reprice-watch thresholds	MEM_AVAIL_MIN 12 GiB ; PSI 10 ; IO 10/5 ; 600 s	carbon,ryzen7,orch	~/.local/bin/rb-reprice-watch.sh:94,549	memory	none found	KEEP	rb	-
+C052	rb-reprice-watch pause	90 min ; ext 30 ×2 ; pass 240 s	carbon,ryzen7,orch	~/.local/bin/rb-reprice-watch.sh:318	memory	none found	KEEP	rb	pressure pause, not a zero-runs wait
+C053	rb-spawn-hold timeout	45 s	carbon	~/.local/bin/rb-spawn-hold.sh:142	hang-guard	none found	KEEP	rb	-
+C054	burst-idle-guard zero-runs age	900 s	carbon	~/.local/bin/burst-idle-guard.sh:26	alarm	idle slot = defect	KEEP	rb	-
+C055	BUILD_MAX_BRANCHES	default 2 ; redbaron 6	carbon,redbaron,ryzen7,orch	~/.local/bin/claude-build-headless.sh:90 ; claude-build.service.d/branches.conf:2	memory	none found	KEEP	rb	-
+C056	ballast guard water marks	90 / 85 / 80 %	carbon	~/.config/ballast/guard.toml:11	disk	none found	KEEP	aide	-
+C057	live-export GH_TTL / GH_MAX_AGE	900 s / 3600 s	carbon	~/.local/bin/wintermute-live-export.sh:33	safety	none found	KEEP	aide	gh API rate
+C058	chain-redlinks GH_CAP	10	carbon	~/.local/bin/chain-redlinks-lint.sh:22	safety	none found	KEEP	aide	gh API rate
+C059	dash MEMSYNC_STALE_MIN	120 min	carbon	~/wintermute/fleet-dash/collect.sh:95	alarm	none found	KEEP	rb	-
+C060	dash live LOCAL/PUBLIC_MAX_S	600 / 900 s	carbon	~/wintermute/fleet-dash/wintermute_live.py:18	alarm	none found	KEEP	rb	-
+C061	dash ctl STALE_S / GUARD_S	2700 / 3600 s	carbon	~/wintermute/fleet-dash/ctl_status.py:33	alarm	none found	KEEP	rb	-
+C062	dash CAP_HOLD_S / AIDE_LANE_ALARM_PCT	86400 s / 50 %	carbon	~/wintermute/fleet-dash/ctl_status.py:35	alarm	none found	KEEP	rb	-
+C063	dash VERIFIER_MIN_N / SHARE	13 / 0.25	carbon	~/wintermute/fleet-dash/seat_alarms.py:17	alarm	CLAUDE.md corrected share > 25 %	KEEP	rb	-
+C064	dash disk RED / YELLOW / INODE	92 / 85 / 90 %	carbon	~/wintermute/fleet-dash/disk_health.py:20	alarm	none found	KEEP	rb	-
+C065	dash backup STALE_H / LAG_H	26 / 30 h	carbon	~/wintermute/fleet-dash/backup_age.py:36	alarm	none found	KEEP	rb	-
+C066	dash backup scratch fraction	0.70 / 0.65	carbon	~/wintermute/fleet-dash/backup_age.py:44	disk	none found	KEEP	rb	-
+C067	dash JOURNAL_CAP	64 MiB per tick	carbon	~/wintermute/fleet-dash/journal_ingest.py:27	memory	none found	KEEP	rb	-
+C068	dash hand-target alarm	60 GB / 1800 s	carbon	~/wintermute/fleet-dash/hand_targets.py:18	alarm	none found	KEEP	rb	-
+C069	dash promise STALE	5 d / 30 min	carbon	~/wintermute/fleet-dash/promise_clock.py:20	alarm	approvals #129	KEEP	rb	-
+C070	dash never_ask WINDOW_S	86400 s	carbon	~/wintermute/fleet-dash/never_ask_joe.py:12	alarm	none found	KEEP	rb	-
+C071	dash open_prs LIMIT / EVERY_S	500 / 300 s	carbon	~/wintermute/fleet-dash/open_prs.py:18	display	none found	KEEP	rb	listing size only; the open-PR cap is R001
+C072	dash merge_queue WINDOW_H	72 h	carbon	~/wintermute/fleet-dash/merge_queue.py:21	display	none found	KEEP	rb	-
+C073	dash carbon RESERVE_MB	3072	carbon	~/wintermute/fleet-dash/carbon_room.py:13	memory	none found	KEEP	rb	-
+C074	dash being_built WINDOW_H / MAX_VIEWS	6 h / 12	carbon	~/wintermute/fleet-dash/being_built.py:153	display	none found	KEEP	rb	-
+C075	dash r7_suite STALE	24 h	carbon	~/wintermute/fleet-dash/r7_suite.py:18	alarm	none found	KEEP	rb	-
+C076	dash verify_guard ALARM_S	6 h	carbon	~/wintermute/fleet-dash/verify_guard.py:20	alarm	none found	KEEP	rb	-
+C077	dash MAX_EVENTS	10	carbon	~/wintermute/fleet-dash/alarm_events.py:12	display	none found	KEEP	rb	-
+C078	dash queue/bell STALE_S	180 s	carbon	~/wintermute/fleet-dash/queue_counts.py:108	alarm	none found	KEEP	rb	-
+C079	dash timers_stalled	2× / 600 s	carbon	~/wintermute/fleet-dash/timers_stalled.py:30	alarm	none found	KEEP	rb	-
+C080	dash PROOF_STALE_S	24 h	carbon	~/wintermute/fleet-dash/chain_progress.py:24	alarm	none found	KEEP	rb	-
+C081	fleet-dash-collect cadence	60 s / 55 s	carbon	~/.config/systemd/user/fleet-dash-collect.timer:6	cadence	status.json ≤ 60 s old	KEEP	rb	-
+C082	swarm-decide unit MemoryMax	1500M / 500M / 1500M	carbon	swarm-decide-*.service:11	memory	none found	KEEP	aide	-
+C083	queue-starve-watch MemoryMax	200M	carbon	~/.config/systemd/user/queue-starve-watch.service:8	memory	none found	KEEP	aide	-
+C084	fleet-token-jyentech-mon.timer	OnCalendar 2026-11-02 20:05	carbon	~/.config/systemd/user/fleet-token-jyentech-mon.timer:5	rationing	approvals #171 (ring, never a calendar)	DROP	aide A297	disabled; remove the unit file
+C085	max_runs (redbaron)	2	redbaron	~/.config/wm-build/config.toml:5 ; limits.lock:7	memory	LIMITS 10-20 (oomd 3→2)	KEEP	rb	limits-guard owns it
+C086	max_per_target	99	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:6	safety	none found	KEEP	rb	effectively unlimited
+C087	max_consecutive_exec_failures	12	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:24-28	safety	none found	KEEP	rb	-
+C088	admit_min_avail_x_peak	1.0	redbaron,ryzen7	~/.config/wm-build/config.toml:60,66	memory	none found	KEEP	rb	-
+C089	max_runs_by_prefix (redbaron)	mcphost-=2	redbaron	~/.config/wm-build/config.toml:69	routing	approvals #49 (mcphost on RB)	KEEP	rb	-
+C090	host_min_free_gb (redbaron)	110	redbaron	~/.config/wm-build/config.toml:76	disk	none found	KEEP	rb	-
+C091	host_run_budget_gb	rb 70 ; r7 30	redbaron,ryzen7	~/.config/wm-build/config.toml:77 (rb) ; :68 (r7)	disk	none found	KEEP	rb ; r7	-
+C092	max_eur_day	0 (none)	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:87/80/56	money	Joe 09-19 "no daily cap"	KEEP	rb	0 = no cap; matches #195
+C093	max_tokens_day	0 (none)	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:88/81/57	rationing	none found	KEEP	rb	0 = no cap; matches #195
+C094	gate parallelism (redbaron)	4	redbaron	~/.config/wm-build/config.toml:49	memory	none found	KEEP	rb	-
+C095	precheck_wall_secs	2400	redbaron	~/.config/wm-build/config.toml:56	hang-guard	none found	KEEP	rb	-
+C096	builder slots	3	redbaron,ryzen7	~/.config/wm-build/config.toml:102 (rb) ; :95 (r7)	memory	none found	KEEP	rb ; r7	-
+C097	cargo_jobs	3	redbaron,ryzen7	~/.config/wm-build/config.toml:105 (rb) ; :99 (r7)	memory	LIMITS 10-20	KEEP	rb ; r7	-
+C098	cargo_jobs_wait_max_minutes	120	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:106/100/74	hang-guard	none found	KEEP	rb	-
+C099	builder.max_boxes	rb 4 ; r7 4 ; orch 2	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:92 (rb) ; :85 (r7) ; :61 (orch)	leased-box	Joe 10-11 "4 gate boxes" (pre-10-11 deletion)	DROP	rb A296 ; r7 A299 ; rb A295	only permanent boxes since 10-11 (Joe "really outdated", #195)
+C100	builder.eur_per_day	rb 50 ; r7 50 ; orch 5	redbaron,ryzen7,orch	~/.config/wm-build/config.toml:94 (rb) ; :87 (r7) ; :63 (orch)	leased-box	Joe 10-11 "I meant the budget cap"	DROP	rb A296 ; r7 A299 ; rb A295	leased-box spend cap
+C101	builder.idle_minutes	20	redbaron,ryzen7,orch	config.toml:100/93/69 ; limits.lock (r7 :5, orch :3)	money	Joe 10-07 "20 minutes"; CLAUDE.md box idle 20 min	KEEP	rb	CLAUDE.md firm rule; inert while no boxes are leased
+C102	box.grace_minutes	20	redbaron,ryzen7,orch	config.toml:219/198/133 ; limits.lock (r7 :4, orch :2)	money	Joe 10-07	KEEP	rb	CLAUDE.md firm rule; inert while no boxes are leased
+C103	box.roles.coder.max_boxes	rb 4 ; r7 4 ; orch 2	redbaron,ryzen7,orch	config.toml:142/136/110 ; limits.lock (r7 :6, orch :4)	leased-box	Joe 10-06 "hetzner bill too high"	DROP	rb A296 ; r7 A299 ; rb A295	limits-guard owns limits.lock: change by `limits-guard set --by joe-20261101`
+C104	box.roles.coder.max_leases_per_box	rb 7 ; r7 7 ; orch 5	redbaron,ryzen7,orch	config.toml:143/137/111 ; limits.lock (r7 :7, orch :5)	leased-box	none found	DROP	rb A296 ; r7 A299 ; rb A295	-
+C105	box.roles.gate.max_leases_per_box	rb 4 ; r7 4 ; orch 2	redbaron,ryzen7,orch	config.toml:146/140/114	leased-box	none found	DROP	rb A296 ; r7 A299 ; rb A295	-
+C106	box.roles.gate.max_boxes	rb 4 ; r7 4	redbaron,ryzen7	config.toml:147 (rb) ; :141 (r7)	leased-box	Joe 10-11 "4 gate boxes"	DROP	rb A296 ; r7 A299	-
+C107	box.max_concurrent	8	redbaron,ryzen7,orch	config.toml:221/200/135	memory	Joe 10-05 "go 6"	CHECK	rb	if it counts leased-box coders → DROP with C103; if host-mode coders → KEEP as a memory cap
+C108	cargo_jobs.mem_budget_gb	rb 26 ; r7 22	redbaron,ryzen7	config.toml:326 (rb) ; :315 (r7)	memory	MemGate 26 G RB / 22 G r7	KEEP	rb ; r7	-
+C109	cargo_jobs.mem_headroom_gb	4	redbaron,ryzen7	config.toml:329 (rb) ; :316 (r7)	memory	none found	KEEP	rb ; r7	-
+C110	cargo_jobs.max_compiling_units	3	redbaron,ryzen7	config.toml:330 (rb) ; :317 (r7)	memory	none found	KEEP	rb ; r7	-
+C111	mem_caps_gb.land (rb)	12.5	redbaron	config.toml:335	memory	none found	KEEP	rb	-
+C112	mem_caps_gb.inner (rb)	12.0	redbaron	config.toml:336	memory	none found	KEEP	rb	-
+C113	mem_caps_gb.gate (rb)	13	redbaron	config.toml:337	memory	none found	KEEP	rb	-
+C114	mem_caps_gb.hand (rb)	9	redbaron	config.toml:338	memory	none found	KEEP	rb	-
+C115	mem_caps_gb wm-build hand (rb)	5	redbaron	config.toml:350	memory	none found	KEEP	rb	value read from the comment
+C116	gate.producer_walls flake-lint	5 (unit unread)	redbaron,ryzen7	config.toml:214 (rb) ; :193 (r7)	hang-guard	none found	CHECK	rb	comment says "1-min wall"; confirm the unit
+C117	wm-build inner MemoryHigh	rb 14G ; r7 12G	redbaron,ryzen7	wm-build-.service.d/10-inner-memory.conf	memory	none found	KEEP	rb ; r7	-
+C118	app.slice MemoryHigh (rb)	24G	redbaron	app.slice.d/50-rb-build-mem.conf:5	memory	none found	KEEP	rb	-
+C119	app.slice MemoryMax (rb)	26G	redbaron	app.slice.d/50-rb-build-mem.conf:6	memory	none found	KEEP	rb	= C108
+C120	claude-vibeloop MemoryMax (rb)	22G (High 18G)	redbaron	claude-vibeloop*.service.d/memory-cap.conf:3	memory	none found	KEEP	rb	-
+C121	claude-build-work RuntimeMaxSec	90 min	redbaron	claude-build-work.service.d/runtime-max.conf:2	hang-guard	none found	KEEP	rb	-
+C122	rb-land-hold-watch MemoryMax	256M	redbaron,ryzen7	rb-land-hold-watch.service:7	memory	none found	KEEP	rb	-
+C123	BUILD_SAME_TARGET_CAP	6	redbaron	claude-build.service.d/burst-caps.conf:5	memory	none found	KEEP	rb	-
+C124	seat-tick git pull timeout	60 s	ryzen7,orch	~/.local/bin/seat-tick.sh:1306	hang-guard	none found	KEEP	aide	-
+C125	TOKEN_BUDGET_WEIGHTED	0 (none)	ryzen7,orch	~/.local/bin/token-ledger:86	rationing	none found	KEEP	aide	0 = no budget; matches #195
+C126	max_boxes (top-level)	0 = unlimited	ryzen7,orch,redbaron	config.toml:16	leased-box	none found	DROP	r7 A299 ; rb A295 ; rb A296	a leased-box key reading "unlimited" next to a permanent-boxes-only rule
+C127	max_box_hours_day	0 = unlimited	ryzen7,orch	config.toml:15	leased-box	Joe 09-19 "no daily cap"	DROP	r7 A299 ; rb A295	-
+C128	builder.max_hours	8760	ryzen7,orch	config.toml:94 (r7) ; :70 (orch)	leased-box	none found	DROP	r7 A299 ; rb A295	box lifetime key beside idle_minutes
+C129	max_runs (ryzen7)	3	ryzen7	~/.config/wm-build/config.toml:5 ; limits.lock:8	memory	Joe 11-01 1:5x AM "its 3 slots, 1 is reduced spend rationing", approvals #195	KEEP	r7	the #116 one-slot value was rationing and is void
+C130	max_runs_by_prefix (ryzen7) mcphost-	1	ryzen7	~/.config/wm-build/config.toml:75	memory	r7 11-01 1:08 AM PST: the mcphost inner pin 12.5 GiB (C134) under MemGate 22 G fits one; approvals #49 (mcphost builds on RB)	KEEP	r7	A293 answered; the other two r7 slots take synthorg / wm-build
+C130a	max_runs_by_prefix (ryzen7) five slug 0-caps	synthetic-tenant-purge, docs-put-many-live-reproof, chain-near, docs-imp, tools-call-prog = 0	ryzen7	~/.config/wm-build/config.toml:75	safety	r7 13:3x pin	CHECK	r7 A293	a 0 blocks the slug; each needs a still-wanted reason or removal
+C131	load_wait_secs	0	ryzen7	config.toml:36	cadence	Joe 10-11 "what else can we cut from the gate?"	KEEP	r7	-
+C132	canary_max_age_hours	100000	ryzen7	config.toml:63	safety	none found	KEEP	r7	gate disabled on purpose
+C133	max_members	6	ryzen7	config.toml:284	memory	none found	CHECK	r7	name what it groups
+C134	mem_caps_gb.mcphost.inner (r7)	12.5	ryzen7	config.toml:335	memory	repriced 10-20	KEEP	r7	-
+C135	mem_caps_gb.synthorg (r7)	6 (interim)	ryzen7	config.toml:331	memory	10-19 comment	CHECK	r7	value line not read; confirm and drop "interim"
+C136	mem_caps_gb.pytest (r7)	2	ryzen7	config.toml:328	memory	priced, peak 0.38 GiB	CHECK	r7	value line not read
+C137	land-red-hold cadence	60 s	ryzen7,orch	land-red-hold*.timer:6	cadence	none found	KEEP	r7	-
+C138	land-red-hold MemoryMax / RuntimeMaxSec	512M / 600 s	ryzen7,orch	land-red-hold*.service:6-8	memory	none found	KEEP	r7	-
+C139	ryzen7-disk-guard cadence	20 min	ryzen7	ryzen7-disk-guard.timer:5	cadence	none found	KEEP	r7	-
+C140	rb-land-hold-watch cadence	15 s	ryzen7	rb-land-hold-watch.timer:6	cadence	none found	KEEP	r7	-
+C141	rb-land-hold-watch TimeoutStartSec	120	ryzen7	rb-land-hold-watch.service:8	hang-guard	none found	KEEP	r7	-
+C142	r7-prds-clone-guard cadence	2 min	ryzen7	r7-prds-clone-guard.timer:5	cadence	none found	KEEP	r7	-
+C143	wm-build-limits-guard cadence	5 min	ryzen7,orch	wm-build-limits-guard.timer:6	cadence	none found	KEEP	r7	reverts hand edits of max_runs within 5 min
+C144	ryzen7-pressure-guard cadence	5 min	ryzen7	ryzen7-pressure-guard.timer:5	cadence	none found	KEEP	r7	-
+C145	burst-idle-guard cadence	5 min	ryzen7,orch	burst-idle-guard.timer:6	cadence	none found	KEEP	r7	-
+C146	r7-tmp-inode-guard cadence	5 min	ryzen7	r7-tmp-inode-guard.timer:5	cadence	none found	KEEP	r7	-
+C147	hand-pr-land-driver cadence / timeout	10 min / 1800 s	ryzen7,orch	hand-pr-land-driver.timer:7 ; .service:16	cadence	#194 merge all now	KEEP	r7	-
+C148	hand-pr-land-driver EXPIRES	2026-11-08 12:00	ryzen7,orch	hand-pr-land-driver.service:7	expiry	watcher rule	KEEP	r7	-
+C149	operator-overlap-digest TimeoutStartSec	60	ryzen7,orch	operator-overlap-digest.service:6	hang-guard	none found	KEEP	r7	-
+C150	r7-land-hold-watch	30 s / 120 s / 256M	ryzen7	r7-land-hold-watch.timer:5 ; .service:5-6	memory	none found	KEEP	r7	-
+C151	r7-wlmf-guard cadence	15 s	ryzen7	r7-wlmf-guard.timer:5	cadence	none found	KEEP	r7	-
+C152	verifier-cap-watch cadence / timeout	2 min / 60	ryzen7,orch	verifier-cap-watch.timer:7 ; .service:13	cadence	none found	KEEP	r7	-
+C153	wm-build TimeoutStopSec	15	ryzen7,orch	wm-build.service.d/stop.conf:2	hang-guard	none found	KEEP	r7	-
+C154	wm-build restart bounds	StartLimitIntervalSec 0 ; RestartSec 15	ryzen7	wm-build.service.d/mount-wait.conf:4,8	safety	none found	KEEP	r7	-
+C155	seat-floor-probe cadence / timeout	10 min / 120	ryzen7,orch	seat-floor-probe.timer:6 ; .service:7	cadence	none found	KEEP	r7	-
+C156	SEAT_FLOOR_BACKFILL_BYTES	40000000	ryzen7,orch	~/.local/bin/seat-floor-probe.sh:16	memory	none found	KEEP	r7	-
+C157	BUILD_TICKS_PER_DAY	0 (none)	ryzen7,orch	~/.local/bin/claude-build-tick.sh:39	rationing	Joe 09-12 "remove daily cap"	KEEP	aide	0 = no cap; matches #195
+C158	claude-self LINT_MAX_LINES	200	ryzen7,orch	~/.local/bin/claude-self:25	safety	none found	KEEP	aide	-
+C159	JOIN_CHECK_TIMEOUT	10 s	ryzen7	~/.local/bin/constellation-join-check:16	hang-guard	none found	KEEP	r7	-
+C160	mcphost-explore-run BUDGET_ASSERT	calls ≤ 3000, tokens_out ≤ 600000	ryzen7,orch	~/.local/bin/mcphost-explore-run.sh:73	rationing	none found; Joe 10-19 "no testing budget limit" (goal.md § chain)	DROP	aide A298	per-run token budget on the discovery chain (#195 + goal.md no chain budget)
+C161	r7 cargo/pytest slot WAIT_S	480 s	ryzen7	~/.local/bin/r7-cargo-slot.sh:42 ; r7-pytest-slot.sh:18	hang-guard	none found	KEEP	r7	-
+C162	r7-mcp-gate-remote CARGO_BUILD_JOBS	6	ryzen7,orch	~/.local/bin/r7-mcp-gate-remote.sh:8	memory	none found	KEEP	r7	-
+C163	r7-release-after watcher	EXPIRES 2026-10-24 ; GAP 600 ; MAXN 6	ryzen7	~/.local/bin/r7-release-after.sh:18	expiry	none found	DROP	r7 A294	expired 10-24; disarm
+C164	r7-reprice-inner-cap FLOOR	p+3 / 0.75 × MMAX	ryzen7	~/.local/bin/r7-reprice-inner-cap.sh:22	memory	none found	KEEP	r7	measured-peak formula
+C165	r7-tag-catchup MemoryMax	8G	ryzen7	~/.local/bin/r7-tag-catchup.sh:39	memory	none found	KEEP	r7	-
+C166	r7-tmp-target-reap AGE_MIN	120	ryzen7	~/.local/bin/r7-tmp-target-reap.sh:12	disk	none found	KEEP	r7	-
+C167	r7-verify-leg knobs	START 100G ; TRIP 60G ; PSI 25 ; TIMEOUT 5400 ; JOBS 4	ryzen7	~/.local/bin/r7-verify-leg.sh:8	memory	none found	KEEP	r7	-
+C168	r7-verify-leg LEG_BUDGET_S	4800 s	ryzen7	~/.local/bin/r7-verify-leg.sh:15	hang-guard	none found	KEEP	r7	-
+C169	WPA_TIMEOUT	120	ryzen7,orch	~/.local/bin/watcher-lib-postapply.sh:19	hang-guard	none found	KEEP	r7	-
+C170	vibeloop MAX_COST_USD_PER_DAY	value in ~/.config/vibeloop/limits (unread)	ryzen7,orch	~/.local/bin/vibeloop-ctl:146 ; vibeloop-digest.sh:88	rationing	none found	DROP	aide A298	daily cost cap (#195 "no budget limit")
+C171	mcphost-binary-for-sha CARGO_BUILD_JOBS	3	orch	~/.local/bin/mcphost-binary-for-sha:164	memory	none found	KEEP	rb	-
+C172	max_runs (orch)	4	orch	~/.config/wm-build/config.toml:5 ; limits.lock:6	leased-box	Joe 10-07 "max_runs=4" (cpx62 coder box)	DEAD	rb A295	orch daemon inactive since 10-08; orch never compiles
+C173	orch-operator cadence / timeout	30 min / 3300	orch	orch-operator.timer:6 ; .service:8	cadence	none found	CHECK	rb	is the unit enabled? if so, 30 min predates #151 max speed
+C174	claude-vibeloop-measure (orch) memory	1500M / 2200M	orch	claude-vibeloop-measure.service.d/memory-cap.conf:2-3	memory	none found	KEEP	rb	-
+C175	mcphost-deploy-on-land restart bounds	20 min ; burst 6 ; 45 s	orch	mcphost-deploy-on-land.service.d/retry.conf:5-10	safety	none found	KEEP	rb	-
+C176	MCPHOST_DEPLOY_GATE_BUDGET_S	600	orch	mcphost-deploy-on-land.service.d/gate-budget-600.conf:4	hang-guard	none found	KEEP	rb	time budget
+C177	synthorg-chain-shadow TimeoutStartSec	5400	orch	synthorg-chain-shadow.service:15	hang-guard	none found	KEEP	rb	-
+C178	synthorg-chain-on-deploy TimeoutStartSec	1200	orch	synthorg-chain-on-deploy.service:14	hang-guard	none found	KEEP	rb	-
+C179	claude-quota-watch RECOVERY_TIMEOUT	1200	orch	~/.local/bin/claude-quota-watch.sh:20	hang-guard	none found	KEEP	rb	-
+C180	vibeloop MAX_CYCLES_PER_DAY	16	orch	~/.local/bin/claude-vibeloop-headless.sh:9	rationing	none found	DROP	aide A298	daily count cap (#195)
+C181	vibeloop CAP_SECS / WATCHDOG_SECS	9600 / 1200	orch	claude-vibeloop-headless.sh:72 ; claude-vibeloop-tick.sh:28	hang-guard	none found	KEEP	rb	-
+# RULE-LEVEL CAPS (stated in CLAUDE.md / goal.md / playbook; enforcement named in enforced_at)
+R001	open-PR cap	none (was ≤ 30 fleet / ≤ 8 per repo, #153)	fleet	none (pr-wip gate SPEC A40 dropped)	rationing	Joe 11-01 1:5x AM "MERGE THEM ALL NOW. NOT SLOW DOWN FIXES", approvals #194	VOID	-	CLAUDE.md + goal.md updated 11-01; dotfiles#181
+R002	quota budget	none (was ≤ 144M weighted to Mon 9 PM)	fleet	week-plan page; quota governor A14 SPEC	rationing	Joe 11-01 "no budget limit", approvals #195	VOID	rb (A14)	A14 governor may alarm on quota.level; it never throttles
+R003	phase budgets W1-W3, 5-h window guard, burn target ≤ 0.7 %/h	void	fleet	week-plan page lines 20, 78, 84	rationing	#145, #195	VOID	-	page amendment 11-01
+R004	one-inner rule / chain exclusivity / 1 tooling coder at a time	void	fleet	week-plan page lines 136-137	rationing	#145, #151	VOID	-	-
+R005	haiku spawn cap ≤ 2 per seat tick, ≤ 3 per aide sweep	void	fleet	week-plan page line 100; enforcement unknown	rationing	#195	VOID	aide A298	confirm no hook counts spawns
+R006	Fable batch gates 8 AM / 8 PM ≤ 10 rows	void; grade on arrival	fleet	week-plan page line 141	rationing	#151	VOID	-	-
+R007	r7 one slot (#116)	void → 3	ryzen7	was CLAUDE.md Hosts line	rationing	approvals #195	VOID	-	see C129
+R008	tooling freeze to Fri 11-06 2 PM	lifted	fleet	goal.md § Stage	rationing	#145	VOID	-	CLAUDE.md WEEK PLAN line corrected 11-01
+R009	tooling token share ≤ 5 %	none	fleet	goal.md § Stage	rationing	#124	VOID	-	-
+R010	aide sweep	10 min (cron :03/:13/…)	carbon	aide in-session CronCreate	cadence	approvals #127, #151	KEEP	aide	-
+R011	ctl sweep	20 min	carbon	seats.tsv tick_min	cadence	#151	KEEP	aide	-
+R012	box idle / grace	20 min	fleet	C101/C102	money	CLAUDE.md § Money (Joe's word only)	KEEP	-	firm rule
+R013	permanent Hetzner boxes only	hub, orch, mcphost-1	fleet	hetzner-fixed-fleet-guard.sh (5 min)	money	Joe 10-11	KEEP	rb	-
+R014	PRD size	≤ 8 ACs	fleet	prd-lint	safety	CLAUDE.md § PRDs	KEEP	-	-
+R015	first-pass yield target	≥ 60 % (6 h)	redbaron,ryzen7	goal.md rb/r7 lines	target	goal.md	KEEP	rb ; r7	-
+R016	stale open run	none older than 4 h without cause + plan	redbaron,ryzen7	goal.md rb/r7 lines	target	goal.md	KEEP	rb ; r7	long-land threshold R017 is a separate class
+R017	long land	> 12 h in land needs owner + target within 2 h	fleet	playbook:28	target	playbook	CHECK	ctl	reconcile with R016 (4 h)
+R018	promote cadence	cut a version when nothing promoted in 2 h	redbaron	playbook:26	cadence	playbook	KEEP	rb	-
+R019	test accounts	unlimited	mcphost	playbook:38	safety	CLAUDE.md § mcphost	KEEP	-	-
+R020	prod signup limit	5 signups/IP/h app (fleet exempt) ; Caddy 600 req/min/IP	mcphost prod	mcphost app + Caddy	safety	verified 10-17	KEEP	rb	real-user abuse guard, not rationing
+R021	chain testing budget / agent count	none	fleet	goal.md § chain	rationing	Joe 10-19	KEEP	-	no limit; see C160
+R022	r7 verify legs	≤ 2 concurrent, never with mcphost inner	ryzen7	week-plan line 138	memory	week plan	CHECK	r7	memory reason (12 GiB pin under MemGate 22 G) → KEEP; otherwise VOID
+R023	probe-gate (Opus/Fable sessions run no read commands)	deny on fable/opus	all hosts	.claude/hooks/probe-gate.sh § 1b	rationing	CLAUDE.md model routing 10-22	CHANGE	plain-carbon	Joe sessions (aide + plain, no WM_SEAT) exempt 11-01 #195; fleet seats still gated, review under #195

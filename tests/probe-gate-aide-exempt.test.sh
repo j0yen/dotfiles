@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# probe-gate aide exemption: the aide (WM_SEAT=aide, exported only by
-# aide-launch.sh) is NOT gated; a seat (WM_SEAT=ctl), a tmux session and a
-# plain `claude` on carbon (no marker: Joe's own session, 10-23) ARE gated (exit 2).
+# probe-gate exemption for Joe's own sessions: the aide (WM_SEAT=aide, exported
+# only by aide-launch.sh) and a plain `claude` (no WM_SEAT, approvals #195 11-01)
+# are NOT gated; a fleet seat (WM_SEAT=ctl/rb) IS gated (exit 2).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 gate="$here/.claude/hooks/probe-gate.sh"
@@ -19,10 +19,12 @@ run() { # name expected_rc env...
 }
 run aide-marker-exempt         0 PROBE_GATE_HOSTNAME=carbon WM_SEAT=aide
 run aide-marker-exempt-anyhost 0 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=aide
-run plain-carbon-gated         2 PROBE_GATE_HOSTNAME=carbon
-run seat-unit-gated            2 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
-run tmux-seat-gated            2 PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0
-run other-host-gated           2 PROBE_GATE_HOSTNAME=redbaron
+run plain-carbon-exempt        0 PROBE_GATE_HOSTNAME=carbon
+run plain-tmux-exempt          0 PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0
+run plain-other-host-exempt    0 PROBE_GATE_HOSTNAME=redbaron
+run seat-ctl-gated             2 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
+run seat-rb-gated              2 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=rb
 grep -q '"${WM_SEAT:-}" = aide' "$gate" && echo "PASS gate-has-aide-predicate" || { echo "FAIL gate-has-aide-predicate"; fail=1; }
+grep -q -- '-z "${WM_SEAT:-}"' "$gate" && echo "PASS gate-has-plain-predicate" || { echo "FAIL gate-has-plain-predicate"; fail=1; }
 if sed 's/#.*//' "$gate" | grep -q 'hostname'; then echo "FAIL gate-still-reads-hostname"; fail=1; else echo "PASS gate-does-not-infer-aide-from-hostname"; fi
 exit $fail
