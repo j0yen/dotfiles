@@ -35,7 +35,7 @@ echo "gh $*" >>"$T/calls.log"
 case "$1 $2" in
   "pr list") f="$T/prs-$(echo "$4" | tr / -).json"; [ -f "$f" ] && cat "$f" || echo '[]' ;;
   "pr view") cat "$T/state-$3" 2>/dev/null || { echo "no such pr" >&2; exit 1; } ;;
-  "api repos/"*) echo tests/foo_test.py ;;
+  "api repos/"*) printf "modified\ttests/foo_test.py\n" ;;
   *) echo "stub gh: unexpected $*" >&2; exit 9 ;;
 esac
 E
@@ -70,6 +70,7 @@ E
 echo "lint $*" >>"$T/calls.log"; [ "$(cat "$T/lint.rc")" = 0 ] || echo "G4: stub refusal"; exit "$(cat "$T/lint.rc")"
 E
   chmod +x "$T"/bin/*
+  for h in redbaron carbon; do mkdir -p "$T/hb-$h"; printf '#!/bin/sh\necho %s\n' "$h" >"$T/hb-$h/hostname"; chmod +x "$T/hb-$h/hostname"; done   # hostname -s via PATH only (carbon-no-build)
 }
 row() {   # row <id> <minutes-ago> <agent> <kind> <what> [gates]
   python3 - "$T/rows.json" "$1" "$(iso "$2")" "$3" "$4" "$5" "${6:-}" <<'E'
@@ -89,8 +90,8 @@ unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
   mkdir -p "$T/vdir/$1"; printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=pytest EXIT=0\nagent=aide\n' "$REPO" "$2" "$3" "$4" >"$T/vdir/$1/meta"
   [ -n "${5:-}" ] && printf '{"result":"verdict row %s\\nLOG: /x.log"}' "$5" >"$T/vdir/$1/result.json"
 }
-tick() {   # tick [--dry-run]  (stdout kept in $T/out)
-  T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
+tick() {   # tick [--dry-run]  (stdout kept in $T/out; HOSTSTUB=carbon|redbaron picks the stubbed hostname, default redbaron)
+  PATH="$T/hb-${HOSTSTUB:-redbaron}:$PATH" T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
   HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD="${PREMISE_CMD:-true}" bash "$DRV" "$@" >"$T/out" 2>&1; }
 n() { grep -c "$1" "$T/calls.log"; }   # count of calls matching
@@ -145,9 +146,25 @@ cleanup
 
 # ---- (d) merged >= 15 min ago with no r7 START -> one ring; with a START or too young -> none
 setup; row g1 900 r7 design "x"; printf '{"event":"pr-merged","oid":"%s","pr":41,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"
+D40=$(printf 'd%.0s' $(seq 40)); printf '{"state":"MERGED","mergeCommit":{"oid":"%s"}}\n' "$D40" >"$T/state-41"
 tick; tick
-[ "$(n '^seat-ask r7')" = 1 ] && grep -q "seat-ask r7 $REPO#41 merged $H1; run post-merge suite" "$T/calls.log" && pass "(d) one post-merge ring to r7, not repeated" || bad "(d) ring ($(grep seat-ask "$T/calls.log"))"
+[ "$(n '^seat-ask r7')" = 1 ] && grep -q "seat-ask r7 $REPO#41 merged; run post-merge suite at MERGE commit $D40 (PR head $H1)" "$T/calls.log" && ! grep -q "MERGE commit $H1" "$T/calls.log" && ! grep -q "seat-ask r7 $REPO#41 merged $H1" "$T/calls.log" && pass "(d) one post-merge ring to r7 at the merge commit, not the PR head, not repeated" || bad "(d) ring ($(grep seat-ask "$T/calls.log"))"
 cleanup
+
+# ---- (d2) no readable merge commit -> no ring, no MERGE commit text
+setup; printf '{"event":"pr-merged","oid":"%s","pr":43,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"
+tick; tick
+[ "$(n '^seat-ask')" = 0 ] && ! grep -q "MERGE commit" "$T/calls.log" && pass "(d2) no merge commit: no ring, no MERGE commit text" || bad "(d2) ($(grep seat-ask "$T/calls.log"))"
+cleanup
+
+# ---- (d3) mcphost rings rb at its merge commit
+REPO_SAVED=$REPO; REPO=j0yen/mcphost   # tick pins HPLD_REPOS to $REPO
+setup; printf '{"event":"pr-merged","oid":"%s","pr":44,"repo":"j0yen/mcphost","ts":"%s","verdict":"v1"}\n' "$H1" "$(iso 20)" >"$T/events.jsonl"
+E40=$(printf 'e%.0s' $(seq 40)); printf '{"state":"MERGED","mergeCommit":{"oid":"%s"}}\n' "$E40" >"$T/state-44"
+tick; tick
+grep -q "seat-ask rb j0yen/mcphost#44 merged; run post-merge suite at MERGE commit $E40 (PR head $H1)" "$T/calls.log" && ! grep -q "seat-ask r7 j0yen/mcphost#44" "$T/calls.log" && pass "(d3) mcphost ring goes to rb at the merge commit, none to r7" || bad "(d3) ($(grep seat-ask "$T/calls.log"))"
+cleanup
+REPO=$REPO_SAVED
 setup; printf '{"event":"pr-merged","oid":"%s","pr":41,"repo":"%s","ts":"%s","verdict":"v1"}\n' "$H1" "$REPO" "$(iso 20)" >"$T/events.jsonl"; row s1 5 r7 plan "START r7-suite-41 on ryzen7 ($REPO#41)"; tick
 [ "$(n '^seat-ask')" = 0 ] && pass "(d) an r7 START row naming the PR suppresses the ring" || bad "(d) START ignored"
 cleanup
@@ -286,6 +303,12 @@ cleanup
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1
 unitdir u1 41 $H1 g1; fin u1 '2026-10-27T01:00:00-07:00 GUARD-SKIP rc=12 RETRACT-FAILED d-v1 tmo'; tick
 [ "$(n '^verifier launch')" = 0 ] && [ "$(grep -c 'HPLD RING-STUCK' "$T/records.log")" = 1 ] && pass "vguard: RETRACT-FAILED finished -> ring-stuck, no relaunch" || bad "vguard retract-failed ($(cat "$T/records.log"))"
+# ---- carbon-no-build (Joe 10-27, approvals #47): on carbon a GATED suite row launches nothing and rings r7 once per head
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1 fix x"; pr $REPO 41 $H1
+HOSTSTUB=carbon tick; HOSTSTUB=carbon tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(n '^room ')" = 0 ] && [ "$(n '^seat-ask r7')" = 1 ] && [ "$(n '^seat-ask')" = 1 ] && grep -q 'HPLD RING-CARBONSUITE .*#41 k=carbonsuite:' "$T/records.log" && pass "(carbon) GATED suite row: no launch, no ROOM call, one ring to r7 over two ticks, one row" || bad "(carbon) GATED suite row on carbon"
+echo "$H2" >"$T/h2"; pr $REPO 41 $H2; row g2 5 r7 design "GATED $REPO#41 COMMIT=$H2 re-gated"; HOSTSTUB=carbon tick
+[ "$(n '^verifier launch')" = 0 ] && [ "$(n '^seat-ask r7')" = 2 ] && pass "(carbon) a new head rings r7 once more (once per head)" || bad "(carbon) per-head ring"
 cleanup
 
 bash "$DRV" --selftest >/dev/null && pass "--selftest" || bad "--selftest"

@@ -24,6 +24,8 @@ _SSP_RE="^${_SSP_WS}*[A-Za-z0-9_-]+${_SSP_WS}+[0-9]{1,2}:[0-9x]{2}${_SSP_WS}*([A
 
 seat_stamp_source() {
   local s="${EVENT_SOURCE:-${WM_SEAT:-$(ps -o comm= -p "$PPID" 2>/dev/null)}}"
+  # aide lanes (10-27): a non-main lane's lines carry the lane; main/unset keep `aide`
+  if [ -z "${EVENT_SOURCE:-}" ] && [ "${WM_SEAT:-}" = aide ] && [ -n "${WM_AIDE_LANE:-}" ] && [ "$WM_AIDE_LANE" != main ] && [[ "$WM_AIDE_LANE" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then s="aide:$WM_AIDE_LANE"; fi
   s="$(printf '%s' "${s:-unknown}" | tr -d '|\n' | sed -E 's/^ +//; s/ +$//')"
   printf '%s' "${s:-unknown}"
 }

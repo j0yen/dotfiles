@@ -1,0 +1,7 @@
+[Unit]
+Description=pr-conflict-watch: merge main into open PR branches whose only conflicts are generated files; bell owners on code conflicts (Joe 11-01 12:1x AM)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/.local/bin/pr-conflict-watch.py --apply
+TimeoutStartSec=900
+Nice=10

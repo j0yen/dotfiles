@@ -1,0 +1,11 @@
+[Unit]
+Description=Five-whys mechanism registry: count SPEC mechanisms older than 7 days into ~/.cache/fleet-dash/spec-age.json (1071 M6, approvals #125/#110)
+# carbon only: the files install everywhere (install.sh links the whole tree), the unit runs on carbon
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=120
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/analysis-spec-age.sh"
