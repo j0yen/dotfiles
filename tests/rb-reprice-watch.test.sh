@@ -4,6 +4,7 @@
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 bin=$here/../.local/bin
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hermetic_sqlite3.sh"   # PATH sqlite3 that cannot create a db (ryzen7 ro wrapper) -> rw stand-in, else FAIL
 fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }

@@ -1,0 +1,2 @@
+- Rule one (Joe 10-01) ⚙ missing-claude.sh SPEC; later text
+- Rule two live ⚙ exists-art.sh (done)

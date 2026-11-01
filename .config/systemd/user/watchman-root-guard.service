@@ -1,0 +1,14 @@
+[Unit]
+Description=watchman root guard: watch-del any watchman root that is a DENY member (PREMISE carbon roots in DENY exhaust inotify, EXPIRES 2026-11-24)
+# StartLimitIntervalSec=0 and NO StartLimitBurst (Fable 10-24): a start-limit hit would put the .path trigger into failed state and silently disarm the guard.
+# The script debounces itself (same watch-list sha within 5 s = no-op).
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# TMPDIR decides the watchman socket (~/.cache/tmp/jsy-state/sock); no EnvironmentFile: environment.d PATH holds a literal $HOME that systemd does not expand
+Environment=TMPDIR=%h/.cache/tmp
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+Nice=10
+TimeoutStartSec=60
+ExecStart=/bin/bash %h/.local/bin/watchman-root-guard.sh
