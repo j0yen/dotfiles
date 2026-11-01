@@ -214,3 +214,4 @@ R019	test accounts	unlimited	mcphost	playbook:38	safety	CLAUDE.md § mcphost	KEE
 R020	prod signup limit	5 signups/IP/h app (fleet exempt) ; Caddy 600 req/min/IP	mcphost prod	mcphost app + Caddy	safety	verified 10-17	KEEP	rb	real-user abuse guard, not rationing
 R021	chain testing budget / agent count	none	fleet	goal.md § chain	rationing	Joe 10-19	KEEP	-	no limit; see C160
 R022	r7 verify legs	≤ 2 concurrent, never with mcphost inner	ryzen7	week-plan line 138	memory	week plan	CHECK	r7	memory reason (12 GiB pin under MemGate 22 G) → KEEP; otherwise VOID
+R023	probe-gate (Opus/Fable sessions run no read commands)	deny on fable/opus	all hosts	.claude/hooks/probe-gate.sh § 1b	rationing	CLAUDE.md model routing 10-22	CHANGE	plain-carbon	Joe sessions (aide + plain, no WM_SEAT) exempt 11-01 #195; fleet seats still gated, review under #195
