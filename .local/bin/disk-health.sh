@@ -258,8 +258,8 @@ def _line_ts(line, source):
 def kernel_io(errors):
     """-> dict {since_boot, h6, h24, last_age_s, last, usb_resets, unfiltered} or None when no kernel log is readable.
     since_boot = block-device error lines in the whole boot (info only). h6/h24 = those lines timestamped within the last 6 h / 24 h; filtered HERE
-    by line timestamp (journalctl -k -b -o short-unix, else dmesg --time-format=iso). When any line carries no parseable timestamp the window cannot
-    be trusted: h6/h24 are None and unfiltered is True (never the since-boot number). DISK_HEALTH_JOURNAL_FILE (a short-unix text file) replaces journalctl for tests."""
+    by line timestamp (journalctl -k -b -o short-unix, else dmesg --time-format=iso). When any error line (a counted hit) carries no parseable timestamp the window cannot
+    be trusted (unstamped non-hit continuation lines of multi-line kernel dumps are ignored): h6/h24 are None and unfiltered is True (never the since-boot number). DISK_HEALTH_JOURNAL_FILE (a short-unix text file) replaces journalctl for tests."""
     now = float(os.environ.get("DISK_HEALTH_NOW") or time.time())
     jf = os.environ.get("DISK_HEALTH_JOURNAL_FILE")
     cmds = [("journal", ["journalctl", "-k", "-b", "-o", "short-unix", "--no-pager", "-q"]), ("dmesg", ["dmesg", "--time-format=iso"]), ("dmesg", ["dmesg"])]
@@ -277,7 +277,7 @@ def kernel_io(errors):
         hits = [l for l in lines if KERNEL_RE.search(l)]
         usb = sum(1 for l in lines if USB_RESET_RE.search(l))
         stamped = [(l, _line_ts(l, source)) for l in hits]
-        unfiltered = any(_line_ts(l, source) is None for l in lines)
+        unfiltered = any(t is None for _, t in stamped)
         res = {"since_boot": len(hits), "last": [h.strip()[:200] for h in hits[-3:]], "usb_resets": usb, "unfiltered": unfiltered,
                "h6": None, "h24": None, "last_age_s": None}
         if not unfiltered:

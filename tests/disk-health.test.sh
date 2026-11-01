@@ -35,6 +35,11 @@ printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\n%
 printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\n%s.000000 fx kernel: blk_update_request: I/O error, dev sdc, sector 2\n' "$((now - 40 * 3600))" "$((now - 600))" >"$sb/new.j"
 got=$(win old "$sb/old.j"); [ "$got" = "1 0 0 False" ] && pass "journal error 40 h old: since_boot 1, 6h 0, 24h 0 (window filter)" || bad "old-error fixture: got '$got'"
 got=$(win new "$sb/new.j"); [ "$got" = "2 1 1 False" ] && pass "journal error 10 min old: since_boot 2, 6h 1, 24h 1" || bad "new-error fixture: got '$got'"
+# unstamped continuation lines (kernel mem-info dump) are not hits: they must not blank the window; an unstamped HIT still does
+printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\nunevictable:0 dirty:12 writeback:0\nkernel_misc_reclaimable:0\n%s.000000 fx kernel: blk_update_request: I/O error, dev sdc, sector 2\n slab_reclaimable:55\n' "$((now - 40 * 3600))" "$((now - 600))" >"$sb/cont.j"
+printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\nblk_update_request: I/O error, dev sdc, sector 2\n' "$((now - 600))" >"$sb/unst.j"
+got=$(win cont "$sb/cont.j"); [ "$got" = "2 1 1 False" ] && pass "unstamped non-hit continuation lines: 6h count stays a number (1), not null" || bad "continuation fixture: got '$got'"
+got=$(win unst "$sb/unst.j"); [ "$got" = "2 None None True" ] && pass "unstamped hit: 6h/24h null, unfiltered true" || bad "unstamped-hit fixture: got '$got'"
 rm -rf "$sb"
 
 # expected mounts (host -> mountpoints map): seams DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_HOST; sandbox PATH has python3 only
