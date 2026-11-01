@@ -10,7 +10,7 @@ payload() { jq -n --arg c "$1" --arg t "${2:-Bash}" '{tool_name:$t,tool_input:{c
 # t <name> <want: pass|block|unparsed> <command> [VAR=val ...]   (env is cleared of the markers, then the given ones set)
 t() {
   local name=$1 want=$2 cmd=$3; shift 3; n=$((n+1))
-  local err rc; err=$(payload "$cmd" | env -u WM_SEAT -u RB_CODER_ID "$@" bash "$hook" 2>&1 >/dev/null); rc=$?
+  local err rc in; in=$(payload "$cmd"); err=$(env -u WM_SEAT -u RB_CODER_ID "$@" bash "$hook" <<<"$in" 2>&1 >/dev/null); rc=$?   # stdin by here-string, not a pipe: an unmarked hook exits 0 without reading, and jq would die of SIGPIPE (rc=141 under pipefail)
   case "$want" in
     pass) [ $rc = 0 ] && [ -z "$err" ] && echo "ok - $name" || { echo "NOT OK - $name: rc=$rc $err"; fail=1; } ;;
     block) [ $rc = 2 ] && [[ "$err" == *"rb-land-push.sh"* ]] && [[ "$err" != *"unparsed push target"* ]] && [ "$(printf '%s\n' "$err" | wc -l)" = 1 ] && echo "ok - $name" || { echo "NOT OK - $name: rc=$rc $err"; fail=1; } ;;

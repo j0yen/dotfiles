@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 30 min: reap idle wchg watchman roots
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
