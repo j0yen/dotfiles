@@ -35,4 +35,15 @@ t g-other-subcommand 0 "" < <(printf 'wm-decide show --target redbaron --pr x\nw
 t h-comment 0 "" < <(printf '# wm-decide record --target redbaron --pr x\n   # wm-decide record --target redbaron --pr x\n')
 t c2-whole-token-only 0 "" < <(printf 'wm-decide record --pr-url x --targets y --what "--prefix --target-host"\n')
 t b-equals-form 1 "line 1: $MSG" < <(printf 'wm-decide record --target=redbaron --pr=x\n')
+# A725 rules-lint: both safety rule strings must be present in a coder prompt
+K='kill only pids you started, by pid'; L='LIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):'
+rt() { # rt <name> <want-rc> <want-substr|""> <must-not-substr|""> ; prompt on stdin
+  local name=$1 want=$2 sub=$3 nsub=$4 f out rc; f=$(mktemp); cat > "$f"
+  out=$(rb_prompt_rules_lint "$f" 2>&1); rc=$?; rm -f "$f"; n=$((n + 1))
+  if [ "$rc" = "$want" ] && { [ -z "$sub" ] || [[ $out == *"$sub"* ]]; } && { [ -z "$nsub" ] || [[ $out != *"$nsub"* ]]; }; then echo "PASS: ($name) rc=$rc ${out:+msg='$out'}"
+  else echo "FAIL: ($name) rc=$rc want=$want msg='$out' want-msg='$sub'"; fail=1; fi
+}
+rt r1-both-present 0 "" "" < <(printf 'x\n%s\n%s\n' "$K" "$L")
+rt r2-missing-kill 1 "missing rule: '$K'" "LIVE CLONES" < <(printf 'x\n%s\n' "$L")
+rt r3-missing-live 1 "missing rule: '$L'" "kill only" < <(printf 'x\n%s\n' "$K")
 [ "$fail" = 0 ] && echo "PASS rb-prompt-lint n=$n" || { echo "FAIL rb-prompt-lint n=$n"; exit 1; }

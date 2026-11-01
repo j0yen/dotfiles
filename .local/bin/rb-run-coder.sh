@@ -4,7 +4,7 @@
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
-# spawn-hold 76, spec-lint 73, STEP 0 75.
+# spawn-hold 76, spec-lint 73, STEP 0 75, rules-lint 72 (prompt lacks the kill-by-pid or LIVE CLONES rule; rb_prompt_rules_lint).
 # env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests).
 set -uo pipefail
@@ -25,6 +25,11 @@ cd "$HOME"
 if ! pl_msg=$(rb_prompt_pair_lint "$pf" 2>&1 >/dev/null); then
   pl_txt=$(sed -n "$(printf '%s\n' "$pl_msg" | head -n 1 | sed -n 's/^line \([0-9]*\):.*/\1/p')p" "$pf" | cut -c1-160)
   echo "REFUSED pair-lint $pf: $(printf '%s\n' "$pl_msg" | head -n 1) | text: $pl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED pair-lint: $pl_txt" || true; exit 77
+fi
+# rules-lint gate (aide A725, row d-20261023-054617-rb-a725: prompts a375 and a361m ran without the kill-by-pid and LIVE CLONES rules): exit 72.
+if ! rl_msg=$(rb_prompt_rules_lint "$pf" 2>&1); then
+  rl_txt=$(printf '%s\n' "$rl_msg" | head -n 1)
+  echo "REFUSED rules-lint $pf: $rl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED rules-lint: $rl_txt" || true; exit 72
 fi
 # spawn-hold gate (CSH, replaces the interim freeze-file gate of row 2041): EVERY spawn asks rb-spawn-hold.sh
 # whether a daemon redrive on redbaron is memory-refused; HOLD -> exit 76 + report + seat-event. The only exemption is

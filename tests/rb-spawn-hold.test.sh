@@ -114,7 +114,7 @@ H=$R/home; mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$H/.cache/rb-sea
 printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/bin/seat-event.sh"
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
-head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
+{ head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$R/prompt.md"        # >= 200 bytes + the two A725 rule lines, no cargo/redbaron words: the gate must still fire
 cat "$R/a.jsonl" > /dev/null
 extra="--journal-file $R/a.jsonl --state-file $R/f.state.json --now $NOW"
 HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f1 "$R/prompt.md" >/dev/null 2>&1; rc=$?
