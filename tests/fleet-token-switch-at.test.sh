@@ -12,6 +12,7 @@ mkdir "$t/stub" "$t/empty"
 for s in aide-relaunch.sh fleet-token-rotate.sh systemd-run; do
   printf '#!/bin/sh\necho STUB-RAN %s >> "%s/ran.log"\n' "$s" "$t" >"$t/stub/$s"; chmod +x "$t/stub/$s"
 done
+printf '#!/bin/sh\n[ "$1" = --check ] && exit 0\necho STUB-RAN fleet-token-rotate.sh >> "%s/ran.log"\n' "$t" >"$t/stub/fleet-token-rotate.sh"
 export PATH="$t/stub:/usr/bin:/bin"
 export FLEET_TOKEN_ROTATE_CHECK_BIN="$t/stub/fleet-token-rotate.sh"   # the arm-time --check runs the stub, never the real store
 out="$(bash "$h" acctB 09:30 --by joe-20261101 --dry-run 2>&1)" && rc=0 || rc=$?
