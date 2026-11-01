@@ -112,10 +112,8 @@ run i $R/i.jsonl ""; expect "(i) refuse then dropped run-ended" 76 "HOLD run=103
 H=$R/home; mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$H/.cache/rb-seat/coders"
 : > "$H/.config/environment.d/90-claude-oauth.conf"
 printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/bin/seat-event.sh"
-# rb-run-coder.sh launches the coder on redbaron over ssh (never a local claude): claude.ran = the remote systemd-run launch was attempted
-printf '#!/usr/bin/env bash\ncase "$*" in *systemd-run*) echo ran >> "%s/claude.ran";; *is-active*) exit 3;; *"cat "*) echo 0;; esac\nexit 0\n' "$R" > "$H/.local/bin/ssh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.local/bin/scp"
-chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/ssh" "$H/.local/bin/scp"
+printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
+chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
 head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
 cat "$R/a.jsonl" > /dev/null
 extra="--journal-file $R/a.jsonl --state-file $R/f.state.json --now $NOW"
@@ -423,7 +421,7 @@ run s2g $MISSING "$(gprev x 601 null false nosource)"; expect "(s2g) no-source p
 run s2h $MISSING "$(printf '{"active":false,"read_at":"%s","source":"unknown","unknown_since":"%s"}' "$(isoago 50)" "$(isoago 700)")"; expect "(s2h) unknown prev: the earlier unknown_since wins" 76 "HOLD unknown-blind unknown_since=$(isoago 700) age_s=700 "
 
 # (re1) a failing journal read persists read_error (unknown path); (re2) a stale-ssh path keeps it too; (re3) a following good read clears it
-run re1 $MISSING ""; expect "(re1) failing read" 0 "OK unknown: "
+run re1 $MISSING ""; expect "(re1) failing read" 0 "UNKNOWN unknown: "
 case "$(field read_error)" in "journal file unreadable:"*) pass "(re1) read_error persisted: $(field read_error)";; *) bad "(re1) read_error $(field read_error)";; esac
 [ "$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["read_error"]) <= 200)' "$st")" = True ] && pass "(re1) read_error <= 200 chars" || bad "(re1) read_error too long"
 run re2 $MISSING "$(gprev ssh 100 null true)"; expect "(re2) stale-ssh" 76 "HOLD run="
