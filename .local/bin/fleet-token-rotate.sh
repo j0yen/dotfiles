@@ -12,6 +12,9 @@
 #      --blocked-until <epoch|LA date text> (validated up front, bad = exit 64): also blocks the PREVIOUS account until then (fleet-token-lib.sh ft_block: the
 #      429 watcher and the weekly schedule refuse it) and records that time as previous_reset_at. No previous account known = a warning, nothing blocked.
 #      previous_reset_at = the largest quota_wait_until in ctl/rb/r7-tick.json (epoch; null when none): the watcher will not rotate back before it.
+# fleet-token-rotate.sh --check <same argv>: parse + validate the exact arguments and check the store holds <account>; places, locks and writes nothing.
+#   Exit 0 good argv, 1 no store entry, 64 usage. Run by fleet-token-switch-at.sh at arm time, which refuses to arm on rc != 0.
+# Under a systemd unit (INVOCATION_ID set) --trigger hand is refused (64) unless --armed-by fleet-token-switch-at is given.
 # Daemons and adopted units keep the OLD token until restarted (the bell says so); this script restarts nothing but the three seat ticks.
 # Exit: 0 rotated / no-op, 1 refused, 2 pre-verify failed, 3 place failed (rolled back), 64 usage.
 # Env (all injectable, default the real thing): FLEET_TOKEN_VERIFY_CMD FLEET_TOKEN_PLACE_CMD FLEET_TOKEN_BELL_CMD FLEET_TOKEN_SYSTEMCTL FLEET_TOKEN_RECORD_CMD
@@ -22,7 +25,7 @@ set +x
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-token-lib.sh"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2; exit 64; }
+usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>] [--armed-by <helper>]  |  --check <argv>  |  --selftest' >&2; exit 64; }
 
 TMPS=(); OWN_DIR=""
 cleanup() {
@@ -84,7 +87,7 @@ max_reset() {   # the largest quota_wait_until across the three tick.json files 
 }
 
 rotate() {
-  local acct="" by="" trigger="" why="" evid="" bu="" buep=""
+  local acct="" by="" trigger="" why="" evid="" bu="" buep="" armed=""
   acct="${1:-}"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -93,6 +96,7 @@ rotate() {
       --why) why="${2:-}"; shift ;;
       --evidence) evid="${2:-}"; shift ;;
       --blocked-until) bu="${2:-}"; shift ;;
+      --armed-by) armed="${2:-}"; shift ;;
       *) usage ;;
     esac
     shift
@@ -100,9 +104,13 @@ rotate() {
   ft_valid_account "$acct" || usage
   [[ "$by" =~ ^[A-Za-z0-9._@:+-]+$ ]] || usage
   case "$trigger" in 429|schedule|hand) ;; *) [[ "$trigger" =~ ^joe-[0-9A-Za-z:._-]+$ ]] || usage ;; esac
+  if [ "$trigger" = hand ] && [ -n "${INVOCATION_ID:-}" ] && [ "$armed" != fleet-token-switch-at ]; then
+    echo "fleet-token-rotate: REFUSED: --trigger hand under a systemd unit needs --armed-by fleet-token-switch-at (arm a timed switch with fleet-token-switch-at.sh)" >&2; exit 64
+  fi
   if [ -n "$bu" ]; then buep="$(ft_parse_la_date "$bu")" || { echo "fleet-token-rotate: cannot parse --blocked-until '$bu' as a date" >&2; exit 64; }; fi
 
   [ -f "$FT_STORE/$acct" ] || { echo "fleet-token-rotate: REFUSED: no store entry for '$acct' (fleet-token-store.sh add $acct)" >&2; return 1; }
+  if [ "$CHECK" = 1 ]; then echo "check ok: $acct (trigger $trigger, by $by)"; return 0; fi
   mkdir -p "$FT_STATE" "$FT_DASH"
   exec 8>>"$FT_STATE/rotate.lock"
   flock -w 300 8 || { echo "fleet-token-rotate: another rotation holds the lock" >&2; return 1; }
@@ -183,6 +191,7 @@ selftest() {
     ft_st_store acctDup "$c"; ft_st_store acctV "$c-verifyfail"; ft_st_store acctX1 "$c-exit1"
     A="$(ft_sha8 "$FT_STORE/acctA")"; B="$(ft_sha8 "$FT_STORE/acctB")"; C="$(ft_sha8 "$FT_STORE/acctC")"
     local NOW=1790000000; export FLEET_TOKEN_NOW_EPOCH=$NOW
+    unset INVOCATION_ID
 
     # 1. refusals
     run nosuch --by t --trigger hand; rc=$?
@@ -192,6 +201,15 @@ selftest() {
     run acctB --by t --trigger 'joe-x y'; rc=$?; [ "$rc" = 64 ]; ft_st_chk "trigger joe- with a space: usage, exit 64" $?
     run acctB --by t --trigger hand "$c"; rc=$?; [ "$rc" = 64 ] && ! grep -qF "$c" "$e"; ft_st_chk "stray argv: exit 64, not echoed" $?
     [ -z "$(fl place)" ]; ft_st_chk "usage errors placed nothing" $?
+
+    # 1b. --check: parse + store check, never places; INVOCATION_ID guard on hand
+    run --check acctB --by joe-2026-11-01 --trigger reset-0220; rc=$?; [ "$rc" = 64 ] && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ]; ft_st_chk "--check: trigger reset-0220 exits 64, nothing verified or placed" $?
+    run --check acctB --by joe-2026-11-01 --trigger hand; rc=$?; [ "$rc" = 0 ] && grep -q '^check ok: acctB' "$o" && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ] && [ -z "$(fl bell)" ] && [ ! -e "$FT_TOKJSON" ] && [ ! -e "$FT_ROTLOG" ]; ft_st_chk "--check: good argv exits 0, nothing verified/placed/belled/written" $?
+    run --check nosuch --by t --trigger hand; rc=$?; [ "$rc" = 1 ]; ft_st_chk "--check: account missing from the store exits 1" $?
+    INVOCATION_ID=abc run acctB --by t --trigger hand; rc=$?; [ "$rc" = 64 ] && grep -q 'armed-by fleet-token-switch-at' "$e" && [ -z "$(fl place)" ]; ft_st_chk "hand under a unit (INVOCATION_ID set) refused (64), nothing placed" $?
+    INVOCATION_ID=abc run --check acctB --by t --trigger hand; rc=$?; [ "$rc" = 64 ]; ft_st_chk "--check hand under a unit refused too" $?
+    INVOCATION_ID=abc run --check acctB --by t --trigger hand --armed-by fleet-token-switch-at; rc=$?; [ "$rc" = 0 ]; ft_st_chk "hand under a unit with --armed-by fleet-token-switch-at: check ok" $?
+    INVOCATION_ID=abc run --check acctB --by t --trigger 429; rc=$?; [ "$rc" = 0 ]; ft_st_chk "429 under a unit unchanged" $?
 
     # 2. no-op when current
     "$(dirname "$SELF")/fleet-token-store.sh" current acctA >/dev/null
@@ -275,6 +293,8 @@ selftest() {
 }
 
 [ "${1:-}" = "--selftest" ] && { selftest; exit $?; }
+CHECK=0
+if [ "${1:-}" = "--check" ]; then CHECK=1; shift; fi
 [ $# -ge 1 ] || usage
 ft_paths
 trap cleanup EXIT
