@@ -298,3 +298,6 @@ against the freshly redeployed endpoint; if zero segments bootstrap it writes
 harness probe or truth tier starts, so a broken bootstrap path is caught within one measure-job
 tick instead of hiding for up to a day. `vibeloop-ctl measure` surfaces both: inline
 `proxy=`/`cleanup=` fields on each ledger line and a separate `last proxy:` summary line.
+
+## fleet-token-switch-receipt (A379)
+- fleet-token-switch-receipt.sh: last step of the switch-at unit posts DONE/FAILED to the aide inbox + ctl-events from token.json and place.log; --arm files the +3 min follow-up row.
