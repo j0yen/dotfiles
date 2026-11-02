@@ -4,7 +4,7 @@
   spec  SPEC DB   pass iff the NEWEST decisions row whose evidence holds `sha256:<hex of SPEC>` is kind=verdict, model contains `fable`,
                   final verdict in {AGREE, AGREE-WITH-EDITS} (final = regrade JSON `verdict` when present, else the first word of `what`),
                   and the spec's stem (fvg.spec.md -> fvg) appears in that row's what/evidence. stdout `OK <id>` rc 0, else the reason rc 1.
-  hatch PROMPT DB pass iff PROMPT carries `Hatch: d-<id>` naming a kind=decision row, `what` starting NO-SPEC-SPAWN, evidence holding
+  hatch PROMPT DB pass iff PROMPT carries `Hatch: d-<id>` naming a kind=decision|other row (wm-decide record writes no kind=decision), `what` starting NO-SPEC-SPAWN, evidence holding
                   `sha256:<hex of PROMPT with the Hatch line(s) removed>`, id timestamp <= 24 h old. stdout the row id rc 0, else `hatch-<why>` rc 1.
 
 The DB is opened read-only (`file:...?mode=ro`, never immutable=1); a locked DB retries 3x ~1 s apart then `db-locked`; a missing file or a schema
@@ -113,7 +113,7 @@ def gate_hatch(prompt, db):
     if not rows:
         raise Refuse("hatch-no-row")
     _id, _ts, kind, what, evidence = rows[0]
-    if kind != "decision" or not (what or "").startswith("NO-SPEC-SPAWN"):
+    if kind not in ("decision", "other") or not (what or "").startswith("NO-SPEC-SPAWN"):
         raise Refuse("hatch-not-no-spec-decision")
     if "sha256:" + hexd not in (evidence or ""):
         raise Refuse("hatch-prompt-sha-mismatch")
