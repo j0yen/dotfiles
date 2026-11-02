@@ -24,17 +24,18 @@ roots = [os.path.join(home, ".claude/CLAUDE.md")]
 for pat in (".claude/projects/*/memory", ".claude/recall", ".claude/scratch/learning-candidates", "Notes/wiki"):
     roots += sorted(glob.glob(os.path.join(home, pat)))
 files = []
+SKIP = ("/Notes/wiki/sources/", "/.claude/recall/memories.pre-sync-")  # ingested external material and a frozen archive are not the fleet's own wording (A54, 11-02)
 for r in roots:
     if os.path.isfile(r):
         files.append(r)
     elif os.path.isdir(r):
         for d, _, fs in os.walk(r):
-            files += [os.path.join(d, f) for f in fs if f.endswith(".md")]
+            files += [os.path.join(d, f) for f in fs if f.endswith(".md") and not any(k in os.path.join(d, f) for k in SKIP)]
 
 T1_CI = re.compile(r"fuck|shit|bitch|stupid|dumb|lazy|useless|garbage|disaster|dont be a|don.t be a|terrible|furious|angry|disapoint|disappoint|annoy", re.I)
 T1_CS = re.compile(r"MY DEFECT|SEARED|NEVER EVER|NEVER FUCKING|NEVER ASK ME|STOP WASTING")
 T2 = re.compile(r"\b(?:NEVER|STOP|DON.T) ([A-Z]{3,})")
-ALLOW = re.compile(r"lazy import|lazy init|garbage-collect|garbage collector|worst case", re.I)
+ALLOW = re.compile(r"lazy import|lazy init|garbage-collect|garbage collector|worst case|lazygit|doc_lazy_continuation|useless_format|lazy ts parse|very disappointed", re.I)  # identifiers (tool, clippy lint and commit-message names) and the Sean Ellis term of art are facts, not tone (A54, 11-02)
 
 hits = []
 for f in files:
