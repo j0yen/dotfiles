@@ -633,6 +633,11 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/kill-list-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
             "timeout": 5
           }
