@@ -21,6 +21,9 @@ printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/b
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.cache/rb-seat/spec-lint.sh"      # spec-lint (73) is not under test here
 printf '#!/usr/bin/env bash\necho "OK stub"\nexit 0\n' > "$R/hold.stub"
+# room gate (78) is not under test here: a fake carbon-room that always has room, state/ledger under $R
+printf '#!/usr/bin/env bash\necho "room ok: avail=8077 need=$1 reserve=3072 left=$((8077-3072-$1))"\nexit 0\n' > "$R/room-ok.sh"; chmod +x "$R/room-ok.sh"
+export RB_ROOM_BIN="$R/room-ok.sh" CARBON_ROOM_STATE="$R/room-state.json" CARBON_ROOM_LEDGER="$R/room-ledger.jsonl"
 chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude" "$R/hold.stub"
 
 SP=$CD/zed.spec.md

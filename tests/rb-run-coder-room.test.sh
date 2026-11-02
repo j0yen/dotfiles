@@ -19,6 +19,10 @@ printf '#!/usr/bin/env bash\necho hello\nexit 0\n' > "$R/junk-fake"
 printf '#!/usr/bin/env bash\necho "room n/a: not carbon"\nexit 0\n' > "$R/na-fake"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$R/ok-hold"
 chmod +x "$R"/*-fake "$R/ok-hold"
+# fable-verdict gate (80) is not under test here: every case prompt carries a valid Hatch row in a fixture DB (sha = prompt minus the Hatch line)
+export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
+HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; PSHA=$({ { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; }; printf '\n'; } | sha256sum | cut -d' ' -f1)
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN room test", "sha256:" + sys.argv[3], None)); d.commit()' "$RB_DECISIONS_DB" "$HID" "$PSHA"
 
 # case <name> <room-bin> <journal-text> <systemctl-text> [env assignments...]; sets H (home), D, rc
 case_() {
@@ -27,6 +31,7 @@ case_() {
   mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$D"
   : > "$H/.config/environment.d/90-claude-oauth.conf"
   { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$H/prompt.md"   # carries the rules-lint rules (A725)
+  printf '\nHatch: %s\n' "$HID" >> "$H/prompt.md"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/events"\n' "$H" > "$H/.local/bin/seat-event.sh"
   printf '#!/usr/bin/env bash\ntouch "%s/claude.ran"\nexit 0\n' "$H" > "$H/.local/bin/claude"
   printf '#!/usr/bin/env bash\ncat "%s/journal.txt"\nexit 0\n' "$H" > "$H/.local/bin/journalctl"
