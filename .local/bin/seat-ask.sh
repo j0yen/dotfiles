@@ -131,6 +131,9 @@ if [ "${SEAT_ASK_TEST:-}" = 1 ] || { [ -n "${SEAT_ASK_TICK_BIN:-}" ] && [ "$SEAT
   fi
 fi
 awk -F'\t' -v s="$seat" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{exit !f}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" || { echo "seat-ask: unknown seat '$seat'" >&2; exit 64; }
+# #113 refusal (A53): an ask that gates work on 0 open runs / an idle host is refused, shared patterns in .config/wm-guards
+for _l in "${ZERO_GUARD_LIB:-}" "$(dirname "$SELF")/../lib/zero-open-runs-guard.sh" "$HOME/.local/lib/zero-open-runs-guard.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+if type zero_open_runs_refuse >/dev/null 2>&1; then zero_open_runs_refuse "$*" || { echo "seat-ask: refused" >&2; exit 66; }; fi
 # INBOX SEAT (A392, 11-01): a seat whose seats.tsv role is `inbox` (the aide) has no seat-tick turn to run; an ask to it is an inbox line
 # via seat-event.sh. Running seat-tick.sh for it only hit the interactive-aide guard (exit 4) and raised a false seat-tick-failed@aide alarm per ping.
 role="$(awk -F'\t' -v s="$seat" '!/^[[:space:]]*(#|$)/ && $1==s {print $2; exit}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}")"

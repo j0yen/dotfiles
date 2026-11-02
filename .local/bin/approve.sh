@@ -327,6 +327,9 @@ has_trial=0
 for a in "$@"; do case "$a" in --trial-id|--trial-ends|--signal|--revert) has_trial=1 ;; esac; done
 
 quote="${1:-}"; re="${2:-}"
+# #113 refusal (A53): the "re:" line may not gate work on 0 open runs / an idle host (the verbatim quote is Joe's and is not checked)
+for _l in "${ZERO_GUARD_LIB:-}" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/zero-open-runs-guard.sh" "$HOME/.local/lib/zero-open-runs-guard.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+if type zero_open_runs_refuse >/dev/null 2>&1; then zero_open_runs_refuse "$re" || { echo "approve.sh: refused" >&2; exit 66; }; fi
 quote=$(printf '%s' "$quote" | tr '\r\n' '  '); re=$(printf '%s' "$re" | tr '\r\n' '  ')
 re="${re#re: }"
 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ask-check-lint.sh" --text "$re" || exit $?   # A254: source-shaped done-check refused
