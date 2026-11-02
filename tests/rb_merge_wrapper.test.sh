@@ -16,7 +16,14 @@ mkdir -p "$tmp/trip"
 for b in gh wm-decide; do printf '#!/bin/sh\ntouch "%s/tripwire"\nexit 99\n' "$tmp" > "$tmp/trip/$b"; chmod +x "$tmp/trip/$b"; done
 export PATH="$tmp/trip:$PATH" HOME="$tmp/home"; mkdir -p "$HOME"
 
-OID=a1b2c3d4e5f60123456789abcdef0123456789ab
+# pre-gate A (vtg1) needs a launcher record + a clean suite log in a fixture DB; the gate stub's oid is the fixture repo's real HEAD
+RBF_ROOT="$tmp"; RBF_REPO=j0yen/swarm-decide
+. "$here/tests/rb_merge_fixture.sh"
+wvr_real="$(command -v wm-verify-run || echo /home/jsy/.local/bin/wm-verify-run)"; export PATH="$(dirname "$wvr_real"):$PATH"
+rbf_init
+rbf_launch w1 'echo wrapper-suite'
+rbf_row d-20261022-140000-rb-abcd "$RBF_HEAD" w1 "$(rbf_log 'echo wrapper-suite')"
+OID="$RBF_HEAD"
 cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
@@ -54,7 +61,10 @@ esac
 exit "${STUB_GH_RC:-0}"
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
-V=d-20261022-140000-rb-abcd
+# the ADV pre-check (merge-gate-adv) reads a ledger before the gate: a captured-real-row ledger for a non-trigger repo with no brief (tests/fixtures/rb-merge-adv/mkledger.py), so it passes through
+export WM_DECIDE_STATE="$tmp/state"
+ids="$(python3 -I "$here/tests/fixtures/rb-merge-adv/mkledger.py" "$WM_DECIDE_STATE" '{"repo":"j0yen/swarm-decide","pr":7}')" || { echo "NOT OK - rb-merge: ledger fixture"; exit 1; }
+V="$(printf '%s' "$ids" | cut -d' ' -f2)"
 ROW='{"id":"%s","kind":"verdict","agent":"r7","what":"CONFIRM x COMMIT=%s"%s}'
 DEFAULT_LIST="[$(printf "$ROW" $V $OID ',"via":"verifier"')]"
 export STUB_LIST_JSON="$DEFAULT_LIST"

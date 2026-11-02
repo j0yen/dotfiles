@@ -15,8 +15,8 @@
 # FILE  {host, ts, ts_iso, devices:[{dev, kind:nvme|sata|usb, smart_health:PASSED|FAILED|unavailable, media_errors,
 #        unsafe_shutdowns, percentage_used, reallocated, pending, source}], kernel_io_errors_since_boot (info only),
 #        kernel_io_errors_6h / kernel_io_errors_24h (block-device error lines timestamped inside the window; null + kernel_window_unfiltered
-#        true when the log has untimestamped lines), kernel_io_last_error_age_s, kernel_io_last, missing_devices:[{uuid, mount}] (fstab UUID= non-noauto
-#        entries absent from /dev/disk/by-uuid), usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct},
+#        true when the log has untimestamped lines), kernel_io_last_error_age_s, kernel_io_last, missing_devices:[{uuid, mount, source}] (fstab non-noauto device
+#        entries -- UUID=, /dev/disk/by-uuid/, PARTUUID=, LABEL=, /dev/ paths -- whose link is absent; uuid null for non-UUID sources), usb_resets_since_boot (informational), max_inode_pct:{mount,pct}, max_bytes_pct:{mount,pct},
 #        mounts:[{mount, fs, bytes_pct, inode_pct, bytes_level: ok|yellow|red}] (every real filesystem + tmpfs /tmp),
 #        max_bytes_level: ok|yellow|red (the worst mount), errors:[...]}
 #   bytes_level: yellow at BYTES_YELLOW_PCT (85), red at BYTES_RED_PCT (92); fleet-dash disk_health.py raises the same thresholds as alarms.
@@ -36,7 +36,7 @@
 #
 #   expected_mounts_configured: true when .config/disk-health/expected-mounts.json has this host's key (host -> [mountpoints]); each expected mountpoint
 #        absent from /proc/self/mounts is a missing_devices {mount, reason:"not-mounted"}. false (file missing/unparseable, host key absent) = nothing was checked: consumers show YELLOW, never green.
-# ENV  DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_JOURNAL_FILE / DISK_HEALTH_NOW / DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR (test seams), DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
+# ENV  DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_JOURNAL_FILE / DISK_HEALTH_NOW / DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR / DISK_HEALTH_BYPARTUUID_DIR / DISK_HEALTH_BYLABEL_DIR / DISK_HEALTH_DEV_ROOT (test seams), DISK_HEALTH_OUT (file), DISK_HEALTH_HOST (host label), DISK_HEALTH_EXTRA_PATH (appended to PATH; default /usr/sbin:/sbin:/usr/local/sbin)
 set -u
 
 OUT=${DISK_HEALTH_OUT:-$HOME/.cache/fleet-dash/disk-health.json}
@@ -258,8 +258,8 @@ def _line_ts(line, source):
 def kernel_io(errors):
     """-> dict {since_boot, h6, h24, last_age_s, last, usb_resets, unfiltered} or None when no kernel log is readable.
     since_boot = block-device error lines in the whole boot (info only). h6/h24 = those lines timestamped within the last 6 h / 24 h; filtered HERE
-    by line timestamp (journalctl -k -b -o short-unix, else dmesg --time-format=iso). When any line carries no parseable timestamp the window cannot
-    be trusted: h6/h24 are None and unfiltered is True (never the since-boot number). DISK_HEALTH_JOURNAL_FILE (a short-unix text file) replaces journalctl for tests."""
+    by line timestamp (journalctl -k -b -o short-unix, else dmesg --time-format=iso). When any error line (a counted hit) carries no parseable timestamp the window cannot
+    be trusted (unstamped non-hit continuation lines of multi-line kernel dumps are ignored): h6/h24 are None and unfiltered is True (never the since-boot number). DISK_HEALTH_JOURNAL_FILE (a short-unix text file) replaces journalctl for tests."""
     now = float(os.environ.get("DISK_HEALTH_NOW") or time.time())
     jf = os.environ.get("DISK_HEALTH_JOURNAL_FILE")
     cmds = [("journal", ["journalctl", "-k", "-b", "-o", "short-unix", "--no-pager", "-q"]), ("dmesg", ["dmesg", "--time-format=iso"]), ("dmesg", ["dmesg"])]
@@ -277,7 +277,7 @@ def kernel_io(errors):
         hits = [l for l in lines if KERNEL_RE.search(l)]
         usb = sum(1 for l in lines if USB_RESET_RE.search(l))
         stamped = [(l, _line_ts(l, source)) for l in hits]
-        unfiltered = any(_line_ts(l, source) is None for l in lines)
+        unfiltered = any(t is None for _, t in stamped)
         res = {"since_boot": len(hits), "last": [h.strip()[:200] for h in hits[-3:]], "usb_resets": usb, "unfiltered": unfiltered,
                "h6": None, "h24": None, "last_age_s": None}
         if not unfiltered:
@@ -321,10 +321,16 @@ def expected_mounts(errors):
 
 
 def missing_devices(errors):
-    """-> [{uuid, mount}] for /etc/fstab UUID= entries (noauto excluded) with no /dev/disk/by-uuid link: an expected drive that is gone.
-    DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR are the test seams. An unreadable fstab or by-uuid dir adds 'fstab-unreadable' and yields []."""
+    """-> [{uuid, mount, source}] for /etc/fstab device entries (noauto excluded) whose device link is gone: an expected drive that is gone.
+    Source forms read: UUID=<u> and /dev/disk/by-uuid/<u> (uuid = <u>, matched case-insensitively in the by-uuid dir), PARTUUID=<p> (by-partuuid),
+    LABEL=<l> (by-label), any other /dev/... path (uuid null). Non-device sources (/swap.img, tmpfs, proc, network) are skipped. source = the raw fstab field.
+    DISK_HEALTH_FSTAB / DISK_HEALTH_BYUUID_DIR / DISK_HEALTH_BYPARTUUID_DIR / DISK_HEALTH_BYLABEL_DIR / DISK_HEALTH_DEV_ROOT (prefix for plain /dev paths: <root>/dev/sda1)
+    are the test seams. An unreadable fstab or by-uuid dir adds 'fstab-unreadable' and yields []."""
     fstab = os.environ.get("DISK_HEALTH_FSTAB") or "/etc/fstab"
     byuuid = os.environ.get("DISK_HEALTH_BYUUID_DIR") or "/dev/disk/by-uuid"
+    bypartuuid = os.environ.get("DISK_HEALTH_BYPARTUUID_DIR") or "/dev/disk/by-partuuid"
+    bylabel = os.environ.get("DISK_HEALTH_BYLABEL_DIR") or "/dev/disk/by-label"
+    devroot = os.environ.get("DISK_HEALTH_DEV_ROOT") or ""
     try:
         lines = open(fstab).read().splitlines()
         present = {n.lower() for n in os.listdir(byuuid)}
@@ -334,13 +340,29 @@ def missing_devices(errors):
     out = []
     for ln in lines:
         p = ln.split("#", 1)[0].split()
-        if len(p) < 2 or not p[0].upper().startswith("UUID="):
+        if len(p) < 2:
             continue
         if "noauto" in (p[3].split(",") if len(p) > 3 else []):
             continue
-        u = p[0][5:].strip("\"'")
-        if u.lower() not in present:
-            out.append({"uuid": u, "mount": p[1]})
+        src = p[0]
+        up = src.upper()
+        uuid = None
+        if up.startswith("UUID="):
+            uuid = src[5:].strip("\"'")
+        elif src.startswith("/dev/disk/by-uuid/"):
+            uuid = src[len("/dev/disk/by-uuid/"):]
+        if uuid is not None:
+            gone = uuid.lower() not in present
+        elif up.startswith("PARTUUID="):
+            gone = not os.path.lexists(os.path.join(bypartuuid, src[9:].strip("\"'")))
+        elif up.startswith("LABEL="):
+            gone = not os.path.lexists(os.path.join(bylabel, src[6:].strip("\"'")))
+        elif src.startswith("/dev/"):
+            gone = not os.path.lexists(devroot + src)
+        else:
+            continue
+        if gone:
+            out.append({"uuid": uuid, "mount": p[1], "source": src})
     return out
 
 
@@ -709,10 +731,11 @@ F
   cp "$fx/journal.clean" "$fx/journal"
   printf '%s\n' '# comment' 'UUID=AAAA-1111 /mnt/data ext4 defaults,nofail 0 2' 'UUID=bbbb-2222 /mnt/usb ext4 defaults 0 2' 'UUID=cccc-3333 /mnt/off ext4 noauto,user 0 0' '/dev/sda1 /boot/efi vfat defaults 0 1' >"$fx/fstab"
   : >"$fx/byuuid/aaaa-1111"
-  go "$d/c2h.json"
-  check "missing_devices: only the absent non-noauto UUID (case-insensitive match for the present one)" "$d/c2h.json" "d['missing_devices']==[{'uuid':'bbbb-2222','mount':'/mnt/usb'}]"
+  mkdir -p "$fx/root/dev"; : >"$fx/root/dev/sda1"
+  go "$d/c2h.json" DISK_HEALTH_DEV_ROOT="$fx/root"
+  check "missing_devices: only the absent non-noauto UUID (case-insensitive match for the present one)" "$d/c2h.json" "d['missing_devices']==[{'uuid':'bbbb-2222','mount':'/mnt/usb','source':'UUID=bbbb-2222'}]"
   : >"$fx/byuuid/bbbb-2222"
-  go "$d/c2i.json"
+  go "$d/c2i.json" DISK_HEALTH_DEV_ROOT="$fx/root"
   check "missing_devices: all present -> []" "$d/c2i.json" "d['missing_devices']==[]"
   go "$d/c2j.json" DISK_HEALTH_FSTAB="$fx/nonexistent"
   check "missing_devices: unreadable fstab -> [] + fstab-unreadable in errors" "$d/c2j.json" "d['missing_devices']==[] and 'fstab-unreadable' in d['errors']"

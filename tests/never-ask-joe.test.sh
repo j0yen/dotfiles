@@ -24,7 +24,7 @@ stop_in() { jq -nc --arg p "$1" --argjson a "${2:-false}" '{hook_event_name:"Sto
 expect() {
   local name="$1" want="$2" seat="$3" tr="$4" act="${5:-false}" before out rc after
   before=$(nlog)
-  if [ "$seat" = "-" ]; then out=$(stop_in "$tr" "$act" | env -u WM_SEAT bash "$hook" 2>/dev/null); rc=$?
+  if [ "$seat" = "-" ] || [ "$seat" = plain ]; then out=$(stop_in "$tr" "$act" | env -u WM_SEAT bash "$hook" 2>/dev/null); rc=$?
   else out=$(stop_in "$tr" "$act" | WM_SEAT="$seat" bash "$hook" 2>/dev/null); rc=$?; fi
   after=$(nlog)
   if [ "$rc" -ne 0 ]; then bad "$name (rc=$rc)"; return; fi
@@ -58,13 +58,18 @@ expect "block: hold on a different line than the not-done clause" block rb "$(t 
 # allows
 expect "allow: not-done form same line" allow rb "$(t "Not done: raising the cost limit needs Joe's word (seared class)")"
 expect "allow: plain STATUS"            allow rb "$(t $'STATUS 10:52 PM\nTask: hook build.\nState: tests green.\nNext: commit.')"
-expect "allow: WM_SEAT unset"           allow -  "$(t 'Want me to redrive 1068?')"
+expect "block: WM_SEAT unset (A358)"    block plain "$(t 'Want me to redrive 1068?')"
 expect "allow: stop_hook_active"        allow rb "$(t 'Should I merge?')" true
 expect "allow: not-done form with stays as-is" allow rb "$(t 'Not done: raising the idle limit stays as-is until you say otherwise (seared class)')"
 expect "allow: the way you want it"            allow rb "$(t 'Pushed the fix the way you want it.')"
 expect "allow: delta if you want detail"       allow rb "$(t 'Fleet dash shows the delta if you want detail.')"
 expect "allow: your choice of 120K"            allow rb "$(t 'Your choice of 120K was right.')"
 expect "allow: holding until r7 confirms"      allow rb "$(t 'Holding the land until r7 confirms.')"
+
+# A358: Stop covers plain sessions (WM_SEAT unset) too
+expect "A358 block: plain session, Do you want me to" block plain "$(t 'Do you want me to merge it?')"
+expect "A358 block: aide, Do you want me to"          block aide  "$(t 'Do you want me to merge it?')"
+expect "A358 allow: plain session, plain report"      allow plain "$(t 'Merged #157; next: #169.')"
 
 # AskUserQuestion
 before=$(nlog)

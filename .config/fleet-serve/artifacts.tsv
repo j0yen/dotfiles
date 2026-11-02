@@ -1,0 +1,9 @@
+# id	host	artifact	source_ref	deploy_unit	version_field	drift_alarm
+fleet-dash	carbon	fleet-dash collector + index.html	j0yen/fleet-dash@main	spec:A248-fleet-dash-deploy.timer	dash.version	dash-version-drift
+wm-build	orch	wm-build binary	j0yen/wm-build@main	wm-build-shim-check.timer	wm_build.version	wm-build-version-drift
+dotfiles-carbon	carbon	dotfiles symlinks	j0yen/dotfiles@main	dotfiles-hook-sync.timer	dotfiles.version.carbon	dotfiles-version-drift
+dotfiles-redbaron	redbaron	dotfiles symlinks	j0yen/dotfiles@main	dotfiles-hook-sync.timer	dotfiles.version.redbaron	dotfiles-version-drift
+dotfiles-ryzen7	ryzen7	dotfiles symlinks	j0yen/dotfiles@main	dotfiles-hook-sync.timer	dotfiles.version.ryzen7	dotfiles-version-drift
+memory-sync	carbon	memory-sync installer	j0yen/dotfiles@main	spec:A255-memory-sync-unit	memory_sync.version	memory-sync-version-drift
+synthorg-config	ryzen7	synthorg config	j0yen/dotfiles@main	spec:A255-synthorg-config-unit	synthorg_config.version	synthorg-config-version-drift
+mcphost-prod	mcphost-1	mcphost prod binary	j0yen/mcphost@main	mcphost-deploy-release.service	mcphost.version	mcphost-version-drift

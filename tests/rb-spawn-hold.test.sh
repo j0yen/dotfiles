@@ -114,7 +114,17 @@ H=$R/home; mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$H/.cache/rb-sea
 printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/bin/seat-event.sh"
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
+# rcr: rb-run-coder.sh now ends in the ROOM gate. Every invocation below gets an always-ok room fake, journalctl/systemctl stubs (no real user journal or units),
+# and the room state/ledger under $R, so the real carbon-room.sh never runs and never writes fleet-dash state from this test.
+printf '#!/usr/bin/env bash\necho "room ok: avail=8077 need=$1 reserve=3072 left=$((8077-3072-$1))"\nexit 0\n' > "$R/room-ok.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.local/bin/journalctl"; cp "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
+chmod +x "$R/room-ok.sh" "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
+export RB_ROOM_BIN="$R/room-ok.sh" CARBON_ROOM_STATE="$R/room-state.json" CARBON_ROOM_LEDGER="$R/room-ledger.jsonl"
 head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
+# fvg: rb-run-coder.sh's fable-verdict gate (80) refuses a spec-less prompt, so this prompt carries a valid Hatch row in a fixture DB (the gate under test here is spawn-hold)
+export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
+HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; printf '\nHatch: %s\n' "$HID" >> "$R/prompt.md"; PSHA=$(grep -v '^Hatch: ' "$R/prompt.md" | sha256sum | cut -d' ' -f1)
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN spawn-hold test", "sha256:" + sys.argv[3], None)); d.commit()' "$RB_DECISIONS_DB" "$HID" "$PSHA"
 cat "$R/a.jsonl" > /dev/null
 extra="--journal-file $R/a.jsonl --state-file $R/f.state.json --now $NOW"
 HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f1 "$R/prompt.md" >/dev/null 2>&1; rc=$?
@@ -430,6 +440,7 @@ re1st=$st
 run re3 $R/d.jsonl "$(cat "$re1st")"; expect "(re3) good read after a failing read" 0 "OK "
 [ "$(field read_error)" = null ] && pass "(re3) read_error cleared by the good read" || bad "(re3) read_error $(field read_error)"
 [ "$(field source)" = file ] && pass "(re3) source back to file" || bad "(re3) source $(field source)"
+
 # --- local read on the target host + one in-call retry (ctl 9d62/7066) ---
 LT=$R/local; mkdir -p "$LT"
 # stub local runner: ignores the script, emits good empty frames; fails the first $LL_FAILS calls (counter file)

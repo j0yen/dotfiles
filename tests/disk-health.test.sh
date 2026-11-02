@@ -35,6 +35,11 @@ printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\n%
 printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\n%s.000000 fx kernel: blk_update_request: I/O error, dev sdc, sector 2\n' "$((now - 40 * 3600))" "$((now - 600))" >"$sb/new.j"
 got=$(win old "$sb/old.j"); [ "$got" = "1 0 0 False" ] && pass "journal error 40 h old: since_boot 1, 6h 0, 24h 0 (window filter)" || bad "old-error fixture: got '$got'"
 got=$(win new "$sb/new.j"); [ "$got" = "2 1 1 False" ] && pass "journal error 10 min old: since_boot 2, 6h 1, 24h 1" || bad "new-error fixture: got '$got'"
+# unstamped continuation lines (kernel mem-info dump) are not hits: they must not blank the window; an unstamped HIT still does
+printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\nunevictable:0 dirty:12 writeback:0\nkernel_misc_reclaimable:0\n%s.000000 fx kernel: blk_update_request: I/O error, dev sdc, sector 2\n slab_reclaimable:55\n' "$((now - 40 * 3600))" "$((now - 600))" >"$sb/cont.j"
+printf '%s.000000 fx kernel: blk_update_request: I/O error, dev sdb, sector 1\nblk_update_request: I/O error, dev sdc, sector 2\n' "$((now - 600))" >"$sb/unst.j"
+got=$(win cont "$sb/cont.j"); [ "$got" = "2 1 1 False" ] && pass "unstamped non-hit continuation lines: 6h count stays a number (1), not null" || bad "continuation fixture: got '$got'"
+got=$(win unst "$sb/unst.j"); [ "$got" = "2 None None True" ] && pass "unstamped hit: 6h/24h null, unfiltered true" || bad "unstamped-hit fixture: got '$got'"
 rm -rf "$sb"
 
 # expected mounts (host -> mountpoints map): seams DISK_HEALTH_EXPECTED_FILE / DISK_HEALTH_MOUNTS_FILE / DISK_HEALTH_HOST; sandbox PATH has python3 only
@@ -64,6 +69,23 @@ t=$unit/disk-health.timer s=$unit/disk-health.service
 grep -qx 'OnBootSec=3min' "$t" && grep -qx 'OnUnitActiveSec=15min' "$t" && grep -qx 'Persistent=true' "$t" && grep -qx 'WantedBy=timers.target' "$t" \
   && pass "timer: OnBootSec=3min OnUnitActiveSec=15min Persistent=true" || bad "timer fields"
 grep -qx 'Type=oneshot' "$s" && grep -q 'ExecStart=.*\.local/bin/disk-health\.sh"$' "$s" && pass "service: oneshot running disk-health.sh" || bad "service fields"
+
+# missing_devices source forms: /dev/disk/by-uuid/<u> and LABEL= are read; swap file and noauto are skipped
+md=$(mktemp -d "${TMPDIR:-/tmp}/dh-md.XXXXXX"); mkdir -p "$md/bin" "$md/uuid" "$md/label" "$md/partuuid" "$md/dev"; ln -s "$(readlink -f "$(command -v python3)")" "$md/bin/python3"
+: >"$md/journal"; : >"$md/uuid/aaaa-1111"
+printf '%s\n' \
+  'UUID=AAAA-1111 /mnt/a ext4 defaults 0 2' \
+  '/dev/disk/by-uuid/aaaa-1111 / ext4 defaults 0 1' \
+  '/dev/disk/by-uuid/dead-0000 /boot/efi vfat defaults 0 1' \
+  'LABEL=gone-lbl /mnt/lbl ext4 defaults 0 2' \
+  '/swap.img none swap sw 0 0' \
+  'UUID=beef-0000 /mnt/off ext4 noauto,user 0 0' >"$md/fstab"
+env -i HOME="$md" PATH="$md/bin" DISK_HEALTH_OUT="$md/o.json" DISK_HEALTH_HOST=fx DISK_HEALTH_EXTRA_PATH= DISK_HEALTH_JOURNAL_FILE="$md/journal" \
+  DISK_HEALTH_FSTAB="$md/fstab" DISK_HEALTH_BYUUID_DIR="$md/uuid" DISK_HEALTH_BYLABEL_DIR="$md/label" DISK_HEALTH_BYPARTUUID_DIR="$md/partuuid" DISK_HEALTH_DEV_ROOT="$md/dev" "$BASH" "$script" >/dev/null 2>&1
+got=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["missing_devices"], sort_keys=True))' "$md/o.json")
+want='[{"mount": "/boot/efi", "source": "/dev/disk/by-uuid/dead-0000", "uuid": "dead-0000"}, {"mount": "/mnt/lbl", "source": "LABEL=gone-lbl", "uuid": null}]'
+[ "$got" = "$want" ] && pass "missing_devices: absent by-uuid + LABEL= reported, swap file and noauto skipped" || bad "missing_devices source forms: got '$got'"
+rm -rf "$md"
 
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "FAILED"
 exit $fail

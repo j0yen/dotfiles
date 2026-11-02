@@ -151,6 +151,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/login-ledger.sh"
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -345,6 +354,15 @@
             "timeout": 20
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/login-ledger.sh"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -422,8 +440,23 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/followup-stop-gate.sh",
+            "timeout": 25
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/aside-followup-stop.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-followups.sh stop",
+            "timeout": 12
           }
         ]
       },
@@ -444,6 +477,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/seat-owed-stop.sh",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-wake-stop.sh",
+            "timeout": 20
           }
         ]
       }
@@ -544,6 +587,10 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/wm-build-status-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/row-gate-guard.sh"
           },
           {
@@ -596,6 +643,16 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/sudo-stdin-guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/kill-list-gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
             "timeout": 5
           }
@@ -608,6 +665,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/output-cap.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
+            "timeout": 5
           }
         ]
       },
@@ -676,6 +743,16 @@
         ]
       },
       {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [
           {
@@ -702,26 +779,6 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
-            "timeout": 10
           }
         ]
       }
