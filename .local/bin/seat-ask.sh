@@ -62,6 +62,9 @@ selftest() {
   out="$(env -u SEAT_ASK_TEST SEAT_ASK_TICK_BIN="$T/fake-tick" SEAT_ASK_DRY=1 "$SELF" tst x 2>&1)"; [[ "$out" == *" -p OnFailure=seat-tick-failed@tst.service "* ]]; chk "default OnFailure=seat-tick-failed@tst.service (SEAT_ASK_TEST unset, dry)" $?
   out="$("$SELF" tst x 2>&1)"; [[ "$out" == *" -p WorkingDirectory="* && "$out" != *OnFailure* ]]; chk "SEAT_ASK_TEST=1 + dry: OnFailure defaults to EMPTY (no -p OnFailure=)" $?
   out="$(SEAT_ASK_ONFAILURE= SEAT_ASK_TEST= SEAT_ASK_TICK_BIN= "$SELF" tst x 2>&1)"; [[ "$out" != *OnFailure* ]]; chk "SEAT_ASK_ONFAILURE= (empty) omits -p OnFailure=" $?
+  rm -f "$T/called"; printf 'ibx\tinbox\t-\t0\t0\t-\t-\t-\n' >"$T/seats-inbox.tsv"; : >"$T/ev-called"; printf '#!/bin/bash\necho "ev $*" >"%s/ev-called"\n' "$T" >"$sd/seat-event.sh"; chmod +x "$sd/seat-event.sh"
+  out="$(SEAT_ASK_DRY= CTL_ASK_DRY= PATH="$sd:$PATH" SEATS_TABLE="$T/seats-inbox.tsv" SEAT_ASK_EVENT_BIN="$sd/seat-event.sh" SEAT_ASK_TEST= SEAT_ASK_TICK_BIN= "$SELF" ibx hello there 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$T/called" ] && grep -q '^ev ibx hello there' "$T/ev-called"; chk "inbox-role seat (A392): routed to seat-event.sh, systemd-run not called ($rc: ${out:0:60})" $?
   "$SELF" tst >/dev/null 2>&1; [ $? = 64 ]; chk "missing text: exit 64" $?
   [ "$fail" = 0 ] && echo "SELFTEST PASS" || echo "SELFTEST FAIL"
   return "$fail"
@@ -79,6 +82,13 @@ if [ "${SEAT_ASK_TEST:-}" = 1 ] || { [ -n "${SEAT_ASK_TICK_BIN:-}" ] && [ "$SEAT
   fi
 fi
 awk -F'\t' -v s="$seat" '!/^[[:space:]]*(#|$)/ && $1==s {f=1} END{exit !f}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" || { echo "seat-ask: unknown seat '$seat'" >&2; exit 64; }
+# INBOX SEAT (A392, 11-01): a seat whose seats.tsv role is `inbox` (the aide) has no seat-tick turn to run; an ask to it is an inbox line
+# via seat-event.sh. Running seat-tick.sh for it only hit the interactive-aide guard (exit 4) and raised a false seat-tick-failed@aide alarm per ping.
+role="$(awk -F'\t' -v s="$seat" '!/^[[:space:]]*(#|$)/ && $1==s {print $2; exit}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}")"
+if [ "$role" = inbox ]; then
+  if [ "${SEAT_ASK_DRY:-${CTL_ASK_DRY:-}}" = 1 ]; then echo "seat-event.sh $seat $*"; exit 0; fi
+  exec "${SEAT_ASK_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}" "$seat" "$@"
+fi
 # stamp the text (row d335) and count it; the stamped text is what the seat reads
 seat_stamp_apply "$(seat_stamp_source)" "$*"; text="$SEAT_STAMPED"; typed="$SSP_TYPED"
 dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
