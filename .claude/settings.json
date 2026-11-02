@@ -616,6 +616,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/wmb-agent-search-gate.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -720,6 +725,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/answers-first.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
+            "timeout": 5
           }
         ]
       }
