@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]
+# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]
 #   Moves the whole fleet to another Claude account's setup-token from the store (fleet-token-store.sh). NEVER prints a token.
 #   1. refuse (exit 1) when the store lacks <account>; token.json (fleet-dash) already names it -> `no-op: <account> already current`, exit 0
 #      (a missing token.json = unknown = allowed; seed it with `fleet-token-store.sh current <account>`)
@@ -22,7 +22,7 @@ set +x
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-token-lib.sh"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2; exit 64; }
+usage() { echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2; exit 64; }
 
 TMPS=(); OWN_DIR=""
 cleanup() {
@@ -99,7 +99,7 @@ rotate() {
   done
   ft_valid_account "$acct" || usage
   [[ "$by" =~ ^[A-Za-z0-9._@:+-]+$ ]] || usage
-  case "$trigger" in 429|schedule|hand) ;; *) usage ;; esac
+  case "$trigger" in 429|schedule|hand) ;; *) [[ "$trigger" =~ ^joe-[0-9A-Za-z:._-]+$ ]] || usage ;; esac
   if [ -n "$bu" ]; then buep="$(ft_parse_la_date "$bu")" || { echo "fleet-token-rotate: cannot parse --blocked-until '$bu' as a date" >&2; exit 64; }; fi
 
   [ -f "$FT_STORE/$acct" ] || { echo "fleet-token-rotate: REFUSED: no store entry for '$acct' (fleet-token-store.sh add $acct)" >&2; return 1; }
@@ -188,6 +188,8 @@ selftest() {
     run nosuch --by t --trigger hand; rc=$?
     [ "$rc" = 1 ] && grep -q 'REFUSED' "$e" && [ ! -e "$FT_TOKJSON" ] && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ]; ft_st_chk "missing store entry: refused (exit 1), nothing verified or placed, no token.json" $?
     run acctB --by t --trigger bogus; rc=$?; [ "$rc" = 64 ]; ft_st_chk "bad trigger: usage, exit 64" $?
+    run acctB --by t --trigger reset-0220; rc=$?; [ "$rc" = 64 ] && [ -z "$(fl place)" ]; ft_st_chk "trigger reset-0220: usage, exit 64, nothing placed" $?
+    run acctB --by t --trigger 'joe-x y'; rc=$?; [ "$rc" = 64 ]; ft_st_chk "trigger joe- with a space: usage, exit 64" $?
     run acctB --by t --trigger hand "$c"; rc=$?; [ "$rc" = 64 ] && ! grep -qF "$c" "$e"; ft_st_chk "stray argv: exit 64, not echoed" $?
     [ -z "$(fl place)" ]; ft_st_chk "usage errors placed nothing" $?
 
@@ -266,6 +268,8 @@ selftest() {
     run acctA --by joe --trigger hand --blocked-until "2026-10-26 21:00"; rc=$?
     [ "$rc" = 0 ] && grep -q 'no previous account is known: nothing blocked' "$e" && ! ls "$FT_STATE"/blocked-until-* >/dev/null 2>&1; ft_st_chk "blocked-until: no previous account known -> warning, nothing blocked, rotation still done" $?
     ! grep -rqF "$c" "$o" "$e"; ft_st_chk "stdout and stderr carry no token (blocked-until cases)" $?
+    run acctB --by joe-20261101 --trigger joe-20261101; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .trigger)" = joe-20261101 ] && [ "$(tokj .by)" = joe-20261101 ] && tail -n1 "$FT_ROTLOG" | grep -q ' by=joe-20261101 trigger=joe-20261101 '; ft_st_chk "trigger joe-20261101: accepted, recorded as given in token.json and rotations.log" $?
     ft_st_done fleet-token-rotate
   ); return $?
 }
