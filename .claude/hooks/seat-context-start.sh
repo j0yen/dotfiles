@@ -46,16 +46,24 @@ timers_check() {
   [ -z "$out" ] || { echo "=== TIMERS: user timer(s) without a start trigger (cannot fire after a reboot; fix the drop-in, tests/user-timers-start-trigger.test.sh) ==="; printf '%s\n' "$out" | cut -c1-200; }
   return 0
 }
+# D1 (follow-up tracker, approvals #114): this seat's owed/overdue follow-up ids, then silence when none are owed; `unmeasured (<reason>)` when
+# `wm-decide followups` is absent/failing (followup-lib.sh), never a failure of the hook.
+fu_print() {
+  local lib; lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
+  [ -r "$lib" ] || return 0
+  # shellcheck disable=SC1090
+  . "$lib" 2>/dev/null || return 0
+  followups_line "$1" || echo "follow-ups: unmeasured (${FU_REASON:-unknown})"
+  return 0
+}
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-# A49 D1: the seat's owed follow-ups, one line (never blocks: 8 s cap inside the helper, prints `unknown (<reason>)` on any failure).
-followups_line() { local h; h="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-followups.sh"; [ -x "$h" ] && "$h" line 2>/dev/null; return 0; }
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; owed_lines aide; followups_line; timers_check; exit 0 ;; *) sess="" ;; esac
+case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; owed_lines aide; fu_print aide; timers_check; exit 0 ;; *) sess="" ;; esac
 if [ -z "$sess" ]; then
   [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
 fi
 case "$sess" in rb|r7|ctl) ;; *) exit 0 ;; esac
-export WM_SEAT="$sess"
+fu_print "$sess"
 goal="$HOME/Notes/wiki/goal.md"
 play="$HOME/Notes/wiki/playbooks/fleet-operations.md"
 # M9 stage 1 (decisions/2026-10-27-m9-seat-floor-cut-wwhtbt.md, mechanism 1; OFF unless seat_floor_stage_on 1, i.e. SEAT_FLOOR_STAGE>=1 or floor-stage.json .stage>=1):
@@ -77,7 +85,6 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
     if [ "$src" = resume ] && [ "$(cat "$hf" 2>/dev/null)" = "$h" ]; then
       echo "=== goal.md § Stage unchanged since this seat's last tick (hash $h); playbook ~/Notes/wiki/playbooks/fleet-operations.md · handoff ~/.claude/projects/-home-jsy/memory/handoff-$role-*.md ==="
       owed_lines "$sess"
-      followups_line
       exit 0
     fi
     mkdir -p "${hf%/*}" 2>/dev/null; printf '%s\n' "$h" >"$hf" 2>/dev/null
@@ -99,11 +106,9 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
       fi
     } | head -c 4096
     owed_lines "$sess"
-    followups_line
     exit 0
   fi
 fi
-followups_line
 echo "=== goal.md § Stage (seat $sess; read goal.md after a ff-only pull before acting on it) ==="
 if [ -r "$goal" ]; then
   awk '/^## Stage/{p=1} p&&/^## /&&!/^## Stage/{exit} p' "$goal"

@@ -19,11 +19,7 @@ tr_() { # transcript with a prior turn citing $ID, then a real user msg, then th
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"'"$1"'"}]}}'; } >"$T/tr.jsonl"; }
 stop() { printf '{"transcript_path":"%s","stop_hook_active":%s}' "$T/tr.jsonl" "${1:-false}" | env_ WM_SEAT="${2-rb}" bash "$FU" stop; }
 
-okstub
-out="$(env_ WM_SEAT=rb bash "$START" </dev/null 2>/dev/null)"; rc=$?; echo "D1: $(printf '%s\n' "$out" | grep '^FOLLOWUPS')"
-[ "$rc" = 0 ] && printf '%s' "$out" | grep -q "^FOLLOWUPS rb: owed 105 overdue 2 escalated 1; oldest 5: $ID $ID2$"; chk "SessionStart prints the owed line with the oldest id first" $?
-stub 'sleep 30'; out="$(env_ WM_SEAT=rb bash "$START" </dev/null 2>/dev/null)"; rc=$?
-[ "$rc" = 0 ] && printf '%s' "$out" | grep -q '^FOLLOWUPS rb: unknown (timeout)'; chk "stub timeout: unknown line, exit 0" $?
+# D1 (SessionStart owed line) is printed by main's followup-lib.sh via fu_print in seat-context-start.sh; this test keeps the helper's own `line` mode and the Stop hook.
 stub 'echo not-json'; out="$(env_ WM_SEAT=rb bash "$FU" line)"; printf '%s' "$out" | grep -q 'unknown (bad JSON)'; chk "bad JSON: unknown line" $?
 out="$(env -i PATH=/usr/bin:/bin HOME="$T/home" WM_SEAT=rb bash "$FU" line)"; printf '%s' "$out" | grep -q 'unknown (wm-decide not found)'; chk "missing binary: unknown line" $?
 
