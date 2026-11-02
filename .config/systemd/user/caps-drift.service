@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet caps registry: compare every enforced_at value on this host (P28 mechanism 3, report only)
+# runs on every node the tree installs to (carbon, redbaron, ryzen7, orch); rows for other hosts are skipped by the script
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=120
+ExecStartPre=/usr/bin/mkdir -p %h/.cache/fleet-dash
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/caps-drift.sh --status-json %h/.cache/fleet-dash/caps-drift.json"

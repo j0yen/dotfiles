@@ -1,0 +1,11 @@
+[Unit]
+Description=M9 seat floor probe every 10 min (OnBootSec AND OnUnitActiveSec: an empty reset wipes OnBootSec, five-whys 2026-10-24)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

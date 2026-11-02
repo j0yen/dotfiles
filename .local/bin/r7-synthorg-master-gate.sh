@@ -72,7 +72,7 @@ lintclone() {  # lintclone <sha> <dir>: shallow clone at <sha> + uv sync + clock
   clocklint "$D"
 }
 clockonly() {  # clockonly <sha>: the same-sha tick; status, parts and notify stay untouched
-  local D; D=$(mktemp -d "$HOME/.cache/r7-smg.XXXX") || return 0
+  local C=${XDG_CACHE_HOME:-$HOME/.cache} D; mkdir -p "$C" && D=$(mktemp -d "$C/r7-smg.XXXX") || { echo "r7-smg: clockonly cannot make tmpdir under $C; clock NOT updated" >&2; return 1; }  # degraded read; the sole caller ignores rc
   if lintclone "$1" "$D"; then clockfrom "$D"; log "clock-only $(cat "$D/promise.clock.out" 2>/dev/null | grep -o 'promise-lint-clock:.*' | tail -1)"; else log "clock-only: clone/sync failed, clock kept"; fi
   rm -rf "$D"; return 0
 }
@@ -224,6 +224,7 @@ main() {
 }
 selftest() {
   local S fail=0; S=$(mktemp -d); OUT=$S/out.json; LOG=$S/log; NOTIFY=$S/notify; ST=$S/st; BASEDIR=$S/nobase; mkdir -p "$ST" "$BASEDIR"
+  mkdir -p "$S/home"; export HOME=$S/home XDG_CACHE_HOME=$S/home/.cache   # hermetic: .cache deliberately not created, nothing below reaches the real HOME
   chk() { if eval "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
   decide aaaa 0 "all=0"; chk '[ "$(prev status)" = green ] && [ ! -s "$NOTIFY" ]' "first green -> saved, no notify"
   decide bbbb 1 "ruff=1"; chk '[ "$(prev status)" = red ] && grep -q "RED master bbbb" "$NOTIFY"' "red -> notify"
@@ -265,12 +266,17 @@ selftest() {
   decide gggg 0 "all=0"; : > "$NOTIFY"; local before; before=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("clock",None); print(json.dumps(d,sort_keys=True))' "$OUT")
   git() { printf 'gggg\trefs/heads/master\n'; }
   lintclone() { printf 'promise-lint-clock: surface_age_days=3 expired_allow=1 expired_keys=k1\n' > "$2/promise.clock.out"; echo 1 > "$2/expected"; return 0; }
-  main
+  XDG_CACHE_HOME=$S/nope/.cache main
   chk '[ "$(prev status)" = green ] && [ "$(prev sha)" = gggg ] && [ ! -s "$NOTIFY" ] && [ "$(python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); c=d.pop(\"clock\"); print(json.dumps(d,sort_keys=True)); assert c[\"expired_keys\"]==[\"k1\"] and c[\"ts\"]" "$OUT")" = "$before" ]' "clock: same-sha tick rewrites ONLY clock (sha/status/parts/ts/notify untouched)"
+  chk '[ -d "$S/nope/.cache" ] && [ ! -e "$S/home/.cache" ]' "clock: chk (a) XDG_CACHE_HOME=\$S/nope/.cache, nothing pre-created -> mkdir -p made it under the mktemp root, clock written"
   lintclone() { printf 'no clock line here\n' > "$2/promise.clock.out"; echo 0 > "$2/expected"; return 1; }
   main; chk 'python3 -I -c "import json,sys; c=json.load(open(sys.argv[1]))[\"clock\"]; assert c[\"expired_keys\"]==[\"k1\"]" "$OUT"' "clock: clone/sync failure on a same-sha tick keeps the previous clock"
   lintclone() { printf 'promise lint: ok (exit 1 ignored)\n' > "$2/promise.clock.out"; echo 1 > "$2/expected"; return 0; }
   main; chk 'python3 -I -c "import json,sys; d=json.load(open(sys.argv[1])); c=d[\"clock\"]; assert c[\"line_present\"] is False and c[\"expected\"] is True and d[\"status\"]==\"green\"" "$OUT"' "clock: line absent on a same-sha tick -> line_present=false, expected=true, status still green"
+  # chk (b): an unusable cache parent (a regular file) -> stderr line, clock unchanged (never a silent pass)
+  : > "$S/afile"; lintclone() { printf 'promise-lint-clock: surface_age_days=9 expired_allow=9 expired_keys=zz\n' > "$2/promise.clock.out"; echo 1 > "$2/expected"; return 0; }
+  before=$(python3 -I -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["clock"],sort_keys=True))' "$OUT"); err=$(XDG_CACHE_HOME=$S/afile main 2>&1 >/dev/null)
+  chk 'echo "$err" | grep -q "clockonly cannot make tmpdir under $S/afile; clock NOT updated" && [ "$(python3 -I -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[\"clock\"],sort_keys=True))" "$OUT")" = "$before" ]' "clock: unusable cache dir (regular file) -> stderr line, clock unchanged (chk b)"
   unset -f git lintclone
   CLK='{"line_present":true,"ts":"x"}'; decide hhhh 0 "all=0"; unset CLK
   chk '[ "$(python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))[\"clock\"][\"ts\"])" "$OUT")" = x ]' "clock: decide saves the clock passed in CLK"
