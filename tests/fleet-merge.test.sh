@@ -27,7 +27,9 @@ SH
 chmod +x "$T/gh" "$T/wmd" "$T/rbm"
 export FLEET_MERGE_GH="$T/gh" WM_DECIDE_BIN="$T/wmd" FLEET_MERGE_RB_MERGE="$T/rbm" FLEET_MERGE_STATE="$T/state"
 export FLEET_MERGE_REPOS="j0yen/dotfiles" STUB_PRS="$T/prs.json" STUB_ROWS="$T/rows.json" STUB_CALLS="$T/calls" STUB_GHARGS="$T/ghargs"
+. "$here/.local/lib/merge-verdict-grammar.sh"   # fixture rows are built with mvg_format: no hand-typed merge-verdict literal here
 H1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; H2="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+mk() { mvg_format "j0yen/dotfiles" "$1" "$2" "aide-verifier-v$1"; }   # mk <pr> <40hex> -> canonical prefix
 reset() { rm -rf "$T/state" "$T/calls"; : > "$T/calls"; : > "$T/ghargs"; unset STUB_RC; }
 row() { # id ts via what
   printf '{"id":"%s","ts":"%s","via":"%s","agent":"%s","kind":"verdict","what":"%s","evidence":""}' "$1" "$2" "$3" "$3" "$4"
@@ -37,7 +39,7 @@ receipt() { python3 -I -c 'import json,sys; print(json.loads(open(sys.argv[1]).r
 # (a) one PR with a CONFIRM row
 reset
 echo "[{\"number\":7,\"headRefOid\":\"$H1\",\"title\":\"t\"}]" > "$T/prs.json"
-echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM looks good")]" > "$T/rows.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "$(mk 7 $H1) looks good")]" > "$T/rows.json"
 out="$(bash "$script")"
 [ "$(cat "$T/calls")" = "d-1 7 j0yen/dotfiles" ] && ok a-call-args || bad a-call-args
 printf '%s\n' "$out" | grep -qx 'MERGED j0yen/dotfiles#7' && ok a-merged-line || bad a-merged-line
@@ -45,14 +47,14 @@ printf '%s\n' "$out" | grep -qx 'MERGED j0yen/dotfiles#7' && ok a-merged-line ||
 
 # (b) a newer CORRECT row on the same head blocks
 reset
-echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM ok"),$(row d-2 2026-11-01T02:00:00+00:00 controller "dotfiles#7 head aaaaaaaa CORRECT no")]" > "$T/rows.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "$(mk 7 $H1) ok"),$(row d-2 2026-11-01T02:00:00+00:00 controller "dotfiles#7 head aaaaaaaa CORRECT no")]" > "$T/rows.json"
 out="$(bash "$script")"
 [ ! -s "$T/calls" ] && ok b-not-called || bad b-not-called
 [ "$(receipt skipped)" = 1 ] && ok b-skipped || bad b-skipped
 
 # (c) rb-merge rc 2 with a G3 stderr line
 reset
-echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM ok")]" > "$T/rows.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "$(mk 7 $H1) ok")]" > "$T/rows.json"
 rc=0; STUB_RC=2 bash "$script" > "$T/out.txt" || rc=$?
 [ "$rc" = 0 ] && ok c-tick-rc0 || bad c-tick-rc0
 [ "$(receipt refused_by_gate)" = "{'G3': 1}" ] && ok c-refused-G3 || bad c-refused-G3
@@ -67,14 +69,14 @@ printf '%s\n' "$out" | grep -q '^DRY-RUN' && ok d-dry-run-prints || bad d-dry-ru
 # (e) FLEET_MERGE_MAX=1, two eligible PRs: only the older merges
 reset
 echo "[{\"number\":9,\"headRefOid\":\"$H2\",\"title\":\"t\"},{\"number\":7,\"headRefOid\":\"$H1\",\"title\":\"t\"}]" > "$T/prs.json"
-echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM ok"),$(row d-3 2026-11-01T01:30:00+00:00 verifier "dotfiles#9 head bbbbbbbb CONFIRM ok")]" > "$T/rows.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "$(mk 7 $H1) ok"),$(row d-3 2026-11-01T01:30:00+00:00 verifier "$(mk 9 $H2) ok")]" > "$T/rows.json"
 FLEET_MERGE_MAX=1 bash "$script" > /dev/null
 [ "$(cat "$T/calls")" = "d-1 7 j0yen/dotfiles" ] && ok e-only-older || bad e-only-older
 
 # (f) gh pr list is called with --limit 500
 reset
 echo "[{\"number\":7,\"headRefOid\":\"$H1\",\"title\":\"t\"}]" > "$T/prs.json"
-echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM ok")]" > "$T/rows.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "$(mk 7 $H1) ok")]" > "$T/rows.json"
 bash "$script" > /dev/null
 grep -q -- '--limit 500' "$T/ghargs" && ok f-gh-limit-500 || bad f-gh-limit-500
 
@@ -88,6 +90,17 @@ printf '%s\n' "$out" | grep -q 'skip: confirm-without-head j0yen/dotfiles#7' && 
 # (h) real wm-decide list --json shape (pretty-printed array): observe row ignored, constructed CONFIRM found
 reset
 echo "[{\"number\":7,\"headRefOid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"title\":\"t\"}]" > "$T/prs.json"
-STUB_ROWS="$here/tests/fixtures/wm-decide-list-sample.json" bash "$script" > /dev/null
+HC="cccccccccccccccccccccccccccccccccccccccc"
+python3 -I -c 'import json,sys; rows=json.load(open(sys.argv[1])); [r.update(what=sys.argv[2]+" diff matches the PR title") for r in rows if r.get("kind")=="verdict"]; json.dump(rows,open(sys.argv[3],"w"))' "$here/tests/fixtures/wm-decide-list-sample.json" "$(mk 7 $HC)" "$T/h-rows.json"
+STUB_ROWS="$T/h-rows.json" bash "$script" > /dev/null
 [ "$(cat "$T/calls")" = "d-20261101-014500-verifier-dotfiles-7-c0de 7 j0yen/dotfiles" ] && ok h-fixture-confirm-found || bad h-fixture-confirm-found
+# (i) a row in the old `repo#N head <8hex> CONFIRM` shape is gated, not merged
+reset
+echo "[{\"number\":7,\"headRefOid\":\"$H1\",\"title\":\"t\"}]" > "$T/prs.json"
+echo "[$(row d-1 2026-11-01T01:00:00+00:00 verifier "dotfiles#7 head aaaaaaaa CONFIRM looks good")]" > "$T/rows.json"
+out="$(bash "$script")"
+[ ! -s "$T/calls" ] && ok i-old-shape-not-called || bad i-old-shape-not-called
+printf '%s\n' "$out" | grep -q 'skip: confirm-not-canonical j0yen/dotfiles#7' && ok i-old-shape-reason || bad i-old-shape-reason
+[ "$(receipt merged)" = 0 ] && ok i-old-shape-not-merged || bad i-old-shape-not-merged
+
 [ "$fail" = 0 ] && echo "ALL PASS fleet-merge" || { echo "FAILED fleet-merge"; exit 1; }
