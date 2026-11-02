@@ -4,7 +4,8 @@
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
-# spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate).
+# spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; runs last, just before `claude -p`; shares exit 78 with the model gate, told apart by the REFUSED text).
+# env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read).
 # fable-verdict 80 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
 # covered, BY SHA256 OF ITS BYTES, by the newest decisions row carrying `sha256:<hex>` in its evidence, which must be kind=verdict, model fable, final
 # verdict AGREE|AGREE-WITH-EDITS (.local/lib/rb-fable-gate.py); a prompt citing no spec needs a `Hatch: d-<id>` NO-SPEC-SPAWN decision row. This gate
@@ -62,6 +63,31 @@ if [ "$ncited" = 0 ]; then
   hatch_id=$(python3 -I "$gate_py" hatch "$pf" "$fg_db" 2>&1) || fg_refuse "$pf" "no-spec${hatch_id:+ ($(printf '%s\n' "$hatch_id" | head -n 1))}"
   EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n HATCH no-spec $hatch_id" || true
 fi
+# room gate (rcr, ctl 375e / Fable DISAGREE fd8c: two coder spawns cited no ROOM check): need = peak * (1 + other active rb-launch units), asked of
+# carbon-room.sh (MemAvailable - need - 3072 reserve >= 0). peak = RB_ROOM_PEAK_MB, else the MAX `memory peak` over the last 20 finished
+# rb-launch-* units in the user journal (>= 5 lines; fewer = floored at 1500 MB; none = 1500). Fails CLOSED: only rc 0 + a `room ok|n/a:` first line allows.
+room_bin="${RB_ROOM_BIN:-$HOME/.local/bin/carbon-room.sh}"
+if [ -n "${RB_ROOM_PEAK_MB:-}" ]; then peak_mb=$RB_ROOM_PEAK_MB; peak_src=env
+else
+  peaks=$(timeout 20 journalctl --user -u 'rb-launch-*' -g 'memory peak' -o cat --since -7d --no-pager 2>/dev/null | grep -E 'Consumed .* memory peak' | tail -n 20 \
+    | sed -n -E 's/^.*Consumed .*[ ,]([0-9.]+)([BKMGT]) memory peak.*$/\1 \2/p' \
+    | awk '{v=$1; u=$2; m=(u=="B")?v/1048576:(u=="K")?v/1024:(u=="M")?v:(u=="G")?v*1024:v*1048576; c=int(m); if (c<m) c++; if (c<1) c=1; print c}')
+  k=$(printf '%s\n' "$peaks" | grep -c .); jmax=$(printf '%s\n' "$peaks" | grep . | sort -n | tail -n 1)
+  if [ "$k" -ge 5 ]; then peak_mb=$jmax; peak_src="journal(n=$k)"
+  elif [ "$k" -ge 1 ]; then peak_mb=$(( jmax > 1500 ? jmax : 1500 )); peak_src="journal(n=$k)+floor"
+  else peak_mb=1500; peak_src=default; fi
+fi
+if act_out=$(timeout 20 systemctl --user list-units 'rb-launch-*' --state=active --no-legend --plain 2>/dev/null); then
+  n_active=$(printf '%s\n' "$act_out" | awk -v self="rb-launch-$n.service" '$1 ~ /^rb-launch-.*\.service$/ && $1 != self' | grep -c .); act_txt=$n_active
+else n_active=0; act_txt='?'; fi
+need_mb=$(( peak_mb * (1 + n_active) ))
+room_out=$(CARBON_ROOM_CALLER="rb-run-coder:$n" "$room_bin" "$need_mb" 2>&1); rc_r=$?
+room_l1=$(printf '%s\n' "$room_out" | head -n 1)
+room_tail="need_mb=$need_mb peak_mb=$peak_mb peak_src=$peak_src active=$act_txt"
+if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
+  echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
+fi
+echo "$room_l1 $room_tail" > "$D/$n.room"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ROOM $room_l1 $room_tail" || true
 claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc
