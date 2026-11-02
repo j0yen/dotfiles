@@ -33,7 +33,7 @@
 #   suite-dirty       the gating log DIRTY != 0          suite-red   the gating log EXIT != 0
 #   replay-log        another attached block's CMD is only cat/echo/printf/tee/true/:/head/tail/sed -n joined by ; && || |, or wrapped in bash -c / sh -c (secondary denylist; an extra `gh pr checks` block passes)
 #   trailer-missing   an attached block lacks one of the HEAD/CMD/DIRTY/EXIT trailer lines in the stored tail
-#   pre-gate-error    anything else (DB or gate root unreadable, row missing, not a MERGE-OK for this repo#pr, python failure): fail closed, any error in this block exits 6
+#   pre-gate-error    anything else (DB or gate root unreadable, row missing, no canonical merge-verdict prefix for this repo#pr (.local/lib/merge-verdict-grammar.sh), python failure): fail closed, any error in this block exits 6
 # The only route around suite-unknown is a hand `gh pr merge` logged as a DECISION row, never a flag here. gh contract (shared with vtg2): `gh pr merge` is never called on a refusal; read-only gh calls are allowed.
 # Exit codes: 3 attribution/oid, 6 pre-gate A, 64 usage, else the gate's (2) or gh's own.
 set -euo pipefail
@@ -95,8 +95,9 @@ trap 'rc=$?; if [ "$PG_ACTIVE" = 1 ]; then echo "rb-merge.sh: pre-gate-error $v:
 PG_PY="$(cat <<'PY'
 import hashlib, importlib, os, re, shlex, sqlite3, sys, urllib.parse
 sys.dont_write_bytecode = True
-root, db_path, vid, repo, pr, state_root = sys.argv[1:7]
+root, db_path, vid, repo, pr, state_root, libdir = sys.argv[1:8]
 sys.path.insert(0, root)
+sys.path.insert(0, libdir)
 mg = importlib.import_module("wm_decide.mergegate")   # the live parse_attachments, never a copy
 TRAILER = ("HEAD", "CMD", "DIRTY", "EXIT")
 SIMPLE = {"cat", "echo", "printf", "tee", "true", ":", "head", "tail"}
@@ -145,15 +146,18 @@ row = db.execute("SELECT what, evidence FROM decisions WHERE id = ?", (vid,)).fe
 if row is None:
     refuse("pre-gate-error", "no decisions row %s in %s" % (vid, db_path))
 what, evidence = row[0] or "", row[1] or ""
-if not re.search(r"(?:^|\s)MERGE-OK %s#%s(?:\s|$)" % (re.escape(repo), re.escape(pr)), what):
-    refuse("pre-gate-error", "the row's what holds no `MERGE-OK %s#%s`" % (repo, pr))
-commits = re.findall(r"(?:^|\s)COMMIT=(\S*)", what)
-if len(commits) != 1 or not re.fullmatch(r"[0-9a-fA-F]{40}", commits[0]):
-    refuse("head-mismatch", "the row's what must hold exactly one COMMIT=<40 hex> (found %d)" % len(commits))
-commit = commits[0].lower()
-names = re.findall(r"(?:^|\s)agent=verifier:(?:aide|rb|r7)-verifier-([a-z0-9][a-z0-9-]{0,30})(?=\s|$)", what)
-if len(names) != 1:
-    refuse("suite-unknown", "the row's what names no single agent=verifier:<agent>-verifier-<name> (no launcher record to read the suite from)")
+mvg = importlib.import_module("merge_verdict_grammar")   # the ONE merge-verdict grammar (.local/lib/merge-verdict-grammar.sh exports its patterns)
+why, got = mvg.parse_ex(what)
+if why == "prefix":
+    refuse("pre-gate-error", "the row's what holds no canonical `<MERGE-OK word> %s#%s COMMIT=<40 hex> agent=verifier:...` prefix: %s" % (repo, pr, got))
+if why == "commit":
+    refuse("head-mismatch", got)
+if why == "agent":
+    refuse("suite-unknown", got + " (no launcher record to read the suite from)")
+g_owner, g_name, g_pr, commit, agent_tok = got
+if "%s/%s" % (g_owner, g_name) != repo or g_pr != pr:
+    refuse("pre-gate-error", "the row names %s/%s#%s, not %s#%s" % (g_owner, g_name, g_pr, repo, pr))
+names = [agent_tok.split("-verifier-", 1)[1]]
 sdir = os.path.join(state_root, names[0])
 try:
     meta = open(os.path.join(sdir, "meta"), encoding="utf-8").read().splitlines()
@@ -192,8 +196,11 @@ else
   pg_w="$(command -v "$WM_DECIDE")" || pg_refuse pre-gate-error "$WM_DECIDE is not on PATH (no gate root to import parse_attachments from)"
   pg_root="$(dirname "$(dirname "$(readlink -f "$pg_w")")")"
 fi
+mvg_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
+[ -r "$mvg_lib/merge-verdict-grammar.sh" ] && [ -r "$mvg_lib/merge_verdict_grammar.py" ] || pg_refuse pre-gate-error "the merge-verdict grammar lib is missing under $mvg_lib"
+. "$mvg_lib/merge-verdict-grammar.sh"   # exports the MVG_* patterns the pre-gate helper reads
 PG_ACTIVE=1
-pg_out="$(python3 -I -B -c "$PG_PY" "$pg_root" "$PG_DB" "$v" "$repo" "$pr" "$PG_STATE" 2>&1)" \
+pg_out="$(python3 -I -B -c "$PG_PY" "$pg_root" "$PG_DB" "$v" "$repo" "$pr" "$PG_STATE" "$mvg_lib" 2>&1)" \
   || pg_refuse pre-gate-error "helper failed: $(printf '%s\n' "$pg_out" | tail -n1 | cut -c1-200)"
 pg_line="$(printf '%s\n' "$pg_out" | tail -n1)"
 case "$pg_line" in
@@ -207,6 +214,9 @@ wmd_fetch "$WM_DECIDE" || { echo "rb-merge.sh: cannot read the verdict row $v; r
 row="$(wmd_pick "$v")" || { echo "rb-merge.sh: verdict row $v could not be selected; refusing to merge (VIA-UNCHECKED)" >&2; exit 3; }
 via="$(wmd_field "$row" via)"
 [ "$via" = verifier ] || { echo "VIA-NOT-VERIFIER verdict=$v via=$via" >&2; exit 3; }
+# a row that carries structured repo / pr fields must agree with the target byte-for-byte (tightening; the ledger rows seen so far carry neither)
+row_repo="$(wmd_field "$row" repo)"; row_pr="$(wmd_field "$row" pr)"
+{ [ -z "$row_repo" ] || [ "$row_repo" = "$repo" ]; } && { [ -z "$row_pr" ] || [ "$row_pr" = "$pr" ]; } || pg_refuse pre-gate-error "the row's structured repo/pr ($row_repo#$row_pr) differ from the target $repo#$pr"
 
 pr_meta="$("$GH" pr view "$pr" --repo "$repo" --json title,body)"   # read ONCE, before the gate; set -e: an unreadable PR stops here
 adv_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"

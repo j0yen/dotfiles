@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fleet-merge.sh [--dry-run] [--repo owner/name]... -- timed merge executor (A13 MVP, approvals #190).
-# For every open PR whose newest controller/verifier CONFIRM verdict row names the PR's live head, runs rb-merge.sh <verdict-id> <pr> <repo>
+# For every open PR whose newest controller/verifier merge-verdict row (grammar: .local/lib/merge-verdict-grammar.sh) names the PR's live headRefOid in full, runs rb-merge.sh <verdict-id> <pr> <repo>
 # (rb-merge.sh runs the merge gate itself; a refusal is recorded, never fatal). Oldest PR first per repo, at most FLEET_MERGE_MAX (default 5) merges per tick.
 # A newer CORRECT / DISAGREE / MERGE-BLOCK / ADV-BLOCK row on the same PR (and head, when it names one) blocks the PR. No row = skip no-confirm.
 # One JSON receipt line per tick in $FLEET_MERGE_STATE/ticks.jsonl; `MERGED <repo>#<pr>` on stdout per merge (journalctl | grep -c MERGED).
@@ -20,6 +20,7 @@
 # PRODUCER G12 hand-PR reference (gate-fix daemon run or revert PR) in the PR body MISSING A35-hand-pr-refs-producer (rb)
 set -euo pipefail
 
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/merge-verdict-grammar.sh"   # exports MVG_LIB_DIR + the MVG_* patterns plan.py reads
 GH="${FLEET_MERGE_GH:-gh}"
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 RB_MERGE="${FLEET_MERGE_RB_MERGE:-$HOME/.local/bin/rb-merge.sh}"
@@ -48,7 +49,9 @@ gated=0 merged=0 skipped=0 errors=0
 
 # plan.py <rows.json> <prs.json> <repo>: one line per open PR, oldest (lowest number) first: "<pr>\t<verdict-id>" or "<pr>\tskip"
 cat > "$work/plan.py" <<'PYEOF'
-import json, re, sys
+import json, os, re, sys
+sys.path.insert(0, os.environ["MVG_LIB_DIR"])
+import merge_verdict_grammar as mvg   # the ONE merge-verdict grammar: a CONFIRM candidate is a row this parse accepts, nothing else
 rows = json.load(open(sys.argv[1]))
 if isinstance(rows, dict):
     rows = rows.get("rows") or rows.get("decisions") or []
@@ -56,8 +59,8 @@ rows = [r for r in rows if isinstance(r, dict) and r.get("id")]
 prs = json.load(open(sys.argv[2]))
 repo = sys.argv[3]
 name = repo.split("/")[-1]
+# block rows (and a legacy-shaped confirm, only to name it in the skip reason) keep the loose reading: a block must fail closed on any spelling
 PRE = re.compile(r"^\s*[`*_]*((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+)#(\d+)\s+head\s+([0-9a-fA-F]{7,40})\s+(.*)$", re.S)
-CONFIRM = ("CONFIRM", "MERGE-OK")
 BLOCK = ("CORRECT", "DISAGREE", "MERGE-BLOCK", "ADV-BLOCK")
 def word(text):
     t = (text or "").split(None, 1)
@@ -71,43 +74,57 @@ def claim(r):
             return None
         return int(m.group(2)), m.group(3).lower(), word(m.group(4))
     m = re.search(r"\b" + re.escape(name) + r"#(\d+)\b", what)
-    c = re.search(r"COMMIT=([0-9a-fA-F]{7,40})", what + " " + (r.get("evidence") or ""))
-    if m:
-        return int(m.group(1)), (c.group(1).lower() if c else ""), word(what)
+    if m:   # a block row with no `head <sha>` form names no head: it blocks the PR until a newer merge-verdict row on the live head
+        return int(m.group(1)), "", word(what)
     return None
 def by_ctl(r):
     s = ((r.get("via") or "") + " " + (r.get("agent") or "")).lower()
     return any(k in s for k in ("verifier", "controller", "ctl"))
-cl = []
+def structured_ok(r, o, n, pn):
+    """a row that carries structured repo / pr fields must agree with its own parsed ref byte-for-byte"""
+    rr, rp = r.get("repo"), r.get("pr")
+    return (not rr or str(rr) == "%s/%s" % (o, n)) and (not rp or str(rp) == str(pn))
+cl = []   # (ts, id, kind, pr, head) kind in confirm | block | noncanon | nohead
 for r in rows:
     if r.get("kind") != "verdict" or not by_ctl(r):
         continue
+    ts, what = r.get("ts") or "", r.get("what") or ""
+    p = mvg.parse(what)
+    if p:
+        o, n, pn, commit, _agent = p
+        if "%s/%s" % (o, n) == repo and structured_ok(r, o, n, pn):
+            cl.append((ts, r["id"], "confirm", int(pn), commit))
+        continue
     c = claim(r)
-    if c:
-        cl.append((r.get("ts") or "", r["id"], c))
+    if not c:
+        continue
+    pn, h, w = c
+    if w in BLOCK:
+        cl.append((ts, r["id"], "block", pn, h))
+    elif w in ("CONFIRM", "MERGE-OK"):
+        cl.append((ts, r["id"], "nohead" if not h else "noncanon", pn, h))
 cl.sort()
 for p in sorted(prs, key=lambda p: int(p["number"])):
     n, head = int(p["number"]), (p.get("headRefOid") or "").lower()
-    sel, blocked, nohead = None, False, False
-    for ts, rid, (pn, h, w) in cl:
+    sel, blocked, nohead, noncanon = None, False, False, False
+    for ts, rid, kind, pn, h in cl:
         if pn != n:
             continue
-        if not h:
-            if w in CONFIRM:
-                nohead = True
-            elif w in BLOCK:
+        if kind == "nohead":
+            nohead = True
+        elif kind == "block":
+            if not h or (head and (head.startswith(h) or h.startswith(head))):
                 blocked = True
-            continue
-        if not head or (not head.startswith(h) and not h.startswith(head)):
-            continue
-        if w in CONFIRM:
+        elif kind == "noncanon":
+            noncanon = True
+        elif kind == "confirm" and head and h == head:   # a short sha is not a head: byte-equality with the live headRefOid
             sel, blocked = rid, False
-        elif w in BLOCK:
-            blocked = True
     if sel and not blocked:
         print("%d\t%s" % (n, sel))
     elif nohead and not sel:
         print("%d\tskip-nohead" % n)
+    elif noncanon and not sel:
+        print("%d\tskip-noncanon" % n)
     else:
         print("%d\tskip" % n)
 PYEOF
@@ -121,6 +138,9 @@ for repo in "${repos[@]}"; do
     [ -n "$pr" ] || continue
     if [ "$vid" = skip-nohead ]; then
       echo "skip: confirm-without-head $repo#$pr"; skipped=$((skipped + 1)); continue
+    fi
+    if [ "$vid" = skip-noncanon ]; then
+      echo "skip: confirm-not-canonical $repo#$pr"; skipped=$((skipped + 1)); continue
     fi
     if [ "$vid" = skip ]; then
       echo "skip no-confirm $repo#$pr"; skipped=$((skipped + 1)); continue

@@ -74,6 +74,7 @@ set -u
 export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 shopt -u patsub_replacement 2>/dev/null
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+. "$(dirname "$SELF")/../lib/merge-verdict-grammar.sh"   # the ONE merge-verdict grammar (the launch lint parses the rendered verdict --what through it)
 AGENT="${AIDE_VERIFIER_AGENT:-aide}"
 ROOT="${AIDE_VERIFIER_DIR:-$HOME/.local/state/aide-verifier}"
 # the fleet-wide gate: fixed lock path + fixed numbers, independent of ROOT and of every seat env (vcap); the selftest alone may override
@@ -516,6 +517,10 @@ cmd_launch() {
   [ -n "$what" ] || die 2 "lint: the rendered prompt has no verdict --what \"...\""
   [[ "$what" == *"COMMIT=$HEAD"* ]] || die 2 "lint: the verdict --what lacks COMMIT=$HEAD"
   [[ "$what" == *"agent=verifier:$AGENT-verifier-$NAME"* ]] || die 2 "lint: the verdict --what lacks agent=verifier:$AGENT-verifier-$NAME"
+  local mv_w mv_p
+  mv_w="${what#--what \"}"; mv_w="${mv_w%\"}"
+  mv_p="$(mvg_parse "$mv_w" 2>&1)" || die 2 "lint: the verdict --what is not a canonical merge-verdict row: $mv_p"
+  [ "$mv_p" = "${REPO%%/*} ${REPO#*/} $PR ${HEAD,,} $AGENT-verifier-$NAME" ] || die 2 "lint: the verdict --what parses to '$mv_p', not '${REPO%%/*} ${REPO#*/} $PR ${HEAD,,} $AGENT-verifier-$NAME'"
   # ---- self-unit (AVL C3/X1): a launch run inside the unit it would start can never succeed; the own unit is not "another" verifier ----
   local own own_noted=0 target="$AGENT-verifier-$NAME.service" raw
   own="$(own_unit)"   # AVL-OWN
