@@ -204,7 +204,7 @@ STEPS
    d. NEVER attach an artifact (same sha256) that is on a FAIL/BLOCK row to a PASS row: re-run and attach the new log. If the bundle shows a real step failure (`EXIT=<n>` with n>0, FAILED), do not record a PASS unless you also pass `--reconciles "<why it is right>"`.
    e. FOLLOW-UPS: if the controller named required follow-up rows or checks in your launch notes, cite their ids in the what line (`follow-up=<id>`); never claim one you did not see.
 6. ONE verdict row:
-   wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach {{DIR}}/bundle.log --quote "<verbatim line 1>" [--quote "<verbatim line 2>"] --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: scope=<full|the -k/subset you ran>; fresh clone == head; <a count copied from one log line: write it as N passed (or ran=N pass=N) ONLY with an N that a log line shows as 'N passed', 'pass=N' or 'Ran N tests'; merge-gate G4 refuses any count claim it cannot find in the log, so if the log has no such line write 'all pass, 0 FAIL' and no number> via wm-verify-run ({{TOKEN}}); attribution 0/0{{LOGNOTE}}" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
+   wm-decide record --agent {{AGENT}} --via verifier --model sonnet --kind verdict --gates {{GATED}} --attach {{DIR}}/bundle.log --quote "<verbatim line 1>" [--quote "<verbatim line 2>"] --target carbon --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} agent=verifier:{{AGENT}}-verifier-{{NAME}} scope=suite recorded_by=unit:{{AGENT}}-verifier-{{NAME}} session=own-headless-claude-p: scope=<full|the -k/subset you ran>; fresh clone == head; <a count copied from one log line: write it as N passed (or ran=N pass=N) ONLY with an N that a log line shows as 'N passed', 'pass=N' or 'Ran N tests'; merge-gate G4 refuses any count claim it cannot find in the log, so if the log has no such line write 'all pass, 0 FAIL' and no number> via wm-verify-run ({{TOKEN}}); attribution 0/0{{LOGNOTE}}" --why "aide-verifier.sh (DECISION 0e71): the verifier is its own session" --evidence "<log path>" --reverse-text "none (verdict row)"
    The 'ungradable:' line is informational; report any refusal verbatim.
 
 HARD CONSTRAINTS: never kill by pattern: no pkill, no killall, no `kill` with a -f or name/pattern argument, no `pgrep|xargs kill` (a pkill -f 'wm-verify-run' hit every seat's suite on carbon, 10-24 11:05 PM); you may kill only PIDs you started yourself, or stop your own unit with `systemctl --user stop {{AGENT}}-verifier-{{NAME}}`; never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
@@ -805,7 +805,7 @@ F
   [ "$rc" = 2 ] && [[ "$out" == *"--gated"* ]]; chk "lint: bad gated id -> exit 2" $?
   out="$("$SELF" launch bad3 --repo j0yen/dotfiles --pr 7 --head "$H" --gated "$G" --token '  ' --suite s 2>&1)"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"token"* ]]; chk "lint: empty token -> exit 2" $?
-  printf 'target {{REPO}}#{{PR}}\nwm-decide record --what "MERGE-OK {{REPO}}#{{PR}} agent=verifier:aide-verifier-{{NAME}} ok" --gates {{GATED}}\n' >"$T/tpl-nocommit"
+  printf 'target {{REPO}}#{{PR}}\nwm-decide record --what "MERGE-OK {{REPO}}#{{PR}} agent=verifier:aide-verifier-{{NAME}} scope=suite ok" --gates {{GATED}}\n' >"$T/tpl-nocommit"
   out="$(AIDE_VERIFIER_TEMPLATE="$T/tpl-nocommit" L bad4 "${A[@]}" --head "$H")"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"lacks COMMIT="* ]]; chk "lint: a --what lacking COMMIT= -> exit 2" $?
   printf 'wm-decide record --what "MERGE-OK {{REPO}}#{{PR}} COMMIT={{HEAD}} by someone" --gates {{GATED}}\n' >"$T/tpl-noagent"
@@ -1108,7 +1108,7 @@ F
   grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, CPUWeight, Nice, IOWeight, HOME, PATH, launch.sh" $?
   grep -q "$H" "$D/prompt.md" && grep -q "$G" "$D/prompt.md" && grep -qF 'tests/*.test.sh EXIT=0' "$D/prompt.md" && grep -q 'HARD CONSTRAINTS' "$D/prompt.md" \
     && grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$D/prompt.md" && grep -q 'wm-verify-run' "$D/prompt.md" && grep -qF '$(not run)' "$D/prompt.md" \
-    && grep -q -- "--what \"MERGE-OK j0yen/dotfiles#7 COMMIT=$H agent=verifier:aide-verifier-ok1 recorded_by=unit:aide-verifier-ok1 session=own-headless-claude-p" "$D/prompt.md" \
+    && grep -q -- "--what \"MERGE-OK j0yen/dotfiles#7 COMMIT=$H agent=verifier:aide-verifier-ok1 scope=suite recorded_by=unit:aide-verifier-ok1 session=own-headless-claude-p" "$D/prompt.md" \
     && grep -qF "wm-verify-run 'bash tests/run.sh; echo \"tests/*.test.sh EXIT=\$?\"'" "$D/prompt.md"; chk "prompt.md: head, gated id, token line, HARD CONSTRAINTS, anchored attribution regex, one quoted suite, verdict --what" $?
   [ -x "$D/launch.sh" ] && grep -q 'aide-verifier-ok1' "$D/launch.sh" && bash -n "$D/launch.sh"; chk "launch.sh is executable, names the unit, parses" $?
   grep -q '"$(cat "$D/prompt.md")"' "$D/launch.sh" && ! grep -qE 'bash -c|sh -c' "$D/launch.sh" && ! grep -qE ' -c ' "$T/sdrun.log"; chk "the prompt is read from the file by launch.sh, never passed through bash -c" $?
@@ -1224,7 +1224,7 @@ F
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?; D="$T/av/ag1"
   [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
   grep -q -- "wm-decide record --agent r7 --via verifier --model sonnet --kind verdict --gates $G" "$D/prompt.md" \
-    && grep -q -- "agent=verifier:r7-verifier-ag1 recorded_by=unit:r7-verifier-ag1 session=own-headless-claude-p" "$D/prompt.md" \
+    && grep -q -- "agent=verifier:r7-verifier-ag1 scope=suite recorded_by=unit:r7-verifier-ag1 session=own-headless-claude-p" "$D/prompt.md" \
     && ! grep -qE -- '--agent aide|aide-verifier-' "$D/prompt.md"; chk "r7: template carries --agent r7, agent=verifier:r7-verifier-<name>, recorded_by=unit:r7-verifier-<name>, no aide unit/agent" $?
   grep -q '^agent=r7$' "$D/meta" && grep -q ' launched unit=r7-verifier-ag1 ' "$D/state"; chk "r7: meta records the agent, state names the r7 unit" $?
   printf '{"is_error":false,"result":"LOG: /x/verify/r.log\\nVERDICT: %s"}' "$V7" >"$D/result.json"
