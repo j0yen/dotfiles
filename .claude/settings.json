@@ -435,6 +435,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/followup-stop-gate.sh",
             "timeout": 25
           }
@@ -734,6 +739,16 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/park-fresh-fact.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/never-ask-joe.sh",
+            "timeout": 10
           }
         ]
       },
