@@ -1,0 +1,4 @@
+Fixtures for tests/wmb-nocargo-checks.test.sh (real wm-build files, no invented code).
+ba5e1fa1/actor.rs, ba5e1fa1/land/fleet_hold.rs: src/actor.rs and src/land/fleet_hold.rs at wm-build commit ba5e1fa1edef13585647ed27aa9d59b7e9ef7e1e (five unclassified land-hold ops).
+254bea47/actor.rs: src/actor.rs at wm-build commit 254bea47 (base, zero unclassified).
+ba5e1fa1/witness.rs: one verbatim `journal("table", "op"` call prefix (with its src path in a comment) per OPERATOR_OPS entry whose literal lives outside actor.rs, taken from the ba5e1fa1 tree, so the stale-operator check has its literals; the rest of src/ is not copied.
