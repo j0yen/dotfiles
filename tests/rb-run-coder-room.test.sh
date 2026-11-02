@@ -28,7 +28,7 @@ case_() {
   H=$R/$name; D=$H/.cache/rb-seat/coders
   mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$D"
   : > "$H/.config/environment.d/90-claude-oauth.conf"
-  head -c 400 /dev/zero | tr '\0' 'x' > "$H/prompt.md"
+  { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$H/prompt.md"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/events"\n' "$H" > "$H/.local/bin/seat-event.sh"
   printf '#!/usr/bin/env bash\ntouch "%s/claude.ran"\nexit 0\n' "$H" > "$H/.local/bin/claude"
   printf '#!/usr/bin/env bash\ncat "%s/journal.txt"\nexit 0\n' "$H" > "$H/.local/bin/journalctl"

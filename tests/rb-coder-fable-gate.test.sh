@@ -75,7 +75,9 @@ case_() {
   [ "$before" = "$after" ] || { ok=0; why="$why fixture DB bytes changed"; }
   if [ $ok = 1 ]; then pass "$label -> rc=$rc${rep:+ report='$rep'}"; else bad "$label:$why"; fi
 }
-prompt_spec() { printf 'ctx %0200d\nSpec: %s\n' 0 "$1" > "$R/p.$n.md"; echo "$R/p.$n.md"; }   # n is the NEXT case number's predecessor: unique per call
+RULES='kill only pids you started, by pid
+LIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):'   # rules-lint (72) is not under test here
+prompt_spec() { printf 'ctx %0200d\n%s\nSpec: %s\n' 0 "$RULES" "$1" > "$R/p.$n.md"; echo "$R/p.$n.md"; }   # n is the NEXT case number's predecessor: unique per call
 
 ID1=d-20261023-100000-rb-aaaa; ID2=d-20261023-110000-rb-bbbb; ID3=d-20261023-120000-rb-cccc
 P=$(prompt_spec "$SP")
@@ -160,7 +162,7 @@ case_ "(g5) lock released -> the same DB passes" 0 - $R/lock.db "$P"
 # --- no spec / hatch / spec-missing ---
 NOW_ID=d-$(date +%Y%m%d-%H%M%S)-rb-dddd
 OLD_ID=d-$(date -d '25 hours ago' +%Y%m%d-%H%M%S)-rb-eeee
-printf 'ctx %0200d\nrun a thing with no spec\n' 0 > "$R/ns.md"
+printf 'ctx %0200d\n%s\nrun a thing with no spec\n' 0 "$RULES" > "$R/ns.md"
 mkdb $R/h0.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV")]"
 case_ "(h1) prompt citing no spec -> no-spec" 80 "no-spec" $R/h0.db "$R/ns.md"
 mkhatch() { # mkhatch <id> <file> -> prompt file with the Hatch line; echoes the sha of the prompt WITHOUT the line
