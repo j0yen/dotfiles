@@ -1,0 +1,11 @@
+[Unit]
+Description=Every 15 min: probe that the grading-hold flag has a consumer on every acting host
+ConditionHost=carbon
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

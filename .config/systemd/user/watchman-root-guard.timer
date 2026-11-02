@@ -1,0 +1,14 @@
+[Unit]
+Description=Every 1 min: watchman root guard sweep (the REAL guard)
+
+[Timer]
+# This timer is the real guard during inotify exhaustion (10-20: 65536 watches gone 12 s after a client added /home/jsy). The .path unit is only the
+# fast path and needs an inotify watch itself, so it is dead exactly when watches are exhausted. OnCalendar (not OnUnitActiveSec) so a user-manager
+# restart cannot stall it: elapsed OnUnitActiveSec timers stay un-armed until one manual start (10-23 trap).
+OnCalendar=*-*-* *:*:00
+OnBootSec=1min
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

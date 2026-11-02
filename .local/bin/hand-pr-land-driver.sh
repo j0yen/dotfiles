@@ -1,0 +1,703 @@
+#!/usr/bin/env bash
+# hand-pr-land-driver.sh: the unattended driver for HAND PRs (j0yen/synthorg, mcphost, wm-build PRs the daemon does not land).
+# Source: five-whys page ~/Notes/wiki/answers/2026-10-24-wo16-3of7-after-34h-five-whys-rhyme.md, Mechanism 1 + Amendments 10 (twin of ~/.cache/rb-seat/manual-train.py;
+# the plain-session hand run of #414/#416 took master-merge -> MERGED in 22 min, after #414 waited 27 h for a re-verify nobody issued).
+#
+# One TICK (timer, 10 min, carbon) walks every OPEN PR (headRefName not wm-build/*) of the three repos that has a `GATED <repo>#<pr>` row with exactly one COMMIT=<40 hex>
+# (latest such row wins) and takes AT MOST ONE action per PR:
+#   (e) live head != the GATED row's COMMIT      -> ring the owning seat ONCE (key moved), never verify
+#   (b) a verifier unit for that head is finished  -> lint its verdict through the LIVE gate code (mergegate.check, read-only), then `aide-verifier.sh finish`
+#   (c) a MERGE-OK verdict row whose COMMIT prefixes the live head (not voided by a CORRECT* row) -> `rb-merge.sh <verdict> <pr> <repo>` (gate, trailer check, squash merge)
+#   (a) no current verdict, no active verifier unit for the PR -> ROOM check (carbon-room.sh 1024 --reserve-MB 3072), then `aide-verifier.sh launch` (fast CI tier by default;
+#       `TIER=full` or `SUITE=full` in the GATED row -> full pytest + --timeout 5400; a PR that touches the repo's test-registry source set (SRC_SET) or whose file list is unreadable is
+#       ALWAYS full, whatever the GATED row says: five-whys 2026-10-27-synthorg-441 mechanism 3). Only synthorg has an unattended suite on carbon (cargo never fits); the other repos ring the owner once.
+# and, once per merged PR (merge-events.jsonl pr-merged, last HPLD_POSTMERGE_WINDOW_H h):
+#   (d) merged >= 15 min ago, no rb/r7 `START` row naming the PR since the merge -> `seat-ask.sh <owner> '<repo>#<pr> merged; run post-merge suite at MERGE commit <sha>'` ONCE;
+#       owner by repo (mcphost -> rb, synthorg/wm-build -> r7), sha = gh mergeCommit.oid (never the event's PR-head oid); 6 unreadable ticks -> postmerge_skipped row.
+# Every action writes a ledger row (kind=observe, what `HPLD <ACTION> <repo>#<pr> k=<key> ...`). The wm-decide agent enum has no `hand-pr-land-driver`, so the row's agent is
+# `coder:hand-pr-land-driver` (the enum's per-job pattern) and via=hand-pr-land-driver. The `k=<key>` token is the idempotency key: a key already in the ledger is never acted on again;
+# rings write their row BEFORE the ring. A flock keeps two ticks from overlapping. Launch refusals that are transient (ROOM no, ceiling, 429 breaker, not head-of-line) write no row and retry next tick.
+# WATCHER RULE (CLAUDE.md): PREMISE = wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout; EXPIRES = HPLD_EXPIRES (default 2026-11-08 12:00 local).
+# Each tick checks expiry, then premise, BEFORE reading anything: expired or premise failed = ONE ring to ctl (marker file in the state dir), exit 0, no action.
+# NEVER: merge without a gate PASS (rb-merge.sh is the only merge path), force, touch a hold, kill by pattern, print a token.
+#   --dry-run   print the planned actions (PLAN lines), change nothing (no lock, no row, no launch, no ring, no ROOM call)
+#   --selftest  pure-function checks (GATED grammar, keys, owner map, suite shape); tests/hand-pr-land-driver.test.sh runs the stubbed end-to-end cases
+# The tier choice is logged on the HPLD LAUNCH row: `tier=<fast|full> tier_reason=<gated|registry:<file>|files-unknown|default> files=<n> [srcset_drift=1]`.
+# Env (tests): HPLD_MERGE_GATE HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD HPLD_TICK_BUDGET_S
+# Per-tick budget (HPLD_TICK_BUDGET_S, default 1500 s; the unit allows 1800): a long call (launch 600 s, finish 600 s, merge 900 s) is skipped with a `deferred` log line when elapsed + its timeout > budget.
+# Draft PRs (isDraft) are skipped with one observe row per head. A `Depends-on: #N` line in the PR body (same repo) lets launch proceed but holds the merge, one observe row per head, while #N is OPEN.
+set -u
+export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+STATE_DIR="${HPLD_STATE_DIR:-$HOME/.local/state/hand-pr-land-driver}"
+MODE=run
+case "${1:-}" in
+  --dry-run) MODE=dry ;;
+  --selftest) MODE=selftest ;;
+  "") ;;
+  *) echo "usage: hand-pr-land-driver.sh [--dry-run|--selftest]" >&2; exit 64 ;;
+esac
+if [ "$MODE" = run ]; then
+  mkdir -p "$STATE_DIR" || exit 1
+  exec 9>"$STATE_DIR/tick.lock"
+  flock -n 9 || { echo "hand-pr-land-driver: another tick holds the lock; exiting"; exit 0; }
+fi
+export HPLD_MODE="$MODE"
+exec python3 -I -c "$(sed -n '/^#PY-BEGIN$/,/^#PY-END$/p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed '1d;$d')"
+#PY-BEGIN
+import datetime as dt, fnmatch, json, os, re, shlex, subprocess, sys, time
+
+MODE = os.environ["HPLD_MODE"]
+HOME = os.path.expanduser("~")
+WMD = os.environ.get("HPLD_WMD", "wm-decide")
+GH = os.environ.get("HPLD_GH", "gh")
+VERIFIER = os.environ.get("HPLD_VERIFIER", "aide-verifier.sh")
+RBMERGE = os.environ.get("HPLD_RBMERGE", "rb-merge.sh")
+SEATASK = os.environ.get("HPLD_SEATASK", "seat-ask.sh")
+ROOM = os.environ.get("HPLD_ROOM", "carbon-room.sh")
+SYSCTL = os.environ.get("HPLD_SYSTEMCTL", "systemctl")
+VDIR = os.environ.get("HPLD_VDIR", os.path.join(HOME, ".local/state/aide-verifier"))
+EVENTS = os.environ.get("HPLD_EVENTS", os.path.join(HOME, ".local/state/swarm-decide/merge-events.jsonl"))
+SINCE = os.environ.get("HPLD_SINCE", "7d")
+REPOS = os.environ.get("HPLD_REPOS", "j0yen/synthorg j0yen/mcphost j0yen/wm-build").split()
+PM_WINDOW_H = float(os.environ.get("HPLD_POSTMERGE_WINDOW_H", "3"))
+PM_WAIT_S = 15 * 60
+BUDGET_S = float(os.environ.get("HPLD_TICK_BUDGET_S", "1500"))
+T0 = time.monotonic()
+MAX_LAUNCHES, MAX_LAUNCH_FAILS = 2, 3
+AGENT, VIA = "coder:hand-pr-land-driver", "hand-pr-land-driver"
+SUITE_REPOS = {"j0yen/synthorg"}   # repos with a suite that fits on carbon; cargo repos never do
+try:   # carbon-no-build (Joe 10-27, approvals #47): carbon runs no suites; a GATED row that needs one rings r7 once per head
+    ON_CARBON = subprocess.run(["hostname", "-s"], capture_output=True, text=True, timeout=10).stdout.strip() == "carbon"
+except Exception:
+    ON_CARBON = False
+if ON_CARBON:
+    SUITE_REPOS = set()
+HEX40 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])")
+COMMIT_RE = re.compile(r"COMMIT=([0-9a-fA-F]{7,40})")
+KEY_RE = re.compile(r" k=(\S+)")
+# The test-registry source set per repo: a PR touching any of these changes what the fast tier would deselect, so it verifies at the full tier.
+# fnmatch's `*` also crosses `/`, so `tests/*_support.py` matches nested paths on purpose (over-inclusive = safe: it only ever forces the stronger tier).
+# The live swarm-decide contract gen/merge-gate.json key `required_source_set` is the source of truth; the runtime set is the UNION of it and this constant.
+SRC_SET = {"j0yen/synthorg": ["tests/flaky.yaml", "tests/durations.json", "tests/conftest.py", "pyproject.toml", "tests/*_support.py"]}
+SEAT_OF = {"rb": "rb", "r7": "r7", "controller": "ctl", "ctl": "ctl"}   # anything else (aide, joe, coder:*) -> r7, the hand-PR consumer
+
+
+def now():
+    return float(os.environ["HPLD_NOW"]) if os.environ.get("HPLD_NOW") else time.time()
+
+
+def ts_epoch(s):
+    try:
+        return dt.datetime.fromisoformat(s).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def sh(argv, timeout=900):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, "", str(e)
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def gated_re(repo, pr):
+    return re.compile(r"(?<![A-Za-z0-9_.-])GATED\s+%s#%s(?![0-9])" % (re.escape(repo), pr))
+
+
+def gated_commit(what, repo, pr):
+    """The row's one COMMIT=<40 hex> (lowercased), or None when the row is not a GATED row for repo#pr or carries 0 / >1 / a short commit."""
+    if not what or not gated_re(repo, pr).search(what):
+        return None
+    cs = {m.group(1).lower() for m in COMMIT_RE.finditer(what)}
+    if len(cs) != 1:
+        return None
+    c = next(iter(cs))
+    return c if len(c) == 40 else None
+
+
+def owner_seat(agent):
+    return SEAT_OF.get(agent or "", "r7")
+
+
+def suite_for(repo, tier, own_tests):
+    pre = "uv sync -q --frozen && uv run ruff check . && uv run mypy src && uv run synthorg promise lint"
+    own = ""
+    if own_tests:
+        own = " && uv run pytest -q -p no:cacheprovider " + " ".join(shlex.quote(t) for t in own_tests)
+    sel = "" if tier == "full" else ' -m "not flaky and not slow"'
+    return "%s%s && uv run pytest -q -p no:cacheprovider%s -n 2" % (pre, own, sel)
+
+
+def contract_path():
+    """The live merge-gate contract: HPLD_MERGE_GATE, else <root of the wm-decide on PATH>/gen/merge-gate.json (never a checkout)."""
+    if os.environ.get("HPLD_MERGE_GATE"):
+        return os.environ["HPLD_MERGE_GATE"]
+    w = sh(["bash", "-c", "command -v " + shlex.quote(WMD)], 10)[1].strip()
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(w))), "gen", "merge-gate.json") if w else ""
+
+
+def load_contract_sets(path):
+    """(dict repo -> [patterns] | None when the key is absent, note). A malformed file or key falls back to the constant alone: never a crash."""
+    if not path or not os.path.exists(path):
+        return None, "absent"
+    try:
+        d = json.load(open(path)).get("required_source_set")
+    except (OSError, ValueError, AttributeError):
+        return None, "malformed"
+    if d is None:
+        return None, "absent"
+    if not isinstance(d, dict) or not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in d.values()):
+        return None, "malformed"
+    return d, "ok"
+
+
+def source_set(repo, contract):
+    """(union of constant and contract patterns, drift) - drift = both exist and differ."""
+    const = list(SRC_SET.get(repo, []))
+    c = (contract or {}).get(repo)
+    if c is None:
+        return const, False
+    return const + [x for x in c if x not in const], set(c) != set(const)
+
+
+def decide_tier(repo, gated_full, files_rc, files, srcset):
+    """(tier, reason). The registry rule beats the GATED row; an unreadable (rc != 0) or empty file list is `files-unknown` (full on synthorg, fail safe)."""
+    unknown = files_rc != 0 or not files
+    if not unknown:
+        for f in files:
+            if any(fnmatch.fnmatchcase(f, pat) for pat in srcset):
+                return "full", "registry:" + f
+    if gated_full:
+        return "full", "gated"
+    if unknown:
+        return ("full" if repo == "j0yen/synthorg" else "fast"), "files-unknown"
+    return "fast", "default"
+
+
+def short(repo):
+    return {"j0yen/synthorg": "syn", "j0yen/mcphost": "mcp", "j0yen/wm-build": "wmb"}.get(repo, re.sub(r"[^a-z0-9]", "", repo.split("/")[-1].lower())[:4])
+
+
+POSTMERGE_OWNER = {"j0yen/mcphost": "rb", "j0yen/synthorg": "r7", "j0yen/wm-build": "r7"}   # who runs the post-merge suite; an unknown repo has no owner (never defaulted to r7)
+PM_MAX_TRIES = 6
+
+
+def postmerge_owner(repo):
+    return POSTMERGE_OWNER.get(repo)
+
+
+def merge_commit(repo, pr, run):
+    """mergeCommit.oid (40 hex) of a MERGED PR, else None. `run(repo, pr)` returns the parsed `gh pr view --json mergeCommit,state`; it is REQUIRED (no default) and any failure of it reads as None."""
+    if run is None:
+        raise ValueError("merge_commit: run is required")
+    try:
+        d = run(repo, pr)
+        oid = ((d or {}).get("mergeCommit") or {}).get("oid") or ""
+        if (d or {}).get("state") == "MERGED" and re.fullmatch(r"[0-9a-fA-F]{40}", oid):
+            return oid.lower()
+    except Exception:
+        pass
+    return None
+
+
+def gh_pr_view(repo, pr):
+    """The production `run` for merge_commit: one gh call, 30 s cap; raises on failure (merge_commit turns that into None)."""
+    rc_, o_, e_ = sh([GH, "pr", "view", str(pr), "-R", repo, "--json", "mergeCommit,state"], 30)
+    if rc_ != 0:
+        raise RuntimeError("gh pr view rc=%d" % rc_)
+    return json.loads(o_)
+
+
+def postmerge_tick(events, merge_commit_fn, emit, state):
+    """(d) post-merge suite ring. state = {"keys": set of consumed ledger keys, "rows": ledger rows} (+ optional "now", "repos"). Mutates state["keys"] for what it emits."""
+    keys, rows = state["keys"], state.get("rows") or []
+    t_now = state.get("now") if state.get("now") is not None else now()
+    repos = state.get("repos", REPOS)
+    for e in events:
+        if e.get("event") != "pr-merged" or e.get("repo") not in repos:
+            continue
+        t = ts_epoch(e.get("ts"))
+        if t_now - t < PM_WAIT_S or t_now - t > PM_WINDOW_H * 3600:
+            continue
+        repo, pr, pr_head = e["repo"], e["pr"], e.get("oid") or ""
+        owner = postmerge_owner(repo)
+        if owner is None:
+            log("postmerge: no owner seat for repo %s; no ring" % repo)
+            continue
+        tag = "%s#%s" % (repo, pr)
+        skipk = "postmerge-skip:%s" % tag
+        if skipk in keys:
+            continue
+        pat = re.compile(r"(?<![0-9])%s(?![0-9])" % re.escape(str(pr)))
+        if any(r.get("agent") in ("rb", "r7") and (r.get("what") or "").startswith("START") and ts_epoch(r.get("ts")) >= t and pat.search(r["what"]) for r in rows):
+            continue   # either seat already started a suite for this PR
+        mc = merge_commit_fn(repo, pr)
+        tryp = "pmtry:%s:" % tag
+        if mc is None:
+            n = sum(1 for k in keys if k.startswith(tryp)) + 1
+            if n >= PM_MAX_TRIES:
+                keys.add(skipk)
+                emit({"act": "observe-pmskip", "repo": repo, "pr": pr, "tag": tag, "key": skipk, "msg": "postmerge_skipped: no-merge-commit after %d tries" % n})
+                log("postmerge: %s no merge commit after %d tries; skipped" % (tag, n))
+            else:
+                keys.add(tryp + str(n))
+                emit({"act": "observe-pmretry", "repo": repo, "pr": pr, "tag": tag, "key": tryp + str(n), "msg": "merge commit not readable yet (try %d of %d)" % (n, PM_MAX_TRIES)})
+                log("postmerge: %s merge commit not readable (try %d of %d); no ring this tick" % (tag, n, PM_MAX_TRIES))
+            continue
+        k = "postmerge:%s:%s:%s" % (tag, owner, mc[:12])
+        if k in keys:
+            continue
+        keys.add(k)
+        emit({"act": "ring-postmerge", "repo": repo, "pr": pr, "head": mc, "pr_head": pr_head, "owner": owner, "tag": tag, "key": k,
+              "msg": "%s merged; run post-merge suite at MERGE commit %s (PR head %s)" % (tag, mc, pr_head)})
+
+
+def selftest():
+    bad = []
+
+    def chk(name, ok):
+        print(("PASS " if ok else "FAIL ") + name)
+        if not ok:
+            bad.append(name)
+    h = "a" * 40
+    chk("GATED row with one COMMIT=40hex", gated_commit("GATED j0yen/synthorg#414 COMMIT=%s x" % h, "j0yen/synthorg", 414) == h)
+    chk("#41 does not match GATED #414", gated_commit("GATED j0yen/synthorg#414 COMMIT=%s" % h, "j0yen/synthorg", 41) is None)
+    chk("two different COMMITs refused", gated_commit("GATED j0yen/synthorg#4 COMMIT=%s COMMIT=%s" % (h, "b" * 40), "j0yen/synthorg", 4) is None)
+    chk("short COMMIT refused", gated_commit("GATED j0yen/synthorg#4 COMMIT=abcdef1", "j0yen/synthorg", 4) is None)
+    chk("prefix-glued GATED refused", gated_commit("NOGATED j0yen/synthorg#4 COMMIT=%s" % h, "j0yen/synthorg", 4) is None)
+    chk("owner map", owner_seat("rb") == "rb" and owner_seat("controller") == "ctl" and owner_seat("aide") == "r7")
+    chk("fast suite carries the marker filter, full does not", '-m "not flaky and not slow"' in suite_for("j0yen/synthorg", "fast", []) and "-m " not in suite_for("j0yen/synthorg", "full", []))
+    chk("own tests quoted", "tests/a_test.py" in suite_for("j0yen/synthorg", "fast", ["tests/a_test.py"]))
+    chk("verifier pytest runs 2 xdist workers, never 4", suite_for("j0yen/synthorg", "fast", []).endswith("-n 2") and suite_for("j0yen/synthorg", "full", ["t.py"]).endswith("-n 2") and "-n 4" not in suite_for("j0yen/synthorg", "full", []))
+    ss = SRC_SET["j0yen/synthorg"]
+    S = "j0yen/synthorg"
+    chk("registry file forces full over a GATED row without TIER", decide_tier(S, False, 0, ["src/x.py", "tests/flaky.yaml"], ss) == ("full", "registry:tests/flaky.yaml"))
+    chk("registry file beats an explicit fast GATED row", decide_tier(S, False, 0, ["pyproject.toml"], ss) == ("full", "registry:pyproject.toml"))
+    chk("src-only PR is fast/default", decide_tier(S, False, 0, ["src/x.py"], ss) == ("fast", "default"))
+    chk("GATED TIER=full is full/gated", decide_tier(S, True, 0, ["src/x.py"], ss) == ("full", "gated"))
+    chk("gh failure on synthorg is full/files-unknown", decide_tier(S, False, 1, [], ss) == ("full", "files-unknown"))
+    chk("exit-0 empty file list is files-unknown", decide_tier(S, False, 0, [], ss) == ("full", "files-unknown"))
+    chk("non-synthorg gh failure keeps the default tier, reason files-unknown", decide_tier("j0yen/mcphost", False, 1, [], []) == ("fast", "files-unknown"))
+    chk("tests/*_support.py matches, nested too", decide_tier(S, False, 0, ["tests/foo_support.py"], ss)[1] == "registry:tests/foo_support.py" and decide_tier(S, False, 0, ["tests/a/b_support.py"], ss)[0] == "full")
+    chk("union of contract and constant; drift flagged", source_set(S, {S: ["x.yaml"]}) == (ss + ["x.yaml"], True) and source_set(S, {S: list(ss)})[1] is False and source_set(S, None)[1] is False)
+    chk("unit name charset", re.fullmatch(r"[a-z0-9-]+", "hpl-%s-%d-%s-%d" % (short("j0yen/synthorg"), 4, "abcdef0", 1)) is not None)
+    ev = lambda repo, oid: {"event": "pr-merged", "repo": repo, "pr": 7, "oid": oid, "ts": "2026-10-30T08:00:00+00:00"}
+    t_ok = ts_epoch("2026-10-30T08:00:00+00:00") + 20 * 60
+    chk("post-merge owner by repo", postmerge_owner("j0yen/mcphost") == "rb" and postmerge_owner("j0yen/synthorg") == "r7" and postmerge_owner("j0yen/wm-build") == "r7" and postmerge_owner("j0yen/other") is None)
+    st0 = {"keys": set(), "rows": [], "now": t_ok, "repos": ["j0yen/other"]}
+    got0 = []
+    postmerge_tick([ev("j0yen/other", "b" * 40)], lambda r, p: "c" * 40, got0.append, st0)
+    chk("post-merge unknown repo: no emit, no key", got0 == [] and st0["keys"] == set())
+    good = lambda r, p: {"state": "MERGED", "mergeCommit": {"oid": "c" * 40}}
+
+    def boom(r, p):
+        raise RuntimeError("gh down")
+    try:
+        merge_commit("j0yen/mcphost", 7, None)
+        none_raises = False
+    except ValueError:
+        none_raises = True
+    st1 = {"keys": set(), "rows": [], "now": t_ok, "repos": ["j0yen/mcphost"]}
+    got1 = []
+    postmerge_tick([ev("j0yen/mcphost", "b" * 40)], lambda r, p: "c" * 40, got1.append, st1)
+    postmerge_tick([ev("j0yen/mcphost", "b" * 40)], lambda r, p: "c" * 40, got1.append, st1)
+    chk("post-merge quotes merge commit, not head",
+        merge_commit("j0yen/mcphost", 7, good) == "c" * 40
+        and merge_commit("j0yen/mcphost", 7, lambda r, p: {"state": "OPEN", "mergeCommit": {"oid": "c" * 40}}) is None
+        and merge_commit("j0yen/mcphost", 7, lambda r, p: {"state": "MERGED", "mergeCommit": {"oid": "c" * 7}}) is None
+        and merge_commit("j0yen/mcphost", 7, boom) is None
+        and none_raises
+        and len(got1) == 1 and got1[0]["owner"] == "rb" and got1[0]["head"] == "c" * 40 and got1[0]["pr_head"] == "b" * 40)
+    print("SELFTEST " + ("FAIL" if bad else "PASS"))
+    return 1 if bad else 0
+
+
+if MODE == "selftest":
+    sys.exit(selftest())
+
+# ---------------------------------------------------------------- WATCHER RULE: expiry, then premise, before any read
+EXPIRES = os.environ.get("HPLD_EXPIRES", "2026-11-08 12:00")
+STATE_DIR = os.environ.get("HPLD_STATE_DIR", os.path.join(HOME, ".local/state/hand-pr-land-driver"))
+
+
+def disarm(kind, why, key):
+    """One ring to ctl per key (marker file), a best-effort ledger row, exit 0 with no action."""
+    msg = "hand-pr-land-driver %s: %s; the driver took no action" % (kind, why)
+    if MODE == "dry":
+        log("PLAN %s %s" % (kind, why))
+        sys.exit(0)
+    marker = os.path.join(STATE_DIR, "rang-" + re.sub(r"[^A-Za-z0-9._-]", "_", key))
+    if os.path.exists(marker):
+        log("hand-pr-land-driver: %s (already rang ctl)" % why)
+        sys.exit(0)
+    try:
+        open(marker, "w").write(msg + "\n")
+    except OSError:
+        pass
+    sh([WMD, "record", "--agent", AGENT, "--via", VIA, "--kind", "observe", "--what", "HPLD %s %s k=%s" % (kind.upper(), "-", key),
+        "--why", "watcher rule: premise + expiry", "--evidence", msg[:300], "--reverse-text", "none (observation row)"], 60)
+    rc_, _, _ = sh([SEATASK, "ctl", msg], 120)
+    log("RING ctl rc=%d: %s" % (rc_, msg))
+    sys.exit(0)
+
+
+try:
+    expired = now() >= dt.datetime.strptime(EXPIRES, "%Y-%m-%d %H:%M").timestamp()
+except ValueError:
+    expired = True   # an unreadable expiry fails closed
+if expired:
+    disarm("expired", "EXPIRES %s has passed" % EXPIRES, "expired:" + EXPIRES)
+
+
+def premise_missing():
+    miss = []
+    imp = os.environ.get("HPLD_PREMISE_IMPORT_CMD")
+    if imp:
+        ok = sh(shlex.split(imp), 60)[0] == 0
+    else:
+        w = sh(["bash", "-c", "command -v " + shlex.quote(WMD)], 10)[1].strip()
+        root = os.path.dirname(os.path.dirname(os.path.realpath(w))) if w else ""
+        ok = bool(root) and sh(["python3", "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import wm_decide.mergegate", root], 60)[0] == 0
+    if not ok:
+        miss.append("wm-decide not importable")
+    rbm = sh(["bash", "-c", "command -v " + shlex.quote(RBMERGE)], 10)[1].strip()
+    if not rbm:
+        miss.append("rb-merge.sh missing")
+    av = sh(["bash", "-c", "command -v " + shlex.quote(VERIFIER)], 10)[1].strip()
+    try:
+        has_to = bool(av) and "--timeout" in open(os.path.realpath(av), errors="replace").read()
+    except OSError:
+        has_to = False
+    if not has_to:
+        miss.append("aide-verifier.sh lacks --timeout")
+    return miss
+
+
+_miss = premise_missing()
+if _miss:
+    disarm("premise-failed", "; ".join(_miss), "premise:" + ",".join(m.split()[0] for m in _miss))
+
+# ---------------------------------------------------------------- read side (read-only; also runs in --dry-run)
+rc, out, err = sh([WMD, "list", "--since", SINCE, "--json"], 300)
+if rc != 0:
+    log("hand-pr-land-driver: wm-decide list failed rc=%d: %s" % (rc, err.strip()[:200]))
+    sys.exit(1)
+rows = sorted(json.loads(out), key=lambda r: r.get("ts") or "")
+by_id = {r["id"]: r for r in rows}
+hp_keys = set()
+for r in rows:
+    w = r.get("what") or ""
+    if w.startswith("HPLD "):
+        m = KEY_RE.search(w)
+        if m:
+            hp_keys.add(m.group(1))
+
+
+def count_keys(prefix):
+    return sum(1 for k in hp_keys if k.startswith(prefix))
+
+
+def verifier_units():
+    """[{name, repo, pr, head, gated, agent, active, finished(text|None), has_result}] from the unit dirs."""
+    res = []
+    try:
+        names = sorted(os.listdir(VDIR))
+    except OSError:
+        return res
+    for n in names:
+        d = os.path.join(VDIR, n)
+        try:
+            meta = dict(l.rstrip("\n").split("=", 1) for l in open(os.path.join(d, "meta")) if "=" in l)
+        except OSError:
+            continue
+        agent = meta.get("agent") or "aide"
+        unit = "%s-verifier-%s.service" % (agent, n)
+        rc_, o_, _ = sh([SYSCTL, "--user", "is-active", unit], 30)
+        fin = None
+        try:
+            fin = open(os.path.join(d, "finished")).read().strip()
+        except OSError:
+            pass
+        res.append({"name": n, "repo": meta.get("repo"), "pr": meta.get("pr"), "head": (meta.get("head") or "").lower(), "gated": meta.get("gated"),
+                    "agent": agent, "active": o_.strip() in ("active", "activating"), "finished": fin,
+                    "has_result": os.path.getsize(os.path.join(d, "result.json")) > 0 if os.path.exists(os.path.join(d, "result.json")) else False})
+    return res
+
+
+units = verifier_units()
+CONTRACT, CONTRACT_NOTE = load_contract_sets(contract_path())
+if CONTRACT_NOTE == "malformed":
+    log("hand-pr-land-driver: merge-gate contract malformed; using the built-in registry source set only")
+DRIFT = {r: source_set(r, CONTRACT)[1] for r in SRC_SET}
+actions = []   # planned, in order; ONE per PR
+
+
+def pr_files(repo, pr):
+    """(gh rc, every file the PR touches incl. removed, the PR's own tests that still exist). One gh call; a non-zero rc is the caller's `files-unknown`."""
+    rc_, o_, _ = sh([GH, "api", "repos/%s/pulls/%s/files" % (repo, pr), "--paginate", "-q", r'.[] | "\(.status)\t\(.filename)"'], 120)
+    if rc_ != 0:
+        return rc_, [], []
+    files, tests = [], []
+    for ln in o_.splitlines():
+        st, _, f = ln.rpartition("\t")   # a line without a tab is a bare filename
+        f = f.strip()
+        if not f:
+            continue
+        files.append(f)
+        if st != "removed" and re.fullmatch(r"tests/[A-Za-z0-9_./-]+\.py", f):
+            tests.append(f)
+    return rc_, files, tests[:10]
+
+
+def verdict_id_of_unit(u):
+    try:
+        res = json.load(open(os.path.join(VDIR, u["name"], "result.json")))
+    except (OSError, ValueError):
+        return None
+    text = res.get("result") or ""
+    ids = [i for i in re.findall(r"d-[0-9]{8}-[0-9]{6}-%s-[0-9a-f]{4}" % re.escape(u["agent"]), text) if i != u["gated"]]
+    return ids[-1] if ids else None
+
+
+for repo in REPOS:
+    rc, out, err = sh([GH, "pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", "number,headRefOid,headRefName,isDraft,body"], 120)
+    if rc != 0:
+        log("hand-pr-land-driver: gh pr list %s failed rc=%d: %s" % (repo, rc, err.strip()[:200]))
+        continue
+    for pr_o in json.loads(out):
+        pr, live, branch = int(pr_o["number"]), pr_o["headRefOid"].lower(), pr_o.get("headRefName") or ""
+        if branch.startswith("wm-build/"):
+            continue   # a daemon land, not a hand PR
+        grows = [r for r in rows if r.get("kind") != "verdict" and gated_commit(r.get("what"), repo, pr)]
+        if not grows:
+            continue
+        g = grows[-1]
+        tag = "%s#%d" % (repo, pr)
+        if pr_o.get("isDraft"):
+            k = "draft:%s:%s" % (tag, live[:12])
+            if k not in hp_keys:
+                actions.append({"act": "observe-draft", "repo": repo, "pr": pr, "head": live, "tag": tag, "key": k, "msg": "draft PR; skipped (no launch, merge or ring)"})
+            continue
+        gc = gated_commit(g["what"], repo, pr)
+        tier = "full" if re.search(r"(?i)(?<![A-Za-z0-9])(?:TIER|SUITE)=full\b", g["what"]) else "fast"
+        owner = owner_seat(g.get("agent"))
+        tag = "%s#%d" % (repo, pr)
+        base = {"repo": repo, "pr": pr, "head": live, "gated": g["id"], "owner": owner, "tag": tag}
+        if gc != live:
+            k = "moved:%s:%s:%s" % (tag, g["id"], live[:12])
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-moved", key=k, msg="%s: head moved since GATED %s (%s -> %s); re-GATE the new head, the hand-pr-land-driver verifies only a GATED head" % (tag, g["id"], gc[:12], live[:12])))
+            continue
+        pr_units = [u for u in units if u["repo"] == repo and str(u["pr"]) == str(pr)]
+        if any(u["active"] for u in pr_units):
+            continue
+        head_units = [u for u in pr_units if u["head"] == live]
+        # (b) a finished unit with no finish yet
+        pend = [u for u in head_units if not u["finished"] and u["has_result"] and "finish:%s" % u["name"] not in hp_keys and "finishlint:%s" % u["name"] not in hp_keys]
+        if pend:
+            u = pend[-1]
+            actions.append(dict(base, act="finish", key="finish:%s" % u["name"], unit=u["name"], verdict=verdict_id_of_unit(u)))
+            continue
+        # (c) a current MERGE-OK verdict for the live head
+        vs = []
+        pr_ref = re.compile(r"(?<![A-Za-z0-9_.-])(?:%s|%s)#%d(?![0-9])" % (re.escape(repo), re.escape(repo.split("/")[-1]), pr))
+        for r in rows:
+            w = r.get("what") or ""
+            if r.get("kind") != "verdict" or not w.startswith("MERGE-OK") or not pr_ref.search(w):
+                continue
+            m = COMMIT_RE.search(w)
+            if not m or not live.startswith(m.group(1).lower()) or (r["ts"] or "") <= (g["ts"] or ""):
+                continue
+            if any(x.get("gates") == r["id"] and re.match(r"(?i)\s*CORRECT", x.get("what") or "") for x in rows):
+                continue   # voided by a CORRECT / CORRECT-SCOPE row
+            vs.append(r)
+        if vs:
+            v = vs[-1]
+            if "merge:%s" % v["id"] not in hp_keys:
+                deps = []
+                for dl in re.findall(r"(?im)^[ \t>*-]*Depends-on:(.*)$", pr_o.get("body") or ""):
+                    deps += [int(x) for x in re.findall(r"(?<![A-Za-z0-9_/])#(\d+)", dl) if int(x) != pr]
+                opendeps = []
+                for d in sorted(set(deps)):
+                    rc2, o2, _ = sh([GH, "pr", "view", str(d), "--repo", repo, "--json", "state", "-q", ".state"], 60)
+                    if rc2 != 0 or o2.strip() == "OPEN":   # fail closed: an unreadable dep holds too
+                        opendeps.append("#%d(%s)" % (d, o2.strip() or "unknown"))
+                if opendeps:
+                    k = "depwait:%s:%s" % (tag, live[:12])
+                    if k not in hp_keys:
+                        actions.append(dict(base, act="observe-depwait", key=k, msg="merge held: Depends-on still open: %s" % " ".join(opendeps)))
+                    continue
+                actions.append(dict(base, act="merge", key="merge:%s" % v["id"], verdict=v["id"]))
+            continue
+        # (a) verify the live head
+        pfx = "%s:%s:" % (tag, live[:12])
+        launches, fails = count_keys("launch:" + pfx), count_keys("launchfail:" + pfx)
+        if any("finishlint:%s" % u["name"] in hp_keys for u in head_units):
+            continue   # the lint refusal already rang the owner; a hand look decides, no relaunch
+        gate_failed = any("FAIL" in (u["finished"] or "") for u in head_units)
+        if ON_CARBON:
+            k = "carbonsuite:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-carbonsuite", key=k, owner="r7", msg="%s: GATED head %s needs a suite and carbon runs none (CLAUDE.md CARBON); r7: run it on ryzen7 or redbaron" % (tag, live[:12])))
+            continue
+        if repo not in SUITE_REPOS:
+            k = "nosuite:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-nosuite", key=k, msg="%s: GATED head %s has no unattended suite on carbon (cargo repo); verify it by hand on its build host" % (tag, live[:12])))
+            continue
+        if gate_failed or launches >= MAX_LAUNCHES or fails >= MAX_LAUNCH_FAILS:
+            k = "stuck:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-stuck", key=k, msg="%s: driver gave up on head %s (launches=%d, launch-fails=%d, gate-failed=%s); needs a hand look" % (tag, live[:12], launches, fails, gate_failed)))
+            continue
+        n = launches + 1
+        name = "hpl-%s-%d-%s-%d" % (short(repo), pr, live[:7], n)
+        f_rc, f_all, f_tests = pr_files(repo, pr)
+        tier, reason = decide_tier(repo, tier == "full", f_rc, f_all, source_set(repo, CONTRACT)[0])
+        if reason == "files-unknown":
+            log("hand-pr-land-driver: %s file list unreadable or empty (gh rc=%d); tier=%s" % (tag, f_rc, tier))
+        actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), ckey="capdefer:%s%d" % (pfx, int(now() // 3600)),
+                            rkey="roomring:" + pfx, name=name, tier=tier, reason=reason, nfiles=len(f_all), drift=DRIFT.get(repo, False),
+                            suite=suite_for(repo, tier, f_tests)))
+
+# source-set drift between the live contract and the built-in constant: ring aide once a day (dotfiles tests do not run when swarm-decide merges)
+for _r, _d in sorted(DRIFT.items()):
+    _k = "srcset-drift:" + time.strftime("%Y-%m-%d", time.localtime(now()))
+    if _d and _k not in hp_keys:
+        actions.append({"act": "ring-drift", "repo": _r, "pr": 0, "head": "", "owner": "aide", "tag": "srcset:" + _r, "key": _k,
+                        "msg": "hand-pr-land-driver: the live merge-gate contract required_source_set for %s differs from the driver's built-in SRC_SET; the driver uses the union; update SRC_SET" % _r})
+
+# (d) post-merge suite ring
+try:
+    events = [json.loads(l) for l in open(EVENTS) if l.strip()]
+except OSError:
+    events = []
+postmerge_tick(events, lambda repo, pr: merge_commit(repo, pr, gh_pr_view), actions.append, {"keys": hp_keys, "rows": rows})
+
+# ---------------------------------------------------------------- act side
+if MODE == "dry":
+    if not actions:
+        log("PLAN none")
+    for a in actions:
+        extra = {x: a[x] for x in ("unit", "verdict", "name", "tier", "reason", "nfiles", "msg") if x in a}
+        if a["act"] == "launch":
+            extra["suite"] = a["suite"]
+            extra["room"] = "would run: %s 1024 --reserve-MB 3072" % ROOM
+        log("PLAN %s %s k=%s %s" % (a["act"], a["tag"], a["key"], json.dumps(extra)))
+    sys.exit(0)
+
+
+def record(act, a, tail, key=None):
+    what = "HPLD %s %s k=%s %s" % (act.upper(), a["tag"], key or a["key"], tail)
+    rc_, o_, e_ = sh([WMD, "record", "--agent", AGENT, "--via", VIA, "--kind", "observe", "--what", what[:1500],
+                      "--why", "hand-pr-land-driver (five-whys 2026-10-24-wo16-3of7 mechanism 1): a hand PR must not wait for a keystroke",
+                      "--evidence", "tick %s; head %s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now())), a.get("head", "")),
+                      "--reverse-text", "none (observation row)"], 120)
+    if rc_ != 0:
+        log("hand-pr-land-driver: LEDGER ROW FAILED rc=%d: %s" % (rc_, e_.strip()[:200]))
+    return rc_ == 0
+
+
+def ring(a, seat):
+    rc_, o_, e_ = sh([SEATASK, seat, a["msg"]], 120)
+    log("RING %s -> %s rc=%d" % (a["tag"], seat, rc_))
+    return rc_
+
+
+def lint(verdict, repo, pr):
+    """The LIVE gate code, read-only (mergegate.check): rc 0 clean, 2 refused (lines say why), 3 unusable (fail closed)."""
+    cmd = os.environ.get("HPLD_LINT_CMD")
+    if cmd:
+        rc_, o_, e_ = sh(shlex.split(cmd) + [verdict, str(pr), repo], 120)
+        return rc_, (o_ + e_).strip()
+    p = sh(["bash", "-c", "command -v " + shlex.quote(WMD)], 10)[1].strip()
+    if not p:
+        return 3, "wm-decide not on PATH"
+    root = os.path.dirname(os.path.dirname(os.path.realpath(p)))
+    code = ("import sys; sys.path.insert(0, sys.argv[1])\n"
+            "from wm_decide import store, mergegate\n"
+            "db = store.connect(); f, w, i = mergegate.check(db, sys.argv[2], sys.argv[3], int(sys.argv[4]))\n"
+            "[print(r + ': ' + m) for r, m in sorted(f.items())]\nsys.exit(2 if f else 0)\n")
+    rc_, o_, e_ = sh(["python3", "-I", "-c", code, root, verdict, repo, str(pr)], 120)
+    return (rc_ if rc_ in (0, 2) else 3), (o_ + e_).strip()[-400:]
+
+
+def one_line(s, n=300):
+    return " | ".join(l.strip() for l in s.strip().splitlines()[-4:])[:n]
+
+
+for a in actions:
+    act = a["act"]
+    if act.startswith("observe-"):
+        record(act, a, a["msg"])
+    elif act.startswith("ring-"):
+        if record(act, a, "seat=%s %s" % (a["owner"], a["msg"][:300])):   # row first: a failed ring never repeats
+            ring(a, a["owner"])
+    elif act in ("launch", "finish", "merge") and (time.monotonic() - T0) + {"launch": 600, "finish": 600, "merge": 900}[act] > BUDGET_S:
+        log("DEFERRED %s %s: tick budget %ds (elapsed %ds + %s timeout)" % (act, a["tag"], BUDGET_S, time.monotonic() - T0, {"launch": 600, "finish": 600, "merge": 900}[act]))
+    elif act == "launch":
+        room_rc, room_o, room_e = sh([ROOM, "1024", "--reserve-MB", "3072"], 60)
+        if room_rc != 0:
+            log("ROOM NO %s (carbon-room rc=%d): no launch this tick" % (a["tag"], room_rc))
+            if a["reason"].startswith("registry:"):   # a forced-full launch starved by ROOM > 30 min rings the owner once per head
+                mark = os.path.join(STATE_DIR, "roomdefer-" + re.sub(r"[^A-Za-z0-9._-]", "_", a["rkey"]))
+                try:
+                    since = float(open(mark).read().strip())
+                except (OSError, ValueError):
+                    since = None
+                    try:
+                        open(mark, "w").write("%d\n" % now())
+                    except OSError:
+                        pass
+                if since is not None and now() - since > 1800 and a["rkey"] not in hp_keys:
+                    a["msg"] = "%s: forced-full verification (%s) has waited %d min for ROOM; free carbon memory or verify by hand" % (a["tag"], a["reason"], (now() - since) / 60)
+                    if record("room-ring", a, "seat=%s %s" % (a["owner"], a["msg"][:300]), key=a["rkey"]):
+                        ring(a, a["owner"])
+            continue
+        argv = [VERIFIER, "launch", a["name"], "--repo", a["repo"], "--pr", str(a["pr"]), "--head", a["head"], "--gated", a["gated"],
+                "--token", os.environ.get("HPLD_TOKEN") or "pytest EXIT=0", "--suite", a["suite"]]
+        if a["tier"] == "full":
+            argv += ["--timeout", "5400"]
+        rc_, o_, e_ = sh(argv, 600)
+        txt = (o_ + e_)
+        if rc_ == 0:
+            log("LAUNCH %s %s tier=%s tier_reason=%s" % (a["tag"], a["name"], a["tier"], a["reason"]))
+            record("launch", a, "name=%s tier=%s tier_reason=%s files=%d gated=%s%s" % (a["name"], a["tier"], a["reason"], a["nfiles"], a["gated"], " srcset_drift=1" if a["drift"] else ""))
+        elif rc_ in (3, 10, 11, 6) or (rc_ == 2 and re.search(r"(?i)cap reached|ceiling|slot", txt)):
+            log("LAUNCH DEFERRED %s rc=%d (transient): %s" % (a["tag"], rc_, one_line(txt)))
+            if rc_ == 2 and a["ckey"] not in hp_keys:   # at most one observe row per head per hour; never counts toward launchfail / stuck
+                record("launch-deferred", a, "rc=2 %s" % one_line(txt, 200), key=a["ckey"])
+        else:
+            log("LAUNCH FAILED %s rc=%d: %s" % (a["tag"], rc_, one_line(txt)))
+            record("launchfail", a, "rc=%d %s" % (rc_, one_line(txt)), key=a["fkey"])
+    elif act == "finish":
+        if a.get("verdict"):
+            lrc, ltxt = lint(a["verdict"], a["repo"], a["pr"])
+            if lrc != 0:
+                log("FINISH LINT %s verdict=%s rc=%d: %s" % (a["tag"], a["verdict"], lrc, one_line(ltxt)))
+                if record("finish-lint-fail", a, "verdict=%s rc=%d %s" % (a["verdict"], lrc, one_line(ltxt)), key="finishlint:%s" % a["unit"]):
+                    a["msg"] = "%s: verifier %s verdict %s fails the live gate lint (%s); not finished" % (a["tag"], a["unit"], a["verdict"], one_line(ltxt, 200))
+                    ring(a, a["owner"])
+                continue
+        rc_, o_, e_ = sh([VERIFIER, "finish", a["unit"], "--pr", str(a["pr"]), "--repo", a["repo"]], 600)
+        log("FINISH %s %s rc=%d" % (a["tag"], a["unit"], rc_))
+        record("finish", a, "unit=%s rc=%d %s" % (a["unit"], rc_, one_line(o_ + e_, 200)))
+    elif act == "merge":
+        rc_, o_, e_ = sh([RBMERGE, a["verdict"], str(a["pr"]), a["repo"]], 900)
+        m = re.search(r"oid=([0-9a-f]{40})", o_)
+        sha = m.group(1) if m else ""
+        if rc_ == 0:
+            log("MERGED %s %s" % (a["tag"], sha))
+            record("merged", a, "verdict=%s sha=%s" % (a["verdict"], sha))
+        else:
+            log("MERGE REFUSED %s rc=%d: %s" % (a["tag"], rc_, one_line(e_ + o_)))
+            if record("merge-refused", a, "verdict=%s rc=%d %s" % (a["verdict"], rc_, one_line(e_ + o_, 250))):
+                a["msg"] = "%s: rb-merge.sh %s refused rc=%d: %s" % (a["tag"], a["verdict"], rc_, one_line(e_ + o_, 200))
+                ring(a, a["owner"])
+sys.exit(0)
+#PY-END

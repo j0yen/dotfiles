@@ -28,6 +28,7 @@ printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1" in
   merge-gate) echo "PASS verdict=$2 pr=$5#$4 oid=${STUB_OID}"; exit 0 ;;
   merge-done) exit 0 ;;
+  list) python3 -I -c 'import json,sqlite3,sys; print(json.dumps([{"id": r[0], "via": "verifier"} for r in sqlite3.connect(sys.argv[1]).execute("select id from decisions")]))' "$RB_DECISIONS_DB" ;;
 esac
 S
 cat > "$RBF_ROOT/gh" <<'S'

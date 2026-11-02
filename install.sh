@@ -56,18 +56,67 @@ link() {
   fi
 }
 
+# A host-local environment.d file that already sets TMPDIR wins over the fleet default (RedBaron: /mnt/data/tmp/user);
+# the fleet file is not linked there. Files that resolve into this repo do not count.
+host_sets_tmpdir() {
+  local f dst="$home/.config/environment.d/05-tmpdir.conf"
+  for f in "$home"/.config/environment.d/*.conf; do
+    [[ -f "$f" && "$f" != "$dst" ]] || continue
+    [[ "$(readlink -f "$f")" == "$repo_root"/* ]] && continue
+    grep -q '^TMPDIR=' "$f" && return 0
+  done
+  return 1
+}
+
+# Retired paths (fleet-sync P28 mechanism 5): fleet-sync records a path deleted on origin/main in retired.tsv
+# (source<TAB>path<TAB>sha<TAB>time) and hands its location to the post step as FLEET_SYNC_RETIRED. A retired path that a
+# stale tree still holds is not (re)linked; already-linked host files are left alone (report only, never deleted).
+# Unset/empty FLEET_SYNC_RETIRED and no default file = behaviour unchanged. A malformed row is ignored with a WARN.
+declare -A retired=()
+retired_file="${FLEET_SYNC_RETIRED:-}"
+if [[ -z "$retired_file" ]]; then
+  retired_file="${XDG_STATE_HOME:-$home/.local/state}/fleet-sync-retired/retired.tsv"
+fi
+if [[ -f "$retired_file" ]]; then
+  lineno=0
+  while IFS=$'\t' read -r r_src r_path r_rest || [[ -n "${r_src:-}" ]]; do
+    lineno=$((lineno + 1))
+    [[ -z "${r_src:-}" || "${r_src:0:1}" == "#" ]] && continue
+    if [[ -z "${r_path:-}" || "$r_path" == /* || "$r_path" == *..* ]]; then
+      printf 'WARN malformed retired row %s:%s ignored\n' "$retired_file" "$lineno" >&2
+      continue
+    fi
+    retired["$r_path"]=1
+  done < "$retired_file"
+fi
+
 # Walk every file under the repo (excluding .git/, dotfiles meta).
 while IFS= read -r -d '' src; do
   rel="${src#$repo_root/}"
   case "$rel" in
     .git/*|.gitignore|README.md|install.sh) continue ;;
   esac
+  if [[ -n "${retired[$rel]:-}" ]]; then
+    printf 'SKIP retired %s\n' "$rel"
+    continue
+  fi
   if [[ "$rel" =~ $skip_pattern ]]; then
     printf 'skip (claude-self or local-only): %s\n' "$rel"
     continue
   fi
+  if [[ "$rel" == .config/environment.d/05-tmpdir.conf ]] && host_sets_tmpdir; then
+    printf 'skip (host-local TMPDIR file wins): %s\n' "$rel"
+    continue
+  fi
   link "$src" "$home/$rel"
 done < <(find "$repo_root" -type f -print0)
+
+# fleet TMPDIR contract (.config/environment.d/05-tmpdir.conf): the target dir must exist, mode 700.
+if [[ $DRY -eq 1 ]]; then
+  printf 'would run: mkdir -p %s/.cache/tmp && chmod 700 %s/.cache/tmp\n' "$home" "$home"
+else
+  mkdir -p "$home/.cache/tmp" && chmod 700 "$home/.cache/tmp"
+fi
 
 # fleet-sync post-apply check of the shared watcher lib: writes ~/.local/state/watchers/_lib.json
 # (sha, bash -n, source test, every discovered consumer's --selftest). Its exit code is install.sh's, so

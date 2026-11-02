@@ -75,7 +75,7 @@ assert_eq "$(wc -l < "$state/today-summary.txt")" "1" "summary file is one line 
 bs="$state/build-share.json"
 assert_eq "$(jq -r '.date' "$bs")" "2026-09-12" "build-share.json date"
 assert_eq "$(jq -r '.build_share' "$bs")" "86.7" "build-share.json build_share percent over the denominator"
-assert_eq "$(jq -r '.build_roles_re' "$bs")" '^(coder|inner|seat:(ctl|rb|r7|aide))$' "build-share.json names the build role set"
+assert_eq "$(jq -r '.build_roles_re' "$bs")" '^(coder|inner|seat:(ctl|rb|r7|aide(:[A-Za-z0-9._-]+)?))$' "build-share.json names the build role set"
 assert_eq "$(jq -r '.build_weighted' "$bs")" "65000000" "build-share.json build_weighted = coder+inner+seat:rb+seat:aide"
 assert_eq "$(jq -r '.total_weighted' "$bs")" "175000000" "build-share.json total_weighted stays the FULL total"
 assert_eq "$(jq -r '.excluded_weighted' "$bs")" "100000000" "build-share.json excluded_weighted = interactive"
