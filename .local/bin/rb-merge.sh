@@ -30,7 +30,9 @@
 # The only route around suite-unknown is a hand `gh pr merge` logged as a DECISION row, never a flag here. gh contract (shared with vtg2): `gh pr merge` is never called on a refusal; read-only gh calls are allowed.
 # Exit codes: 3 attribution/oid, 6 pre-gate A, 64 usage, else the gate's (2) or gh's own.
 set -euo pipefail
-usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name>" >&2; exit 64; }
+usage() { echo "usage: rb-merge.sh <verdict-id> <pr-number> <owner/name> [--handoff <aide d-id>]" >&2; exit 64; }
+handoff=""
+if [ $# -eq 5 ] && [ "$4" = "--handoff" ]; then handoff="$5"; set -- "$1" "$2" "$3"; fi
 [ $# -eq 3 ] || usage
 v="$1"; pr="$2"; repo="$3"
 case "$pr" in ''|*[!0-9]*) echo "rb-merge.sh: pr must be a number, got '$pr'" >&2; usage ;; esac
@@ -41,6 +43,41 @@ LOG="$RB_MERGE_LOG_DIR/rb-merge-${repo//\//_}-$pr-$(date +%Y%m%dT%H%M%S).log"; e
 exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
+
+# DISCOVERY CHAIN GUARD (r7 9:26 PM, ctl 382b, approval 51): r7 merged synthorg #449 from its own seat; r7 verifies and gates, the AIDE runs this script.
+# A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
+CHAIN_REPOS=(j0yen/synthorg)   # the ONE place the discovery chain repos are listed (no other dotfiles script keeps this set: hand-pr-land-driver HPLD_REPOS is the wider hand-PR set)
+chain_guard() {
+  local r in_chain=0 nrepo
+  # normalise ONCE (gh accepts URL / .git / mixed-case spellings of the same repo): lowercase, strip scheme+host prefix, trailing .git and /; anything that is then not plain owner/name is REFUSED outright
+  nrepo="$(printf '%s' "$repo" | tr 'A-Z' 'a-z' | sed -e 's#^https\?://github\.com/##' -e 's#^github\.com/##' -e 's#^git@github\.com:##' -e 's#/*$##' -e 's#\.git$##' -e 's#/*$##')"
+  if ! printf '%s' "$nrepo" | grep -Eq '^[a-z0-9._-]+/[a-z0-9._-]+$'; then
+    echo "rb-merge: REFUSED repo '$repo' is not plain owner/name after normalisation" >&2; exit 3
+  fi
+  for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$nrepo" ] && in_chain=1; done
+  [ "$in_chain" = 1 ] || return 0
+  [ "${WM_SEAT:-}" = aide ] && return 0
+  if [ -n "$handoff" ]; then
+    local rows
+    if rows="$("$WM_DECIDE" list --since 30d --json 2>/dev/null)" && printf '%s' "$rows" | python3 -I -c '
+import json, re, sys
+hid, pr, repo = sys.argv[1:4]
+for row in json.load(sys.stdin):
+    if row.get("id") != hid:
+        continue
+    if row.get("agent") != "aide":
+        break
+    text = " ".join(str(v) for v in row.values()).lower()
+    # ONE adjacent token names both: <repo>#N or <repo> pr=N (left boundary before the repo, no digit after N)
+    if re.search(r"(?<![a-z0-9._-])%s(?:#|\s+pr=)%s(?!\d)" % (re.escape(repo), re.escape(pr)), text):
+        sys.exit(0)
+    break
+sys.exit(1)' "$handoff" "$pr" "$nrepo"; then return 0; fi
+  fi
+  echo "rb-merge: REFUSED discovery chain PR $repo#$pr needs WM_SEAT=aide or --handoff <aide d-id> (approval 51)" >&2
+  exit 3
+}
+chain_guard
 
 # ---- pre-gate A (see the header): fail closed, ONE exit code (6); the ERR trap covers only this block (PG_ACTIVE) ----
 PG_DB="${RB_DECISIONS_DB:-${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite}"
