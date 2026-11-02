@@ -332,6 +332,7 @@ for _l in "${ZERO_GUARD_LIB:-}" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 if type zero_open_runs_refuse >/dev/null 2>&1; then zero_open_runs_refuse "$re" || { echo "approve.sh: refused" >&2; exit 66; }; fi
 quote=$(printf '%s' "$quote" | tr '\r\n' '  '); re=$(printf '%s' "$re" | tr '\r\n' '  ')
 re="${re#re: }"
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ask-check-lint.sh" --text "$re" || exit $?   # A254: source-shaped done-check refused
 if [ -z "${quote//[[:space:]]/}" ] || [ -z "${re//[[:space:]]/}" ]; then
   echo 'usage: approve.sh "<verbatim Joe quote>" "<re: what it approves>" (both non-empty)' >&2; exit 2
 fi

@@ -1,0 +1,6 @@
+[Unit]
+Description=mirror the wm-decide ledger to redbaron (ctl 4bed option a)
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ledger-mirror-rb.sh
+TimeoutStartSec=120

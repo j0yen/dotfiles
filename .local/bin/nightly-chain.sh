@@ -13,6 +13,18 @@
 # considerations: they need the fleet OAuth token / systemd unit env, and
 # are not part of the discovery chain itself).
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+# A93 money guard: the chain's paid links run uncapped when the per-link spend
+# ceiling is missing (the unit loads its EnvironmentFile as optional, `-`), so a
+# re-enabled timer must refuse before any link starts. Unset, empty, a comment
+# kept as the value (`VAR=  # set me`) or a non-positive number => exit 78.
+_explore_cap="${SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE:-}"
+_explore_cap="${_explore_cap%%#*}"
+_explore_cap="${_explore_cap//[[:space:]]/}"
+if ! [[ "$_explore_cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v c="$_explore_cap" 'BEGIN{exit !(c>0)}'; then
+  echo "REFUSED: SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE unset or not a positive USD number; chain would run uncapped" >&2
+  exit 78
+fi
 for slug in ${NIGHTLY_WAIT_FOR_SLUGS:-}; do
   if [ ! -f "$HOME/Documents/PRDs/built-prds/PRD-$slug.md" ]; then
     echo "== chain deferred: $slug not built yet $(date -u +%FT%TZ)"; exit 0
