@@ -1,6 +1,7 @@
 # Live ~/.config/systemd/user/*.d/*.conf files that are NOT symlinks into dotfiles and are allowed to stay local (checked by tests/user-timers-start-trigger.test.sh part c).
-# One path relative to ~/.config/systemd/user per line. Do NOT list a *.timer.d drop-in here: a timer drop-in is the thing that wiped OnBootSec on 10-24,
-# so it must be tracked in dotfiles (see .config/systemd/user/seat-tick@.timer.d and swarm-decide-regrade.timer.d).
+# One path relative to ~/.config/systemd/user per line. A *.timer.d drop-in wiped OnBootSec on 10-24, so it must be tracked in dotfiles (see .config/systemd/user/seat-tick@.timer.d and
+# swarm-decide-regrade.timer.d); the ONLY exception is a line carrying a machine-read expiry:  <path> # EXPIRES YYYY-MM-DD HH:MM <note>  (local time; the loader allowlist_live in the test
+# drops the entry once the clock passes it, and refuses a *.timer.d line with no EXPIRES).
 agorabus.service.d/boot-telemetry.conf
 graphical-session.target.d/override.conf
 nats-leaf.service.d/ubuntu-path.conf
@@ -24,3 +25,5 @@ wm-tts.service.d/boot-telemetry.conf
 xdg-desktop-portal.service.d/override.conf
 # symlink into the build skill's own tree (not dotfiles)
 claude-build.service.d/defer.conf
+seat-tick@.timer.d/60-quota-stretch.conf # EXPIRES 2026-10-26 21:10 aide QUOTA STRETCH
+swarm-decide-regrade.timer.d/60-quota-stretch.conf # EXPIRES 2026-10-26 21:10 aide QUOTA STRETCH (second drop-in of the same stretch; not in the brief's F4, found live)

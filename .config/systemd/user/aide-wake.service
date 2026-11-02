@@ -1,0 +1,9 @@
+[Unit]
+Description=Aide idle check: pending work + no armed wake + stale heartbeat writes aide-idle.json and pokes the pane when tmux knows it (A7, approvals #127)
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=60
+ExecStart=%h/.local/bin/aide-wake.sh check

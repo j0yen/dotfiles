@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]
+# fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]
 #   Moves the whole fleet to another Claude account's setup-token from the store (fleet-token-store.sh). NEVER prints a token.
 #   1. refuse (exit 1) when the store lacks <account>; token.json (fleet-dash) already names it -> `no-op: <account> already current`, exit 0
 #      (a missing token.json = unknown = allowed; seed it with `fleet-token-store.sh current <account>`)
@@ -30,7 +30,7 @@ usage() {
   local why="${1:-bad arguments}" a="?" b t ts
   ft_valid_account "$R_ACCT" && a="$R_ACCT"
   b="$(ft_clean "$R_BY" | cut -c1-40)"; t="$(ft_clean "$R_TRIG" | cut -c1-40)"
-  echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2
+  echo 'usage: fleet-token-rotate.sh <account> --by <who> --trigger <429|schedule|hand|joe-<date-or-time>> [--why <text>] [--evidence <text>] [--blocked-until <epoch|date>]  |  --selftest' >&2
   ft_paths 2>/dev/null || true
   ft_alarm "rotation to $a REFUSED rc=64 ($why; by=${b:--} trigger=${t:--})" || true
   { mkdir -p "$FT_STATE" && ts="$(ft_now)" && ( umask 077; printf '%s | ts=%s account=%s result=refused rc=64 by=%s trigger=%s\n' \
@@ -114,7 +114,7 @@ rotate() {
   done
   ft_valid_account "$acct" || usage 'invalid account name'
   [[ "$by" =~ ^[A-Za-z0-9._@:+-]+$ ]] || usage 'invalid --by'
-  case "$trigger" in 429|schedule|hand) ;; *) usage "trigger not one of 429|schedule|hand" ;; esac
+  case "$trigger" in 429|schedule|hand) ;; *) [[ "$trigger" =~ ^joe-[0-9A-Za-z:._-]+$ ]] || usage "trigger not one of 429|schedule|hand|joe-<date-or-time>" ;; esac
   if [ -n "$bu" ]; then buep="$(ft_parse_la_date "$bu")" || { echo "fleet-token-rotate: cannot parse --blocked-until '$bu' as a date" >&2; usage 'unparseable --blocked-until'; }; fi
 
   [ -f "$FT_STORE/$acct" ] || { echo "fleet-token-rotate: REFUSED: no store entry for '$acct' (fleet-token-store.sh add $acct)" >&2; return 1; }
@@ -203,6 +203,8 @@ selftest() {
     run nosuch --by t --trigger hand; rc=$?
     [ "$rc" = 1 ] && grep -q 'REFUSED' "$e" && [ ! -e "$FT_TOKJSON" ] && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ]; ft_st_chk "missing store entry: refused (exit 1), nothing verified or placed, no token.json" $?
     run acctB --by t --trigger bogus; rc=$?; [ "$rc" = 64 ]; ft_st_chk "bad trigger: usage, exit 64" $?
+    run acctB --by t --trigger reset-0220; rc=$?; [ "$rc" = 64 ] && [ -z "$(fl place)" ]; ft_st_chk "trigger reset-0220: usage, exit 64, nothing placed" $?
+    run acctB --by t --trigger 'joe-x y'; rc=$?; [ "$rc" = 64 ]; ft_st_chk "trigger joe- with a space: usage, exit 64" $?
     run acctB --by t --trigger hand "$c"; rc=$?; [ "$rc" = 64 ] && ! grep -qF "$c" "$e"; ft_st_chk "stray argv: exit 64, not echoed" $?
     [ -z "$(fl place)" ]; ft_st_chk "usage errors placed nothing" $?
     # A380: a refused argument line is logged, alarmed and belled to the aide (the earlier usage runs above left these traces)
@@ -210,7 +212,7 @@ selftest() {
     grep -q 'ALARM fleet-token: rotation to acctB REFUSED rc=64 (trigger not one of 429|schedule|hand; by=t trigger=bogus)' "$FT_DASH/ctl-events.log" 2>/dev/null \
       || grep -q 'ALARM fleet-token: rotation to acctB REFUSED rc=64' "$FT_DASH/ctl-events.log"; ft_st_chk "refusal: ALARM in ctl-events.log" $?
     fl bell | grep -q '^aide fleet-token: rotation to acctB FAILED rc=64 (refused: '; ft_st_chk "refusal: FAILED line belled to the aide inbox" $?
-    [ "$(wc -l <"$FT_ROTLOG")" = 2 ] && ! grep -rqF "canary-tok" "$FT_ROTLOG" "$FT_DASH/ctl-events.log" "$FAKE_LOG_DIR/bell.log"; ft_st_chk "refusal: one trace per refused run (2), stray argv token never written" $?
+    [ "$(wc -l <"$FT_ROTLOG")" = 4 ] && ! grep -rqF "canary-tok" "$FT_ROTLOG" "$FT_DASH/ctl-events.log" "$FAKE_LOG_DIR/bell.log"; ft_st_chk "refusal: one trace per refused run (4), stray argv token never written" $?
     run; rc=$?; [ "$rc" = 64 ] && tail -n1 "$FT_ROTLOG" | grep -q 'account=? result=refused rc=64 by=- trigger=-$'; ft_st_chk "refusal: empty argv is traced too (account=?)" $?
     # reset the traces so the success-path assertions below see only their own runs
     rm -f "$FT_ROTLOG" "$FT_DASH/ctl-events.log"; : >"$FAKE_LOG_DIR/bell.log"
@@ -290,6 +292,8 @@ selftest() {
     run acctA --by joe --trigger hand --blocked-until "2026-10-26 21:00"; rc=$?
     [ "$rc" = 0 ] && grep -q 'no previous account is known: nothing blocked' "$e" && ! ls "$FT_STATE"/blocked-until-* >/dev/null 2>&1; ft_st_chk "blocked-until: no previous account known -> warning, nothing blocked, rotation still done" $?
     ! grep -rqF "$c" "$o" "$e"; ft_st_chk "stdout and stderr carry no token (blocked-until cases)" $?
+    run acctB --by joe-20261101 --trigger joe-20261101; rc=$?
+    [ "$rc" = 0 ] && [ "$(tokj .trigger)" = joe-20261101 ] && [ "$(tokj .by)" = joe-20261101 ] && tail -n1 "$FT_ROTLOG" | grep -q ' by=joe-20261101 trigger=joe-20261101 '; ft_st_chk "trigger joe-20261101: accepted, recorded as given in token.json and rotations.log" $?
     ft_st_done fleet-token-rotate
   ); return $?
 }

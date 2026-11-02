@@ -1,0 +1,8 @@
+[Unit]
+Description=aide follows the fleet account every 3 min
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=3min
+AccuracySec=30s
+[Install]
+WantedBy=timers.target

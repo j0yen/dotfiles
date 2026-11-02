@@ -154,6 +154,42 @@ print(json.dumps({"ev":"write","id":rid,"ts":ts,"epoch":ns//10**9,"host":host,"w
 }
 
 # ---------------------------------------------------------------------------------------------------------------------------
+# Consecutive-skip streak (tsd3 F3/W3, ctl a26e): r7-untagged-pause logged `no top tag (gh failed) - skip` on every 15 s run for an unknown time and alarmed
+# nothing, because a skip is not a failure. A watcher calls   watcher_skip <reason>   on a run that did nothing for want of an input, and
+# watcher_run_end   on any run that acted or found the world fine (the ONE reset). State: $WATCHER_STATE_DIR/<WP_NAME>.skip = "<n> <last reason>" (dir defaults to
+# $WP_STATE). From WATCHER_SKIP_MAX (default 20) consecutive skips, watcher_skip prints `alarm: skip-streak <name> <n> <reason>` and sets WATCHER_SKIP_ALARM to
+# that text without the "alarm: " prefix; the watcher puts WATCHER_SKIP_STREAK / _REASON / _ALARM in the status.json the fleet-dash collector ingests.
+_wsk_file() { printf '%s/%s.skip' "${WATCHER_STATE_DIR:-$WP_STATE}" "${WP_NAME:-unnamed}"; }
+_wsk_write() { # N REASON -> atomic one-line state file
+  local f t; f=$(_wsk_file); t=$f.tmp.$$
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  { printf '%s %s\n' "$1" "$2" > "$t" && mv -f "$t" "$f"; } 2>/dev/null || { rm -f "$t" 2>/dev/null; return 1; }
+}
+watcher_skip_streak() { local n; n=$(cut -d' ' -f1 "$(_wsk_file)" 2>/dev/null | head -n1); case "$n" in ''|*[!0-9]*) n=0;; esac; printf '%s' "$n"; }
+watcher_skip_alarm() { # prints `skip-streak <name> <n> <reason>` when the persisted streak is at/over the threshold, nothing otherwise (also read by status writers)
+  local max n r; max=${WATCHER_SKIP_MAX:-20}; case "$max" in ''|*[!0-9]*|0) max=20;; esac
+  n=$(watcher_skip_streak); [ "$n" -ge "$max" ] || return 0
+  r=$(cut -d' ' -f2- "$(_wsk_file)" 2>/dev/null | head -n1)
+  printf 'skip-streak %s %s %s' "${WP_NAME:-unnamed}" "$n" "${r:--}"
+}
+watcher_skip() { # REASON
+  [ -n "${WP_NAME:-}" ] || { echo "watcher_skip: wp_arm was not called" >&2; return 1; }
+  local reason n
+  reason=$(_wp_clean "${1:-skip}"); reason=${reason:0:120}; [ -n "$reason" ] || reason=skip
+  n=$(( $(watcher_skip_streak) + 1 ))
+  _wsk_write "$n" "$reason" || echo "watcher_skip: cannot write $(_wsk_file)" >&2
+  WATCHER_SKIP_STREAK=$n; WATCHER_SKIP_REASON=$reason; WATCHER_SKIP_ALARM=$(watcher_skip_alarm)
+  [ -z "$WATCHER_SKIP_ALARM" ] || echo "alarm: $WATCHER_SKIP_ALARM"
+  return 0
+}
+watcher_run_end() { # any non-skip run (acted, or looked and found nothing wrong): the streak is over
+  [ -n "${WP_NAME:-}" ] || return 1
+  WATCHER_SKIP_STREAK=0; WATCHER_SKIP_REASON=; WATCHER_SKIP_ALARM=
+  [ -e "$(_wsk_file)" ] || return 0
+  _wsk_write 0 - || return 1
+}
+
+# ---------------------------------------------------------------------------------------------------------------------------
 # wp_selftest: the lib's own scenarios in throwaway HOMEs (one per scenario), stub wm-decide recording argv. Prints `selftest ok N/N`.
 wp_selftest() {
   local pass=0 fail=0 T got

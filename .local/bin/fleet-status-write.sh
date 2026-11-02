@@ -9,6 +9,8 @@
 # ctl-sweep.sh also uses its mtime to decide whether the last sweep finished.
 #   fleet-status-write.sh < report.md     write (boundary: closed)
 #   fleet-status-write.sh --open </dev/null   mark the sweep open
+#   fleet-status-write.sh --render <status.json>   body generated from status.json: one `<key>: <value>` line per
+#                                          alarm in .config/fleet/alarms.json ('unknown' when absent), then owed lines if any
 #   fleet-status-write.sh --path          print the file path
 #   fleet-status-write.sh --selftest      run the checks in a temp dir
 set -u
@@ -65,8 +67,9 @@ selftest() {
   return "$fail"
 }
 
-OPEN=0
+OPEN=0; RENDER=""
 case "${1:-}" in
+  --render) RENDER="${2:-}"; [ -r "$RENDER" ] || { echo "fleet-status-write: --render needs a readable status.json" >&2; exit 64; } ;;
   --path) echo "$FILE"; exit 0 ;;
   --selftest) selftest; exit $? ;;
   --open) OPEN=1 ;;
@@ -78,7 +81,12 @@ mkdir -p "$DIR" || exit 1
 BODY="$(mktemp "$DIR/.fleet-status.body.XXXXXX")" || exit 1
 OUT="$(mktemp "$DIR/.fleet-status.out.XXXXXX")" || { rm -f "$BODY"; exit 1; }
 trap 'rm -f "$BODY" "$OUT"' EXIT
-if [ "$OPEN" = 1 ] && [ -t 0 ]; then : >"$BODY"; else cat >"$BODY"; fi
+if [ -n "$RENDER" ]; then
+  AL="${FLEET_ALARMS:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)/.config/fleet/alarms.json}"
+  jq -r --slurpfile st "$RENDER" '.alarms[].key as $k | ($k | split(".")) as $p
+    | ($st[0] | try getpath($p) catch null) as $v
+    | "\($k): \(if $v == null then "unknown" elif ($v|type) == "array" then "\($v|length) item(s)" elif ($v|type) == "object" then "\($v|keys|length) key(s)" else $v end)"' "$AL" >"$BODY" || exit 1
+elif [ "$OPEN" = 1 ] && [ -t 0 ]; then : >"$BODY"; else cat >"$BODY"; fi
 HAS_BODY=1; grep -q '[^[:space:]]' "$BODY" || HAS_BODY=0
 if [ "$HAS_BODY" = 0 ] && [ "$OPEN" = 0 ]; then
   echo "fleet-status-write: empty report on stdin, refusing (previous $FILE left untouched)" >&2
