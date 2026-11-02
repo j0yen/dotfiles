@@ -13,8 +13,9 @@
 #       Stop             -> {"decision":"block","reason":...} ONCE per turn (stop_hook_active false), so the turn works the rows before it ends;
 #                           the second Stop of the same turn passes (a bounded push, never a loop). A subagent (.agent_id set) is never blocked.
 #   owed-now.sh guard                         PreToolUse (Edit|Write|MultiEdit|Bash): DENIES a write that would add a DELAY row to open-asks.tsv
-#                                             (post-state minus pre-state, any owner), and a Bash command that names open-asks/seat-ask/seat-event/
-#                                             approve.sh or --due with a timestamp beyond now+grace and no waits-on= in the same command.
+#                                             (post-state minus pre-state, any owner), and a Bash command that names open-asks.tsv AND writes it
+#                                             (redirect, tee, sed -i, cp/mv, script write) with a local timestamp beyond now+grace and no waits-on= in the same command;
+#                                             reads of the file and timestamps ending in Z or +00:00 (quoted upstream times) pass.
 #                                             The refusal is the rule's code form: a future due cannot be written without naming what it waits on
 #                                             (Joe 10-31 11:3x PM "use code to make this impossible moving forward").
 #       Stop             -> blocks up to OWED_NOW_STOP_MAX (3) times per turn (counter reset at UserPromptSubmit), not once.
@@ -110,9 +111,13 @@ PYX
 $added" ;;
     Bash)
       cmd="$(jq -r '.tool_input.command // empty' <<<"$in" 2>/dev/null)"
-      grep -qE 'open-asks|seat-ask\.sh|seat-event\.sh|approve\.sh|--due' <<<"$cmd" || return 0
+      # scope: only a command that names open-asks.tsv AND writes it (redirect, tee, sed -i, cp/mv/install onto it, a script's write/open w|a)
+      grep -q 'open-asks' <<<"$cmd" || return 0
+      grep -qE '>>?[[:space:]]*["'"'"']?[^[:space:];&|]*(open-asks|\$)|tee[^|;&]*open-asks|sed[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-[A-Za-z]*i|(cp|mv|install)[[:space:]][^;&|]*open-asks|\.write\(|open\([^)]*,[[:space:]]*["'"'"'][wa]' <<<"$cmd" || return 0
       grep -q 'waits-on=' <<<"$cmd" && return 0
-      for ts in $(grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' <<<"$cmd" | sort -u); do
+      # a timestamp ending in Z or +00:00 is a quoted upstream time, never a due
+      for ts in $(grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})?' <<<"$cmd" | grep -vE '(Z|\+00:?00|-00:?00)$' | sort -u); do
+        ts="${ts:0:16}"
         e="$(date -d "${ts/T/ }" +%s 2>/dev/null)" || continue
         if [ "$e" -gt $((now + GRACE * 60)) ]; then
           deny "owed-now: the command writes a future due ($ts) to an ask row without waits-on=. Do the work now, or add waits-on=<host|seat|person|event> to the same command (Joe 10-31 11:1x PM, approvals #181/#182)."; return 0
@@ -173,6 +178,14 @@ selftest() {
   t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes the same Bash append with waits-on="
   out="$(jq -cn '{tool_name:"Bash",tool_input:{command:"ls -la"}}' | guard)"
   t "$([ -z "$out" ] && echo 0 || echo 1)" "guard ignores an unrelated Bash command"
+  out="$(jq -cn '{tool_name:"Bash",tool_input:{command:"gh pr list --json mergedAt --jq '"'"'select(.mergedAt > \"2026-11-01T18:00:00Z\")'"'"'"}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes a gh command quoting a Z-suffixed upstream time"
+  out="$(jq -cn --arg c "cat $OPEN_ASKS; echo due $fut" '{tool_name:"Bash",tool_input:{command:$c}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes a Bash command that only reads open-asks.tsv"
+  out="$(jq -cn --arg c "printf 'A9\t$nowiso\taide\t${fut}Z\tk\tc\tx\n' >> $OPEN_ASKS" '{tool_name:"Bash",tool_input:{command:$c}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard ignores a Z-suffixed timestamp even in a write"
+  out="$(jq -cn --arg c "seat-ask.sh --due $fut --to rb x" '{tool_name:"Bash",tool_input:{command:$c}}' | guard)"
+  t "$([ -z "$out" ] && echo 0 || echo 1)" "guard passes a command that never names open-asks.tsv"
   echo "selftest: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
 }
 

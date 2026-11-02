@@ -18,7 +18,7 @@
 #      WP_LIB (default ~/.local/lib/watcher-premise.sh; absent = flag ARM disarmed), RB_SPAWN_HOLD_EXPIRES (watcher EXPIRES, ISO)
 # HAND-YIELD writes carry a premise (watcher-premise.sh): ARM = wp_gate && wp_emit_write && ssh write, only on a state change
 #   (flag absent, or ours and < 10 min from expiry); CLEAR is never gated (a flag we wrote we can always remove) but still emits.
-# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0;
+# stdout (one line): `HOLD run=<id> refusal=<r> age_s=<n> hand_slots=<k> source=<s>` exit 76, or `OK <why> source=<s>` exit 0, or `UNKNOWN unknown: <err> source=unknown` exit 0 (journal unread);
 #   an ssh read appends ` walls=runs:<s>,land:<s>,daemon:<s>,builder:<s>` (per-table remote wall seconds).
 #
 # HOLD iff EITHER
@@ -28,7 +28,7 @@
 #   leading: a `release-mem-queued` run (< 30 min old) with no later grant/drop while any via=hand cargo job is held.
 # Journal window: the last 60 min (the spec says 30; hand slots taken before the 30 min mark must still count as held).
 # Read failure: previous file HOLD and its read_at < 30 min old -> stay HOLD with source=stale-ssh (read_at is NOT advanced,
-#   so the stickiness cannot renew itself); otherwise `OK unknown: <err>` with source=unknown.
+#   so the stickiness cannot renew itself); otherwise `UNKNOWN unknown: <err>` with source=unknown (exit 0 as before; a caller matching OK* must not launch on it).
 # Blind (shu, ctl a43d: the gate failed OPEN): a non-probe, non-exempt call whose source=unknown has lasted >= BLIND_S (600 s) since unknown_since
 #   (shu2: unknown_since = the earliest of the carried unknown_since and the previous state's read_at, i.e. the clock starts at the LAST
 #   GOOD journal read, not at the first failing call)
@@ -219,7 +219,7 @@ if not rerr:
 rows.sort(key=lambda r: r["_t"])
 
 out = {"active": False, "run_id": None, "refusal": None, "refused_at": None, "read_at": iso(now),
-       "source": src, "hand_slots": 0, "parts": [], "exempt": exempt, "unknown_since": None}
+       "source": src, "hand_slots": 0, "parts": [], "exempt": exempt, "unknown_since": None, "read_error": None}
 line = None
 # unknown_since: when the journal first became unreadable (fleet-dash warns after 10 min); carried while reads keep failing
 unk0 = (prev or {}).get("unknown_since") if (prev or {}).get("source") in ("unknown", "stale-ssh") else None
@@ -240,17 +240,18 @@ def blind_origin():
 skip_write = False
 
 if rerr:
+    rerr1 = " ".join(rerr.split())[:200]
     ok_prev = False
     if prev and prev.get("active"):
         try: ok_prev = (now - pts(prev["read_at"])).total_seconds() < CEIL
         except Exception: ok_prev = False
     if ok_prev:
-        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = blind_origin()
+        out = dict(prev); out["source"] = "stale-ssh"; out["exempt"] = exempt; out["unknown_since"] = blind_origin(); out["read_error"] = rerr1
         age = int((now - pts(prev["refused_at"] or prev["read_at"])).total_seconds())
         line = "HOLD run=%s refusal=%s age_s=%d hand_slots=%s source=stale-ssh" % (out.get("run_id"), out.get("refusal"), age, out.get("hand_slots"))
     else:
-        out["source"] = "unknown"; out["unknown_since"] = blind_origin()
-        line = "OK unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
+        out["source"] = "unknown"; out["unknown_since"] = blind_origin(); out["read_error"] = rerr1
+        line = "UNKNOWN unknown: %s source=unknown" % rerr.replace("\n", " ")[:200]
         age_s = int((now - pts(out["unknown_since"])).total_seconds())
         # fail-closed (shu): only a spawn gate refuses; --probe-only (timer) and --exempt (--no-cargo) accept blindness.
         # source stays "unknown" below, so act=none and an unknown-blind HOLD never touches the HAND-YIELD flag.
@@ -323,7 +324,7 @@ PY
   # a crash (incl. a failed state write) is blind: a spawn gate refuses. --exempt without --probe-only (the caller accepts blindness)
   # and --probe-only keep the old OK unknown / exit 0 ON PURPOSE.
   if [ "$probe" -eq 0 ] && [ -z "$exempt" ]; then echo "HOLD unknown-blind engine-failed fix: ssh redbaron journal read or --no-cargo"; exit 76; fi
-  echo "OK unknown: decision engine failed source=unknown"; exit 0
+  echo "UNKNOWN unknown: decision engine failed source=unknown"; exit 0
 }
 line=$(printf '%s\n' "$decision" | sed -n 1p); act=$(printf '%s\n' "$decision" | sed -n 2p)
 

@@ -1,0 +1,5 @@
+# cap_id	host	kind	target	section	key	fmt	pick
+# One row per generated spot; see .local/bin/caps-gen.py. Columns are tab separated.
+C026		dropin	.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf	Timer	OnUnitActiveSec		
+C026		dropin	.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf	Timer	OnBootSec	20min	
+C026		dropin	.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf	Timer	OnUnitActiveSec	{n}min	

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Classifier for carbon-no-build.sh: reads the PreToolUse hook JSON on stdin and prints
 'deny <rule>' or 'allow'. Carbon is for administration and monitoring (CLAUDE.md § Hosts): no builds,
-no test suites, no coding.
+no test suites, no coding. EXCEPTION (Joe 10-31 10:5x PM "authorized to build small things on carbon", approvals #180): a small
+Python/shell change of one or two files and its ONE named unit test file. Allowed: git worktree/clone/branch/commit, edits to
+small-build file types in a git tree (not Rust), `pytest <one test_*.py>` and `bash <one tests/x.test.sh>`. Still denied: cargo/rustc,
+make/go/npm/tsc builds, a directory/glob/tests/run.sh suite run, wm-verify-run, verifier launches, coder agents, `claude -p`.
 
 Bash   : command position only, after unwrapping systemd-run/timeout/nice/nohup/env/setsid/sudo/time/exec;
          quotes and heredoc bodies are ignored, ssh/scp segments are ignored; the first quoted string of
@@ -48,6 +51,8 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     if not os.path.isabs(p):
         p = os.path.join(str(data.get("cwd") or os.getcwd()), p)
     given = os.path.normpath(p)
+    RUST_FILES = {"Cargo.toml", "Cargo.lock", "build.rs"}
+    SMALL_BUILD_EXT = {".py", ".sh", ".md", ".json", ".tsv", ".txt", ".html", ".js", ".css", ".yaml", ".yml", ".conf", ".service", ".timer", ".toml", ".cfg", ".ini"}
     allow = [
         os.path.join(HOME, ".claude/CLAUDE.md"),
         os.path.join(HOME, ".claude/projects/*/memory/*"),
@@ -62,11 +67,15 @@ if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
     # fnmatch's * crosses '/', which is what the ** globs mean
     if any(fnmatch.fnmatchcase(given, g) for g in allow):
         out("allow")
+    if os.path.basename(given) in RUST_FILES or os.path.splitext(given)[1] == ".rs":
+        out("deny edit-rust")
     real = os.path.realpath(given)
     home_real = os.path.realpath(HOME)
     d = os.path.dirname(real)
     while d and d != home_real and d != os.path.dirname(d):
         if os.path.exists(os.path.join(d, ".git")):
+            if os.path.splitext(given)[1] in SMALL_BUILD_EXT:
+                out("allow")   # a small Python/shell/doc/config edit (#180); the live-clone commit guard still holds
             out("deny edit-in-git-tree")
         d = os.path.dirname(d)
     out("allow")
@@ -87,6 +96,19 @@ READERS = {"cat", "grep", "egrep", "fgrep", "rg", "head", "tail", "ls", "wc", "g
            "md5sum", "test", "[", "echo", "printf", "jq", "sed", "awk", "find", "readlink", "realpath", "basename", "dirname", "tee", "rm", "cp", "mv",
            "chmod", "touch", "mkdir", "seat-ask.sh", "ssh", "scp", "rsync", "gh"}
 TEST_PATH = re.compile(r"(?:^|/)tests/(?:run\.sh|[^\s]*\.test\.sh)$")
+GLOB = re.compile(r"[*?\[\]{}$]")
+PY_TEST_FILE = re.compile(r"(?:^|/)(?:test_[^/\s]*|[^/\s]*_test)\.py$")
+
+
+def one_named_test(t):
+    """#180: exactly one explicit test file (no glob, no directory, not tests/run.sh) is a unit test of a small change, not a suite."""
+    hits = [x for x in t if TEST_PATH.search(x)]
+    return len(hits) == 1 and not GLOB.search(hits[0]) and not hits[0].endswith("run.sh")
+
+
+def one_named_pytest_file(rest):
+    files = [x for x in rest if not x.startswith("-") and (PY_TEST_FILE.search(x.split("::")[0]) or x.rstrip("/").endswith((".py", "/")) or "/" in x or x in ("tests", "."))]
+    return len(files) == 1 and bool(PY_TEST_FILE.search(files[0].split("::")[0])) and not GLOB.search(files[0].split("::")[0])
 
 
 def split_segments(s):
@@ -210,19 +232,22 @@ def classify(cmd, depth=0):
             continue
         rest = t[1:]
         # tests/*.test.sh at ANY token position (reads of those files excepted)
-        if b not in READERS and any(TEST_PATH.search(x) for x in t):
+        if b not in READERS and any(TEST_PATH.search(x) for x in t) and not one_named_test(t):
             return "test-suite"
         if b in ("cargo", "rustc"):
             if rest and re.match(r"^(--version|-V|--help|-h)$", rest[0]):
                 continue
             return "cargo"
+        if b in ("pytest", "py.test") and one_named_pytest_file(rest):
+            continue
         if b in DIRECT:
             return "build-or-test"
         if b == "claude" and any(x in ("-p", "--print") or x.startswith("--print=") for x in rest):
             return "claude-print"   # a headless coder turn; rb-run-coder.sh launches it on redbaron over ssh and stays allowed
         if re.match(r"^python[\d.]*$", b):
             if re.search(r"(^|\s)-m\s*pytest\b", " ".join(rest)) or (rest and base(rest[0]) in ("pytest", "py.test")):
-                return "pytest"
+                if not one_named_pytest_file(rest):
+                    return "pytest"
         if b in ("uv", "uvx", "poetry", "pipx", "pdm", "hatch", "npx", "pnpx", "bunx", "pnpm", "yarn", "npm", "bun") and \
                 any(base(x) in ("pytest", "py.test", "tsc", "wm-verify-run") for x in rest):
             return "pytest-or-tsc"
@@ -236,10 +261,6 @@ def classify(cmd, depth=0):
                 return "npm"
         if b == "aide-verifier.sh" and "launch" in rest:
             return "aide-verifier-launch"
-        if b == "git":
-            sub = [x for x in rest if not x.startswith("-")]
-            if len(sub) >= 2 and sub[0] == "worktree" and sub[1] == "add":
-                return "git-worktree-add"
         if b in ("bash", "sh", "zsh", "dash", "ksh") and depth < 4:
             for i, x in enumerate(rest):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", x) and i + 1 < len(rest):

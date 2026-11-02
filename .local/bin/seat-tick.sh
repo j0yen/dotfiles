@@ -31,7 +31,9 @@
 # quota_parse_failed=true + quota_parse_text (the limit line, first 120 chars) are written, plus one `ALARM fleet-token:` line in ctl-events.log (ft_alarm). Both clear at the next exit-0 turn or a rotation.
 # MAX-TURNS (10-23; 10-22 12:00 AM -> 10-23 11:20 AM the rb/r7 seats' own Opus turns were 121M weighted tokens + 141M in-session subagents vs 22M for the PRD coders; a tick turn had no bound:
 # median 19-21 assistant messages, p90 71-136, max 1857): seats.tsv column 8 `max_turns` (integer >= 1, or `-` = no cap; a 7-column row = no cap) appends `--max-turns <N>` to the claude argv of EVERY
-# turn kind (TICK/SWEEP/EVENT/ASK), after `--model <m>` and before the lean/--settings block. MEASURED (claude 2.1.293, `claude -p --max-turns 1`): a capped turn prints `Error: Reached max turns (<N>)` on stdout
+# turn kind (TICK/SWEEP/EVENT/ASK), after `--model <m>` and before the lean/--settings block.
+# NO WAKEUPS (five-whys 10-24 rb-ask-lock): EVERY turn kind also carries `--disallowedTools ScheduleWakeup` (right after the `--max-turns` slot, or after `--model` when uncapped): a seat turn ends at its STATUS and cannot self-schedule wakeups (a /loop turn slept holding <seat>.lock until the 3420 s kill, exit 124, 26 of 27 turns, asks queued behind it).
+# CAP-KILLS: <seat>-tick.json `cap_kills` = consecutive turns whose claude exit was 124 (the `timeout` kill); any other exit resets it to 0; at >= 2 one `ALARM <seat> cap-kills=<n>` line goes to stderr and <seat>-events.log (source cap-kill, no wake). MEASURED (claude 2.1.293, `claude -p --max-turns 1`): a capped turn prints `Error: Reached max turns (<N>)` on stdout
 # (no trailing newline, stderr empty) and exits 1 (`--output-format json`: subtype=error_max_turns, terminal_reason=max_turns, is_error=true). That is a NORMAL turn end here: when rc != 0 and the LAST non-empty
 # line of the turn log is exactly that marker, the turn is recorded as exit 0 (events_offset advances, no SEAT-TICK FAILED bell, last_skip_reason untouched, queued asks stay consumed, the exit-0 EVENT chain still runs),
 # max_turns_hits (count, kept across runs) increments in <seat>-tick.json, and stderr says `seat-tick: <seat> max-turns <N> reached`. Any other non-zero exit is unchanged.
@@ -89,7 +91,7 @@ ALARM_AT=3
 JSONL_DIR="$HOME/.claude/projects/-home-jsy"   # session JSONLs of the seats (cwd $HOME); the override is honoured only in selftest mode
 [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_JSONL_DIR:-}" ] && JSONL_DIR="$SEAT_JSONL_DIR"
 EVENT_RULE='every EVENT line gets a read and, if real, a mitigation this turn; log a DECISION row for each action'
-RULES_LINE='Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; '"$EVENT_RULE"'; this turn ends when you print the timestamped STATUS block.'
+RULES_LINE='Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; '"$EVENT_RULE"'; this turn ends when you print the timestamped STATUS block; a turn ends at its STATUS, no /loop or ScheduleWakeup under seat-tick.'
 EV_MAX=40   # event lines shown in one prompt
 
 # EXIT trap, armed right after the pre-turn state save: any exit before the tail's own save (an unset variable, a signal, a failed command) still
@@ -168,6 +170,21 @@ has_tty_or_tmux() {   # has_tty_or_tmux <pid>: 0 = tty (tty_nr != 0) or tmux anc
   return 1
 }
 
+# The aide seat is keyed on WM_SEAT=aide (set only by aide-launch.sh), never on any interactive claude: a plain carbon `claude` that holds a tty is Joe's own session (A276).
+# is_aide_holder <pid>: 0 unless SEAT is aide and the process environment names a different WM_SEAT; unreadable environ = cannot tell = holder. Selftest hook:
+# SEAT_GUARD_WMSEAT_OVERRIDE=<pid>:<value>[,...] decides for the listed pids (value `-` = unset), honoured only under SEAT_TICK_SELFTEST=1.
+is_aide_holder() {
+  local pid="$1" o ov val
+  [ "${SEAT:-}" = aide ] || return 0
+  if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_GUARD_WMSEAT_OVERRIDE:-}" ]; then
+    IFS=, read -ra ov <<<"$SEAT_GUARD_WMSEAT_OVERRIDE"
+    for o in "${ov[@]}"; do [ "${o%%:*}" = "$pid" ] && { [ "${o#*:}" = aide ]; return; }; done
+  fi
+  [ -r "/proc/$pid/environ" ] || return 0
+  val="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^WM_SEAT=//p' | tail -n1)" || return 0
+  [ "$val" = aide ]
+}
+
 # guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise.
 # Interactive = claude (not print-mode) WITH a controlling tty or a tmux ancestor. A non-print claude holding the SID with neither is noted and ignored.
 guard() {
@@ -177,7 +194,8 @@ guard() {
       cl="$(tr '\0' ' ' <"/proc/$OLD_PID/cmdline")"
       case "$cl" in
         *claude*) if is_print_mode "$cl"; then notes="old_pid $OLD_PID is a print-mode claude (not the interactive seat)"
-                  elif has_tty_or_tmux "$OLD_PID"; then echo "pid $OLD_PID alive: ${cl:0:80}"; return 1
+                  elif has_tty_or_tmux "$OLD_PID" && is_aide_holder "$OLD_PID"; then echo "pid $OLD_PID alive: ${cl:0:80}"; return 1
+                  elif has_tty_or_tmux "$OLD_PID"; then notes="old_pid $OLD_PID is not the aide (WM_SEAT is not aide): ignored"; old_noted=1
                   else notes="old_pid $OLD_PID alive without a tty: not an interactive seat, ignored"; old_noted=1; fi ;;
         *) notes="old_pid $OLD_PID alive but not claude" ;;
       esac
@@ -198,6 +216,10 @@ guard() {
         [ -e "$p/stat" ] || continue   # exited since the cmdline read
         if ! has_tty_or_tmux "$pid"; then
           [ -n "$old_noted" ] && [ "$pid" = "$OLD_PID" ] || notes="${notes:+$notes; }pid $pid holds the SID without a tty: not an interactive seat, ignored"
+          continue
+        fi
+        if ! is_aide_holder "$pid"; then
+          [ -n "$old_noted" ] && [ "$pid" = "$OLD_PID" ] || notes="${notes:+$notes; }pid $pid holds the SID but WM_SEAT is not aide: not the aide, ignored"
           continue
         fi
       fi
@@ -235,6 +257,18 @@ stop_hook_alarm() {
     [ -e "$EVF" ] || ( umask 077; : >"$EVF" )
     chmod 600 "$EVF"
     printf '%s | stop-hook | %s\n' "$ts" "$evl" >>"$EVF"
+  } 7>>"$DASH/$SEAT-events.lock"
+}
+# cap_kill_alarm <n>: the ALARM line on stderr + one line in <seat>-events.log (same lock and `ts | source | text` shape as stop_hook_alarm; no wake, no counters)
+cap_kill_alarm() {
+  local ts evl; ts="$(date -Iseconds)"
+  evl="ALARM $SEAT cap-kills=$1"
+  echo "$evl" >&2
+  {
+    flock 7
+    [ -e "$EVF" ] || ( umask 077; : >"$EVF" )
+    chmod 600 "$EVF"
+    printf '%s | cap-kill | %s\n' "$ts" "$evl" >>"$EVF"
   } 7>>"$DASH/$SEAT-events.lock"
 }
 # quota_hit <log> <now_epoch>: 0 if the tail of a failed turn's output is a plan-limit line: the "hit your ... limit" phrase, or a line ft_parse_la_date reads as a date
@@ -421,7 +455,7 @@ FAKE
   # 1. ctl SWEEP #1: no status file yet, 3 approvals pending
   "$SELF" ctl >"$T/o1" 2>"$T/e1"; rc=$?
   [ "$rc" = 0 ]; chk "sweep 1: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 --max-turns 60 $CA --resume $CS SWEEP $ts_re tick=1 status_age=none approvals_new=3 events_new=0\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-1 --max-turns 60 --disallowedTools ScheduleWakeup $CA --resume $CS SWEEP $ts_re tick=1 status_age=none approvals_new=3 events_new=0\$" "$T/o1"; chk "sweep 1: argv/prompt '$(grep -m1 ^ARGV "$T/o1" | cut -c1-200)'" $?
   grep -q "model test-model-1" "$T/o1"; chk "model comes from MRC_TABLE controller row" $?
   grep -q "token_set=yes cwd=$HOME\$" "$T/o1"; chk "oauth env sourced (token present, value not shown), cwd=\$HOME" $?
   grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o1"; chk "SWEEP: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
@@ -442,7 +476,7 @@ FAKE
   rm -f "$T/dash/fleet-status.md"; printf 'controller test-model-2\nrb test-model-rb\nr7 test-model-r7\n' >"$MRC_TABLE"
   "$SELF" ctl --ask "what is rb doing?" >"$T/o3" 2>"$T/e3"; rc=$?
   [ "$rc" = 0 ]; chk "ask: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 --max-turns 60 $CA --resume $CS ASK $ts_re seat=ctl approvals_new=0 events_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-2 --max-turns 60 --disallowedTools ScheduleWakeup $CA --resume $CS ASK $ts_re seat=ctl approvals_new=0 events_new=0: what is rb doing\?\$" "$T/o3"; chk "ask: prompt '$(grep -m1 ^ARGV "$T/o3" | cut -c1-200)'" $?
   grep -q '^seat_env=WM_SEAT=ctl CLAUDE_SESSION_NAME=ctl WM_DECIDE_AGENT=ctl$' "$T/o3"; chk "ASK: fake claude saw WM_SEAT=ctl and CLAUDE_SESSION_NAME=ctl" $?
   [ ! -e "$T/dash/fleet-status.md" ]; chk "ASK did not write the boundary marker (SWEEP only)" $?
   [ -s "$T/dash/ctl-ask-last.log" ]; chk "ctl-ask-last.log written" $?
@@ -515,9 +549,9 @@ FAKE
   rm -f "$T/dash/fleet-status.md"
   "$SELF" rb >"$T/orb" 2>"$T/erb"; rc=$?
   [ "$rc" = 0 ]; chk "rb tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 $LA --resume $RS TICK $ts_re seat=rb tick=1 events_new=0\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 --disallowedTools ScheduleWakeup $LA --resume $RS TICK $ts_re seat=rb tick=1 events_new=0\$" "$T/orb"; chk "rb: argv has model from row rb + SID from seats.tsv + TICK line 1 '$(grep -m1 ^ARGV "$T/orb" | cut -c1-170)'" $?
   [ "$(pl rb 2 | head -1)" = "$goal_rb" ] && [ "$goal_rb" != "" ]; chk "rb: prompt line 2 = the /goal CLEARWATER: line verbatim ('$(pl rb 2 | cut -c1-70)...')" $?
-  [ "$(pl rb 3)" = 'Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; every EVENT line gets a read and, if real, a mitigation this turn; log a DECISION row for each action; this turn ends when you print the timestamped STATUS block.' ] && [ "$(wc -l <"$T/dash/prompt.rb.txt")" = 2 ]; chk "rb: prompt line 3 = the rules line verbatim, exactly 3 lines" $?
+  [ "$(pl rb 3)" = 'Rules of this shape: one sweep toward the goal per tick; every DECISION is a wm-decide ledger row the same turn; wake the controller with ctl-ask.sh "<text>"; any background process you need outlives this turn only as a systemd-run --user unit with premise + expiry; every EVENT line gets a read and, if real, a mitigation this turn; log a DECISION row for each action; this turn ends when you print the timestamped STATUS block; a turn ends at its STATUS, no /loop or ScheduleWakeup under seat-tick.' ] && [ "$(wc -l <"$T/dash/prompt.rb.txt")" = 2 ]; chk "rb: prompt line 3 = the rules line verbatim, exactly 3 lines" $?
   ! grep -q 'approvals_new\|status_age' "$T/dash/prompt.rb.txt"; chk "rb: no approvals_new / status_age in the prompt" $?
   grep -q '^seat_env=WM_SEAT=rb CLAUDE_SESSION_NAME=rb WM_DECIDE_AGENT=rb$' "$T/orb"; chk "rb: fake claude saw WM_SEAT=rb CLAUDE_SESSION_NAME=rb" $?
   grep -q -- ' --strict-mcp-config ' <(grep -m1 '^ARGV' "$T/orb") && grep -q '^lean_env=SEAT_LEAN=1 CLAUDE_LEAN_START=1$' "$T/orb"; chk "rb LEAN: fake claude got --strict-mcp-config and env SEAT_LEAN=1 CLAUDE_LEAN_START=1" $?
@@ -550,12 +584,12 @@ FAKE
   ( cd "$T/notes" && git checkout -q -- wiki/goal.md ) 2>/dev/null
   # rb ASK
   "$SELF" rb --ask "status of 1025?" >"$T/orba" 2>&1; rc=$?
-  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 $LA --resume $RS ASK $ts_re seat=rb events_new=0: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
+  [ "$rc" = 0 ] && grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-rb --max-turns 80 --disallowedTools ScheduleWakeup $LA --resume $RS ASK $ts_re seat=rb events_new=0: status of 1025\?\$" "$T/orba" && [ -s "$T/dash/rb-ask-last.log" ] && [ "$(jseat rb .last_prompt_kind)" = ask ] && [ "$(jseat rb .sends_total)" = 3 ]; chk "rb ASK: 'ASK <time> <date> seat=rb: <text>', rb-ask-last.log, sends_total unchanged" $?
 
   # 10. r7 TICK
   "$SELF" r7 >"$T/or7" 2>"$T/er7"; rc=$?
   [ "$rc" = 0 ]; chk "r7 tick: exit 0" $?
-  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 $LA --resume $SS TICK $ts_re seat=r7 tick=1 events_new=0\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
+  grep -Eq "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 --disallowedTools ScheduleWakeup $LA --resume $SS TICK $ts_re seat=r7 tick=1 events_new=0\$" "$T/or7"; chk "r7: argv has model from row r7 + SID from seats.tsv + TICK line 1" $?
   [ "$(pl r7 2)" = "$goal_r7" ] && [ "$(pl r7 3 | cut -c1-23)" = "Rules of this shape: on" ] && [ "$(wc -l <"$T/dash/prompt.r7.txt")" = 2 ]; chk "r7: line 2 = the /goal CLEARWATER-R7 line verbatim (not the rb line), line 3 = rules, 3 lines" $?
   grep -q '^seat_env=WM_SEAT=r7 CLAUDE_SESSION_NAME=r7 WM_DECIDE_AGENT=r7$' "$T/or7" && [ -e "$T/dash/r7.lock" ] && [ -s "$T/dash/r7-tick-last.log" ] && [ ! -e "$T/dash/fleet-status.md" ] && ! grep -q 'approvals_new' "$T/dash/prompt.r7.txt"; chk "r7: WM_SEAT=r7, r7.lock, r7-tick-last.log, no --open, no approvals_new" $?
   [ "$(jseat r7 .sends_total)" = 1 ] && [ "$(jseat r7 .last_prompt_kind)" = tick ]; chk "r7: state r7-tick.json sends_total=1 kind=tick" $?
@@ -831,6 +865,14 @@ FAKE
   SEAT_GUARD_TTY_OVERRIDE="$pt1:1" "$SELF" nt --guard-check >/dev/null 2>&1; rc=$?
   has_tty_or_tmux "$pt1"; local want_real=$(( $? == 0 ? 4 : 0 ))   # no SEAT_TICK_SELFTEST: the override must be ignored, the real tty / tmux ancestry decides
   [ "$rc" = "$want_real" ]; chk "TTY GATE: SEAT_GUARD_TTY_OVERRIDE is ignored outside selftest mode (exit $rc, real ancestry says $want_real)" $?
+  # A276: the aide seat is keyed on WM_SEAT=aide. A plain interactive claude (tty, no WM_SEAT) holding the aide's SID is not the aide; the same holder with WM_SEAT=aide is. --guard-check only: no turn runs.
+  printf 'aide\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\n' "$FAKESID" >>"$SEATS_TABLE"
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:-" "$SELF" aide --guard-check >"$T/oa1" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "pid $pt1 holds the SID but WM_SEAT is not aide: not the aide, ignored" "$T/oa1"; chk "AIDE KEY: interactive claude (tty, no WM_SEAT, pid $pt1) holding the aide SID -> not refused ('$(head -c 100 "$T/oa1")')" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:aide" "$SELF" aide --guard-check >"$T/oa2" 2>&1; rc=$?
+  [ "$rc" = 4 ] && grep -q "pid $pt1 holds session $FAKESID" "$T/oa2"; chk "AIDE KEY: the same holder with WM_SEAT=aide -> refused, exit 4, names pid $pt1" $?
+  SEAT_TICK_SELFTEST=1 SEAT_GUARD_TTY_OVERRIDE="$pt1:1" SEAT_GUARD_WMSEAT_OVERRIDE="$pt1:-" "$SELF" nt --guard-check >"$T/oa3" 2>&1; rc=$?
+  [ "$rc" = 4 ]; chk "AIDE KEY: a non-aide seat keeps the old rule (interactive claude with a tty is refused even without WM_SEAT)" $?
   kill "$pt1"; wait "$pt1" 2>/dev/null; sleep 0.3
   # a decoy under a process whose comm is 'tmux' (a copy of bash named tmux) counts as tmux-hosted even with tty 0
   mkdir -p "$T/fakebin"; cp "$(command -v bash)" "$T/fakebin/tmux"
@@ -1084,7 +1126,7 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
   cp "$SEATS_TABLE" "$T/seats.pre-mt"
   printf 'mtd\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\t-\nmt7\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\nmtj\tr7\t%s\t20\t14400\t^/goal CLEARWATER-R7\t-\tabc\n' "$MT_SID" "$MT_SID7" "$MT_SIDJ" >>"$SEATS_TABLE"
   FAKE_SLEEP=0 "$SELF" mtd >"$T/omt1" 2>"$T/emt1"; rc=$?
-  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/omt1" && ! grep -q -- '--max-turns' "$T/omt1" && grep -q -- "--model test-model-r7 $LA --resume $MT_SID " "$T/omt1"; chk "max_turns (a): a row with '-' in column 8 runs with no --max-turns" $?
+  [ "$rc" = 0 ] && grep -q '^ARGV' "$T/omt1" && ! grep -q -- '--max-turns' "$T/omt1" && grep -q -- "--model test-model-r7 --disallowedTools ScheduleWakeup $LA --resume $MT_SID " "$T/omt1"; chk "max_turns (a): a row with '-' in column 8 runs with no --max-turns" $?
   FAKE_SLEEP=0 "$SELF" mt7 >"$T/omt2" 2>"$T/emt2"; rc=$?
   [ "$rc" = 0 ] && grep -q '^ARGV' "$T/omt2" && ! grep -q -- '--max-turns' "$T/omt2"; chk "max_turns (b): a 7-column row (old table) runs with no --max-turns" $?
   FAKE_SLEEP=0 "$SELF" mtj >"$T/omt3" 2>"$T/emt3"; rc=$?
@@ -1093,7 +1135,7 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
     rm -f "$T/dash/r7-events.log"; [ "$mtk" = --event ] && printf '%s | selftest | mt event\n' "$(date -Iseconds)" >"$T/dash/r7-events.log"
     # shellcheck disable=SC2086
     FAKE_SLEEP=0 "$SELF" r7 $mtk >"$T/omt4" 2>/dev/null
-    grep -Eq -- "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 $LA --resume $SS " "$T/omt4"; chk "max_turns (d): r7 ${mtk:-tick} turn: '--max-turns 80' sits between --model and --settings" $?
+    grep -Eq -- "^ARGV: -p --dangerously-skip-permissions --model test-model-r7 --max-turns 80 --disallowedTools ScheduleWakeup $LA --resume $SS " "$T/omt4"; chk "max_turns (d): r7 ${mtk:-tick} turn: '--max-turns 80' sits between --model and --disallowedTools ScheduleWakeup, then --settings" $?
   done
   rm -f "$T/dash/r7-events.log"
   # the measured max-turns end: exit 0, offset advances, no failure path, counter + stderr line
@@ -1114,6 +1156,36 @@ open(sys.argv[2], "w").write(str(pid)); time.sleep(60)' "$FAKESID" "$T/ptykid.pi
   [ "$rc" = 1 ] && [ "$(jseat r7 .last_exit)" = 1 ] && [ "$(jseat r7 .max_turns_hits)" = 2 ]; chk "max_turns (i): any other exit 1 stays a failure (exit 1, hits unchanged)" $?
   FAKE_SLEEP=0 FAKE_MAXTURNS=80 "$SELF" mtd >/dev/null 2>&1; rc=$?
   [ "$rc" = 1 ] && [ "$(jseat mtd .max_turns_hits)" = 0 ]; chk "max_turns (j): the marker on an UNCAPPED row is not special-cased (exit 1, hits 0)" $?
+  rm -f "$T/dash/r7-events.log" "$T/dash/r7.wake"
+  # 12b. (10-24 rb-ask-lock) no wakeups: every turn kind carries --disallowedTools ScheduleWakeup
+  local nwk=0 nwbad=""
+  FAKE_SLEEP=0 "$SELF" ctl >"$T/onw1" 2>/dev/null; FAKE_SLEEP=0 "$SELF" rb >"$T/onw2" 2>/dev/null
+  printf '%s | selftest | nw event\n' "$(date -Iseconds)" >"$T/dash/r7-events.log"; FAKE_SLEEP=0 "$SELF" r7 --event >"$T/onw3" 2>/dev/null
+  FAKE_SLEEP=0 "$SELF" r7 --ask "nw ask" >"$T/onw4" 2>/dev/null
+  for nwk in 1:SWEEP 2:TICK 3:EVENT 4:ASK; do
+    grep -m1 '^ARGV' "$T/onw${nwk%%:*}" | grep -Eq -- " --model [^ ]+( --max-turns [0-9]+)? --disallowedTools ScheduleWakeup .*${nwk##*:} " || nwbad="$nwbad ${nwk##*:}"
+  done
+  FAKE_SLEEP=0 "$SELF" mtd >"$T/onw5" 2>/dev/null
+  grep -m1 '^ARGV' "$T/onw5" | grep -Eq -- ' --model [^ ]+ --disallowedTools ScheduleWakeup ' || nwbad="$nwbad uncapped"
+  [ -z "$nwbad" ]; chk "argv: --disallowedTools ScheduleWakeup on every turn kind (TICK, SWEEP, EVENT, ASK, and an uncapped row)${nwbad:+; missing:$nwbad}" $?
+  grep -q 'no /loop or ScheduleWakeup under seat-tick' "$T/dash/prompt.rb.txt"; chk "rules line tells the seat: a turn ends at its STATUS, no /loop or ScheduleWakeup" $?
+  rm -f "$T/dash/r7-events.log" "$T/dash/r7.wake"
+  # 12c. cap_kills: consecutive exit-124 turns; >= 2 -> one ALARM line in the events log; any other exit resets
+  local CKE="$T/dash/r7-events.log"
+  FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1   # clean turn: cap_kills 0
+  [ "$(jseat r7 .cap_kills)" = 0 ]; chk "cap_kills: a clean turn leaves cap_kills=0" $?
+  FAKE_SLEEP=0 FAKE_EXIT=124 "$SELF" r7 >/dev/null 2>"$T/eck1"; rc=$?
+  [ "$rc" = 124 ] && [ "$(jseat r7 .cap_kills)" = 1 ] && ! grep -q 'cap-kills' "$T/eck1" && ! grep -qs 'cap-kills' "$CKE"; chk "cap_kills: one 124 exit -> cap_kills=1, no ALARM yet" $?
+  FAKE_SLEEP=0 FAKE_EXIT=124 "$SELF" r7 >/dev/null 2>"$T/eck2"; rc=$?
+  [ "$rc" = 124 ] && [ "$(jseat r7 .cap_kills)" = 2 ] && grep -qx 'ALARM r7 cap-kills=2' "$T/eck2" && [ "$(grep -c ' | cap-kill | ALARM r7 cap-kills=2$' "$CKE")" = 1 ] && [ "$(grep -c 'cap-kills' "$CKE")" = 1 ]; chk "cap_kills: second 124 exit -> cap_kills=2, exactly one 'ALARM r7 cap-kills=2' line in r7-events.log" $?
+  FAKE_SLEEP=0 FAKE_EXIT=124 "$SELF" r7 >/dev/null 2>&1
+  [ "$(jseat r7 .cap_kills)" = 3 ] && grep -q ' | cap-kill | ALARM r7 cap-kills=3$' "$CKE"; chk "cap_kills: a third consecutive 124 -> cap_kills=3 and an updated ALARM line" $?
+  FAKE_SLEEP=0 FAKE_EXIT=3 "$SELF" r7 >/dev/null 2>&1
+  [ "$(jseat r7 .cap_kills)" = 0 ]; chk "cap_kills: any other failing exit (3) resets cap_kills to 0" $?
+  FAKE_SLEEP=0 FAKE_EXIT=124 "$SELF" r7 >/dev/null 2>&1; FAKE_SLEEP=0 "$SELF" r7 >/dev/null 2>&1
+  [ "$(jseat r7 .cap_kills)" = 0 ]; chk "cap_kills: a 0 exit after a 124 resets cap_kills to 0" $?
+  "$SELF" r7 --status | jq -e 'has("cap_kills")' >/dev/null; chk "cap_kills: --status carries cap_kills" $?
+  rm -f "$CKE" "$T/dash/r7.wake"
   cp "$T/seats.pre-mt" "$SEATS_TABLE"; rm -f "$T/dash/r7-events.log"
   local mtbad=""
   mtbad="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && NF >= 8 && $8 !~ /^(-|[1-9][0-9]*)$/ {print $1 "(" $8 ")"}' "$HOME/.claude/state/seats.tsv" 2>/dev/null)"
@@ -1295,7 +1367,7 @@ n=$((S_sends + 1))
 if [ "$KIND" = ask ]; then
   if [ "$SEAT" = ctl ]; then PROMPT="ASK $stamp seat=ctl approvals_new=$new events_new=$EV_NEW: $ASK_TEXT"; else PROMPT="ASK $stamp seat=$SEAT events_new=$EV_NEW: $ASK_TEXT"; fi
 elif [ "$KIND" = event ] && [ "$SEAT" = ctl ]; then
-  PROMPT="EVENT $stamp seat=ctl approvals_new=$new events_new=$EV_NEW"$'\n'"Rules of this shape: $EVENT_RULE; this turn ends when you print the timestamped STATUS block."
+  PROMPT="EVENT $stamp seat=ctl approvals_new=$new events_new=$EV_NEW"$'\n'"Rules of this shape: $EVENT_RULE; this turn ends when you print the timestamped STATUS block; a turn ends at its STATUS, no /loop or ScheduleWakeup under seat-tick."
 elif [ "$SEAT" = ctl ]; then
   if [ -e "$SFILE" ]; then age="$(( (now - $(stat -c %Y "$SFILE")) / 60 ))m"; else age="none"; fi
   if [ "$PREV_SENT" -gt 0 ] 2>/dev/null; then since="$(date -d "@$PREV_SENT" '+%Y-%m-%d %-I:%M %p')"; else since="24 hours ago"; fi
@@ -1312,8 +1384,21 @@ else
   if [ "$KIND" = event ]; then PROMPT="EVENT $stamp seat=$SEAT events_new=$EV_NEW"; else PROMPT="TICK $stamp seat=$SEAT tick=$n events_new=$EV_NEW"; fi
   PROMPT="$PROMPT"$'\n'"${pull_note}${goal_line}"$'\n'"$RULES_LINE"
 fi
+# A49 D1: this seat's owed/overdue follow-up ids on every rb/r7/ctl prompt (seat-owed.sh exits 0 always, <= 12 lines; absent helper = nothing added)
+OWED_BIN="${SEAT_OWED_BIN:-$HOME/.local/bin/seat-owed.sh}"
+if [ -x "$OWED_BIN" ]; then
+  OWED_BLOCK="$(timeout 30 "$OWED_BIN" "$SEAT" 2>/dev/null | head -n 12 | cut -c1-600)"
+  [ -n "$OWED_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$OWED_BLOCK"
+fi
 [ -n "$EV_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$EV_BLOCK"
 [ -n "$ASK_BLOCK" ] && PROMPT="$PROMPT"$'\n'"$ASK_BLOCK"
+# follow-up tracker D1 (approvals #114): the seat's owed/overdue ids ride every prompt kind; silent when none are owed or `wm-decide followups` is unmeasured
+# (SessionStart prints the unmeasured line), so an absent or failing tracker never changes a prompt.
+for _fl in "$(dirname "$(readlink -f "$0")")/../../.claude/hooks/followup-lib.sh" "$HOME/.claude/hooks/followup-lib.sh"; do
+  # shellcheck disable=SC1090
+  [ -r "$_fl" ] && { . "$_fl"; FU_LINE="$(followups_line "$SEAT" 2>/dev/null)" || FU_LINE=""; break; }
+done
+[ -n "${FU_LINE:-}" ] && PROMPT="$PROMPT"$'\n'"$FU_LINE"
 
 # d. model row: a missing row refuses (exit 3) before anything is written
 MODEL="$(awk -v r="$ROLE" '$1==r{print $2}' "$MRC" 2>/dev/null | head -1)"
@@ -1360,7 +1445,7 @@ if [ "$ASK_NEW" -gt 0 ]; then
     asks_consume && [ -n "$ASK_CONSUMED" ] && echo "seat-tick: $SEAT $ASK_NEW queued ask(s) carried in this prompt, queue -> ${ASK_CONSUMED##*/}"
   else echo "seat-tick: $SEAT WARN claude not launchable (or pre-turn save failed): $ASK_NEW queued ask(s) stay queued" >&2; fi
 fi
-( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${MT_ARGV[@]}" "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
+( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${MT_ARGV[@]}" --disallowedTools ScheduleWakeup "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
 rc="${PIPESTATUS[0]:-1}"
 # a capped turn ends `Error: Reached max turns (<N>)` with exit 1 (see MAX-TURNS in the header): the seat did its bounded sweep, a normal end
 MT_N=""; [ "$rc" != 0 ] && [ -n "$MAX_TURNS" ] && MT_N="$(max_turns_hit "$LOG")"
@@ -1384,7 +1469,8 @@ if [[ "$S_shbefore" =~ ^[0-9]+$ ]]; then S_bounces=$(( sh_after - S_shbefore ));
 if [ "$CAPKILL" = 1 ]; then
   S_ck=$(( S_ck + 1 )); S_cs="$CAP"; S_lck="$iso"; S_evoff="$NEW_EVOFF"
   echo "seat-tick: $SEAT CAP-KILL #$S_ck: $KIND turn killed at cap=${CAP}s (exit $rc); asks carried+1 (2nd carry -> asks.dead), events cursor advanced to $S_evoff" >&2
-elif [ "$rc" = 0 ]; then S_ck=0; fi   # cap_kills counts consecutive 124s; an exit-0 end zeroes it
+else S_ck=0; fi   # cap_kills counts consecutive cap kills (124/137); any other end breaks the streak
+[ "$S_ck" -ge 2 ] && cap_kill_alarm "$S_ck"   # 2+ consecutive cap kills: one ALARM line (stderr + events log)
 if [ "$rc" = 0 ]; then S_seen="$total"; S_skipped=0; S_reason=""; S_evoff="$NEW_EVOFF"; S_lastprompt="$start"; S_qw=""; S_qa=""; S_qk=""; S_qpf=false; S_qpt=""; fi
 # quota-wait: a failed turn whose output is the usage-limit line is not a failure anyone can act on. Not a skip (ticks_skipped untouched), events/approvals/lastprompt
 # not advanced, exit 0 so the unit does not fail (no OnFailure bell); a2 then holds the next ticks until the reset. An unparseable reset leaves quota_wait_until null.

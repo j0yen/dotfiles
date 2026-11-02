@@ -1,0 +1,1 @@
+never (wait for|gate on) [^.;:()]{1,40}|[^.;:()]{0,40} is not a gate

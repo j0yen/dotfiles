@@ -1,0 +1,10 @@
+[Unit]
+Description=Ask ledger due-check every 10 minutes (A10)
+ConditionHost=carbon
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

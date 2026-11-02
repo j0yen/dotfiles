@@ -1,0 +1,6 @@
+[Unit]
+Description=Quota level (read-only governor): writes quota-level.json on change, alarms on change
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/quota-level.sh
