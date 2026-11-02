@@ -21,7 +21,7 @@ echo "head=$head base=$base"
 RUSTFLAGS="$flags" CARGO_TARGET_DIR="$PWD/target-head" "$slot" check --all-targets; hrc=$?
 echo "head RUSTFLAGS=$flags check --all-targets rc=$hrc"
 [ $hrc -eq 0 ] || { echo "HEAD FAILED check --all-targets"; exit $hrc; }
-RUSTFLAGS="$flags" CARGO_TARGET_DIR="$PWD/target-head" "$slot" test; trc=$?
+RUSTFLAGS="$flags" CARGO_TARGET_DIR="$PWD/target-head" "$slot" test --no-fail-fast; trc=$?
 echo "cargo test EXIT=$trc"
 [ $trc -eq 0 ] || { echo "HEAD FAILED cargo test"; exit $trc; }
 
