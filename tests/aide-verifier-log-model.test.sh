@@ -26,6 +26,7 @@ import re
 from . import contract
 AGENT_RE = re.compile(r"\bagent=([A-Za-z0-9:._-]+)")
 AUTHOR_RE = re.compile(r"\bauthor=([A-Za-z0-9:._-]+)")
+ANY_OF = " || "
 def strip_attachments(evidence):
     return evidence or ""
 def _agent_token(row, rx=AGENT_RE):

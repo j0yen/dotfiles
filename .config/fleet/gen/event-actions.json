@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "note": "L2 event table (A236). First match wins. Executed by .local/bin/event-act.sh; a line matching no class is unknown and starts a seat turn as before. Edit here, then run tests/event-act.test.sh.",
+  "seats": ["rb", "r7", "ctl", "aide"],
+  "classes": [
+    {
+      "name": "followup-owner-route",
+      "from_seats": ["aide"],
+      "match": "FOLLOWUP-(ESCALATE|OVERDUE)",
+      "owner_re": "owner=([A-Za-z0-9_-]+)",
+      "owner_fallback": "rb",
+      "action": "route",
+      "product": false
+    },
+    {
+      "name": "r7-leg-bell-merge-path",
+      "from_seats": ["aide"],
+      "match": "R7-BELL .*(VERIFY[0-9]+ EXIT=|leg ).*(merge-path|merge path)",
+      "owner": "rb",
+      "action": "route",
+      "product": false
+    }
+  ]
+}

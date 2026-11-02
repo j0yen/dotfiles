@@ -1,0 +1,23 @@
+{
+  "_note": "L5 alarm contract (A238): every status.json field a rule or page names. key = jq path in status.json; owner = who computes it; row = open-asks row that ships the collector. fleet-dash collect.sh computes each; fleet-status-write.sh --render shows each ('unknown' when absent); tests/alarms-no-drift.test.sh fails when a page names a field this file lacks.",
+  "alarms": [
+    {"key": "claude_operated", "owner": "fleet-dash", "row": "A238", "doc": "rules whose gear-pointer resolves to nothing, minus the exempt list"},
+    {"key": "idle_host_blocked", "owner": "fleet-dash", "row": "A238", "doc": "idle host with an eligible PRD"},
+    {"key": "hand_prs", "owner": "fleet-dash", "row": "A238", "doc": "stalled hand-PR landings"},
+    {"key": "runs_unitless", "owner": "fleet-dash", "row": "A238", "doc": "open runs with no unit"},
+    {"key": "r7_verify", "owner": "fleet-dash", "row": "A238", "doc": "ryzen7 verify legs and verdict receipts"},
+    {"key": "runs_per_slug_24h", "owner": "fleet-dash", "row": "A238", "doc": "runs per slug over 24 h"},
+    {"key": "lock_hold", "owner": "fleet-dash", "row": "A238", "doc": "hold rows with a consumer per host"},
+    {"key": "needs_joe", "owner": "fleet-dash", "row": "A238", "doc": "needs-Joe list"},
+    {"key": "carbon.build_procs", "owner": "fleet-dash", "row": "A52", "doc": "build processes on carbon"},
+    {"key": "quota.level", "owner": "fleet-dash", "row": "A14", "doc": "quota governor level"},
+    {"key": "seats.aide.last_tick", "owner": "fleet-dash", "row": "A7", "doc": "aide last tick time"},
+    {"key": "mechanisms_spec", "owner": "fleet-dash", "row": "A238", "doc": "SPEC pointers with age_h"},
+    {"key": "verify.false_exit_logs_24h", "owner": "fleet-dash", "row": "A238", "doc": "verify logs whose EXIT line contradicts the body"}
+  ],
+  "exempt": [
+    {"class": "judgment", "match": "grade|review|PRD|plan|design"},
+    {"class": "money", "match": "money|cost|idle limit|spend"},
+    {"class": "real-users-data", "match": "real users|prod data"}
+  ]
+}

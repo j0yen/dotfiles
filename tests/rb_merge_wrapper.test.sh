@@ -16,7 +16,14 @@ mkdir -p "$tmp/trip"
 for b in gh wm-decide; do printf '#!/bin/sh\ntouch "%s/tripwire"\nexit 99\n' "$tmp" > "$tmp/trip/$b"; chmod +x "$tmp/trip/$b"; done
 export PATH="$tmp/trip:$PATH" HOME="$tmp/home"; mkdir -p "$HOME"
 
-OID=a1b2c3d4e5f60123456789abcdef0123456789ab
+# pre-gate A (vtg1) needs a launcher record + a clean suite log in a fixture DB; the gate stub's oid is the fixture repo's real HEAD
+RBF_ROOT="$tmp"; RBF_REPO=j0yen/swarm-decide
+. "$here/tests/rb_merge_fixture.sh"
+wvr_real="$(command -v wm-verify-run || echo /home/jsy/.local/bin/wm-verify-run)"; export PATH="$(dirname "$wvr_real"):$PATH"
+rbf_init
+rbf_launch w1 'echo wrapper-suite'
+rbf_row d-20261022-140000-rb-abcd "$RBF_HEAD" w1 "$(rbf_log 'echo wrapper-suite')"
+OID="$RBF_HEAD"
 cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
