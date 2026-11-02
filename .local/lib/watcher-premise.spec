@@ -11,6 +11,10 @@ wp_emit_write	KIND TARGET WHAT EVIDENCE REVERSE	append the decision row to the l
 wp_by		(none)	prints the by= tag: joe-<YYYYMMDD>+<watcher>  (limits-guard accepts any --by starting with joe-)
 wp_selftest		throwaway-HOME scenarios of the lib itself; prints "selftest ok N/N"
 wp_decide_record	LINE_JSON	build and run `wm-decide record` from one outbox line (used by wp_emit_write and by the outbox puller)
+watcher_skip	REASON	count one more consecutive SKIP run in $WATCHER_STATE_DIR/<NAME>.skip (default dir $WP_STATE); from WATCHER_SKIP_MAX (default 20) on print `alarm: skip-streak <name> <n> <reason>`; sets WATCHER_SKIP_STREAK/_REASON/_ALARM
+watcher_run_end	(none)	the reset: any non-skip run (act or ok) ends the streak (file back to 0)
+watcher_skip_streak	(none)	print the current streak (0 when none)
+watcher_skip_alarm	(none)	print `skip-streak <name> <n> <reason>` when the persisted streak is >= WATCHER_SKIP_MAX, else nothing
 
 [status_columns]
 # ONE line, tab-separated, overwritten on every wp_gate (E9). File: $WP_STATE/<NAME>.tsv

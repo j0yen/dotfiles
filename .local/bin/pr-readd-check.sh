@@ -2,7 +2,7 @@
 # Refuse a PR that re-adds a path main deleted after the PR's merge base (P28 mechanism 6).
 # Usage: pr-readd-check.sh <repo-dir> <pr-ref> [<main-ref>=origin/main]
 # Exit 0 = none, 3 = RE-ADD found, 2 = usage or git error (fails closed).
-set -u
+set -uo pipefail
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
   echo "usage: pr-readd-check.sh <repo-dir> <pr-ref> [<main-ref>]" >&2
   exit 2

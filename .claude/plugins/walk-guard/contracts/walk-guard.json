@@ -1,0 +1,60 @@
+{
+  "_doc": "walk-guard contract: the ONE source for the PreToolUse walk-guard hook (hooks/walk-guard.sh + walk_guard.py), its --selftest, the refusal/rewrite text, the pgrep pattern (--pgrep-pattern) and the rb bell watcher. Nothing named here may be hard-coded elsewhere: tests/walkguard_drift.test.sh fails on drift. '~' = the user's home. A root guards itself and every descendant down to `depth` levels (so /mnt/data/hand is guarded, /mnt/data/wm-build/wt/<slug>/src is not); exact_roots guard only that exact directory (the wt root).",
+  "version": 1,
+  "commands": {
+    "grep": {
+      "aliases": ["egrep", "fgrep", "zgrep"],
+      "recursive": {"short": "rR", "long": ["--recursive", "--dereference-recursive"], "pairs": [["-d", "recurse"], ["--directories", "recurse"]]},
+      "pattern_positional": true,
+      "pattern_flags": ["-e", "-f", "--regexp", "--file"],
+      "opt_args": ["-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context", "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--color", "--colour"],
+      "prune": ["--exclude-dir={dir}"]
+    },
+    "rg": {
+      "aliases": [],
+      "always": true,
+      "pattern_positional": true,
+      "pattern_flags": ["-e", "-f", "--regexp", "--file"],
+      "no_pattern_flags": ["--files", "--type-list"],
+      "opt_args": ["-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m", "-j", "-M", "-E", "-r", "-d", "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--type-add", "--after-context", "--before-context", "--context", "--max-count", "--threads", "--max-columns", "--encoding", "--replace", "--max-depth", "--max-filesize", "--path-separator", "--sort", "--sortr", "--pre", "--pre-glob", "--color", "--colors", "--engine"],
+      "stdin_when_pathless": true,
+      "prune": ["-g", "!{dir}"]
+    },
+    "find": {
+      "aliases": [],
+      "always": true,
+      "roots": "leading",
+      "prune_style": "find"
+    },
+    "du": {
+      "aliases": [],
+      "always": true,
+      "pattern_positional": false,
+      "opt_args": ["-d", "-B", "-t", "-X", "--max-depth", "--block-size", "--threshold", "--exclude-from", "--exclude", "--time-style", "--files0-from", "--time"],
+      "prune": ["--exclude={dir}"]
+    },
+    "ls": {
+      "aliases": [],
+      "recursive": {"short": "R", "long": ["--recursive"], "pairs": []},
+      "pattern_positional": false,
+      "opt_args": ["-I", "-w", "-T", "--ignore", "--width", "--tabsize", "--sort", "--time", "--time-style", "--format", "--color", "--indicator-style", "--quoting-style", "--block-size"],
+      "prune": []
+    }
+  },
+  "roots": [
+    {"path": "/mnt/data", "depth": 2},
+    {"path": "/mnt/ssd", "depth": 2},
+    {"path": "~", "depth": 0}
+  ],
+  "exact_roots": [
+    "~/.local/state/wm-build/wt",
+    "/mnt/data/wm-build/wt"
+  ],
+  "prune_dirs": ["target", ".cargo"],
+  "wrappers": {"ionice": "-c3", "nice": "-n19", "timeout_max": 600},
+  "hosts": {
+    "ssh_targets": ["redbaron", "ryzen7"],
+    "local_guarded": ["redbaron", "ryzen7"],
+    "never": ["orch"]
+  }
+}

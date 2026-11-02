@@ -1,0 +1,10 @@
+[Unit]
+Description=Memory tone lint: neutral language across CLAUDE.md, memory, recall, wiki (A54, Joe 10-30); exit 1 on a hit fails the unit
+# no ConditionHost: per-node agent, runs on carbon, redbaron, ryzen7
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=300
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/memory-tone-lint.sh"

@@ -115,6 +115,10 @@ printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/b
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
 head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
+# fvg: rb-run-coder.sh's fable-verdict gate (80) refuses a spec-less prompt, so this prompt carries a valid Hatch row in a fixture DB (the gate under test here is spawn-hold)
+export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
+HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; printf '\nHatch: %s\n' "$HID" >> "$R/prompt.md"; PSHA=$(grep -v '^Hatch: ' "$R/prompt.md" | sha256sum | cut -d' ' -f1)
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN spawn-hold test", "sha256:" + sys.argv[3], None)); d.commit()' "$RB_DECISIONS_DB" "$HID" "$PSHA"
 cat "$R/a.jsonl" > /dev/null
 extra="--journal-file $R/a.jsonl --state-file $R/f.state.json --now $NOW"
 HOME=$H RB_SPAWN_HOLD_BIN=$hold RB_SPAWN_HOLD_EXTRA="$extra" bash "$runc" f1 "$R/prompt.md" >/dev/null 2>&1; rc=$?
@@ -316,7 +320,7 @@ prev6='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-
 prev6u='{"active":true,"run_id":1039,"refusal":"max-units","refused_at":"2026-10-23T09:00:00Z","read_at":"2026-10-23T09:25:00Z","source":"stale-ssh","hand_slots":2,"parts":[],"exempt":null,"unknown_since":"2026-10-23T09:00:00Z"}'
 same6=1
 # shu2 changed ONE thing here: the carried unknown_since of a prior GOOD read is that read's read_at (09:25), not now; everything else is byte-identical
-strip_us() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("unknown_since",None); print(json.dumps(d,sort_keys=True))' "$1"; }
+strip_us() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("unknown_since",None); d.pop("read_error",None); print(json.dumps(d,sort_keys=True))' "$1"; }
 for pv in "$prev6" "$prev6u"; do for ex in "" "--probe-only"; do
   printf '%s\n' "$pv" > "$R/u6.new.json"; printf '%s\n' "$pv" > "$R/u6.old.json"
   on=$("$hold" --journal-file $MISSING --state-file "$R/u6.new.json" --now "$NOW" --no-flag $ex 2>&1); orc=$?
@@ -419,6 +423,17 @@ codeonly=$(sed -n "/<<'PY'\$/,/^PY\$/p" "$hold" | sed -E 's/^[[:space:]]*#.*$//;
 run s2g $MISSING "$(gprev x 601 null false nosource)"; expect "(s2g) no-source prev, read_at 601 s" 76 "HOLD unknown-blind unknown_since=$(isoago 601) age_s=601 "
 # the unknown branch keeps the earlier of the two: a prev unknown whose read_at is later than unknown_since still dates from unknown_since
 run s2h $MISSING "$(printf '{"active":false,"read_at":"%s","source":"unknown","unknown_since":"%s"}' "$(isoago 50)" "$(isoago 700)")"; expect "(s2h) unknown prev: the earlier unknown_since wins" 76 "HOLD unknown-blind unknown_since=$(isoago 700) age_s=700 "
+
+# (re1) a failing journal read persists read_error (unknown path); (re2) a stale-ssh path keeps it too; (re3) a following good read clears it
+run re1 $MISSING ""; expect "(re1) failing read" 0 "UNKNOWN unknown: "
+case "$(field read_error)" in "journal file unreadable:"*) pass "(re1) read_error persisted: $(field read_error)";; *) bad "(re1) read_error $(field read_error)";; esac
+[ "$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["read_error"]) <= 200)' "$st")" = True ] && pass "(re1) read_error <= 200 chars" || bad "(re1) read_error too long"
+run re2 $MISSING "$(gprev ssh 100 null true)"; expect "(re2) stale-ssh" 76 "HOLD run="
+case "$(field read_error)" in "journal file unreadable:"*) pass "(re2) stale-ssh read_error persisted";; *) bad "(re2) read_error $(field read_error)";; esac
+re1st=$st
+run re3 $R/d.jsonl "$(cat "$re1st")"; expect "(re3) good read after a failing read" 0 "OK "
+[ "$(field read_error)" = null ] && pass "(re3) read_error cleared by the good read" || bad "(re3) read_error $(field read_error)"
+[ "$(field source)" = file ] && pass "(re3) source back to file" || bad "(re3) source $(field source)"
 
 # --- local read on the target host + one in-call retry (ctl 9d62/7066) ---
 LT=$R/local; mkdir -p "$LT"

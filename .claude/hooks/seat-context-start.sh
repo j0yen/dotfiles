@@ -28,6 +28,14 @@ aide_card() {  # <= 8 lines; every source optional; never fails
     if [ -n "$ts" ] && [ -n "$tt" ]; then echo "ctl tick: $ts/$tt from ~/.cache/fleet-dash/ctl-tick.json"; else echo "ctl tick: unreadable ~/.cache/fleet-dash/ctl-tick.json"; fi
   else echo "ctl tick: no tick state"; fi
 }
+# A49 D1: this seat's owed/overdue follow-up ids (seat-owed.sh prints <= 12 lines, exits 0 always; silent when the helper is absent).
+owed_lines() {
+  local h="${SEAT_OWED_BIN:-$HOME/.local/bin/seat-owed.sh}"
+  [ -x "$h" ] || return 0
+  echo "=== OWED follow-ups (seat $1) ==="
+  timeout 30 "$h" "$1" 2>/dev/null | head -n 12 | cut -c1-600
+  return 0
+}
 # Start-trigger check (five-whys 2026-10-24: an empty OnUnitActiveSec= wiped OnBootSec, seat ticks and the regrader never fired after a reboot, nothing alarmed):
 # every enabled user timer on carbon + redbaron + ryzen7 must show a start trigger. Prints NOTHING when healthy; a FAIL/SKIP line per problem otherwise.
 # Never fails the hook; bounded by timeout; silent when the helper is absent (a host without this dotfiles revision).
@@ -38,13 +46,24 @@ timers_check() {
   [ -z "$out" ] || { echo "=== TIMERS: user timer(s) without a start trigger (cannot fire after a reboot; fix the drop-in, tests/user-timers-start-trigger.test.sh) ==="; printf '%s\n' "$out" | cut -c1-200; }
   return 0
 }
+# D1 (follow-up tracker, approvals #114): this seat's owed/overdue follow-up ids, then silence when none are owed; `unmeasured (<reason>)` when
+# `wm-decide followups` is absent/failing (followup-lib.sh), never a failure of the hook.
+fu_print() {
+  local lib; lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
+  [ -r "$lib" ] || return 0
+  # shellcheck disable=SC1090
+  . "$lib" 2>/dev/null || return 0
+  followups_line "$1" || echo "follow-ups: unmeasured (${FU_REASON:-unknown})"
+  return 0
+}
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; timers_check; exit 0 ;; *) sess="" ;; esac
+case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; owed_lines aide; fu_print aide; timers_check; exit 0 ;; *) sess="" ;; esac
 if [ -z "$sess" ]; then
   [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
 fi
 case "$sess" in rb|r7|ctl) ;; *) exit 0 ;; esac
+fu_print "$sess"
 goal="$HOME/Notes/wiki/goal.md"
 play="$HOME/Notes/wiki/playbooks/fleet-operations.md"
 # M9 stage 1 (decisions/2026-10-27-m9-seat-floor-cut-wwhtbt.md, mechanism 1; OFF unless seat_floor_stage_on 1, i.e. SEAT_FLOOR_STAGE>=1 or floor-stage.json .stage>=1):
@@ -65,6 +84,7 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
     h=$(printf '%s' "$stage_txt" | sha256sum | cut -c1-12); hf="$HOME/.cache/claude-seat/$sess.stage-hash"
     if [ "$src" = resume ] && [ "$(cat "$hf" 2>/dev/null)" = "$h" ]; then
       echo "=== goal.md § Stage unchanged since this seat's last tick (hash $h); playbook ~/Notes/wiki/playbooks/fleet-operations.md · handoff ~/.claude/projects/-home-jsy/memory/handoff-$role-*.md ==="
+      owed_lines "$sess"
       exit 0
     fi
     mkdir -p "${hf%/*}" 2>/dev/null; printf '%s\n' "$h" >"$hf" 2>/dev/null
@@ -85,6 +105,7 @@ if [ -r "$HOME/.local/bin/seat-lean.sh" ]; then
         [ -z "$tl" ] || { echo "=== TIMERS: user timer(s) without a start trigger (status.json timers_no_start_trigger) ==="; printf '%s\n' "$tl"; }
       fi
     } | head -c 4096
+    owed_lines "$sess"
     exit 0
   fi
 fi
@@ -100,6 +121,7 @@ if [ -x "$HOME/.local/bin/goal-lint.sh" ] && [ -r "$goal" ]; then
   echo "=== goal-lint (P1 final-message-only · P2 STATUS block · P3 unmeasured passes · P4 WAIT form · P5 never require/forbid) ==="
   "$HOME/.local/bin/goal-lint.sh" "$goal" 2>&1 | sed 's/^\(goal-lint: \)\{0,1\}/goal-lint: /' || true   # one prefix whether or not the linter adds its own
 fi
+owed_lines "$sess"
 echo "=== wiki/playbooks/fleet-operations.md ==="
 if [ -r "$play" ]; then cat "$play"; else echo "playbook missing at $play"; fi
 timers_check

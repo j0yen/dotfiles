@@ -1,0 +1,11 @@
+[Unit]
+Description=Ask ledger: run each open open-asks.tsv row's done-check, close passing rows, re-ping overdue owners, write asks.json (A10)
+# carbon only: the files install everywhere, the unit runs on carbon
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=900
+ExecStart=/usr/bin/python3 %h/.local/bin/asks-due.py

@@ -329,6 +329,7 @@ for a in "$@"; do case "$a" in --trial-id|--trial-ends|--signal|--revert) has_tr
 quote="${1:-}"; re="${2:-}"
 quote=$(printf '%s' "$quote" | tr '\r\n' '  '); re=$(printf '%s' "$re" | tr '\r\n' '  ')
 re="${re#re: }"
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ask-check-lint.sh" --text "$re" || exit $?   # A254: source-shaped done-check refused
 if [ -z "${quote//[[:space:]]/}" ] || [ -z "${re//[[:space:]]/}" ]; then
   echo 'usage: approve.sh "<verbatim Joe quote>" "<re: what it approves>" (both non-empty)' >&2; exit 2
 fi

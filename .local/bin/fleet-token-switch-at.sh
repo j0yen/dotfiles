@@ -2,7 +2,9 @@
 # fleet-token-switch-at.sh <account> <HH:MM> [--by joe-<date>] [--dry-run]
 # Arms ONE transient user timer unit (fleet-token-switch-at-<HHMM>) that runs, in order, at the next HH:MM (today, else tomorrow):
 #   1. fleet account switch: fleet-token-rotate.sh <account> --by <by> --trigger joe-<HHMM>
-#   2. aide account switch:  aide-relaunch.sh <account> joe-switch-at-<HHMM> (account = required first argument, same account as step 1; the rest is the free-text reason)
+#   2. aide account switch (only when step 1 exited 0):  aide-relaunch.sh <account> joe-switch-at-<HHMM> (account = required first argument, same account as step 1; the rest is the free-text reason)
+#   3. receipt: fleet-token-switch-receipt.sh reads token.json + place log and posts DONE/FAILED to the aide inbox and ctl-events (A379);
+#      arming also files the follow-up P row (seat-ask.sh --due +3 min).
 # Runs `fleet-token-rotate.sh --check <argv>` first and refuses to arm (exit = its rc, nothing armed) when it is non-zero.
 # Refuses with exit 2, arming nothing, when fleet-token-rotate.sh or aide-relaunch.sh cannot be found. --dry-run prints the systemd-run command only.
 # Exit: 0 armed / dry-run printed, 2 a step's script is absent, 64 usage.
@@ -39,8 +41,9 @@ if [ "$(date +%s)" -ge "$(date -d "$day $hhmm:00" +%s)" ]; then day="$(date -d '
 cal="$day $hhmm:00"
 unit="fleet-token-switch-at-$tag"
 cmd=(systemd-run --user --on-calendar="$cal" --unit="$unit" --collect
-     /usr/bin/env bash -c 'set -e; "$1" "$2" --by "$3" --trigger "$4" --armed-by fleet-token-switch-at && echo "fleet account switch done"; "$5" "$2" "$6" && echo "aide account switch done"' fleet-token-switch-at
+     /usr/bin/env bash -c 'rcpt="$(dirname "$1")/fleet-token-switch-receipt.sh"; set +e; "$1" "$2" --by "$3" --trigger "$4" --armed-by fleet-token-switch-at; rc=$?; if [ "$rc" = 0 ]; then "$5" "$2" "$6" && echo "aide account switch done"; fi; "$rcpt" "$2" "${4:4:2}:${4:6:2}" "$rc"' fleet-token-switch-at
      "$rotate" "$acct" "$by" "joe-$tag" "$relaunch" "joe-switch-at-$tag")
 if [ "$dry" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; exit 0; fi
 "${cmd[@]}"
+"$here/fleet-token-switch-receipt.sh" "$acct" "$hhmm" 0 --arm || echo "fleet-token-switch-at: WARN follow-up row NOT filed (seat-ask.sh failed); file it by hand" >&2
 echo "armed $unit for $cal: fleet account switch to $acct (by $by), then aide account switch"
