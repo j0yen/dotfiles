@@ -12,7 +12,9 @@ mkdir "$t/stub" "$t/empty"
 for s in aide-relaunch.sh fleet-token-rotate.sh systemd-run; do
   printf '#!/bin/sh\necho STUB-RAN %s >> "%s/ran.log"\n' "$s" "$t" >"$t/stub/$s"; chmod +x "$t/stub/$s"
 done
+printf '#!/bin/sh\n[ "$1" = --check ] && exit 0\necho STUB-RAN fleet-token-rotate.sh >> "%s/ran.log"\n' "$t" >"$t/stub/fleet-token-rotate.sh"
 export PATH="$t/stub:/usr/bin:/bin"
+export FLEET_TOKEN_ROTATE_CHECK_BIN="$t/stub/fleet-token-rotate.sh"   # the arm-time --check runs the stub, never the real store
 out="$(bash "$h" acctB 09:30 --by joe-20261101 --dry-run 2>&1)" && rc=0 || rc=$?
 [ "$rc" = 0 ] && ok "dry-run exits 0" || bad "dry-run exits 0 (rc=$rc)"
 grep -q -- '--unit=fleet-token-switch-at-0930' <<<"$out" && ok "unit name fleet-token-switch-at-0930" || bad "unit name"
@@ -29,6 +31,12 @@ bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && grep -q 'STUB-RAN sys
 rm -f "$t/stub/aide-relaunch.sh" "$t/ran.log"
 bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && rc=0 || rc=$?
 [ "$rc" = 2 ] && [ ! -e "$t/ran.log" ] && ok "absent aide-relaunch.sh: exit 2, nothing armed" || bad "absent relaunch (rc=$rc)"
+# --check at arm time: a rotate stub exiting 64 on --check -> nothing armed, rc 64
+printf '#!/bin/sh\n[ "$1" = --check ] && exit 64\necho STUB-RAN rotate >> "%s/ran.log"\n' "$t" >"$t/stub/fleet-token-rotate.sh"
+printf '#!/bin/sh\necho STUB-RAN aide-relaunch.sh >> "%s/ran.log"\n' "$t" >"$t/stub/aide-relaunch.sh"; chmod +x "$t/stub/"*
+rm -f "$t/ran.log"
+bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>"$t/err" && rc=0 || rc=$?
+[ "$rc" = 64 ] && [ ! -e "$t/ran.log" ] && grep -q 'nothing armed' "$t/err" && ok "rotate --check rc 64: refuses to arm, no unit created" || bad "check refusal (rc=$rc)"
 bash "$h" acctB 9:30 >/dev/null 2>&1 && rc=0 || rc=$?
 [ "$rc" = 64 ] && ok "bad time: exit 64" || bad "bad time (rc=$rc)"
 [ "$fail" = 0 ] && echo "OK fleet-token-switch-at" || echo "NOT OK fleet-token-switch-at"
