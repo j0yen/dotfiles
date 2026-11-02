@@ -11,7 +11,8 @@
 # checks the row; the 30-min Fable regrader checks the row's provenance (evidence names the Fable spawn: agent/task id or transcript path:line).
 # env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests), RB_DECISIONS_DB (default
-# ~/.local/state/swarm-decide/decisions.sqlite, opened read-only; tests use a fixture).
+# ~/.local/state/swarm-decide/decisions-carbon.sqlite = carbon's ledger copied to RB every 10 min, opened read-only, refused when over 30 min old;
+# RB's own decisions.sqlite is a stub with no seat rows (ctl 4bed); tests use a fixture).
 set -uo pipefail
 nocargo=0; args=(); for a in "$@"; do if [ "$a" = --no-cargo ]; then nocargo=1; else args+=("$a"); fi; done
 n="${args[0]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; pf="${args[1]:?usage: rb-run-coder.sh <name> <prompt-file> [--no-cargo]}"; D="$HOME/.cache/rb-seat/coders"
@@ -46,7 +47,7 @@ elif [ "$rc_h" != 0 ]; then
   echo "REFUSED spawn-hold rc=$rc_h: $why" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED spawn-hold rc=$rc_h" || true; exit 76; fi
 # spec-lint gate (rb 10-23, Fable QPA-v4 process fix, row 9ea3): every *.spec.md the prompt cites must pass spec-lint.sh.
 # fable-verdict gate (fvg): a cited spec that does not exist refuses (spec-missing); each existing spec needs its Fable verdict row (exit 80).
-gate_py="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/rb-fable-gate.py"; fg_db="${RB_DECISIONS_DB:-$HOME/.local/state/swarm-decide/decisions.sqlite}"
+gate_py="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/rb-fable-gate.py"; fg_db="${RB_DECISIONS_DB:-$HOME/.local/state/swarm-decide/decisions-carbon.sqlite}"
 fg_refuse() { echo "REFUSED fable-verdict $1: $2" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED fable-verdict" || true; exit 80; }
 ncited=0
 for sp in $(grep -oE '[~/A-Za-z0-9_.-]+\.spec\.md' "$pf" | sed "s|^~|$HOME|" | sort -u); do
