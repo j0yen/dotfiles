@@ -118,8 +118,9 @@ chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude"
 # and the room state/ledger under $R, so the real carbon-room.sh never runs and never writes fleet-dash state from this test.
 printf '#!/usr/bin/env bash\necho "room ok: avail=8077 need=$1 reserve=3072 left=$((8077-3072-$1))"\nexit 0\n' > "$R/room-ok.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.local/bin/journalctl"; cp "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
-chmod +x "$R/room-ok.sh" "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
-export RB_ROOM_BIN="$R/room-ok.sh" CARBON_ROOM_STATE="$R/room-state.json" CARBON_ROOM_LEDGER="$R/room-ledger.jsonl"
+printf '#!/usr/bin/env bash\necho "memcap ok: unit=rb-coder-t.service high=1 max=1"\n' > "$R/memcap-ok.sh"   # memcap gate (71) passes too
+chmod +x "$R/room-ok.sh" "$R/memcap-ok.sh" "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
+export RB_ROOM_BIN="$R/room-ok.sh" RB_MEMCAP_BIN="$R/memcap-ok.sh" CARBON_ROOM_STATE="$R/room-state.json" CARBON_ROOM_LEDGER="$R/room-ledger.jsonl"
 { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words, carries the rules-lint rules: the gate must still fire
 # fvg: rb-run-coder.sh's fable-verdict gate (80) refuses a spec-less prompt, so this prompt carries a valid Hatch row in a fixture DB (the gate under test here is spawn-hold)
 export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
