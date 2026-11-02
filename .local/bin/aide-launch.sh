@@ -65,5 +65,13 @@ if [ -f "$cj" ] && [ "$(jq -r --arg d "$HOME" '.projects[$d].hasTrustDialogAccep
   t="$(mktemp "$cj.aide.XXXXXX")" && jq --arg d "$HOME" '.projects[$d].hasTrustDialogAccepted = true' "$cj" > "$t" && [ -s "$t" ] && mv -f "$t" "$cj" \
     && echo "aide-launch: trust pre-accepted for $HOME" >&2 || { rm -f "$t"; echo "aide-launch: WARN trust pre-accept failed ($cj)" >&2; }
 fi
+# A7 aide-wake: a tmux pane is the only external wake path (aide-wake.sh check pokes it). Inside tmux the pane is recorded; AIDE_TMUX=1 outside tmux
+# re-runs this script in a detached tmux session `aide` (attach: tmux attach -t aide). Default (unset) = unchanged launch.
+wd="${AIDE_WAKE_DIR:-$HOME/.cache/aide}"
+if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  mkdir -p "$wd" && printf '%s\n' "$TMUX_PANE" > "$wd/pane"
+elif [ "${AIDE_TMUX:-0}" = 1 ] && command -v "${AIDE_TMUX_BIN:-tmux}" >/dev/null 2>&1; then
+  exec "${AIDE_TMUX_BIN:-tmux}" new-session -s aide "$(readlink -f "$0")" "$@"
+fi
 if [ "${AIDE_USE_AGENTNS:-0}" = 1 ] && command -v agentns-claude >/dev/null 2>&1; then exec agentns-claude --dangerously-skip-permissions "$@"; fi
 exec ${AIDE_CLAUDE_BIN:-"$HOME/.npm-global/bin/claude"} --dangerously-skip-permissions "$@"
