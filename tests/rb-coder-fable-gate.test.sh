@@ -175,6 +175,8 @@ mkdb $R/h4.db "[$(row $NOW_ID decision '' 'NO-SPEC-SPAWN one-off probe' "sha256:
 case_ "(h4) hatch row with the wrong prompt sha -> no-spec (hatch-prompt-sha-mismatch)" 80 "no-spec (hatch-prompt-sha-mismatch)" $R/h4.db "$HP"
 mkdb $R/h5.db "[$(row $NOW_ID verdict $M 'NO-SPEC-SPAWN one-off probe' "sha256:$HS")]"
 case_ "(h5) hatch row with kind=verdict -> no-spec (hatch-not-no-spec-decision)" 80 "no-spec (hatch-not-no-spec-decision)" $R/h5.db "$HP"
+mkdb $R/h5o.db "[$(row $NOW_ID other '' 'NO-SPEC-SPAWN one-off probe' "sha256:$HS")]"
+case_ "(h5o) hatch row with kind=other (what wm-decide record writes) -> passes" 0 - $R/h5o.db "$HP"
 mkdb $R/h6.db "[$(row $NOW_ID decision '' 'APPROVED one-off probe' "sha256:$HS")]"
 case_ "(h6) hatch row whose what is not NO-SPEC-SPAWN -> no-spec (hatch-not-no-spec-decision)" 80 "no-spec (hatch-not-no-spec-decision)" $R/h6.db "$HP"
 case_ "(h7) Hatch names a row that does not exist -> no-spec (hatch-no-row)" 80 "no-spec (hatch-no-row)" $R/h0.db "$HP"
