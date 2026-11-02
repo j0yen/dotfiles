@@ -1,0 +1,13 @@
+# Snapshot of the gate ids in swarm-decide wm_decide/mergegate.py (A250). Override with MERGEGATE_PY=<path to the live file>.
+    fails["G0"] = 1
+    fails["G1"] = 1
+    fails["G2"] = 1
+    fails["G3"] = 1
+    fails["G4"] = 1
+    fails["G5"] = 1
+    fails["G6"] = 1
+    fails["G7"] = 1
+    fails["G8"] = 1
+    fails["G9"] = 1
+    fails["G10"] = 1
+    fails["G12"] = 1
