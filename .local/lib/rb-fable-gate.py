@@ -9,7 +9,10 @@
 
 The DB is opened read-only (`file:...?mode=ro`, never immutable=1); a locked DB retries 3x ~1 s apart then `db-locked`; a missing file or a schema
 without the needed columns is `db-unreadable`. Reasons: sha-mismatch [<id>], no-fable-verdict-row <id>, verdict-<WORD> <id>, stem-mismatch <id>,
-db-locked, db-unreadable. RB_FABLE_GATE_TIMEOUT (seconds, default 5) is the sqlite busy timeout; a shorter value only fails closed sooner.
+db-locked, db-unreadable, db-stale <age>s. RB_FABLE_GATE_TIMEOUT (seconds, default 5) is the sqlite busy timeout; a shorter value only fails closed sooner.
+The DB is carbon's ledger copy (rb-run-coder.sh default ~/.local/state/swarm-decide/decisions-carbon.sqlite, written by a carbon timer every 10 min,
+ctl row d-20261101-231026-controller-4bed): a file whose mtime is older than RB_FABLE_GATE_MAX_AGE_S (default 1800) refuses `db-stale <age>s`, because a
+stale copy can miss a newer hatch row or a Fable DISAGREE on the spec's verdict row.
 """
 import hashlib, json, os, re, sqlite3, sys, time
 from datetime import datetime
@@ -26,6 +29,17 @@ class Refuse(Exception):
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def check_fresh(db_path):
+    """Refuse(db-stale <age>s) when the DB file is older than RB_FABLE_GATE_MAX_AGE_S; a missing file is left to query() (db-unreadable)."""
+    max_age = float(os.environ.get("RB_FABLE_GATE_MAX_AGE_S", "1800"))
+    try:
+        age = time.time() - os.stat(db_path).st_mtime
+    except OSError:
+        return
+    if age > max_age:
+        raise Refuse("db-stale %ds" % int(age))
 
 
 def query(db_path, sql, args=()):
@@ -128,6 +142,7 @@ def main(argv):
         print("usage: rb-fable-gate.py spec|hatch FILE DB", file=sys.stderr)
         return 64
     try:
+        check_fresh(argv[3])
         out = gate_hatch(argv[2], argv[3]) if argv[1] == "hatch" else "OK " + gate_spec(argv[2], argv[3])
         print(out)
         return 0
