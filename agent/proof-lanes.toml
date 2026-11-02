@@ -39,3 +39,9 @@ id = "config-reload-check"
 description = "Config edit reload check: PostToolUse hook answering a wm-build config.toml edit with what the daemon loaded, proven by the crchk_ac* shell tests."
 globs = [".claude/hooks/config-reload-check.sh", ".claude/settings.json", "tests/crchk_*"]
 required_commands = ["for t in tests/crchk_ac*.test.sh; do bash \"$t\" || exit 1; done"]
+
+[[lane]]
+id = "walk-guard"
+description = "Build-host walk guard: contract, PreToolUse hook, selftest, install wiring, proven by the walkguard_* shell tests (contract/hook drift, case table)."
+globs = [".claude/plugins/walk-guard/**", "install.sh", "tests/walkguard_*"]
+required_commands = ["for t in tests/walkguard_*.test.sh; do bash \"$t\" || exit 1; done"]

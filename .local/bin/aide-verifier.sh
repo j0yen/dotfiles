@@ -44,6 +44,13 @@
 #       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
 #       must `exec aide-verifier.sh launch ... --queue`; verifier-cap-watch.sh bells rb + ctl when more than SLOT_CEIL units are active or a unit's MemoryPeak tops PEAK_MB.
 #       Writes $AIDE_VERIFIER_DIR/<name>/{prompt.md,launch.sh,meta,state}; launch.sh reads the prompt from the FILE (never bash -c); prints the unit name.
+#       Also writes (ctl fef9 / Fable a798; hand PR vtg1): suite.txt = the EXACT --suite string (no newline added) + `suite_sha256=<hex>` in meta, which rb-merge.sh pre-gate A
+#       (exit 6: suite-unknown suite-mismatch suite-ambiguous head-mismatch suite-dirty suite-red replay-log trailer-missing pre-gate-error) checks against the CMD of the attached log
+#       (a verdict from a launch before vtg1 has no suite.txt and refuses suite-unknown: re-verify it). The template's step 4 keeps the ONE `wm-verify-run '<suite>'` call as the gating log
+#       and forbids a wm-verify-run of a cat/echo/printf/tee replay. settings.json + pretool-hook.sh: launch.sh runs `claude -p --settings settings.json --disallowedTools 'Bash(pkill:*)'
+#       'Bash(killall:*)'`; the PreToolUse hook refuses pkill/killall as a whole word anywhere in a Bash command, `kill` of a negative/0/%job target, and any Bash/Write/Edit naming
+#       aide-verifier/<name>/(meta|suite.txt|settings.json|pretool-hook.sh). BEST-EFFORT (the suite allowlist, not the hook, is the merge guard). The prompt's HARD CONSTRAINTS carry the
+#       pkill line, the mktemp-only/read-only line and the LIVE CLONES list. gh contract shared with vtg2: `gh pr merge` is never called on a refusal; read-only gh calls are allowed.
 #       ON CARBON (`hostname -s` = carbon) a --suite launch exits 3 `carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)` right after the lints, before the fleet gate / any unit; a --log (LOG-ONLY) launch runs no suite and proceeds, since the GATED row, the verdict row and merge-gate all live in carbon's ledger; finish and watch are unaffected.
 #   finish <name> [--pr N --repo O/R] [--again]  | watch <name> [...]  (watch waits for the unit to go inactive first, AIDE_VERIFIER_WATCH_MAX_S=3000 -> exit 6)
 #       Reads result.json; no verdict row id in .result (or is_error) -> prints the verifier's final text, NO bell, exit 4. Else, BEFORE merge-gate (GS): when the verdict row is
@@ -210,6 +217,7 @@ step4_suite() {
 4. Suite under the LIVE wrapper from inside the clone as ONE quoted string. The wrapper ~/.local/bin/wm-verify-run has NO --help flag: read its header first; it runs `bash -c` on its single argument and appends WM-VERIFY HEAD/CMD/DIRTY/EXIT lines; the log lands in ~/.local/state/swarm-decide/verify/. Shape:
    cd $d/repo && ~/.local/bin/wm-verify-run {{SUITE_Q}}
    The G3 token is `{{TOKEN}}`. How merge-gate G3 reads it (wm_decide/mergegate.py g3_missing): a token ending in ` EXIT=0` passes when the log's `WM-VERIFY EXIT=0` trailer is present AND the `WM-VERIFY CMD=` trailer contains the text before ` EXIT=0`, so it does NOT have to appear as a literal body line; any other token must appear in a body line. The wrapper's EXIT must be 0, and no FAIL line may appear.{{EXPECT}} If anything fails: STOP, report the failing names, record NO verdict.
+   The merge gate admits only the one attached log whose CMD equals the suite above, run at the PR head on a clean tree; never wm-verify-run a cat/echo/printf/tee of an existing log, a script you wrote that replays one, or a self-written pass line. Attach only logs at the PR head with DIRTY=0 and no expected FAIL lines; cite mutation logs by path + sha256 in the bundle.
 S4
 }
 # step4_log: the "fetch the log" variant of step 4 (launch --log): no suite runs on carbon; {{...}} placeholders are filled by render
@@ -244,6 +252,9 @@ STEPS
    The 'ungradable:' line is informational; report any refusal verbatim.
 
 HARD CONSTRAINTS: never kill by pattern: no pkill, no killall, no `kill` with a -f or name/pattern argument, no `pgrep|xargs kill` (a pkill -f 'wm-verify-run' hit every seat's suite on carbon, 10-24 11:05 PM); you may kill only PIDs you started yourself, or stop your own unit with `systemctl --user stop {{AGENT}}-verifier-{{NAME}}`; never merge or push; never run the real interactive claude; no ssh; no systemd changes; never write outside your scratch dir except the wm-decide row and the wrapper's own log; never touch /home/jsy/dotfiles, ~/.claude/state, ~/.cache/fleet-dash; never delete anything outside your own mktemp dirs; tool output > 2 KB to a file in the scratch dir; never print key material or a token.
+- NEVER pkill/killall by pattern (including `pkill -P`); kill only pids you started, by pid (enforced by the launch hook).
+- Any test, mutation or probe that deletes, moves or writes uses a `mktemp -d` root it created, never a real host path. Verifiers are read-only on real paths.
+- LIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead): /home/jsy/wintermute/fleet-dash /home/jsy/dotfiles /home/jsy/Documents/PRDs /mnt/data/wm-build/wt/*
 
 FINAL OUTPUT (plain text, at most 15 lines): head, attribution counts, test counts + the token line, then exactly `LOG: <absolute log path>` and `VERDICT: <verdict row id>` on their own lines, refusals.
 TPL
@@ -383,6 +394,60 @@ gate_lint() {
     GATE_ERR+="${GATE_ERR:+$'\n'}lint: G1: cannot read the live head of $REPO#$PR (gh pr view failed: $(printf '%s' "$live" | head -n1 | cut -c1-160))"
   fi
   [ -z "$GATE_ERR" ]
+}
+
+# ---- the verifier's PreToolUse hook (ctl fef9 / Fable a798): written per launch to <state dir>/pretool-hook.sh and wired by <state dir>/settings.json ----
+# BEST-EFFORT guard for a lazy or confused verifier, not a sandbox (xargs, python os.kill, an unexpanded $D/meta path or a pipe through eval all evade it; same-uid forgery is out of scope).
+# It refuses (permissionDecision deny): Bash text holding pkill/killall as a whole word ANYWHERE (so `grep pkill file` is refused too: pinned in the selftest, case v7), `kill` with a
+# negative / 0 / %job target (`kill 12345` passes), and any Bash/Write/Edit naming aide-verifier/<name>/(meta|suite.txt|settings.json|pretool-hook.sh).
+# Malformed hook input fails OPEN (no verdict from the hook); the suite allowlist in rb-merge.sh, not this hook, is the merge guard. No single quote may appear below (the writer wraps it in '...').
+read -r -d '' HOOK_PY <<'PY'
+import json, os, re, shlex, sys
+try:
+    d = json.load(sys.stdin)
+    ti = d.get("tool_input") or {}
+except Exception:
+    sys.exit(0)
+def deny(msg):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "aide-verifier hook: " + msg}}))
+    sys.exit(0)
+cmd = ti.get("command") if isinstance(ti.get("command"), str) else ""
+paths = [os.path.normpath(ti[k]) for k in ("file_path", "notebook_path") if isinstance(ti.get(k), str)]
+NAMES = r"/(meta|suite\.txt|settings\.json|pretool-hook\.sh)(?![A-Za-z0-9_.-])"
+PROT = re.compile(r"aide-verifier/[^/\s\"]+" + NAMES + ("|" + re.escape(os.path.normpath(sys.argv[1])) + NAMES if len(sys.argv) > 1 else ""))   # argv[1] = the state dir of this launch (the root may be overridden)
+for text in [cmd] + paths:
+    if PROT.search(text):
+        deny("the launcher-owned files meta, suite.txt, settings.json and pretool-hook.sh in the verifier state dir are read-only for you")
+if re.search(r"(^|[^A-Za-z0-9_])(pkill|killall)([^A-Za-z0-9_]|$)", cmd):
+    deny("pkill/killall is refused: kill only pids you started, by pid")
+for m in re.finditer(r"(?<![A-Za-z0-9_-])kill(?=\s)", cmd):
+    seg = re.split(r"[;&|\n)]", cmd[m.end():], maxsplit=1)[0]
+    try:
+        args = shlex.split(seg)
+    except ValueError:
+        args = seg.split()
+    i = 0
+    if args and args[0] in ("-s", "-n"):
+        i = 2
+    elif args and args[0].startswith("-") and args[0] != "--":
+        i = 1
+    if i < len(args) and args[i] == "--":
+        i += 1
+    for t in args[i:]:
+        if t.startswith("-") or t.startswith("%") or t == "0":
+            deny("kill with a group/all/job target (%s) is refused: kill only pids you started, by pid" % t)
+PY
+
+write_hook() {  # write_hook <state dir>: pretool-hook.sh + settings.json (both chmod 644/755 here; the hook itself refuses writes to them)
+  local d="$1" hk
+  hk="$d/pretool-hook.sh"
+  {
+    echo '#!/bin/bash'
+    echo "# generated by aide-verifier.sh: PreToolUse hook of the verifier's claude -p (ctl fef9, Fable a798). Best-effort; see aide-verifier.sh HOOK_PY."
+    printf "exec python3 -I -B -c '%s' %q\n" "$HOOK_PY" "$d"
+  } >"$hk" || return 1
+  chmod 755 "$hk" || return 1
+  jq -n --arg c "$(printf '%q' "$hk")" '{hooks: {PreToolUse: [{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", hooks: [{type: "command", command: $c}]}]}}' >"$d/settings.json"
 }
 
 cmd_launch() {
@@ -548,12 +613,15 @@ cmd_launch() {
     printf 'export PYTEST_ADDOPTS=%q\n' "${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-rs"   # every pytest skip in the unit is itemized as a SKIPPED [n] line (finish scans them)
     printf 'D=%q\n' "$DIR"
     echo 'cd "$D" || exit 70'
-    printf 'exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-%s}" %q -p --dangerously-skip-permissions --disallowedTools %q --settings "$D/settings.json" --model %s --output-format json "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$VTIMEOUT" "$claude" 'Bash(pkill:*) Bash(killall:*)' "$MODEL_ID"
+    # --disallowedTools is variadic: it is the last option and `--` ends it before the prompt operand
+    printf 'exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-%s}" %q -p --dangerously-skip-permissions --model %s --output-format json --settings "$D/settings.json" --disallowedTools %q %q -- "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$VTIMEOUT" "$claude" "$MODEL_ID" 'Bash(pkill:*)' 'Bash(killall:*)'
   } >"$DIR/launch.sh"
   chmod 755 "$DIR/launch.sh"
-  # mechanical guard: a PreToolUse Bash hook scoped to this unit only (settings file passed by launch.sh), plus the deny rules above
-  jq -n --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$h}]}]}}' >"$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
-  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\nlog=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$LOG" >"$DIR/meta"
+  printf '%s' "$SUITE" >"$DIR/suite.txt" || die 2 "cannot write $DIR/suite.txt"   # the EXACT rendered suite, no newline added: rb-merge.sh admits only the log whose CMD equals it (fef9)
+  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\nlog=%s\nsuite_sha256=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$LOG" "$(sha256sum "$DIR/suite.txt" | cut -d' ' -f1)" >"$DIR/meta"
+  write_hook "$DIR" || die 2 "cannot write the verifier hook in $DIR"
+  # main's verifier-kill-guard.sh stays as a second PreToolUse entry after the vtg1 hook (entry 0)
+  jq --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '.hooks.PreToolUse += [{matcher:"Bash",hooks:[{type:"command",command:$h}]}]' "$DIR/settings.json" >"$DIR/settings.json.new" && mv "$DIR/settings.json.new" "$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
   # ---- start ----
   if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
@@ -1130,6 +1198,49 @@ F
   [ -x "$D/launch.sh" ] && grep -q 'aide-verifier-ok1' "$D/launch.sh" && bash -n "$D/launch.sh"; chk "launch.sh is executable, names the unit, parses" $?
   grep -q '"$(cat "$D/prompt.md")"' "$D/launch.sh" && ! grep -qE 'bash -c|sh -c' "$D/launch.sh" && ! grep -qE ' -c ' "$T/sdrun.log"; chk "the prompt is read from the file by launch.sh, never passed through bash -c" $?
   grep -q ' launched unit=aide-verifier-ok1 ' "$D/state"; chk "state has a launched line" $?
+  # ---- vtg1 (ctl fef9 / Fable a798): suite.txt, the pkill hook, the template sentences ----
+  local SUITE1='bash tests/run.sh; echo "tests/*.test.sh EXIT=$?"' SHA1
+  SHA1="$(printf '%s' "$SUITE1" | sha256sum | cut -d' ' -f1)"
+  [ "$(cat "$D/suite.txt")" = "$SUITE1" ] && [ "$(wc -c <"$D/suite.txt")" = "${#SUITE1}" ] && grep -qx "suite_sha256=$SHA1" "$D/meta"; chk "vtg1 (v1): launch writes suite.txt = the exact --suite bytes (no newline added) and suite_sha256=<its sha256> into meta" $?
+  local MLS=$'echo one\necho "tests/*.test.sh EXIT=$?"'
+  out="$(L mls --repo j0yen/dotfiles --pr 7 --head "$H" --gated "$G" --token 'tests/*.test.sh EXIT=0' --suite "$MLS")"; rc=$?
+  [ "$rc" = 0 ] && [ "$(wc -c <"$T/av/mls/suite.txt")" = "${#MLS}" ] && [ "$(sed -n 2p "$T/av/mls/suite.txt")" = 'echo "tests/*.test.sh EXIT=$?"' ] && grep -qx "suite_sha256=$(printf '%s' "$MLS" | sha256sum | cut -d' ' -f1)" "$T/av/mls/meta"; chk "vtg1 (v1b): a multi-line suite keeps its newline in suite.txt" $?
+  grep -qF -- '--settings "$D/settings.json" --disallowedTools Bash\(pkill:\*\) Bash\(killall:\*\) -- "$(cat "$D/prompt.md")"' "$D/launch.sh"; chk "vtg1 (v2): launch.sh runs claude -p with --settings <state dir>/settings.json and --disallowedTools Bash(pkill:*) Bash(killall:*), then -- and the prompt" $?
+  [ -x "$D/pretool-hook.sh" ] && bash -n "$D/pretool-hook.sh" && jq -e --arg c "$(printf '%q' "$D/pretool-hook.sh")" '.hooks.PreToolUse[0].hooks[0].command == $c and (.hooks.PreToolUse[0].matcher | test("Bash") and test("Write") and test("Edit"))' "$D/settings.json" >/dev/null; chk "vtg1 (v3): settings.json is JSON wiring a PreToolUse hook (Bash|Write|Edit) to the executable, parsing pretool-hook.sh" $?
+  hk() { jq -nc --arg t "$1" --arg k "$2" --arg v "$3" '{tool_name: $t, tool_input: {($k): $v}}' | "$D/pretool-hook.sh" 2>/dev/null; }
+  local hk_ok=0 c
+  for c in 'pkill -f x' 'killall x' 'bash -c "pkill -P 1"' 'sh -c '"'"'killall node'"'" 'echo hi; pkill claude' 'kill -9 -1' 'kill -TERM -4242' 'kill %1' 'kill -- -1' 'kill -s KILL 0' 'kill 12 -3'; do
+    hk Bash command "$c" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and .hookSpecificOutput.hookEventName == "PreToolUse"' >/dev/null || { hk_ok=1; echo "  hook let through: $c" >&2; }
+  done
+  [ "$hk_ok" = 0 ]; chk "vtg1 (v4): the hook denies pkill -f x, killall x, bash -c \"pkill -P 1\", sh -c killall, kill -9 -1, kill -TERM -<pgid>, kill %1, kill -- -1, kill -s KILL 0 (block JSON, exit 0)" $?
+  hk_ok=0
+  for c in 'kill 12345' 'kill -9 12345' 'kill -s TERM 12345 12346' 'ls -la; echo skill' 'git -C "$d/repo" log --oneline' 'echo pkillx'"'"'s'; do
+    [ -z "$(hk Bash command "$c")" ] || { hk_ok=1; echo "  hook refused: $c" >&2; }
+  done
+  [ "$hk_ok" = 0 ]; chk "vtg1 (v5): the hook allows kill 12345, kill -9 12345, kill -s TERM <pids>, ls, git log, a word that merely contains kill" $?
+  hk_ok=0
+  for c in "echo x > $D/meta" "cp /dev/null $D/suite.txt" "sed -i s/a/b/ $D/settings.json" "rm $D/pretool-hook.sh" "cat x >> /home/u/.local/state/aide-verifier/zz/meta"; do
+    hk Bash command "$c" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null || { hk_ok=1; echo "  hook let through: $c" >&2; }
+  done
+  for c in meta suite.txt settings.json pretool-hook.sh; do
+    hk Write file_path "$D/$c" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null || { hk_ok=1; echo "  hook let through Write $c" >&2; }
+    hk Edit file_path "$D/./x/../$c" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null || { hk_ok=1; echo "  hook let through Edit ../$c" >&2; }
+  done
+  [ "$hk_ok" = 0 ]; chk "vtg1 (v6): the hook denies Bash/Write/Edit naming aide-verifier/<name>/{meta,suite.txt,settings.json,pretool-hook.sh} (also via ./x/..)" $?
+  hk_ok=0
+  for c in "echo x > $D/scratch.txt" "cat $D/prompt.md" "d=\$(mktemp -d -p $D); cd \$d" "cat $D/result.json"; do
+    [ -z "$(hk Bash command "$c")" ] || { hk_ok=1; echo "  hook refused: $c" >&2; }
+  done
+  [ -z "$(hk Write file_path "$D/scratch/notes.md")" ] || hk_ok=1
+  [ "$hk_ok" = 0 ]; chk "vtg1 (v6b): the verifier's own scratch files and prompt.md/result.json in the state dir stay usable (only meta, suite.txt, settings.json, pretool-hook.sh are refused)" $?
+  hk Bash command 'grep -n pkill /tmp/some-file' | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null; chk "vtg1 (v7): PINNED best-effort false positive: grep pkill <file> is REFUSED (the regex matches the word anywhere in the string)" $?
+  printf 'not json' | "$D/pretool-hook.sh" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ -z "$(printf 'not json' | "$D/pretool-hook.sh" 2>/dev/null)" ]; chk "vtg1 (v7b): malformed hook input fails open (exit 0, no block JSON); the suite allowlist is the merge guard" $?
+  grep -qF 'NEVER pkill/killall by pattern (including `pkill -P`); kill only pids you started, by pid (enforced by the launch hook).' "$D/prompt.md" \
+    && grep -qF 'Any test, mutation or probe that deletes, moves or writes uses a `mktemp -d` root it created, never a real host path. Verifiers are read-only on real paths.' "$D/prompt.md" \
+    && grep -qF 'LIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead): /home/jsy/wintermute/fleet-dash /home/jsy/dotfiles /home/jsy/Documents/PRDs /mnt/data/wm-build/wt/*' "$D/prompt.md"; chk "vtg1 (v8): the rendered prompt carries the pkill line, the mktemp-only/read-only line and the LIVE CLONES list" $?
+  grep -qF 'The merge gate admits only the one attached log whose CMD equals the suite above, run at the PR head on a clean tree; never wm-verify-run a cat/echo/printf/tee of an existing log, a script you wrote that replays one, or a self-written pass line. Attach only logs at the PR head with DIRTY=0 and no expected FAIL lines; cite mutation logs by path + sha256 in the bundle.' "$D/prompt.md" \
+    && ! grep -q 'checks\.sh' "$D/prompt.md" && [ "$(grep -c 'wm-verify-run' "$D/prompt.md")" -ge 2 ] && [ "$(grep -c '^   cd \$d/repo && ~/.local/bin/wm-verify-run ' "$D/prompt.md")" = 1 ]; chk "vtg1 (v9): the rendered prompt states the no-replay sentence verbatim, keeps ONE wm-verify-run {{SUITE_Q}} call, and has no hand-written checks.sh advice" $?
   # ---- unit timeout + kill guard (TKG) ----
   grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-2400}" ' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh runs timeout with AIDE_VERIFIER_TIMEOUT_S default 2400, meta timeout_s=2400" $?
   out="$(L tkg5 "${A[@]}" --head "$H" --timeout 5400)"; rc=$?
@@ -1140,7 +1251,7 @@ F
   out="$(L tkg8 "${A[@]}" --head "$H" --timeout abc)"; rc=$?; [ "$rc" = 2 ]; chk "TKG timeout: --timeout abc -> exit 2" $?
   printf '{"is_error":false,"result":"no id"}' >"$T/av/tkg5/result.json"; out="$("$SELF" finish tkg5 2>&1)"
   [[ "$out" == *"timeout_s=5400"* ]]; chk "TKG timeout: finish reports the recorded timeout_s (exit-4 message)" $?
-  grep -qF -- '--disallowedTools Bash\(pkill:\*\)\ Bash\(killall:\*\) --settings "$D/settings.json"' "$D/launch.sh" && grep -q 'verifier-kill-guard.sh' "$D/settings.json" && jq -e '.hooks.PreToolUse[0].matcher == "Bash"' "$D/settings.json" >/dev/null; chk "TKG guard: launch.sh denies Bash(pkill:*) and Bash(killall:*) and loads the unit-scoped settings.json hook" $?
+  grep -qF -- '--settings "$D/settings.json" --disallowedTools Bash\(pkill:\*\) Bash\(killall:\*\) --' "$D/launch.sh" && grep -q 'verifier-kill-guard.sh' "$D/settings.json" && jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash")] | length == 1' "$D/settings.json" >/dev/null; chk "TKG guard: launch.sh denies Bash(pkill:*) and Bash(killall:*) and loads the unit-scoped settings.json hook" $?
   grep -q 'never kill by pattern' "$D/prompt.md" && grep -q 'systemctl --user stop aide-verifier-ok1' "$D/prompt.md"; chk "TKG guard: prompt forbids pkill/killall/kill by pattern, allows own PIDs and own unit stop" $?
   out="$(L ok1 "${A[@]}" --head "$H")"; rc=$?; [ "$rc" = 2 ]; chk "a reused name is refused" $?
   FAKE_SDRUN_FAIL=1 L sdf "${A[@]}" --head "$H" >/dev/null; rc=$?
@@ -1234,5 +1345,5 @@ case "${1:-}" in
   launch) shift; cmd_launch "$@" ;;
   finish) shift; cmd_finish "$@" ;;
   watch) shift; cmd_watch "$@" ;;
-  *) sed -n '2,62p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,72p' "$SELF" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
