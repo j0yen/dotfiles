@@ -1,0 +1,6 @@
+[Unit]
+Description=Second delete-only Hetzner guard on carbon: delete any server outside hub, orch, mcphost-1 (Joe 2026-10-11 PERMANENT HETZNER BOXES ONLY; A44)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/hetzner-fixed-fleet-guard-carbon.sh
