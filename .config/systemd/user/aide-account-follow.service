@@ -1,0 +1,5 @@
+[Unit]
+Description=aide account switch follows the fleet account switch (Joe 11-01 1:5x PM, approvals #207)
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/aide-account-follow.sh

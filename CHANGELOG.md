@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-01 — fleet-switch-joe-trigger (patch)
+
+`fleet-token-rotate.sh --trigger` also accepts `joe-<date-or-time>`
+(`^joe-[0-9A-Za-z:._-]+$`), recorded as given in token.json and rotations.log;
+anything else stays exit 64 and the usage text lists the forms (A362: a
+`--trigger reset-0220` call exited 64 at 2:21 AM and the fleet stayed on the old
+account). New `.local/bin/fleet-token-switch-at.sh <account> <HH:MM> [--by
+joe-<date>] [--dry-run]` arms one transient user unit
+`fleet-token-switch-at-<HHMM>` that runs the fleet account switch
+(`fleet-token-rotate.sh ... --trigger joe-<HHMM>`) and then the aide account
+switch (`aide-relaunch.sh`, no account argument); exit 2 when either script is
+absent. `tests/fleet-token-switch-at.test.sh` + two selftest cases.
+
 ## 2026-10-24 — repo-suite (minor)
 
 `.local/bin/repo-suite.sh TREE LABEL OUTDIR` runs a repo's `tests/*.test.sh`
@@ -15,6 +28,17 @@ worktree under `~/.local/state/repo-suite/wt/`, logs to
 `~/.cache/fleet-dash/repo-suite.json` carries `{repo: {sha, state, age_s, pass,
 fail, ts, unseen, unseen_oldest_s}}`. Both scripts have a hermetic `--selftest`;
 `tests/repo-suite.test.sh` runs them.
+
+## 2026-10-24 — seat-tick-no-wakeup (patch)
+
+`.local/bin/seat-tick.sh` adds `--disallowedTools ScheduleWakeup` to the claude
+argv of every turn kind (TICK/SWEEP/EVENT/ASK), after the `--max-turns` slot and
+before the lean/`--settings` block, and the rules line says a turn ends at its
+STATUS with no `/loop` or `ScheduleWakeup`. A `/loop` turn had slept holding
+`rb.lock` until the 3420 s kill (exit 124) on 26 of 27 turns. `<seat>-tick.json`
+gains `cap_kills` (consecutive exit-124 turns, reset by any other exit); at 2 or
+more one `ALARM <seat> cap-kills=<n>` line goes to stderr and `<seat>-events.log`.
+
 ## 2026-10-24 — seat-tick-strict-stophook (patch)
 
 `.local/bin/seat-tick.sh` `stop_hook_lines` counts only user messages whose
@@ -274,3 +298,6 @@ against the freshly redeployed endpoint; if zero segments bootstrap it writes
 harness probe or truth tier starts, so a broken bootstrap path is caught within one measure-job
 tick instead of hiding for up to a day. `vibeloop-ctl measure` surfaces both: inline
 `proxy=`/`cleanup=` fields on each ledger line and a separate `last proxy:` summary line.
+
+## fleet-token-switch-receipt (A379)
+- fleet-token-switch-receipt.sh: last step of the switch-at unit posts DONE/FAILED to the aide inbox + ctl-events from token.json and place.log; --arm files the +3 min follow-up row.
