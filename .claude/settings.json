@@ -435,6 +435,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/followup-stop-gate.sh",
+            "timeout": 25
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/aside-followup-stop.sh",
             "timeout": 10
           }
