@@ -20,7 +20,10 @@ case "$host" in orch|orch.*) ;; *) [ "${ORCH_MDV_ALLOW_HOST:-}" = 1 ] || { echo 
 
 d=$HOME/.cache/mdeploy-verify/$sha
 log=${logarg:-$d/verify.log}
-mkdir -p "$d/tmp" || exit 2
+# short tmp dir: pytest fixtures build ssh control paths under TMPDIR, which must stay under 100 chars
+# (readymargin_ac1 failed on a 138-char path under $d/tmp, 11-02; aide-verifier-md85)
+t=/tmp/mdv-${sha:0:12}
+mkdir -p "$d" "$t" || exit 2
 exec 9>"$d/.lock"
 flock -n 9 || { echo "refused: another orch-mdeploy-verify holds the lock for $sha" >&2; exit 2; }
 
@@ -36,7 +39,7 @@ cmd='uv run --locked pytest -q -m "not live and not slow and not www_pin" --dura
 env -i \
   PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
   HOME="$HOME" LANG="${LANG:-C.UTF-8}" USER="${USER:-jsy}" LOGNAME="${USER:-jsy}" SHELL=/bin/bash \
-  TMPDIR="$d/tmp" TMP="$d/tmp" TEMP="$d/tmp" \
+  TMPDIR="$t" TMP="$t" TEMP="$t" \
   MCPHOST_DEPLOY_GATE_HERMETIC=1 \
   bash -c "$cmd" > "$log" 2>&1
 rc=$?
