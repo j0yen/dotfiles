@@ -120,7 +120,7 @@ printf '#!/usr/bin/env bash\necho "room ok: avail=8077 need=$1 reserve=3072 left
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.local/bin/journalctl"; cp "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
 chmod +x "$R/room-ok.sh" "$H/.local/bin/journalctl" "$H/.local/bin/systemctl"
 export RB_ROOM_BIN="$R/room-ok.sh" CARBON_ROOM_STATE="$R/room-state.json" CARBON_ROOM_LEDGER="$R/room-ledger.jsonl"
-head -c 400 /dev/zero | tr '\0' 'x' > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words: the gate must still fire
+{ head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$R/prompt.md"        # >= 200 bytes, no cargo/redbaron words, carries the rules-lint rules: the gate must still fire
 # fvg: rb-run-coder.sh's fable-verdict gate (80) refuses a spec-less prompt, so this prompt carries a valid Hatch row in a fixture DB (the gate under test here is spawn-hold)
 export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
 HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; printf '\nHatch: %s\n' "$HID" >> "$R/prompt.md"; PSHA=$(grep -v '^Hatch: ' "$R/prompt.md" | sha256sum | cut -d' ' -f1)

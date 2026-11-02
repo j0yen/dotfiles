@@ -10,6 +10,7 @@
 # covered, BY SHA256 OF ITS BYTES, by the newest decisions row carrying `sha256:<hex>` in its evidence, which must be kind=verdict, model fable, final
 # verdict AGREE|AGREE-WITH-EDITS (.local/lib/rb-fable-gate.py); a prompt citing no spec needs a `Hatch: d-<id>` NO-SPEC-SPAWN decision row. This gate
 # checks the row; the 30-min Fable regrader checks the row's provenance (evidence names the Fable spawn: agent/task id or transcript path:line).
+# rules-lint 72 (prompt lacks the kill-by-pid or LIVE CLONES rule; rb_prompt_rules_lint) runs with the spawn gates.
 # env: RB_CODER_MODEL = sonnet (default, medium effort) | opus (high effort: ambiguous multi-file refactor, architecture, or a sonnet coder's ESCALATE: opus; anything else exits 78).
 # env: RB_SPAWN_HOLD_BIN (default ~/.local/bin/rb-spawn-hold.sh), RB_SPAWN_HOLD_EXTRA (extra args for it; tests), RB_DECISIONS_DB (default
 # ~/.local/state/swarm-decide/decisions-carbon.sqlite = carbon's ledger copied to RB every 10 min, opened read-only, refused when over 30 min old;
@@ -32,6 +33,11 @@ cd "$HOME"
 if ! pl_msg=$(rb_prompt_pair_lint "$pf" 2>&1 >/dev/null); then
   pl_txt=$(sed -n "$(printf '%s\n' "$pl_msg" | head -n 1 | sed -n 's/^line \([0-9]*\):.*/\1/p')p" "$pf" | cut -c1-160)
   echo "REFUSED pair-lint $pf: $(printf '%s\n' "$pl_msg" | head -n 1) | text: $pl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED pair-lint: $pl_txt" || true; exit 77
+fi
+# rules-lint gate (aide A725, row d-20261023-054617-rb-a725: prompts a375 and a361m ran without the kill-by-pid and LIVE CLONES rules): exit 72.
+if ! rl_msg=$(rb_prompt_rules_lint "$pf" 2>&1); then
+  rl_txt=$(printf '%s\n' "$rl_msg" | head -n 1)
+  echo "REFUSED rules-lint $pf: $rl_txt" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED rules-lint: $rl_txt" || true; exit 72
 fi
 # spawn-hold gate (CSH, replaces the interim freeze-file gate of row 2041): EVERY spawn asks rb-spawn-hold.sh
 # whether a daemon redrive on redbaron is memory-refused; HOLD -> exit 76 + report + seat-event. The only exemption is
