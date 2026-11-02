@@ -497,6 +497,9 @@ for repo in REPOS:
         if any(u["active"] for u in pr_units):
             continue
         head_units = [u for u in pr_units if u["head"] == live]
+        head_units.sort(key=lambda u: int((re.search(r"-(\d+)$", u["name"]) or re.search(r"(\d*)$", u["name"])).group(1) or 0))
+        newest = head_units[-1] if head_units else None
+        guard_newest = bool(newest and newest["finished"] and "GUARD-SKIP" in newest["finished"])   # the load guard skipped tests in the head's newest unit
         # (b) a finished unit with no finish yet
         pend = [u for u in head_units if not u["finished"] and u["has_result"] and "finish:%s" % u["name"] not in hp_keys and "finishlint:%s" % u["name"] not in hp_keys]
         if pend:
@@ -516,6 +519,8 @@ for repo in REPOS:
             if any(x.get("gates") == r["id"] and re.match(r"(?i)\s*CORRECT", x.get("what") or "") for x in rows):
                 continue   # voided by a CORRECT / CORRECT-SCOPE row
             vs.append(r)
+        if guard_newest:
+            vs = []   # belt and braces: never merge a head whose newest finished unit is a GUARD-SKIP, whatever rows say
         if vs:
             v = vs[-1]
             if "merge:%s" % v["id"] not in hp_keys:
@@ -550,6 +555,11 @@ for repo in REPOS:
             if k not in hp_keys:
                 actions.append(dict(base, act="ring-nosuite", key=k, msg="%s: GATED head %s has no unattended suite on carbon (cargo repo); verify it by hand on its build host" % (tag, live[:12])))
             continue
+        if guard_newest and not gate_failed and launches >= MAX_LAUNCHES:
+            k = "guardskip-cap:%s" % pfx
+            if k not in hp_keys:
+                actions.append(dict(base, act="ring-stuck", key=k, msg="%s: head %s was GUARD-SKIPped by the load guard on %d launches; the cause is host LOAD, not code; re-verify when carbon load is below core count" % (tag, live[:12], launches)))
+            continue
         if gate_failed or launches >= MAX_LAUNCHES or fails >= MAX_LAUNCH_FAILS:
             k = "stuck:%s" % pfx
             if k not in hp_keys:
@@ -563,7 +573,7 @@ for repo in REPOS:
             log("hand-pr-land-driver: %s file list unreadable or empty (gh rc=%d); tier=%s" % (tag, f_rc, tier))
         actions.append(dict(base, act="launch", key="launch:%s%d" % (pfx, n), fkey="launchfail:%s%d" % (pfx, fails + 1), ckey="capdefer:%s%d" % (pfx, int(now() // 3600)),
                             rkey="roomring:" + pfx, name=name, tier=tier, reason=reason, nfiles=len(f_all), drift=DRIFT.get(repo, False),
-                            suite=suite_for(repo, tier, f_tests)))
+                            suite=suite_for(repo, tier, f_tests), gs=(newest["name"] if guard_newest and not gate_failed else None)))
 
 # source-set drift between the live contract and the built-in constant: ring aide once a day (dotfiles tests do not run when swarm-decide merges)
 for _r, _d in sorted(DRIFT.items()):
@@ -668,8 +678,10 @@ for a in actions:
         if rc_ == 0:
             log("LAUNCH %s %s tier=%s tier_reason=%s" % (a["tag"], a["name"], a["tier"], a["reason"]))
             record("launch", a, "name=%s tier=%s tier_reason=%s files=%d gated=%s%s" % (a["name"], a["tier"], a["reason"], a["nfiles"], a["gated"], " srcset_drift=1" if a["drift"] else ""))
-        elif rc_ in (3, 10, 11, 6) or (rc_ == 2 and re.search(r"(?i)cap reached|ceiling|slot", txt)):
-            log("LAUNCH DEFERRED %s rc=%d (transient): %s" % (a["tag"], rc_, one_line(txt)))
+            if a.get("gs"):
+                record("guard-skip", a, "relaunched after GUARD-SKIP unit %s as %s" % (a["gs"], a["name"]), key="guardskip:%s" % a["gs"])
+        elif rc_ in (3, 10, 11, 6, 13) or (rc_ == 2 and re.search(r"(?i)cap reached|ceiling|slot", txt)):
+            log("LAUNCH DEFERRED %s rc=%d (transient, no attempt consumed): %s" % (a["tag"], rc_, one_line(txt)))
             if rc_ == 2 and a["ckey"] not in hp_keys:   # at most one observe row per head per hour; never counts toward launchfail / stuck
                 record("launch-deferred", a, "rc=2 %s" % one_line(txt, 200), key=a["ckey"])
         else:
