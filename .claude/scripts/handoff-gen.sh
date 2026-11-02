@@ -20,6 +20,11 @@ db="$state/state.db"
 mc_url="${HANDOFF_MCPHOST_URL:-https://mcphost.dev/status.json}"
 syn_repo="${HANDOFF_SYNTHORG_REPO:-$HOME/repos/synthorg}"
 out="$memdir/handoff-generated-$(hostname -s 2>/dev/null || echo unknown).md" # per-host: concurrent hosts never share a file (Fable review 10-20)
+# aide lanes (10-27): a non-main lane writes its own file, so its SessionEnd never clobbers the main aide's per-host handoff; main/unset unchanged
+lane_applied=0; _lane="${WM_AIDE_LANE:-main}"
+if [ "${WM_SEAT:-}" = aide ] && [ "$_lane" != main ] && [[ "$_lane" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+  out="$memdir/handoff-generated-$(hostname -s 2>/dev/null || echo unknown)-$_lane.md"; lane_applied=1
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="${2:-$out}"; shift 2 ;;
@@ -82,9 +87,15 @@ render() {
     echo "ended 24h: $NOHOST"
   fi
 
-  section "Queue" "$S .queue"
+  section "Queue" "$S .queue + .sources.queue"
   if present queue; then
-    jq -r '.queue | "admitted: \(.admitted|length) slots=\(.slots // "-")", (.skipped[]? | "skipped \(.reason): \(.slugs|length)")' "$status" 2>/dev/null | head -n 12
+    # fleet-dash counts (operator-status-gen.sh); never print a number the source did not vouch for
+    qs=$(sj '.sources.queue // "missing"')
+    if [ "$qs" = ok ]; then
+      jq -r '.queue | "queue: \(.queue_total // "?") (building \(.building // "?"), ready \(.queue_ready // "?")" + (if .blocked != null then ", blocked \(.blocked)" else "" end) + (if .parked != null then ", parked \(.parked)" else "" end) + ")"' "$status" 2>/dev/null | head -n 3
+    else
+      echo "queue: unknown ($qs)"
+    fi
   else
     echo "Queue: $NOHOST"
   fi
@@ -142,7 +153,7 @@ rm -f "$tmp" 2>/dev/null
 # R4: index line as line 2 of MEMORY.md, once; no other line is touched
 idx_line='- [GENERATED HANDOFF — read first](handoff-generated-carbon.md) · [redbaron](handoff-generated-redbaron.md) · [ryzen7](handoff-generated-ryzen7.md) — per-host, rewritten at every SessionEnd by handoff-gen.sh; the prose handoff keeps decisions and traps only'
 mem="$memdir/MEMORY.md"
-if [ -f "$mem" ] && ! grep -qF 'handoff-generated-' "$mem"; then
+if [ "$lane_applied" = 0 ] && [ -f "$mem" ] && ! grep -qF 'handoff-generated-' "$mem"; then
   mem=$(readlink -f "$mem")
   mtmp="$mem.tmp.$$"
   sed -e '1a\' -e "$idx_line" "$mem" >"$mtmp" 2>/dev/null && mv -f "$mtmp" "$mem"

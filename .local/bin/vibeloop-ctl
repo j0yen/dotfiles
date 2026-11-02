@@ -44,7 +44,7 @@ LOOP="$PRD_DIR/vibeloop"
 CL="$LOOP/cost-ledger.jsonl"
 CLAIM="$LOOP/operator.json"
 NATS_URL="${NATS_URL:-nats://127.0.0.1:4222}"
-here() { [ "$(hostname)" = "RedBaron" ]; }
+here() { [ "$(hostname | tr "[:upper:]" "[:lower:]")" = "redbaron" ]; }   # the host reports lowercase `redbaron`; a case-sensitive "RedBaron" compare made RedBaron ssh to itself
 rb() { if here; then bash -lc "$*"; else ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "export PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH; $*"; fi; }
 pull() { git -C "$PRD_DIR" pull -q --ff-only 2>/dev/null || echo "warn: pull failed (offline or diverged)" >&2; }
 push() { # $1 message, rest = paths

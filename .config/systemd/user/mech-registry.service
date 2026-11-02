@@ -1,0 +1,6 @@
+[Unit]
+Description=Mechanism registry: parse # Mechanisms + SPEC pointers, probe installed artifacts, write mechanisms.json (read-only probes)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/mech-registry.sh"

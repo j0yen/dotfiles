@@ -44,11 +44,28 @@ case "$fp" in
     "$HOME/.claude/recall/"*) exit 0 ;;
     "$HOME/.cache/"*) exit 0 ;;
     "/tmp/"*) exit 0 ;;
+    "$HOME/tmp/"*) exit 0 ;;
+    "$HOME/.local/state/"*) exit 0 ;;
 esac
 
 # Parent dir for watching; the scope of interest is that dir's contents.
 parent_dir=$(dirname "$fp")
 [ -d "$parent_dir" ] || exit 0
+
+# Never watch $HOME or a dir with no project root: walk up the way `watch-project` resolves
+# (.git/.hg/.svn/.watchmanconfig); if the first hit is $HOME, or none, skip. Bounds the watchman
+# inotify use (a root on $HOME exhausted the 65536 limit on 2026-10-23).
+root_dir=""
+d="$parent_dir"
+while :; do
+    for m in .git .hg .svn .watchmanconfig; do
+        if [ -e "$d/$m" ]; then root_dir="$d"; break 2; fi
+    done
+    [ "$d" = "/" ] && break
+    d=$(dirname "$d")
+done
+[ -z "$root_dir" ] && exit 0
+[ "$root_dir" = "$HOME" ] && exit 0
 
 case "$mode" in
   pre)

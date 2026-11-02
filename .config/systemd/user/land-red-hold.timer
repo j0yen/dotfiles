@@ -1,0 +1,9 @@
+[Unit]
+Description=Every 60 s: land-red-hold tick (journal cursor read + CI poll)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target

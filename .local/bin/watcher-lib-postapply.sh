@@ -60,7 +60,7 @@ wpa_write() {  # sha bash_n source pairs
 
 wpa_run() {
   command -v jq >/dev/null 2>&1 || { echo "watcher-lib-postapply: jq required" >&2; return 2; }
-  local sha=null bash_n=false src=false rc=0 n f res
+  local sha=null bash_n=false src=false rc=0 cr n f res
   if [ -r "$WPA_LIB" ]; then
     sha=$(sha256sum "$WPA_LIB" | cut -d' ' -f1)
     bash -n "$WPA_LIB" 2>/dev/null && bash_n=true
@@ -75,8 +75,16 @@ wpa_run() {
     f=$WPA_BIN/$n
     if ! grep -Iq -- '--selftest' "$f" 2>/dev/null; then
       res=no-selftest
-    elif [ -x "$f" ] && timeout "$WPA_TIMEOUT" "$f" --selftest >/dev/null 2>&1 </dev/null; then
-      res=ok
+    elif [ -x "$f" ]; then
+      # tee keeps the consumer's output on its own fd (stdout still discarded as before) and in a file for first_fail
+      local so; so=$(mktemp "${TMPDIR:-/tmp}/wpa-consumer.XXXXXX") || so=/dev/null
+      timeout "$WPA_TIMEOUT" "$f" --selftest 2>&1 </dev/null | tee "$so" >/dev/null; cr=${PIPESTATUS[0]}
+      if [ "$cr" = 0 ]; then res=ok; else
+        res=fail; rc=1
+        local ff; ff=$(grep -m1 FAIL "$so" 2>/dev/null); ff=${ff:-<none>}
+        echo "POSTAPPLY SELFTEST FAIL consumer=$n rc=$cr first_fail=$ff" >&2
+      fi
+      [ "$so" = /dev/null ] || rm -f "$so"
     else
       res=fail; rc=1
     fi
