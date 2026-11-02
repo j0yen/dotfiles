@@ -151,6 +151,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/login-ledger.sh"
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -345,6 +354,15 @@
             "timeout": 20
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/login-ledger.sh"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -417,6 +435,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/followup-stop-gate.sh",
+            "timeout": 25
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/aside-followup-stop.sh",
             "timeout": 10
           }
@@ -428,6 +456,26 @@
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/owed-now.sh hook",
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/seat-owed-stop.sh",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/aide-wake-stop.sh",
             "timeout": 20
           }
         ]
@@ -529,11 +577,20 @@
           },
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/wm-build-status-gate.sh"
+          },
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/row-gate-guard.sh"
           },
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/probe-gate.sh"
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
+            "timeout": 5
           },
           {
             "type": "command",
@@ -573,6 +630,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/wmb-agent-search-gate.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
+            "timeout": 5
           }
         ]
       },
@@ -583,6 +645,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/output-cap.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/session-jsonl-read-guard.sh",
+            "timeout": 5
           }
         ]
       },
@@ -667,6 +739,16 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/answers-first.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/secret-read-gate.sh",
+            "timeout": 5
           }
         ]
       }
