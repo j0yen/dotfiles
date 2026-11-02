@@ -8,7 +8,7 @@
 #             OR (exactly 1 such seat AND a confirming haiku probe on the CURRENT token fails with a limit message),
 #             AND the earliest of those resets is more than 20 min away.
 #   CANDIDATE the next account in ${XDG_CONFIG_HOME:-~/.config}/fleet-token/ring (ordered names, # comments) after the current one that has a store
-#             entry, skipping an account rotated away from < 6 h ago (floor) or whose rotations.log previous_reset_at is still in the future,
+#             entry, skipping an account whose rotations.log previous_reset_at is still in the future, or rotated away from < 6 h ago (floor) with no logged reset,
 #             one BLOCKED (state file blocked-until-<account> = one epoch, set by ft_block / `fleet-token-store.sh block`; a limit whose reset is known),
 #             and one whose rotation failed in the last 30 min (the failed rotate already ALARMed; the next ring entry is tried).
 #   BLOCK     on a confirmed limit the watcher blocks the account that hit it (until the later of the limited seats' quota_wait_until and the reset
@@ -103,7 +103,10 @@ skip_reason() {
   [ -n "$line" ] || return 0
   ts="$(sed -nE 's/.* ts=([0-9]+) .*/\1/p' <<<"$line")"; rs="$(sed -nE 's/.* previous_reset_at=([0-9]+|null)$/\1/p' <<<"$line")"
   if [[ "$rs" =~ ^[0-9]+$ ]] && [ "$rs" -gt "$now" ]; then echo "its limit resets $(ft_iso "$rs")"; return; fi
-  if [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago"; return; fi
+  # 11-01: the floor guards an account whose reset is UNKNOWN; a logged reset that has passed makes it eligible at once
+  # (3:1x AM 11-01: mcphost.dev reset 2:10 AM, rotated away 12:02 AM; the floor hid it and ctl/rb/r7 sat in a weekly quota-wait).
+  [[ "$rs" =~ ^[0-9]+$ ]] && return 0
+  if [[ "$ts" =~ ^[0-9]+$ ]] && [ $(( now - ts )) -lt "$FLOOR" ]; then echo "rotated away from < 6 h ago (reset unknown)"; return; fi
 }
 
 watch() {
@@ -120,7 +123,7 @@ watch() {
   fi
   store_age_check
 
-  local cur s qw qa limited=() minreset="" anywait=0
+  local cur s qw qa limited=() minreset="" anywait=0 limacct=""
   cur="$(ft_current)"
   for s in $FT_SEATS; do
     qw="$(jq -r '.quota_wait_until // empty' "$FT_DASH/$s-tick.json" 2>/dev/null || true)"
@@ -128,7 +131,8 @@ watch() {
     anywait=1
     qa="$(jq -r '.quota_account // empty' "$FT_DASH/$s-tick.json" 2>/dev/null || true)"
     [ -n "$cur" ] && [ "$qa" = "$cur" ] || continue
-    limited+=("$s"); if [ -z "$minreset" ] || [ "$qw" -lt "$minreset" ]; then minreset="$qw"; fi
+    limited+=("$s"); limacct="$qa"   # the account the seat was running when limited (quota_account), == $cur by the test above
+    if [ -z "$minreset" ] || [ "$qw" -lt "$minreset" ]; then minreset="$qw"; fi
   done
   if [ -z "$cur" ]; then
     [ "$anywait" = 0 ] || { stamp_ok no-current "$ALARM_EVERY" && ft_alarm "a seat is quota-waiting but $FT_TOKJSON is missing, so the account in use is unknown: run fleet-token-store.sh current <account>"; }
@@ -157,8 +161,8 @@ watch() {
   local pr bwhy="429 on ${limited[*]} (seat-tick quota_wait_until)"
   pr="$(probe_reset)"
   if [ -n "$pr" ] && { [ -z "$maxreset" ] || [ "$pr" -gt "$maxreset" ]; }; then maxreset="$pr"; bwhy="429 on ${limited[*]} (reset text in the probe's limit message)"; fi
-  if [ -n "$maxreset" ] && ft_block "$cur" "$maxreset" "$bwhy" keep-later; then
-    wlog "blocked $cur until $(ft_la_iso "$(ft_blocked_until "$cur")")"
+  if [ -n "$maxreset" ] && ft_block "$limacct" "$maxreset" "$bwhy" keep-later; then
+    wlog "blocked $limacct until $(ft_la_iso "$(ft_blocked_until "$limacct")")"
   fi
 
   local ring=() line name i start=0 order=() cand="" why="" skipped=""
@@ -268,6 +272,10 @@ EOF2
     printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 36000))" "$((NOW - 100))" >"$FT_ROTLOG"
     runw
     [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 10 h ago with its reset in the past: eligible again" $?
+    reset; seats 7200 7200 -
+    printf '%s | ts=%s account=acctA previous=acctB by=x trigger=429 previous_reset_at=%s\n' "$(ft_iso)" "$((NOW - 3600))" "$((NOW - 100))" >"$FT_ROTLOG"
+    runw
+    [ "$(tokj .account)" = acctB ]; ft_st_chk "acctB rotated away from 1 h ago with its logged reset in the past: the 6 h floor does not apply" $?
     reset; seats 1100 1100 -; runw
     [ -z "$(fl place)" ] && [ "$(tokj .account)" = acctA ] && grep -q 'is <= 20 min away' "$FT_STATE/429-watch.log"; ft_st_chk "earliest reset only 18 min away: no rotation" $?
     reset; seats 1300 1300 -; runw
@@ -322,6 +330,9 @@ EOF2
     [ "$(tokj .account)" = acctB ]; ft_st_chk "block-garbled: an unparseable blocked-until file is ignored (old behaviour) -> acctB" $?
     reset; seats 7200 9000 -; runw
     [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 9000))" ] && grep -q " account=acctA until=$((NOW + 9000)) .* why=429 on ctl rb (seat-tick quota_wait_until)\$" "$FT_BLOCKLOG"; ft_st_chk "block-on-429: the account that hit the limit (acctA) is blocked until the latest limited seat's reset, then rotated away from" $?
+    # no cap on a long wait: a weekly wait (here 9 days = 777600 s, longer than the 8-day figure the brief asked to rule out) is counted, blocked in full and rotated away from (no max-wait clamp in this script)
+    reset; seats 777600 777600 -; runw
+    [ "$(tokj .account)" = acctB ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 777600))" ]; ft_st_chk "long-wait: two seats waiting 9 days on acctA -> acctA blocked until the full 9 days (no cap), rotated to acctB" $?
     reset; seats 7200 7200 -; ft_st_store acctB "$c-bad"; runw
     [ "$(tokj .account)" = acctA ] && [ -z "$(fl place)" ] && [ "$(cat "$FT_STATE/blocked-until-acctA")" = "$((NOW + 7200))" ]; ft_st_chk "block-kept-on-rotate-fail: pre-verify of the candidate fails, no rotation, acctA's block STAYS" $?
     ft_st_store acctB "$c-2"

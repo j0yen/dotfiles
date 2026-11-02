@@ -1,0 +1,1 @@
+# <file>:<line>\t<reason>   (empty on purpose: fix the caller instead; see tests/no-real-seat-in-tests.test.sh)

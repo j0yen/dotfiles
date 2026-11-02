@@ -7,7 +7,7 @@
 #
 # Test/override env: OPERATOR_CACHE_DIR, WM_BUILD_STATE_DIR, OPERATOR_WM_BIN,
 # WM_BUILD_CONFIG, SYNTHORG_STATE_DIR, OPERATOR_CHAIN_HOST,
-# OPERATOR_PROC_ROOT, OPERATOR_WM_UNIT, CLAUDE_AGORABUS_SID.
+# OPERATOR_PROC_ROOT, OPERATOR_WM_UNIT, OPERATOR_FLEET_STATUS, CLAUDE_AGORABUS_SID.
 set -uo pipefail
 
 cache="${OPERATOR_CACHE_DIR:-$HOME/.cache/operator}"
@@ -28,6 +28,7 @@ syn="${SYNTHORG_STATE_DIR:-$HOME/.local/state/synthorg}"
 chain_host="${OPERATOR_CHAIN_HOST:-orch}"
 procroot="${OPERATOR_PROC_ROOT:-/proc}"
 unit="${OPERATOR_WM_UNIT:-wm-build.service}"
+fleet_sj="${OPERATOR_FLEET_STATUS:-$HOME/.cache/fleet-dash/status.json}"
 
 declare -A SRC
 q() { # q <sql> — JSON array of rows from state.db, '[]' when none; rc!=0 on failure
@@ -55,23 +56,31 @@ else
   SRC[runs]=missing; SRC[decisions]=missing
 fi
 
-# queue — newest daemon/tick row from the journal tail (progressive, never a full scan)
+# queue — fleet-wide counts from fleet-dash's status.json `.queue` (carbon's own wm-build journal
+# has had no tick rows since build ops moved to RedBaron). ok only when that file's top-level ts is
+# <= 180 s old; stale when older; missing when the file/field is absent or unparseable.
 queue=null
+if [ -r "$fleet_sj" ]; then
+  fq=$(timeout 1 jq -c 'select(type=="object") | {ts: (.ts // null), q: (.queue // null)}' "$fleet_sj" 2>/dev/null)
+  fts=$(jq -r '.ts // empty | tonumber? // empty' <<<"${fq:-null}" 2>/dev/null)
+  if [ -n "$fq" ] && [ "$(jq -r '.q|type' <<<"$fq")" = object ]; then
+    queue=$(jq -c '.q | {queue_total, queue_ready, building, blocked, parked} | with_entries(select(.value != null))' <<<"$fq")
+    if [ -n "$fts" ] && [ $(( $(date +%s) - ${fts%.*} )) -le 180 ]; then SRC[queue]=ok; else SRC[queue]=stale; fi
+  else
+    SRC[queue]=missing
+  fi
+else
+  SRC[queue]=missing
+fi
+
+# config reads the journal tick row below (tick_loaded_at); tail is progressive, never a full scan
 if [ -r "$journal" ]; then
   line=""
   for n in 262144 1048576; do
     line=$(timeout 1 tail -c "$n" "$journal" 2>/dev/null | grep -aE '"op": ?"tick"' | tail -n 1)
     [ -n "$line" ] && break
   done
-  if [ -n "$line" ] && jq -e . >/dev/null 2>&1 <<<"$line"; then
-    tick="$line"
-    queue=$(jq -c '(.row // .) | {admitted: (.admitted // []), skipped: ((.skipped // []) | group_by(.reason) | map({reason: .[0].reason, slugs: map(.slug)})), slots: (.slots // null), boxes: (.boxes // null)}' <<<"$tick")
-    SRC[queue]=ok
-  else
-    SRC[queue]=missing
-  fi
-else
-  SRC[queue]=missing
+  if [ -n "$line" ] && jq -e . >/dev/null 2>&1 <<<"$line"; then tick="$line"; fi
 fi
 
 # chain — newest chain-ledger row (+ chain-progress when present)

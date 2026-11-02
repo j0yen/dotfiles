@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rb-coder-fable-gate.test.sh - fvg: rb-run-coder.sh refuses (exit 78) a spawn unless every cited *.spec.md is covered, by sha256 of its bytes,
+# rb-coder-fable-gate.test.sh - fvg: rb-run-coder.sh refuses (exit 80) a spawn unless every cited *.spec.md is covered, by sha256 of its bytes,
 # by the newest decisions row = kind verdict + model fable + final verdict AGREE|AGREE-WITH-EDITS + the spec's stem; a prompt citing no spec
 # needs a valid `Hatch:` row. Every case asserts the exit code AND the report reason, that the claude stub marker is absent on a refusal (the gate
 # precedes the spawn), and that the fixture DB bytes are unchanged (read-only). HOME, the fixture DB, the stubs and the lock helper live under a
@@ -61,7 +61,7 @@ case_() {
   local after=""; [ ! -f "$db" ] || after=$(sha256sum "$db" | cut -d' ' -f1)
   local ok=1 why=""
   [ "$rc" = "$erc" ] || { ok=0; why="rc=$rc want $erc"; }
-  if [ "$erc" = 78 ]; then
+  if [ "$erc" = 80 ]; then
     [[ $rep == "REFUSED fable-verdict "*": $ereason"* ]] || { ok=0; why="$why report='$rep' want reason '$ereason'"; }
     [ ! -e "$R/claude.ran" ] || { ok=0; why="$why claude ran after a refusal"; }
     grep -q "RB-CODER c$n REFUSED fable-verdict" "$R/events.log" || { ok=0; why="$why no REFUSED seat-event"; }
@@ -94,9 +94,9 @@ case_ "(a6) --no-cargo path passes too" 0 - $R/a.db "$P" --no-cargo
 
 # --- sha binding ---
 cp "$SP" "$R/zed.spec.md.orig"; printf 'x' >> "$SP"; HEX2=$(sha256sum "$SP" | cut -d' ' -f1)
-case_ "(b1) spec edited by one byte after recording -> sha-mismatch naming the stem row" 78 "sha-mismatch $ID1" $R/a.db "$P"
+case_ "(b1) spec edited by one byte after recording -> sha-mismatch naming the stem row" 80 "sha-mismatch $ID1" $R/a.db "$P"
 mkdb $R/b2.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS unrelated' "sha256:$HEX other")]"
-case_ "(b2) no row names the stem either -> bare sha-mismatch" 78 "sha-mismatch" $R/b2.db "$P"
+case_ "(b2) no row names the stem either -> bare sha-mismatch" 80 "sha-mismatch" $R/b2.db "$P"
 [[ "$(cat "$CD/c$n.report.md")" != *"sha-mismatch d-"* ]] && pass "(b2) bare: no id appended" || bad "(b2) id appended: $(cat "$CD/c$n.report.md")"
 mkdb $R/b3.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS zed spec' "$EV"),$(row $ID2 verdict $M 'AGREE zed re-record' "sha256:$HEX2 zed")]"
 case_ "(b3) re-recorded row with the new sha -> passes" 0 - $R/b3.db "$P"
@@ -104,46 +104,46 @@ mv "$R/zed.spec.md.orig" "$SP"   # back to the recorded bytes
 
 # --- kind / model ---
 mkdb $R/c1.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV"),$(row $ID2 design claude-opus-5-5 'AGREE zed design' "$EV")]"
-case_ "(c1) newest row for the sha is kind=design model=opus -> no-fable-verdict-row" 78 "no-fable-verdict-row $ID2" $R/c1.db "$P"
+case_ "(c1) newest row for the sha is kind=design model=opus -> no-fable-verdict-row" 80 "no-fable-verdict-row $ID2" $R/c1.db "$P"
 mkdb $R/c2.db "[$(row $ID2 design $M 'AGREE zed design' "$EV")]"
-case_ "(c2) kind=design model=fable -> no-fable-verdict-row" 78 "no-fable-verdict-row $ID2" $R/c2.db "$P"
+case_ "(c2) kind=design model=fable -> no-fable-verdict-row" 80 "no-fable-verdict-row $ID2" $R/c2.db "$P"
 mkdb $R/c3.db "[$(row $ID2 verdict claude-opus-5-5 'AGREE zed' "$EV")]"
-case_ "(c3) kind=verdict model=opus -> no-fable-verdict-row" 78 "no-fable-verdict-row $ID2" $R/c3.db "$P"
+case_ "(c3) kind=verdict model=opus -> no-fable-verdict-row" 80 "no-fable-verdict-row $ID2" $R/c3.db "$P"
 mkdb $R/c4.db "[$(row $ID2 verdict '' 'AGREE zed' "$EV")]"
-case_ "(c4) kind=verdict model NULL -> no-fable-verdict-row" 78 "no-fable-verdict-row $ID2" $R/c4.db "$P"
+case_ "(c4) kind=verdict model NULL -> no-fable-verdict-row" 80 "no-fable-verdict-row $ID2" $R/c4.db "$P"
 
 # --- verdict word / regrade ---
 mkdb $R/d1.db "[$(row $ID1 verdict $M 'DISAGREE zed' "$EV")]"
-case_ "(d1) fable verdict DISAGREE -> verdict-DISAGREE" 78 "verdict-DISAGREE $ID1" $R/d1.db "$P"
+case_ "(d1) fable verdict DISAGREE -> verdict-DISAGREE" 80 "verdict-DISAGREE $ID1" $R/d1.db "$P"
 mkdb $R/d2.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"by":"fable-regrader","verdict":"CORRECT","result":"DISAGREE"}')]"
-case_ "(d2) what=AGREE, regrade verdict CORRECT (the regrader's real word) -> verdict-CORRECT" 78 "verdict-CORRECT $ID1" $R/d2.db "$P"
+case_ "(d2) what=AGREE, regrade verdict CORRECT (the regrader's real word) -> verdict-CORRECT" 80 "verdict-CORRECT $ID1" $R/d2.db "$P"
 mkdb $R/d3.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"DISAGREE"}')]"
-case_ "(d3) what=AGREE, regrade verdict DISAGREE -> verdict-DISAGREE" 78 "verdict-DISAGREE $ID1" $R/d3.db "$P"
+case_ "(d3) what=AGREE, regrade verdict DISAGREE -> verdict-DISAGREE" 80 "verdict-DISAGREE $ID1" $R/d3.db "$P"
 mkdb $R/d4.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"by":"fable-regrader","result":"RESOLVED"}')]"
 case_ "(d4) regrade JSON without a verdict key falls back to what (AGREE passes)" 0 - $R/d4.db "$P"
 mkdb $R/d5.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"CONFIRM"}')]"
-case_ "(d5) regrade verdict CONFIRM -> verdict-CONFIRM" 78 "verdict-CONFIRM $ID1" $R/d5.db "$P"
+case_ "(d5) regrade verdict CONFIRM -> verdict-CONFIRM" 80 "verdict-CONFIRM $ID1" $R/d5.db "$P"
 mkdb $R/d6.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"ESCALATE"}')]"
-case_ "(d6) regrade verdict ESCALATE -> verdict-ESCALATE" 78 "verdict-ESCALATE $ID1" $R/d6.db "$P"
+case_ "(d6) regrade verdict ESCALATE -> verdict-ESCALATE" 80 "verdict-ESCALATE $ID1" $R/d6.db "$P"
 mkdb $R/d7.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{not json')]"
-case_ "(d7) unparseable regrade fails closed" 78 "verdict-REGRADE-UNREADABLE $ID1" $R/d7.db "$P"
+case_ "(d7) unparseable regrade fails closed" 80 "verdict-REGRADE-UNREADABLE $ID1" $R/d7.db "$P"
 mkdb $R/e1.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV"),$(row $ID2 verdict $M 'DISAGREE zed' "$EV")]"
-case_ "(e1) older AGREE + newer DISAGREE on the same sha -> newest governs, 78" 78 "verdict-DISAGREE $ID2" $R/e1.db "$P"
+case_ "(e1) older AGREE + newer DISAGREE on the same sha -> newest governs, 80" 80 "verdict-DISAGREE $ID2" $R/e1.db "$P"
 mkdb $R/e2.db "[$(row $ID1 verdict $M 'DISAGREE zed' "$EV"),$(row $ID2 verdict $M 'AGREE zed' "$EV")]"
 case_ "(e2) older DISAGREE + newer AGREE -> newest governs, passes" 0 - $R/e2.db "$P"
 
 # --- stem ---
 mkdb $R/f1.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS other spec' "sha256:$HEX (other.spec.md); spawn t")]"
-case_ "(f1) governing row names a different stem -> stem-mismatch" 78 "stem-mismatch $ID1" $R/f1.db "$P"
+case_ "(f1) governing row names a different stem -> stem-mismatch" 80 "stem-mismatch $ID1" $R/f1.db "$P"
 mkdb $R/f2.db "[$(row $ID1 verdict $M 'AGREE-WITH-EDITS unzedded' "sha256:$HEX")]"
-case_ "(f2) stem only as a substring of another word -> stem-mismatch" 78 "stem-mismatch $ID1" $R/f2.db "$P"
+case_ "(f2) stem only as a substring of another word -> stem-mismatch" 80 "stem-mismatch $ID1" $R/f2.db "$P"
 
 # --- fail closed ---
-case_ "(g1) RB_DECISIONS_DB missing file -> db-unreadable" 78 "db-unreadable" $R/missing.db "$P"
+case_ "(g1) RB_DECISIONS_DB missing file -> db-unreadable" 80 "db-unreadable" $R/missing.db "$P"
 printf 'not a database, not a database, not a database' > $R/g2.db
-case_ "(g2) not a sqlite file -> db-unreadable" 78 "db-unreadable" $R/g2.db "$P"
+case_ "(g2) not a sqlite file -> db-unreadable" 80 "db-unreadable" $R/g2.db "$P"
 python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, kind text)"); d.commit()' $R/g3.db
-case_ "(g3) schema without the needed columns -> db-unreadable" 78 "db-unreadable" $R/g3.db "$P"
+case_ "(g3) schema without the needed columns -> db-unreadable" 80 "db-unreadable" $R/g3.db "$P"
 mkdb $R/lock.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV")]"
 python3 -I -c '
 import sqlite3, sys, time
@@ -152,7 +152,7 @@ time.sleep(60)' $R/lock.db $R/lock.ready &
 LOCKPID=$!
 for _ in $(seq 1 50); do [ -e $R/lock.ready ] && break; sleep 0.1; done
 [ -e $R/lock.ready ] || bad "(g4) lock helper never took the lock"
-case_ "(g4) fixture DB under an exclusive write lock (helper pid $LOCKPID) -> db-locked" 78 "db-locked" $R/lock.db "$P"
+case_ "(g4) fixture DB under an exclusive write lock (helper pid $LOCKPID) -> db-locked" 80 "db-locked" $R/lock.db "$P"
 kill "$LOCKPID" 2>/dev/null; wait "$LOCKPID" 2>/dev/null; LOCKPID=""
 case_ "(g5) lock released -> the same DB passes" 0 - $R/lock.db "$P"
 
@@ -161,7 +161,7 @@ NOW_ID=d-$(date +%Y%m%d-%H%M%S)-rb-dddd
 OLD_ID=d-$(date -d '25 hours ago' +%Y%m%d-%H%M%S)-rb-eeee
 printf 'ctx %0200d\nrun a thing with no spec\n' 0 > "$R/ns.md"
 mkdb $R/h0.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV")]"
-case_ "(h1) prompt citing no spec -> no-spec" 78 "no-spec" $R/h0.db "$R/ns.md"
+case_ "(h1) prompt citing no spec -> no-spec" 80 "no-spec" $R/h0.db "$R/ns.md"
 mkhatch() { # mkhatch <id> <file> -> prompt file with the Hatch line; echoes the sha of the prompt WITHOUT the line
   { cat "$R/ns.md"; printf 'Hatch: %s\n' "$1"; } > "$2"; sha256sum "$R/ns.md" | cut -d' ' -f1; }
 HP=$R/hp.md; HS=$(mkhatch $NOW_ID $HP)
@@ -170,18 +170,18 @@ case_ "(h2) valid Hatch row -> passes" 0 - $R/h2.db "$HP"
 grep -q "RB-CODER c$n HATCH no-spec $NOW_ID" "$R/events.log" && pass "(h2) seat-event RB-CODER HATCH no-spec $NOW_ID fired" || bad "(h2) HATCH seat-event missing: $(cat $R/events.log)"
 HO=$R/ho.md; HSO=$(mkhatch $OLD_ID $HO)
 mkdb $R/h3.db "[$(row $OLD_ID decision '' 'NO-SPEC-SPAWN one-off probe' "sha256:$HSO")]"
-case_ "(h3) hatch row 25 h old -> no-spec (hatch-expired)" 78 "no-spec (hatch-expired)" $R/h3.db "$HO"
+case_ "(h3) hatch row 25 h old -> no-spec (hatch-expired)" 80 "no-spec (hatch-expired)" $R/h3.db "$HO"
 mkdb $R/h4.db "[$(row $NOW_ID decision '' 'NO-SPEC-SPAWN one-off probe' "sha256:$(printf 0%.0s $(seq 64))")]"
-case_ "(h4) hatch row with the wrong prompt sha -> no-spec (hatch-prompt-sha-mismatch)" 78 "no-spec (hatch-prompt-sha-mismatch)" $R/h4.db "$HP"
+case_ "(h4) hatch row with the wrong prompt sha -> no-spec (hatch-prompt-sha-mismatch)" 80 "no-spec (hatch-prompt-sha-mismatch)" $R/h4.db "$HP"
 mkdb $R/h5.db "[$(row $NOW_ID verdict $M 'NO-SPEC-SPAWN one-off probe' "sha256:$HS")]"
-case_ "(h5) hatch row with kind=verdict -> no-spec (hatch-not-no-spec-decision)" 78 "no-spec (hatch-not-no-spec-decision)" $R/h5.db "$HP"
+case_ "(h5) hatch row with kind=verdict -> no-spec (hatch-not-no-spec-decision)" 80 "no-spec (hatch-not-no-spec-decision)" $R/h5.db "$HP"
 mkdb $R/h6.db "[$(row $NOW_ID decision '' 'APPROVED one-off probe' "sha256:$HS")]"
-case_ "(h6) hatch row whose what is not NO-SPEC-SPAWN -> no-spec (hatch-not-no-spec-decision)" 78 "no-spec (hatch-not-no-spec-decision)" $R/h6.db "$HP"
-case_ "(h7) Hatch names a row that does not exist -> no-spec (hatch-no-row)" 78 "no-spec (hatch-no-row)" $R/h0.db "$HP"
+case_ "(h6) hatch row whose what is not NO-SPEC-SPAWN -> no-spec (hatch-not-no-spec-decision)" 80 "no-spec (hatch-not-no-spec-decision)" $R/h6.db "$HP"
+case_ "(h7) Hatch names a row that does not exist -> no-spec (hatch-no-row)" 80 "no-spec (hatch-no-row)" $R/h0.db "$HP"
 PM=$(prompt_spec "$CD/nope.spec.md")
-case_ "(h8) nonexistent spec path -> spec-missing" 78 "spec-missing $CD/nope.spec.md" $R/a.db "$PM"
+case_ "(h8) nonexistent spec path -> spec-missing" 80 "spec-missing $CD/nope.spec.md" $R/a.db "$PM"
 { cat "$PM"; printf 'Hatch: %s\n' "$NOW_ID"; } > "$R/hm.md"
-case_ "(h9) a Hatch line does not rescue a nonexistent spec" 78 "spec-missing $CD/nope.spec.md" $R/h2.db "$R/hm.md"
+case_ "(h9) a Hatch line does not rescue a nonexistent spec" 80 "spec-missing $CD/nope.spec.md" $R/h2.db "$R/hm.md"
 
 # --- the other gates keep their exits and precede this one ---
 : > "$R/empty.md"

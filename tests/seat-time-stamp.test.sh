@@ -3,6 +3,10 @@
 # leading clock label. Runs both selftests under a throwaway HOME, then drives both scripts with a fixed fake clock (SEAT_STAMP_NOW, honoured only
 # under SEAT_TICK_SELFTEST=1) and asserts the typed time never reaches the stored events.log line or the --ask argv the seat reads.
 set -u
+# capability probe (first executable block): no systemd user bus -> SKIP (exit 77, counted as skip= by tests/run.sh), never a pass
+for _p in "systemctl --user show-environment" "systemd-run --user --quiet true"; do
+  $_p >/dev/null 2>&1 || { _rc=$?; echo "SKIP $(basename "$0"): no systemd user bus (probe '$_p' rc=$_rc)"; exit 77; }
+done
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EV="$here/.local/bin/seat-event.sh"; ASK="$here/.local/bin/seat-ask.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -29,5 +33,12 @@ grep -q ' | aide | aide 6:41 AM re ctl 6:0x: reply body one$' "$L" && grep -q ' 
 [ "$(jq -r '[.stamped,.typed_label_replaced]|@csv' "$EVENTS_DIR/tst-events.json")" = "3,2" ]; ok "events.json counters stamped=3 typed_label_replaced=2" $?
 a="$("$ASK" tst "rb 6:1x AM: ask body" 2>&1)"
 [[ "$a" == *" tst --ask aide 6:41 AM: ask body" ]] && ! [[ "$a" == *6:1x* ]]; ok "seat-ask argv carries the real stamp and not the typed clock" $?
+# aide lanes (step 3b ii): seat_stamp_source
+src() { env -i PATH="$PATH" "$@" bash -c ". '$here/.local/lib/seat-time-stamp.sh'; seat_stamp_source"; }
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=build)" = "aide:build" ]; ok "WM_SEAT=aide WM_AIDE_LANE=build -> source aide:build" $?
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=main)" = "aide" ]; ok "WM_AIDE_LANE=main -> source aide" $?
+[ "$(src WM_SEAT=aide)" = "aide" ]; ok "WM_AIDE_LANE unset -> source aide" $?
+[ "$(src WM_SEAT=aide WM_AIDE_LANE=build EVENT_SOURCE=x)" = "x" ]; ok "EVENT_SOURCE=x wins over the lane" $?
+[ "$(src WM_SEAT=rb WM_AIDE_LANE=build)" = "rb" ]; ok "non-aide seat ignores WM_AIDE_LANE" $?
 [ "$fail" = 0 ] && echo "ALL OK" || echo "FAILED"
 exit "$fail"

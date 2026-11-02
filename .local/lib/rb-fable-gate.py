@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rb-fable-gate.py - the Fable-verdict gate for rb-run-coder.sh (exit 78). Run as `python3 -I rb-fable-gate.py MODE ARG DB`.
+"""rb-fable-gate.py - the Fable-verdict gate for rb-run-coder.sh (exit 80). Run as `python3 -I rb-fable-gate.py MODE ARG DB`.
 
   spec  SPEC DB   pass iff the NEWEST decisions row whose evidence holds `sha256:<hex of SPEC>` is kind=verdict, model contains `fable`,
                   final verdict in {AGREE, AGREE-WITH-EDITS} (final = regrade JSON `verdict` when present, else the first word of `what`),
