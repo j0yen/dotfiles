@@ -7,6 +7,7 @@ set -u
 [ "${1:-}" = --flags ] || { echo "usage: $0 --flags '<RUSTFLAGS>' <BASE-sha>"; exit 64; }
 flags=$2; base=${3:?base sha}
 # slot = the host memory gate: redbaron /mnt/data/hand/cargo-slot.sh, ryzen7 wmb-slot-r7.sh (wraps r7-cargo-slot.sh -- cargo ...); WMB_SLOT overrides.
+if [ -n "${WMB_SLOT:-}" ] && [ ! -x "$WMB_SLOT" ]; then echo "WMB_SLOT=$WMB_SLOT is not executable on $(hostname)"; exit 2; fi
 slot=${WMB_SLOT:-/mnt/data/hand/cargo-slot.sh}
 [ -x "$slot" ] || slot=$HOME/.local/bin/wmb-slot-r7.sh
 [ -x "$slot" ] || { echo "no cargo slot gate on $(hostname) (WMB_SLOT unset, no cargo-slot.sh, no wmb-slot-r7.sh)"; exit 2; }
