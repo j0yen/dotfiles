@@ -12,11 +12,13 @@ For each registry row whose host column names this host, each enforced_at entry
       exists = DRIFT; a named line that still carries a value token = DRIFT.
 Rows whose enforced_at is not a host path (docs, "none", fleet/mcphost hosts) are not read.
 
-Usage: caps-drift.sh [--registry caps.tsv] [--root DIR] [--home DIR] [--host NAME] [--status-json PATH]
+Usage: caps-drift.sh [--registry caps.tsv] [--root DIR] [--home DIR] [--host NAME] [--status-json PATH] [--regen]
+--regen (stage 2, A323): after the read, rewrite every file the generator manifest owns (caps-gen.py --write) instead of only reporting,
+  then print `caps.regen rc=<n>`; the drift lines above still show what differed before the rewrite.
 Output: DRIFT/UNKNOWN lines, then `caps.drift count=<n> first=<id>`.
 --status-json merges {"caps":{"drift":{count,first,unknown,ts}}} into PATH atomically (tmp + rename).
 """
-import datetime, importlib.util, json, os, re, socket, sys
+import datetime, importlib.util, json, os, re, socket, subprocess, sys
 
 sys.dont_write_bytecode = True  # the loader below must not leave __pycache__ beside the script
 
@@ -201,6 +203,8 @@ def merge_status(path, count, first, unknown):
 
 def main(argv):
     opt = {"--registry": None, "--root": "/", "--home": None, "--host": None, "--status-json": None}
+    regen = "--regen" in argv
+    argv = [a for a in argv if a != "--regen"]
     i = 0
     while i < len(argv):
         if argv[i] not in opt or i + 1 >= len(argv):
@@ -223,6 +227,15 @@ def main(argv):
     print(f"caps.drift count={len(drift)} first={first}")
     if opt["--status-json"]:
         merge_status(opt["--status-json"], len(drift), first, len(unknown))
+    if regen:
+        gen = os.path.join(HERE, "caps-gen.py")
+        cmd = [sys.executable, "-I", gen, "--write", "--registry", reg, "--home", home, "--host", host]
+        man = os.path.join(os.path.dirname(reg), "caps-gen.tsv")
+        if os.path.exists(man):
+            cmd += ["--manifest", man]
+        rc = subprocess.run(cmd).returncode
+        print(f"caps.regen rc={rc}")
+        return rc
     return 0
 
 

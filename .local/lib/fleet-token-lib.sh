@@ -141,6 +141,21 @@ ft_alarm() {
     chmod 600 "$FT_DASH/ctl-events.log"
     printf '%s | fleet-token | %s\n' "$(ft_iso)" "$line" >>"$FT_DASH/ctl-events.log"
   } 7>>"$FT_DASH/ctl-events.lock"
+  # A381 (M6): ctl runs on the fleet token and cannot act while that account is limited, so the alarm also reaches the aide inbox (another account).
+  # FLEET_TOKEN_AIDE_BELL_CMD overrides the bell; a selftest without one rings nothing.
+  local bell="${FLEET_TOKEN_AIDE_BELL_CMD:-}"
+  [ -n "$bell" ] || [ "${FLEET_TOKEN_SELFTEST:-}" = 1 ] || bell=seat-event.sh
+  [ -z "$bell" ] || EVENT_SOURCE=fleet-token "$bell" aide "$line" >/dev/null 2>&1 || true
+  return 0
+}
+
+# ft_status_write <no_candidate_since epoch|"">: $FT_DASH/fleet-token-status.json {account, no_candidate_since, ts} for the fleet-dash collector
+# (status.json fleet_token.account + fleet_token.no_candidate_since, alarm while the latter is set). The since-epoch of an unbroken no-candidate state is kept by the caller.
+ft_status_write() {
+  mkdir -p "$FT_DASH" 2>/dev/null || return 0
+  local since="${1:-null}"; [[ "$since" =~ ^[0-9]+$ ]] || since=null
+  jq -n --arg a "$(ft_current)" --argjson s "$since" --argjson t "$(ft_now)" '{account:$a,no_candidate_since:$s,ts:$t}' >"$FT_DASH/fleet-token-status.json.tmp.$$" 2>/dev/null \
+    && mv -f "$FT_DASH/fleet-token-status.json.tmp.$$" "$FT_DASH/fleet-token-status.json"
   return 0
 }
 
@@ -178,7 +193,7 @@ rm -f "$f"
 case "$t" in *-badplace) echo "carbon placed rc=0"; echo "redbaron placed rc=255"; exit 0 ;; *-verifyfail) echo "carbon verify=FAIL 401"; exit 0 ;; *-exit1) exit 1 ;; esac
 echo "carbon placed rc=0"; echo "carbon verify=ok"
 EOF
-  for n in bell systemctl; do
+  for n in bell systemctl aidebell; do
     printf '#!/usr/bin/env bash\nset +x\nprintf "%%s\\n" "$*" >>"$FAKE_LOG_DIR/%s.log"\n' "$n" >"$F/$n"
   done
   # record: logs its argv (asserted token-free), prints a decision id; FAKE_RECORD_FAIL=1 makes it fail
@@ -192,7 +207,7 @@ EOF2
   chmod +x "$F"/*
   export FAKE_LOG_DIR="$T/fakelogs"; mkdir -p "$FAKE_LOG_DIR"
   export FLEET_TOKEN_VERIFY_CMD="$F/verify" FLEET_TOKEN_PLACE_CMD="$F/place" FLEET_TOKEN_BELL_CMD="$F/bell" \
-         FLEET_TOKEN_RECORD_CMD="$F/record" FLEET_TOKEN_SYSTEMCTL="$F/systemctl"
+         FLEET_TOKEN_RECORD_CMD="$F/record" FLEET_TOKEN_SYSTEMCTL="$F/systemctl" FLEET_TOKEN_AIDE_BELL_CMD="$F/aidebell"
 }
 
 # ft_st_store <account> <token>: put a store entry straight on disk (the canary token lives only here)

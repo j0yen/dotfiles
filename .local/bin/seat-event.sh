@@ -17,6 +17,7 @@
 #   Lanes SELF-REGISTER: aide:<lane> with lane matching $AIDE_LANE_RE (.local/lib/aide-lane.sh, shared with aide-launch.sh) needs no row; an explicit row still wins; aide:main and bare aide need the row as before.
 #   LANES (aide-lanes 10-27): a lane of the aide is the seat `aide:<lane>` (`seat-event.sh --inbox-row aide:build`), appended to $EVENTS_DIR/aide-<lane>-events.log
 #   and read by aide-inbox.sh under WM_AIDE_LANE=<lane>; `seat-event.sh aide` keeps writing aide-events.log only.
+#   EVENT TABLE (A236): before the append, event-act.sh classifies the line; a known class is routed to its owner by code and not appended here (SEAT_EVENT_ACT=0 disables).
 #   SEAT_EVENT_NOWAKE=1: append (and debounce) only, never wake (seat-tick-failed.sh for ctl: a failing ctl tick must not spawn another ctl tick).
 # Env: EVENTS_DIR (default FLEET_DASH_DIR or ~/.cache/fleet-dash) EVENT_SOURCE EVENT_DEBOUNCE_S SEATS_TABLE SEAT_EVENT_TICK_BIN SEAT_EVENT_DRY=1 (print the spawn command, run nothing)
 # This script never runs claude and never touches a unit it did not create; the only thing it starts is the transient seat-event-* unit.
@@ -166,6 +167,12 @@ SEAT="$1"; shift
 known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
 [ -n "$LINE" ] || { echo 'seat-event: empty line' >&2; exit 2; }
+# L2 event table (A236): a line of a known class (gen/event-actions.json) is executed by code (event-act.sh routes it to its owner and writes the action row)
+# and is NOT appended to this seat; rc 10 (unknown class / already at its owner) falls through to the normal append + wake. SEAT_EVENT_ACT=0 disables; event-act.sh sets it for its own delivery.
+if [ "${SEAT_EVENT_ACT:-1}" != 0 ] && [ "${SEAT_EVENT_DRY:-}" != 1 ]; then
+  _act="${EVENT_ACT_BIN:-$(dirname "$SELF")/event-act.sh}"
+  if [ -x "$_act" ]; then "$_act" "$SEAT" "$LINE" >/dev/null 2>&1; [ $? = 0 ] && exit 0; fi
+fi
 DIR="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
 ( umask 077; mkdir -p "$DIR" ) || exit 1
 # aide lanes (10-27): `aide:<lane>` is a seat name; its files map `:` -> `-` (aide-build-events.log), `aide` itself is unchanged

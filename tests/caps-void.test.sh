@@ -7,14 +7,28 @@ V="$here/.local/bin/caps-void.sh"; T="$here/.config/fleet/caps.tsv"
 fail=0; ok() { echo "PASS $1"; }; bad() { echo "FAIL $1"; fail=1; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
-# today's registry: live rationing rows, live routing rows
+# the checked set is read from the registry at test time (Joe #195 voids rationing rows; a removed row must not fail this test)
+ids_of() { awk -F'\t' -v c="$2" -v v="$3" '!/^#/ && $6==c && $8 ~ v {print $1}' "$1" | sort; }
+listed() { sed -n 's/^ROW \([^ ]*\) .*/\1/p' <<<"$1" | sort; }
+live_rat="$(ids_of "$T" rationing '^(KEEP|CHECK|CHANGE)$')"; live_rou="$(ids_of "$T" routing '^(KEEP|CHECK|CHANGE)$')"
+nonlive="$(awk -F'\t' '!/^#/ && $8 ~ /^(VOID|DEAD|DROP)$/ {print $1}' "$T" | sort)"
+# listing_matches REG CLASS EXPECTED: the dry run lists exactly the registry's live rows of the class, and no VOID/DEAD/DROP row
+listing_matches() {
+  local o; o="$("$V" --class "$2" --dry-run --registry "$1" 2>&1)"
+  [ "$(listed "$o")" = "$3" ] && ! comm -12 <(listed "$o") <(awk -F'\t' '!/^#/ && $8 ~ /^(VOID|DEAD|DROP)$/ {print $1}' "$1" | sort) | grep -q .
+}
 out="$("$V" --class rationing --dry-run --registry "$T" 2>&1)"
-for id in C093 C125 C157 R021; do grep -q "^ROW $id " <<<"$out" && ok "today rationing dry-run lists $id" || bad "today rationing lacks $id"; done
-grep -q '^ROW R023 ' <<<"$out" && bad "R023 is class routing and must not be listed under rationing" || ok "R023 not in rationing (it is class routing)"
-grep -q '^ROW R00[1-9] ' <<<"$out" && bad "VOID rows listed as live" || ok "VOID/DEAD/DROP rows not listed"
+listing_matches "$T" rationing "$live_rat" && ok "today rationing dry-run lists exactly the registry's live rationing rows ($(echo $live_rat))" || bad "rationing listing differs from registry live rows"
 out2="$("$V" --class routing --dry-run --registry "$T" 2>&1)"
-grep -q '^ROW R023 ' <<<"$out2" && ok "today routing dry-run lists R023" || bad "today routing lacks R023"
-grep -q 'C093 redbaron ~/.config/wm-build/config.toml:88' <<<"$out" && grep -q 'C093 orch ~/.config/wm-build/config.toml:57' <<<"$out" && ok "per-host enforced_at lines printed (C093 rb:88 orch:57)" || bad "per-host lines"
+listing_matches "$T" routing "$live_rou" && ok "today routing dry-run lists exactly the registry's live routing rows ($(echo $live_rou))" || bad "routing listing differs from registry live rows"
+comm -12 <(listed "$out") <(echo "$live_rou") | grep -q . && bad "a routing row is listed under rationing" || ok "routing rows are not in the rationing listing"
+comm -12 <(listed "$out") <(echo "$nonlive") | grep -q . && bad "VOID rows listed as live" || ok "VOID/DEAD/DROP rows not listed"
+# per-host enforced_at lines: path:L1/L2/.. maps positionally onto the host list, a single number applies to every host
+exp="$(awk -F'\t' -v OFS=' ' '!/^#/ && $6=="rationing" && $8 ~ /^(KEEP|CHECK|CHANGE)$/ && $5 ~ /^~/ {
+  i=index($5,":"); if(!i) next; path=substr($5,1,i-1); nl=split(substr($5,i+1),L,"/"); nh=split($4,H,",")
+  if(nl==1) for(k=1;k<=nh;k++) print $1,H[k],path":"L[1]; else if(nl==nh) for(k=1;k<=nh;k++) print $1,H[k],path":"L[k] }' "$T")"
+n=0; while IFS= read -r l; do [ -n "$l" ] || continue; n=$((n+1)); grep -qxF "  $l" <<<"$out" || bad "per-host line missing: $l"; done <<<"$exp"
+ok "per-host enforced_at lines printed for all $n derived host entries"
 cp "$T" "$tmp/before.tsv"; "$V" --class rationing --dry-run --registry "$T" >/dev/null 2>&1
 cmp -s "$T" "$tmp/before.tsv" && ok "dry run leaves caps.tsv byte-identical" || bad "dry run changed the registry"
 
@@ -43,12 +57,25 @@ fi
 cp "$T" "$tmp/work.tsv"
 "$V" --class rationing --registry "$tmp/work.tsv" >/dev/null 2>&1; [ $? = 64 ] && ok "real run without --approvals is refused" || bad "real run accepted no approvals"
 out="$("$V" --class rationing --approvals 195 --registry "$tmp/work.tsv" 2>&1)"
-for id in C093 C125 C157 R021; do
+for id in $live_rat; do
   awk -F'\t' -v i="$id" '$1==i && $8=="VOID" && $10 ~ /VOID #195$/ {f=1} END{exit !f}' "$tmp/work.tsv" && ok "$id rewritten to VOID with #195 in the note" || bad "$id not voided"
 done
-diff <(grep -vP '^(C093|C125|C157|R021)\t' "$T") <(grep -vP '^(C093|C125|C157|R021)\t' "$tmp/work.tsv") >/dev/null && ok "all other lines byte-identical" || bad "other lines changed"
+pat="^($(echo $live_rat | tr ' ' '|'))\$"
+diff <(awk -F'\t' -v p="$pat" '$1 !~ p' "$T") <(awk -F'\t' -v p="$pat" '$1 !~ p' "$tmp/work.tsv") >/dev/null && ok "all other lines byte-identical" || bad "other lines changed"
 python3 -I "$here/.local/bin/caps-lint.py" "$tmp/work.tsv" | head -1 | grep -q ' 0 violation' && ok "voided registry still lints clean" || bad "voided registry lint"
 out="$("$V" --class rationing --dry-run --registry "$tmp/work.tsv" 2>&1)"
 grep -q 'class rationing: 0 live row' <<<"$out" && ok "second dry run: 0 live rows" || bad "second dry run"
 "$V" --class nonsense --dry-run --registry "$T" >/dev/null 2>&1; [ $? = 64 ] && ok "unknown class refused" || bad "unknown class accepted"
+
+# --- negative fixtures: the derived checks must detect a real defect, so they are not tautological
+# (a) a rationing row that is still live in a registry otherwise equal to the expected one is a listing mismatch
+printf 'ZZ999\tfixture\t5\tfleet\tnone\trationing\tfixture\tKEEP\taide\tfixture live row\n' | cat "$T" - > "$tmp/neg-live.tsv"
+listing_matches "$tmp/neg-live.tsv" rationing "$live_rat" && bad "negative fixture: an extra live rationing row went undetected" || ok "negative fixture: extra live rationing row is detected"
+# (b) a voided row put back to KEEP after the real run (a void row with a live consumer) fails the zero-live check
+zero_live() { "$V" --class rationing --dry-run --registry "$1" 2>&1 | grep -q 'class rationing: 0 live row'; }
+awk -F'\t' -v OFS='\t' '!/^#/ && $6=="rationing" && $8=="VOID" && !d {$8="KEEP"; d=1} {print}' "$tmp/work.tsv" > "$tmp/neg-void.tsv"
+printf 'ZZ998\tfixture\t5\tfleet\tnone\trationing\tfixture\tVOID\taide\tfixture\n' >> "$tmp/neg-void.tsv"
+sed -i 's/^ZZ998\(.*\)VOID\(.*\)$/ZZ998\1KEEP\2/' "$tmp/neg-void.tsv"
+zero_live "$tmp/work.tsv" && ok "voided registry passes the zero-live check" || bad "voided registry has live rows"
+zero_live "$tmp/neg-void.tsv" && bad "negative fixture: a void row with a live consumer went undetected" || ok "negative fixture: void row revived as live is detected"
 exit $fail
