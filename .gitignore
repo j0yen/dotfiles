@@ -5,3 +5,5 @@
 /target/
 *.bak
 *.bak-*
+__pycache__/
+*.pyc
