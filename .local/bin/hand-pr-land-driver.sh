@@ -43,6 +43,7 @@ if [ "$MODE" = run ]; then
 fi
 export HPLD_MODE="$MODE"
 exec python3 -I -c "$(sed -n '/^#PY-BEGIN$/,/^#PY-END$/p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed '1d;$d')"
+: <<'#PY-END'   # bash -n parses the Python below as a heredoc body; exec above means bash never reaches it
 #PY-BEGIN
 import datetime as dt, fnmatch, json, os, re, shlex, subprocess, sys, time
 
