@@ -10,6 +10,8 @@ wrap="$here/.local/bin/rb-merge.sh"
 fx="$here/tests/fixtures/rb-merge-adv"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/rbmergeadv.XXXXXX")" || exit 2
 case "$tmp" in */rbmergeadv.*) trap 'rm -rf "$tmp"' EXIT ;; *) exit 2 ;; esac
+RBF_ROOT="$tmp"; . "$here/tests/rb_merge_fixture.sh"
+export AIDE_VERIFIER_GATE_ROOT; AIDE_VERIFIER_GATE_ROOT="$(rbf_gate_root)"   # resolved BEFORE HOME moves; the live tree is only imported by pre-gate A
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" XDG_STATE_HOME="$tmp/home/.local/state"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 . "$here/.local/lib/adv-grammar.sh"
@@ -50,6 +52,8 @@ esac
 exit 0
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
+export WM_SEAT=aide   # j0yen/synthorg is a discovery-chain repo (a587be0, rb-merge.sh chain guard): the ADV cases run as the aide seat, the guard itself is tests/rb-merge-chain-guard.test.sh
+rbf_init   # pre-gate A (vtg1) runs before the ADV check and reads its own verdict row + launcher record + suite log, here built at the stub gate's oid
 export STUB_LOG="$tmp" STUB_OID="$OID" STUB_HEAD="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
 PASSLOG="$tmp/adv-pass.log"; echo "adversarial verifier output" > "$PASSLOG"
 EMPTYLOG="$tmp/adv-empty.log"; : > "$EMPTYLOG"
@@ -67,6 +71,7 @@ case_run() {
   mkdir -p "$st"
   ids="$(python3 -I "$fx/mkledger.py" "$st" "{\"repo\":\"$repo\",\"pr\":$pr,\"suffix\":\"$(( ++caseno ))\"${CASE_COMMIT:+,\"commit\":\"$CASE_COMMIT\"},\"rows\":$rows,\"brief_in\":$bin,\"brief_tok\":\"$btok\"}")" || { bad "$name: ledger fixture failed"; return 1; }
   G="${ids%% *}"; rest="${ids#* }"; V="${rest%% *}"; rowids=(${rest#* })
+  rbf_pg "$V" "$repo" "$pr" "$OID"
   export STUB_VIDS="$V d-20261024-000000-r7-ffff"   # the ffff id is case (h3)'s verdict that is absent from the ledger but still a via=verifier row
   : > "$tmp/calls"
   WM_DECIDE_STATE="$st" bash "$wrap" "$V" "$pr" "$repo" >"$tmp/out" 2>"$tmp/err"; rc=$?
