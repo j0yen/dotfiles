@@ -73,6 +73,7 @@ dB 'cargo build --release'
 dB 'cd /x && cargo test'
 dB 'rustc foo.rs'
 dB 'aide-verifier.sh launch v1 --repo o/r --suite "x"'
+aB 'aide-verifier.sh launch v1 --repo o/r --pr 1 --head 0000000000000000000000000000000000000000 --gated d-20261102-000000-aide-0000 --token "t EXIT=0" --log ryzen7:/home/jsy/x.log --model opus --queue'   # A641: log-only launch runs no suite
 dB 'systemd-run --user --unit u -p MemoryMax=2G cargo test'
 aB 'systemd-run --user --unit=u bash tests/foo.test.sh'
 # ---- Bash gaps (binding amendment 3): one test per case
