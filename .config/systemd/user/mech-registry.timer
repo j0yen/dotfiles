@@ -1,9 +1,9 @@
 [Unit]
-Description=Mechanism registry every 30 min
+Description=mech-registry every 15 min (A49)
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=30min
+OnBootSec=5min
+OnUnitActiveSec=15min
 Persistent=true
 
 [Install]

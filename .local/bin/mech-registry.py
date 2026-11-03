@@ -48,7 +48,7 @@ def parse_line(text):
             art = s[1:].strip()
         elif re.match(r"owner\s+\S+", s):
             owner = s.split()[1].rstrip(".,;")
-        elif re.match(r"state\s+\S+", s):
+        elif re.match(r"state:?\s+\S+", s):
             state = re.sub(r"[^A-Za-z-].*$", "", s.split()[1]).upper()
         elif re.match(r"since\s+\d{4}-\d{2}-\d{2}", s):
             since = s.split()[1][:10]
@@ -61,7 +61,7 @@ def page_entries(path, root):
     fn = os.path.basename(path)
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.read().split("\n")
-    gear = sum(1 for l in lines if "⚙" in l)
+    gear = 0  # ⚙ lines inside the # Mechanisms section only; ⚙ in prose or amendments is a pointer, not a registry line
     out, inside, parsed_gear = [], False, 0
     for i, l in enumerate(lines, 1):
         if re.match(r"#\s+Mechanisms\s*$", l):
@@ -69,7 +69,9 @@ def page_entries(path, root):
             continue
         if inside and re.match(r"#\s", l):
             inside = False
-        if inside and re.match(r"\s*\d+\.\s", l):
+        if inside and "⚙" in l:
+            gear += 1
+        if inside and re.match(r"\s*(?:\d+\.|-)\s", l):
             p = parse_line(l)
             if p:
                 if "⚙" in l:
@@ -121,7 +123,7 @@ def tokens_of(artifact):
 
 def build_probe(artifact):
     """-> (cmd, reason). cmd is a read-only shell command (None when nothing is probeable); reason names why."""
-    toks = tokens_of(artifact)
+    toks = [t for t in tokens_of(artifact) if not re.match(r"(?:\./)?tests?/", t)]  # tests live in the repo, never installed
     if not toks:
         return None, ("pr-only" if PR_RE.search(artifact) else "no-artifact")
     parts = []
@@ -132,11 +134,11 @@ def build_probe(artifact):
             parts.append(f"systemctl --user is-active --quiet {base}")
             continue
         cands = ([t] if t.startswith("/") else [f"$HOME/{t}"]) + [f"$HOME/{d}/{base}" for d in LIVE_DIRS]
-        test = "(" + " || ".join(f"test -e {c}" for c in dict.fromkeys(cands)) + ")"
+        test = "{ " + " || ".join(f"test -e {c}" for c in dict.fromkeys(cands)) + "; }"
         if "/hooks/" in t:
             test += f" && grep -qs {base} $HOME/.claude/settings.json $HOME/.config/claude-seat/settings.json"
         parts.append(test)
-    return " && ".join(f"({p})" for p in parts), None
+    return " && ".join(f"( {p} )" for p in parts), None
 
 
 def run_probe(host, cmd):
