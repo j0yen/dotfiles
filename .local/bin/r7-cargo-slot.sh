@@ -20,6 +20,8 @@
 #   (downloads only, no build script runs) → bwrap → cargo. Never an unsandboxed fallback.
 set -u
 LIB=/home/jsy/.local/lib/hand-sandbox.sh; . "$LIB" || { echo "r7-cargo-slot: sandbox lib missing ($LIB); refusing" >&2; exit 77; }
+PLACE=$(dirname "$(readlink -f "$0")")/../lib/r7-cargo-place.sh; [ -r "$PLACE" ] || PLACE=/home/jsy/.local/lib/r7-cargo-place.sh   # A681 root-device guard (shared with the cargo shim)
+. "$PLACE" || { echo "r7-cargo-slot: placement lib missing ($PLACE); refusing" >&2; exit 77; }
 LOGD=/home/jsy/.local/state/r7-cargo-slot; mkdir -p "$LOGD"; LOG=$LOGD/slot.log
 REAL_CARGO=${R7_SLOT_REAL_CARGO:-/home/jsy/.cargo}
 export RUSTUP_HOME=${RUSTUP_HOME:-/home/jsy/.rustup}
@@ -121,6 +123,7 @@ esac
 [ "$1" = cargo ] || [ "$(basename "$1")" = cargo ] || { echo "r7-cargo-slot: only cargo commands (got $1)" >&2; exit 2; }
 precheck "$LOG" || exit 75; [ "$PCV" = error ] && echo "r7-cargo-slot: $PCM" >&2
 [ -n "${CARGO_TARGET_DIR:-}" ] || export CARGO_TARGET_DIR=/mnt/ssd/cargo-target/hand-$(basename "$TOP")  # /mnt/ssd itself is root-owned; cargo-target is jsy
+r7_cargo_place "$TOP" || exit $?   # A681: a target on the root device moves to /mnt/ssd/cargo-target/hand-<top>; ssd unmounted = exit 75
 mkdir -p "$CARGO_TARGET_DIR" || exit 77; TGT=$(realpath -e "$CARGO_TARGET_DIR") || exit 77
 CH=/home/jsy/.cargo-hand/$(basename "$TOP"); mk_cargo_home "$CH" || { echo "r7-cargo-slot: cannot make private cargo home $CH" >&2; exit 77; }
 SCRROOT=${R7_SLOT_SCRATCH:-/home/jsy/hand/.slot-scratch}; mkdir -p "$SCRROOT" || exit 77
