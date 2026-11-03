@@ -1,1 +1,1 @@
-\b(0|zero) open runs|\b(0|zero|no) runs? (are )?open|\b(at|until|wait(ing)? for) (0|zero) (open )?runs|when (the host is )?idle|quiet host
+\b(0|zero) open runs|\b(0|zero|no) runs? (are )?open|\b(at|until|wait(ing)? for) (0|zero) (open )?runs|when (the host is )?idle|quiet host|\bno open runs|when (the )?(fleet|host|rb|redbaron|ryzen7|r7) is idle|once idle|after the queue drains|wait(s|ing)? (for|until) no( open)? runs

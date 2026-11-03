@@ -6,7 +6,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fail=0
 ok() { echo "PASS: $1"; }; bad() { echo "FAIL: $1"; fail=$((fail+1)); }
-PIN_ERE='\b(0|zero) open runs|\b(0|zero|no) runs? (are )?open|\b(at|until|wait(ing)? for) (0|zero) (open )?runs|when (the host is )?idle|quiet host'
+PIN_ERE='\b(0|zero) open runs|\b(0|zero|no) runs? (are )?open|\b(at|until|wait(ing)? for) (0|zero) (open )?runs|when (the host is )?idle|quiet host|\bno open runs|when (the )?(fleet|host|rb|redbaron|ryzen7|r7) is idle|once idle|after the queue drains|wait(s|ing)? (for|until) no( open)? runs'
 PIN_EXEMPT='never (wait for|gate on) [^.;:()]{1,40}|[^.;:()]{0,40} is not a gate'
 [ "$(head -n1 "$here/.config/wm-guards/zero-open-runs.ere")" = "$PIN_ERE" ] && ok "refusal ERE pinned" || bad "refusal ERE drifted from the swarm-decide constant"
 [ "$(head -n1 "$here/.config/wm-guards/zero-open-runs-exempt.ere")" = "$PIN_EXEMPT" ] && ok "exempt ERE pinned" || bad "exempt ERE drifted"
@@ -23,7 +23,7 @@ PY
 fi
 . "$here/.local/lib/zero-open-runs-guard.sh"
 export WM_GUARDS_DIR="$here/.config/wm-guards"
-for t in "wait for 0 open runs" "apply at 0 runs" "do it when idle" "on a quiet host only" "once no runs open" "until zero runs"; do
+for t in "wait for 0 open runs" "apply at 0 runs" "do it when idle" "on a quiet host only" "once no runs open" "until zero runs" "no open runs" "when the fleet is idle" "when ryzen7 is idle" "restart once idle" "after the queue drains" "waits for no open runs"; do
   zero_open_runs_refuse "$t" 2>/dev/null && bad "lib passed: $t" || ok "lib refuses: $t"
 done
 for t in "drain ONE slot" "runs open: 2" "never wait for 0 open runs (Joe #113): apply to new runs now" "0 open runs is not a gate"; do
