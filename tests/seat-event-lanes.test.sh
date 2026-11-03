@@ -34,7 +34,7 @@ out="$(SEAT_EVENT_DRY=1 "$SE" aide:wake "row wins" 2>&1)"; [ ! -e "$EVENTS_DIR/a
 # main / bare aide: byte-identical to origin/main on a fixture; aide:main with no row still refuses
 mkdir -p "$T/bin" "$T/lib"; OM="$T/bin/seat-event.sh"; git -C "$(dirname "$SE")" show origin/main:.local/bin/seat-event.sh >"$OM" 2>/dev/null && chmod +x "$OM"
 if [ -x "$OM" ]; then
-  cp "$(dirname "$SE")/../lib/seat-time-stamp.sh" "$T/lib/"
+  cp "$(dirname "$SE")/../lib/seat-time-stamp.sh" "$(dirname "$SE")/../lib/aide-lane.sh" "$T/lib/"   # origin/main seat-event.sh sources both libs from ../lib
   for who in new old; do
     X="$SE"; [ $who = old ] && X="$OM"
     d="$T/fx-$who"; mkdir -p "$d"

@@ -55,13 +55,13 @@ GH="${RB_MERGE_GH:-gh}"
 # A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
 CHAIN_REPOS=(j0yen/synthorg)   # the ONE place the discovery chain repos are listed (no other dotfiles script keeps this set: hand-pr-land-driver HPLD_REPOS is the wider hand-PR set)
 chain_guard() {
-  local r in_chain=0 nrepo
+  local r in_chain=0
   # normalise ONCE (gh accepts URL / .git / mixed-case spellings of the same repo): lowercase, strip scheme+host prefix, trailing .git and /; anything that is then not plain owner/name is REFUSED outright
-  nrepo="$(printf '%s' "$repo" | tr 'A-Z' 'a-z' | sed -e 's#^https\?://github\.com/##' -e 's#^github\.com/##' -e 's#^git@github\.com:##' -e 's#/*$##' -e 's#\.git$##' -e 's#/*$##')"
-  if ! printf '%s' "$nrepo" | grep -Eq '^[a-z0-9._-]+/[a-z0-9._-]+$'; then
+  NREPO="$(printf '%s' "$repo" | tr 'A-Z' 'a-z' | sed -e 's#^https\?://github\.com/##' -e 's#^github\.com/##' -e 's#^git@github\.com:##' -e 's#/*$##' -e 's#\.git$##' -e 's#/*$##')"
+  if ! printf '%s' "$NREPO" | grep -Eq '^[a-z0-9._-]+/[a-z0-9._-]+$'; then
     echo "rb-merge: REFUSED repo '$repo' is not plain owner/name after normalisation" >&2; exit 3
   fi
-  for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$nrepo" ] && in_chain=1; done
+  for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$NREPO" ] && in_chain=1; done
   [ "$in_chain" = 1 ] || return 0
   [ "${WM_SEAT:-}" = aide ] && return 0
   if [ -n "$handoff" ]; then
@@ -79,7 +79,7 @@ for row in json.load(sys.stdin):
     if re.search(r"(?<![a-z0-9._-])%s(?:#|\s+pr=)%s(?!\d)" % (re.escape(repo), re.escape(pr)), text):
         sys.exit(0)
     break
-sys.exit(1)' "$handoff" "$pr" "$nrepo"; then return 0; fi
+sys.exit(1)' "$handoff" "$pr" "$NREPO"; then return 0; fi
   fi
   echo "rb-merge: REFUSED discovery chain PR $repo#$pr needs WM_SEAT=aide or --handoff <aide d-id> (approval 51)" >&2
   exit 3
@@ -200,7 +200,7 @@ mvg_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib"
 [ -r "$mvg_lib/merge-verdict-grammar.sh" ] && [ -r "$mvg_lib/merge_verdict_grammar.py" ] || pg_refuse pre-gate-error "the merge-verdict grammar lib is missing under $mvg_lib"
 . "$mvg_lib/merge-verdict-grammar.sh"   # exports the MVG_* patterns the pre-gate helper reads
 PG_ACTIVE=1
-pg_out="$(python3 -I -B -c "$PG_PY" "$pg_root" "$PG_DB" "$v" "$repo" "$pr" "$PG_STATE" "$mvg_lib" 2>&1)" \
+pg_out="$(python3 -I -B -c "$PG_PY" "$pg_root" "$PG_DB" "$v" "$NREPO" "$pr" "$PG_STATE" "$mvg_lib" 2>&1)" \
   || pg_refuse pre-gate-error "helper failed: $(printf '%s\n' "$pg_out" | tail -n1 | cut -c1-200)"
 pg_line="$(printf '%s\n' "$pg_out" | tail -n1)"
 case "$pg_line" in
@@ -224,7 +224,7 @@ adv_refuse() { echo "$1 ${2:--} $repo#$pr" >&2; [ -z "${3:-}" ] || echo "ADV-REA
 [ -r "$adv_lib/adv-grammar.sh" ] && [ -r "$adv_lib/rb-merge-adv-check.py" ] || adv_refuse ADV-UNCHECKED -
 . "$adv_lib/adv-grammar.sh"
 adv_env=(); for adv_v in $(compgen -A variable ADV_); do adv_env+=("$adv_v=${!adv_v}"); done   # every ADV_* variable of the lib reaches the helper: no second list to drift
-adv_out="$(env "${adv_env[@]}" python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite" "$v" "$repo" "$pr" ${RB_MERGE_ADV_WAIVE:+"$RB_MERGE_ADV_WAIVE"} 2>/dev/null)" \
+adv_out="$(env "${adv_env[@]}" python3 -I "$adv_lib/rb-merge-adv-check.py" "${WM_DECIDE_STATE:-$HOME/.local/state/swarm-decide}/decisions.sqlite" "$v" "$NREPO" "$pr" ${RB_MERGE_ADV_WAIVE:+"$RB_MERGE_ADV_WAIVE"} 2>/dev/null)" \
   || adv_out="REFUSE ADV-UNCHECKED -"
 case "$adv_out" in
   NOTRIGGER) ;;

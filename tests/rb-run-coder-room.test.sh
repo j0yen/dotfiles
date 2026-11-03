@@ -19,6 +19,20 @@ printf '#!/usr/bin/env bash\nexit 64\n' > "$R/usage-fake"
 printf '#!/usr/bin/env bash\necho hello\nexit 0\n' > "$R/junk-fake"
 printf '#!/usr/bin/env bash\necho "room n/a: not carbon"\nexit 0\n' > "$R/na-fake"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$R/ok-hold"
+# fable-verdict gate (fvg): the prompt cites no spec, so it carries a Hatch line backed by a NO-SPEC-SPAWN row in a fixture decisions DB
+BASE=$R/base-prompt.md
+{ head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$BASE"
+HATCH_ID=d-$(date +%Y%m%d-%H%M%S)-rb-room
+python3 -I - "$R/hatch.db" "$HATCH_ID" "$(sha256sum "$BASE" | cut -d' ' -f1)" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("""CREATE TABLE decisions (id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL, via TEXT NOT NULL, model TEXT, kind TEXT NOT NULL, target TEXT,
+  what TEXT NOT NULL, why TEXT NOT NULL, evidence TEXT NOT NULL, reverse TEXT NOT NULL, rule_ids TEXT, first_verdict TEXT, regrade TEXT,
+  regrade_attempts INTEGER NOT NULL DEFAULT 0, correction TEXT, tags TEXT, outcome TEXT, expect_by TEXT, graded_at TEXT, grader TEXT, gates TEXT, session TEXT)""")
+db.execute("INSERT INTO decisions (id, ts, agent, via, model, kind, what, why, evidence, reverse) VALUES (?,?,?,?,?,?,?,?,?,?)",
+           (sys.argv[2], "ts-" + sys.argv[2], "rb", "t", None, "other", "NO-SPEC-SPAWN room gate fixture", "w", "sha256:" + sys.argv[3], "r"))
+db.commit(); db.close()
+PY
 printf '#!/usr/bin/env bash\necho "memcap ok: unit=rb-coder-t.service high=12884901888 max=15032385536"\n' > "$R/ok-memcap"
 printf '#!/usr/bin/env bash\necho "memcap NO: not in a .service unit (cgroup=/user.slice/tmux.scope)"\nexit 3\n' > "$R/no-memcap"
 chmod +x "$R"/*-fake "$R/ok-hold" "$R"/*-memcap
@@ -29,18 +43,14 @@ case_() {
   H=$R/$name; D=$H/.cache/rb-seat/coders
   mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$D"
   : > "$H/.config/environment.d/90-claude-oauth.conf"
-  { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$H/prompt.md"
-  # fvg: the fable-verdict gate (80) refuses a spec-less prompt, so the prompt carries a Hatch row that exists in a fixture DB
-  hid=d-20261102-000000-rb-0001; printf '\nHatch: %s\n' "$hid" >> "$H/prompt.md"
-  psha=$(grep -v '^Hatch: ' "$H/prompt.md" | sha256sum | cut -d' ' -f1)
-  rm -f "$H/decisions.fixture.sqlite"; python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN room test", "sha256:" + sys.argv[3], None)); d.commit()' "$H/decisions.fixture.sqlite" "$hid" "$psha"
+  { cat "$BASE"; printf 'Hatch: %s\n' "$HATCH_ID"; } > "$H/prompt.md"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/events"\n' "$H" > "$H/.local/bin/seat-event.sh"
   printf '#!/usr/bin/env bash\ntouch "%s/claude.ran"\nexit 0\n' "$H" > "$H/.local/bin/claude"
   printf '#!/usr/bin/env bash\ncat "%s/journal.txt"\nexit 0\n' "$H" > "$H/.local/bin/journalctl"
   printf '#!/usr/bin/env bash\ncat "%s/systemctl.txt"\nexit 0\n' "$H" > "$H/.local/bin/systemctl"
   chmod +x "$H/.local/bin/"*
   printf '%s' "$jtxt" > "$H/journal.txt"; printf '%s' "$stxt" > "$H/systemctl.txt"
-  env HOME="$H" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
+  env HOME="$H" RB_ROOM_HOSTNAME=carbon RB_DECISIONS_DB="$R/hatch.db" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
     bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 }
 jline() { printf 'rb-launch-x%s.service: Consumed 3min 38.580s CPU time over 12min 26.464s wall clock time, %s memory peak, 3.1M memory swap peak.\n' "$1" "$2"; }
@@ -92,7 +102,7 @@ if [ $rc = 0 ] && [ "$argv" = 1500 ] && [[ $room == *'peak_src=journal(n=2)+floo
 # (k) systemctl failure -> active=? and n_active=0
 case_ k "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900
 printf '#!/usr/bin/env bash\nexit 1\n' > "$H/.local/bin/systemctl"
-HOME=$H RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
+HOME=$H RB_ROOM_HOSTNAME=carbon RB_DECISIONS_DB="$R/hatch.db" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 room=$(cat "$D/t.room" 2>/dev/null)
 [ $rc = 0 ] && [[ $room == *active=\?* ]] && pass "(k) systemctl failure -> '$room'" || bad "(k) rc=$rc room='$room'"
 # (mc1) memcap NO (room ok) -> 71, report REFUSED memcap rc=3:, event, no claude (memcap gate, Fable CORRECT fcdf/05b3)

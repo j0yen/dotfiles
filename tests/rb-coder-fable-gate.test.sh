@@ -21,8 +21,9 @@ printf '#!/usr/bin/env bash\necho "$*" >> "%s/events.log"\n' "$R" > "$H/.local/b
 printf '#!/usr/bin/env bash\necho ran >> "%s/claude.ran"\nexit 0\n' "$R" > "$H/.local/bin/claude"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.cache/rb-seat/spec-lint.sh"      # spec-lint (73) is not under test here
 printf '#!/usr/bin/env bash\necho "OK stub"\nexit 0\n' > "$R/hold.stub"
+printf '#!/usr/bin/env bash\necho "room n/a: fixture"\nexit 0\n' > "$R/room.stub"      # room gate (rcr) is not under test here
 printf '#!/usr/bin/env bash\necho "memcap ok: unit=rb-coder-t.service high=1 max=1"\n' > "$R/memcap-ok.stub"   # memcap gate (71) passes; the gate under test here is fable-verdict
-chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude" "$R/hold.stub" "$R/memcap-ok.stub"
+chmod +x "$H/.local/bin/seat-event.sh" "$H/.local/bin/claude" "$R/hold.stub" "$R/room.stub" "$R/memcap-ok.stub"
 
 SP=$CD/zed.spec.md
 printf '# zed\n## Premises\n- a.sh:1 -> x\n## Change\n1. y\n' > "$SP"
@@ -57,7 +58,7 @@ case_() {
   local label=$1 erc=$2 ereason=$3 db=$4 pf=$5; shift 5; n=$((n+1))
   rm -f "$R/claude.ran" "$CD/c$n.report.md"; : > "$R/events.log"
   local before=""; [ ! -f "$db" ] || before=$(sha256sum "$db" | cut -d' ' -f1)
-  HOME=$H RB_DECISIONS_DB=$db RB_SPAWN_HOLD_BIN=$R/hold.stub RB_MEMCAP_BIN=$R/memcap-ok.stub RB_FABLE_GATE_TIMEOUT=${GATE_TO:-0.3} bash "$runc" "c$n" "$pf" "$@" >/dev/null 2>&1; local rc=$?
+  HOME=$H RB_DECISIONS_DB=$db RB_SPAWN_HOLD_BIN=$R/hold.stub RB_ROOM_BIN=$R/room.stub RB_ROOM_PEAK_MB=1 RB_MEMCAP_BIN=$R/memcap-ok.stub RB_FABLE_GATE_TIMEOUT=${GATE_TO:-0.3} bash "$runc" "c$n" "$pf" "$@" >/dev/null 2>&1; local rc=$?
   local rep; rep=$(cat "$CD/c$n.report.md" 2>/dev/null)
   local after=""; [ ! -f "$db" ] || after=$(sha256sum "$db" | cut -d' ' -f1)
   local ok=1 why=""
