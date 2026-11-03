@@ -137,8 +137,9 @@ def _member_re(m):
 
 
 SECRET_RE = re.compile("|".join(_member_re(m) for m in S1_MEMBERS))
+# ANCESTOR dirs of an S1 member: /home/<user> or $HOME (a HOME outside /home, e.g. a test fixture or /root, is an ancestor too)
 ANCESTOR_RE = re.compile(
-    r"^(?:/|/home|/proc(?:/[^/]+)?|/home/[^/]+|/home/[^/]+/\.(?:config|claude)|/home/[^/]+/\.config/(?:mcphost-deploy|gh|environment\.d))/?$"
+    r"^(?:/|/home|/proc(?:/[^/]+)?|" + ANCH + r"|" + ANCH + r"/\.(?:config|claude)|" + ANCH + r"/\.config/(?:mcphost-deploy|gh|environment\.d))/?$"
 )
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

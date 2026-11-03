@@ -4,6 +4,8 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../.local/bin/aide-verifier.sh"
+# host load is not under test: the launch load gate (MAX_LOAD) refused with rc=13 on ryzen7 at load 17-20 (lanes dot264b/dot270b 11-03)
+export AIDE_VERIFIER_MAX_LOAD="${AIDE_VERIFIER_MAX_LOAD:-999}"
 fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
@@ -37,13 +39,16 @@ def _agent_token(row, rx=AGENT_RE):
 def g3_missing(tokens, atts, commit):
     return [t for t in tokens if not (t.endswith(" EXIT=0") and any(t[:-7] in (a["trailer"].get("CMD") or "") for a in atts))], None
 F
+printf '#!/bin/bash\necho "WM-VERIFY CMD=bash -c for t in tests/*.test.sh; do bash \$t; done"\n' >"$th/bin/fake-logcmd"   # A649: launch --log reads the log's CMD trailer
+echo "0.10 0.10 0.10 1/1 1" >"$th/loadavg"   # the host's real load must not decide these launches (load gate, exit 13): the script's own test inputs
 chmod +x "$th"/bin/*
 TOK='tests/*.test.sh EXIT=0'
 lc() {  # lc <name> <args...>: launch under fakes; stdout+stderr
   local nm="$1"; shift
   HOME="$th/home" FAKE_DIR="$th" AIDE_VERIFIER_DIR="$th/av" AIDE_VERIFIER_ROOM_CMD="$th/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$th/bin/fake-sdrun" \
-    AIDE_VERIFIER_SYSTEMCTL="$th/bin/fake-systemctl" AIDE_VERIFIER_BELL="$th/bin/fake-bell" AIDE_VERIFIER_WM_DECIDE="$th/bin/fake-wmd" AIDE_VERIFIER_GATE_ROOT="$th/gate" \
+    AIDE_VERIFIER_SYSTEMCTL="$th/bin/fake-systemctl" AIDE_VERIFIER_BELL="$th/bin/fake-bell" AIDE_VERIFIER_WM_DECIDE="$th/bin/fake-wmd" AIDE_VERIFIER_GATE_ROOT="$th/gate" AIDE_VERIFIER_LOGCMD_CMD="$th/bin/fake-logcmd" \
     PATH="$th/bin:$PATH" AIDE_VERIFIER_CGROUP_FILE="$th/cgroup-absent" AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_SLOT_CEIL=2 AIDE_VERIFIER_POLL_S=1 \
+    AIDE_VERIFIER_LOADAVG_FILE="$th/loadavg" AIDE_VERIFIER_MAX_LOAD=100 \
     bash "$script" launch "$nm" --repo j0yen/dotfiles --pr 7 --gated "$G" --token "$TOK" --head "$H" "$@" 2>&1
 }
 P() { cat "$th/av/$1/prompt.md"; }

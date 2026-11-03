@@ -14,13 +14,14 @@ echo "OWED $1: owed 3, overdue 2, escalated 1, oldest d-20261024-004131-rb-b354"
 echo "OVERDUE $1: d-20261024-004131-rb-b354 d-20261025-000000-rb-aaaa d-20261026-000000-rb-bbbb"
 STUB
 chmod +x "$tmp/bin/seat-owed.sh"
+# PATH carries only the stub dir + system dirs: a host that has the real seat-owed.sh on PATH must not satisfy the d2 "missing" case
 run() { # run <seat|-> <message> -> stdout in $tmp/out, stderr in $tmp/err
   local seat="$1" msg="$2" payload
   payload=$(jq -nc --arg m "$msg" '{hook_event_name:"Stop",stop_hook_active:false,last_assistant_message:$m}')
   if [ "$seat" = - ]; then
-    env -u WM_SEAT PATH="$tmp/bin:$PATH" HOME="$tmp/home" bash "$hook" <<<"$payload" >"$tmp/out" 2>"$tmp/err"
+    env -u WM_SEAT PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" bash "$hook" <<<"$payload" >"$tmp/out" 2>"$tmp/err"
   else
-    WM_SEAT="$seat" PATH="$tmp/bin:$PATH" HOME="$tmp/home" bash "$hook" <<<"$payload" >"$tmp/out" 2>"$tmp/err"
+    WM_SEAT="$seat" PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" bash "$hook" <<<"$payload" >"$tmp/out" 2>"$tmp/err"
   fi
 }
 

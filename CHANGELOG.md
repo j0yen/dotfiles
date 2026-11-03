@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-02 — rb-run-coder-room-rb (patch)
+
+`rb-run-coder.sh` room step now reads real memory on RedBaron: off carbon it forces `carbon-room.sh` to measure (`CARBON_ROOM_HOST`,
+reserve = `mem_headroom_gb`) and refuses (78, `memgate NO`) when `mem_budget_gb` minus the live `wm-build builder cargo-jobs list` class caps
+is below need, or the Σ is unreadable. `.room` gains `memgate free_mb= sum_mb= budget_mb=`. Carbon unchanged. Tests l-p (ctl 8:59 PM, rows 05b3/fcdf).
+
 ## 2026-11-01 — fleet-switch-joe-trigger (patch)
 
 `fleet-token-rotate.sh --trigger` also accepts `joe-<date-or-time>`

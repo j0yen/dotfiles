@@ -4,8 +4,9 @@
 # Tracked in dotfiles (j0yen/dotfiles .local/bin, tests/rb-spawn-hold.test.sh); ~/.cache/rb-seat/coders/run-coder.sh is a symlink to it.
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
-# spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; runs last, just before `claude -p`; shares exit 78 with the model gate, told apart by the REFUSED text).
-# env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read).
+# spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; shares exit 78 with the model gate, told apart by the REFUSED text),
+# memcap 71 (rb-coder-memcap.sh caps this coder's own unit; runs last, just before `claude -p`).
+# env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read), RB_MEMCAP_BIN (default ~/.local/bin/rb-coder-memcap.sh).
 # fable-verdict 80 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
 # covered, BY SHA256 OF ITS BYTES, by the newest decisions row carrying `sha256:<hex>` in its evidence, which must be kind=verdict, model fable, final
 # verdict AGREE|AGREE-WITH-EDITS (.local/lib/rb-fable-gate.py); a prompt citing no spec needs a `Hatch: d-<id>` NO-SPEC-SPAWN decision row. This gate
@@ -87,13 +88,56 @@ if act_out=$(timeout 20 systemctl --user list-units 'rb-launch-*' --state=active
   n_active=$(printf '%s\n' "$act_out" | awk -v self="rb-launch-$n.service" '$1 ~ /^rb-launch-.*\.service$/ && $1 != self' | grep -c .); act_txt=$n_active
 else n_active=0; act_txt='?'; fi
 need_mb=$(( peak_mb * (1 + n_active) ))
-room_out=$(CARBON_ROOM_CALLER="rb-run-coder:$n" "$room_bin" "$need_mb" 2>&1); rc_r=$?
+# Non-carbon host (RedBaron): carbon-room.sh would print `room n/a: not carbon`, so force its measure with CARBON_ROOM_HOST and a reserve of
+# mem_headroom_gb (config.toml [cargo_jobs], default 4; env RB_ROOM_HEADROOM_MB), then check MemGate's own Σ: budget (mem_budget_gb, default 26;
+# env RB_ROOM_BUDGET_MB; config path env RB_ROOM_CONFIG) minus the class caps of the live `wm-build builder cargo-jobs list` slots (env RB_ROOM_MEMGATE_SUM_MB) must cover need.
+# Class = run-name prefix (land|inner|gate|hand); anything else takes the largest cap. Sigma unreadable = refuse (memgate NO).
+room_host=${RB_ROOM_HOSTNAME:-$(hostname 2>/dev/null)}; mg_txt=''; mg_no=''; room_env=()
+if [ "$room_host" != carbon ]; then
+  mg_cfg=${RB_ROOM_CONFIG:-$HOME/.config/wm-build/config.toml}
+  mg_cfgout=$(python3 -I -c 'import sys,tomllib
+try: c=tomllib.load(open(sys.argv[1],"rb")).get("cargo_jobs",{})
+except Exception: c={}
+print(int(float(c.get("mem_budget_gb",26))*1024),int(float(c.get("mem_headroom_gb",4))*1024))' "$mg_cfg" 2>/dev/null) || mg_cfgout=''
+  read -r mg_budget mg_head <<< "${mg_cfgout:-26624 4096}"
+  mg_budget=${RB_ROOM_BUDGET_MB:-$mg_budget}; mg_head=${RB_ROOM_HEADROOM_MB:-$mg_head}
+  room_env=(CARBON_ROOM_HOST="$room_host" CARBON_ROOM_RESERVE_MB="$mg_head")
+  if [ -n "${RB_ROOM_MEMGATE_SUM_MB:-}" ]; then mg_sum=$RB_ROOM_MEMGATE_SUM_MB
+  else
+    mg_sum=$(cd ~ && timeout 30 "${RB_ROOM_WMB_BIN:-$HOME/.cargo/bin/wm-build}" builder cargo-jobs list 2>/dev/null | python3 -I -c 'import sys,tomllib,re
+try: caps=tomllib.load(open(sys.argv[1],"rb")).get("cargo_jobs",{}).get("mem_caps_gb",{})
+except Exception: caps={}
+caps={k:float(v) for k,v in caps.items() if not isinstance(v,dict)}
+big=max(caps.values(),default=12.5); rows=sys.stdin.read().splitlines()
+if not rows or rows[0].split("\t")[:5]!=["id","run","producer","pid","alive"]: sys.exit(1)
+t=0.0
+for r in rows[1:]:
+    f=r.split("\t")
+    if len(f)<7: sys.exit(1)
+    if f[4]!="yes": continue
+    m=re.match(r"(land|inner|gate|hand)(?:[-.]|$)",f[1]); t+=caps.get(m.group(1),big) if m else big
+print(int(t*1024))' "$mg_cfg" 2>/dev/null) || mg_sum=''
+  fi
+  if [[ $mg_sum =~ ^[0-9]+$ ]]; then mg_free=$(( mg_budget - mg_sum )); mg_txt="memgate free_mb=$mg_free sum_mb=$mg_sum budget_mb=$mg_budget"
+    [ "$mg_free" -lt "$need_mb" ] && mg_no="memgate NO: free_mb=$mg_free < need_mb=$need_mb"
+  else mg_no="memgate NO: sigma unreadable"; mg_txt="memgate sigma=unreadable"; fi
+fi
+room_out=$(env "${room_env[@]}" CARBON_ROOM_CALLER="rb-run-coder:$n" "$room_bin" "$need_mb" 2>&1); rc_r=$?
 room_l1=$(printf '%s\n' "$room_out" | head -n 1)
-room_tail="need_mb=$need_mb peak_mb=$peak_mb peak_src=$peak_src active=$act_txt"
+room_tail="need_mb=$need_mb peak_mb=$peak_mb peak_src=$peak_src active=$act_txt${mg_txt:+ $mg_txt}"
+if [ "$rc_r" = 0 ] && [[ $room_l1 =~ ^room\ (ok|n/a): ]] && [ -n "$mg_no" ]; then rc_r=3; room_l1=$mg_no; fi
 if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
   echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
 fi
 echo "$room_l1 $room_tail" > "$D/$n.room"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ROOM $room_l1 $room_tail" || true
+# memcap gate (rb 11-02, Fable CORRECT fcdf/05b3: coders ran on redbaron with MemoryMax=infinity): rb-coder-memcap.sh sets MemoryHigh/MemoryMax
+# (12G/14G) on this coder's own unit and reads the cgroup back. Fails CLOSED: only rc 0 + a `memcap ok:` first line allows; anything else exits 71.
+memcap_bin="${RB_MEMCAP_BIN:-$HOME/.local/bin/rb-coder-memcap.sh}"
+mc_out=$("$memcap_bin" 2>&1); rc_m=$?; mc_l1=$(printf '%s\n' "$mc_out" | head -n 1)
+if [ "$rc_m" != 0 ] || ! [[ $mc_l1 =~ ^memcap\ ok: ]]; then
+  echo "REFUSED memcap rc=$rc_m: $mc_l1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED memcap rc=$rc_m: $mc_l1" || true; exit 71
+fi
+echo "$mc_l1" > "$D/$n.memcap"
 claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc

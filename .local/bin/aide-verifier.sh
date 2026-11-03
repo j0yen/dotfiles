@@ -493,8 +493,18 @@ cmd_launch() {
     [[ "$lpath" =~ ^/[A-Za-z0-9._/+@%=,-]+$ ]] || die 2 "lint: --log must be an absolute path (optionally redbaron: or ryzen7: prefixed) of [A-Za-z0-9._/+@%=,-] only (got '$LOG')"
     if [ "$LOGHOST" = local ]; then LOGFETCH="cp $lpath {{DIR}}/bundle.log"; else LOGFETCH="scp -q $LOGHOST:$lpath {{DIR}}/bundle.log"; fi
     LOGFETCH="${LOGFETCH//'{{DIR}}'/$ROOT/$NAME}"
-    SUITE="${TOKEN% EXIT=0}"   # the G3 lint compares the token prefix with the suite CMD; in log mode the CMD is the log's own trailer, which the prompt checks (CMDCHECK)
-    [ "$SUITE" = "$TOKEN" ] || CMDCHECK=" The CMD line must contain \`$SUITE\` (check it with \`grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log | grep -cF -- '$SUITE'\`, 1 or more)."
+    # A649: suite.txt = the log's exact `WM-VERIFY CMD=` trailer (rb-merge.sh admits only the log whose CMD equals it; a token-prefix suite gave exit 6 suite-mismatch)
+    local logcmd SUITE_PFX
+    if [ -n "${AIDE_VERIFIER_LOGCMD_CMD:-}" ]; then logcmd="$(timeout "$CMD_TIMEOUT_S" $AIDE_VERIFIER_LOGCMD_CMD "$LOGHOST" "$lpath" 2>/dev/null | head -n1)"   # tests: prints the CMD trailer line of <host> <path>
+    elif [ "$LOGHOST" = local ]; then logcmd="$(grep -m1 '^WM-VERIFY CMD=' "$lpath" 2>/dev/null)"
+    else logcmd="$(timeout "$CMD_TIMEOUT_S" ssh -o BatchMode=yes -o ConnectTimeout=8 "$LOGHOST" "grep -m1 '^WM-VERIFY CMD=' $lpath" 2>/dev/null | head -n1)"; fi
+    [[ "$logcmd" == "WM-VERIFY CMD="?* ]] || die 2 "lint: cannot read a 'WM-VERIFY CMD=' trailer from --log $LOG (missing log, unreachable host, or no CMD trailer)"
+    SUITE="${logcmd#WM-VERIFY CMD=}"
+    SUITE_PFX="${TOKEN% EXIT=0}"
+    if [ "$SUITE_PFX" != "$TOKEN" ] && [[ "$SUITE" != *"$SUITE_PFX"* ]]; then
+      die 2 "lint: the log's CMD '$SUITE' does not contain the token prefix '$SUITE_PFX' (--token '$TOKEN'): wrong log or wrong token"
+    fi
+    [ "$SUITE_PFX" = "$TOKEN" ] || CMDCHECK=" The CMD line must contain \`$SUITE_PFX\` (check it with \`grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log | grep -cF -- '$SUITE_PFX'\`, 1 or more)."
     LOGNOTE="; log-only (suite ran on $LOGHOST under wm-verify-run)"
     STEP4_TXT="$(step4_log)"
   else
@@ -1082,7 +1092,7 @@ F
   printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\nexec %q "$@"\n' "$RR" >"$T/bin/fake-room-real"; chmod +x "$T/bin/fake-room-real"
   mi() { printf 'MemTotal:       15467572 kB\nMemFree:         1000000 kB\nMemAvailable:   %d kB\nSwapFree:       2097152 kB\n' $(($1 * 1024)) >"$T/meminfo"; }
   # R3 <ceiling> cmd...: run cmd with the REAL carbon-room.sh (fake meminfo, via a wrapper that logs the asked need) and SLOT_CEIL=<ceiling>
-  R3() { local ce="$1"; shift; ( export AIDE_VERIFIER_SLOT_CEIL="$ce" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room-real" CARBON_ROOM_HOST=carbon CARBON_ROOM_MEMINFO="$T/meminfo" CARBON_ROOM_STATE="$T/rs.json" CARBON_ROOM_LEDGER="$T/rl.jsonl"; "$@" ); }
+  R3() { local ce="$1"; shift; ( unset CARBON_ROOM_RESERVE_MB; export AIDE_VERIFIER_SLOT_CEIL="$ce" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room-real" CARBON_ROOM_HOST=carbon CARBON_ROOM_MEMINFO="$T/meminfo" CARBON_ROOM_STATE="$T/rs.json" CARBON_ROOM_LEDGER="$T/rl.jsonl"; "$@" ); }   # the selftest sizes room with carbon-room.sh's own default reserve (3072): a host env CARBON_ROOM_RESERVE_MB (RB sets 4096) must not decide (7c)
   mem3() { mkdir -p "$T/mem"; local u; for u in a b c; do echo $(($1 * 1048576)) >"$T/mem/$2-verifier-$u.service"; done; }
   r429() { mkdir -p "$1/$2"; printf '{"is_error":true,"api_error_status":429,"result":"rate limited"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
   rok() { mkdir -p "$1/$2"; printf '{"is_error":false,"api_error_status":null,"result":"ok"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
@@ -1315,7 +1325,7 @@ F
   [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
   grep -q -- "wm-decide record --agent r7 --via verifier --model sonnet --kind verdict --gates $G" "$D/prompt.md" \
     && grep -q -- "agent=verifier:r7-verifier-ag1 scope=suite recorded_by=unit:r7-verifier-ag1 session=own-headless-claude-p" "$D/prompt.md" \
-    && ! grep -qE -- '--agent aide|aide-verifier-' "$D/prompt.md"; chk "r7: template carries --agent r7, agent=verifier:r7-verifier-<name>, recorded_by=unit:r7-verifier-<name>, no aide unit/agent" $?
+    && ! sed "s|$T|<T>|g" "$D/prompt.md" | grep -qE -- '--agent aide|aide-verifier-'; chk "r7: template carries --agent r7, agent=verifier:r7-verifier-<name>, recorded_by=unit:r7-verifier-<name>, no aide unit/agent" $?
   grep -q '^agent=r7$' "$D/meta" && grep -q ' launched unit=r7-verifier-ag1 ' "$D/state"; chk "r7: meta records the agent, state names the r7 unit" $?
   printf '{"is_error":false,"result":"LOG: /x/verify/r.log\\nVERDICT: %s"}' "$V7" >"$D/result.json"
   out="$(FAKE_GATE=pass "$SELF" finish ag1 2>&1)"; rc=$?
