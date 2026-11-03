@@ -1,0 +1,15 @@
+#!/bin/bash
+# cargo shim (A681): on ryzen7, no cargo run by jsy places a target dir on the root device, whatever the caller exported.
+# Other hosts, and any cargo run inside this shim (R7_CARGO_SHIM_INNER=1), exec the real cargo unchanged. A target already off the root device
+# passes untouched (the wm-build daemon sees no change). Placement logic: .local/lib/r7-cargo-place.sh (shared with r7-cargo-slot.sh).
+# PATH: ~/.local/bin must precede ~/.cargo/bin for the shim to see calls.
+REAL=$HOME/.cargo/bin/cargo
+if [ "${R7_CARGO_SHIM_INNER:-}" != 1 ] && [ "$(hostname -s 2>/dev/null)" = ryzen7 ]; then
+  SELF=$(readlink -f "$0")
+  LIB=$(dirname "$SELF")/../lib/r7-cargo-place.sh; [ -r "$LIB" ] || LIB=$HOME/.local/lib/r7-cargo-place.sh
+  . "$LIB" || { echo "cargo shim: placement lib missing ($LIB); refusing" >&2; exit 77; }
+  [ "$(readlink -f "$REAL")" != "$SELF" ] || { echo "cargo shim: $REAL resolves to the shim itself" >&2; exit 127; }
+  r7_cargo_place || exit $?
+fi
+export R7_CARGO_SHIM_INNER=1
+exec "$REAL" "$@"
