@@ -259,7 +259,9 @@ def classify(cmd, depth=0):
             sub = [x for x in rest if not x.startswith("-")][:1]
             if sub and sub[0] in ("test", "build", "run", "t", "run-script"):
                 return "npm"
-        if b == "aide-verifier.sh" and "launch" in rest:
+        if b == "aide-verifier.sh" and "launch" in rest and "--log" not in rest:
+            # LOG-ONLY launches (--log) run no suite: the unit reads a wm-verify-run log from the build host and writes
+            # the verdict row into the carbon-only ledger, so carbon is the one host that can launch them (A641, 11-02).
             return "aide-verifier-launch"
         if b in ("bash", "sh", "zsh", "dash", "ksh") and depth < 4:
             for i, x in enumerate(rest):
