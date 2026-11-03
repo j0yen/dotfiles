@@ -1,6 +1,7 @@
 [Unit]
-Description=Mechanism registry: parse # Mechanisms + SPEC pointers, probe installed artifacts, write mechanisms.json (read-only probes)
+Description=mech-registry: probe promised mechanisms for LIVE state (A49)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -lc "%h/.local/bin/mech-registry.sh"
+ExecStart=%h/.local/bin/mech-registry.py
+TimeoutStartSec=300
