@@ -1,0 +1,20 @@
+#!/bin/bash
+# pre-push (rb --no-cargo coder, ctl 8220 11-03): the publish refusal behind pre-commit. Runs .local/bin/wmb-nocargo-checks.sh on
+# every pushed tip of a wm-build repo (the commit's own src/ tree, exported by git archive) and refuses the push on any finding.
+# Seals the paths pre-commit does not run on (--no-verify, cherry-pick, rebase, am). Other repos pass untouched.
+top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+grep -qs 'OPERATOR_OPS' "$top/src/actor.rs" || exit 0
+bin="${WMB_NOCARGO_BIN:-$(cd "$(dirname "$(readlink -f "$0")")/../../bin" 2>/dev/null && pwd)/wmb-nocargo-checks.sh}"
+[ -x "$bin" ] || { echo "pre-push: REFUSED, wmb-nocargo-checks.sh not found at $bin" >&2; exit 1; }
+z=0000000000000000000000000000000000000000; bad=
+while read -r lr ls rr rs; do
+  [ "$ls" = "$z" ] && continue
+  tmp=$(mktemp -d) || exit 1
+  if git archive "$ls" src | tar -x -C "$tmp" 2>/dev/null; then
+    out=$("$bin" "$tmp" 2>&1); rc=$?
+  else out="git archive failed"; rc=2; fi
+  rm -rf "$tmp"
+  [ "$rc" = 0 ] || { printf '%s\n' "$out" | head -n 20 >&2; bad="$bad ${ls:0:12}(rc=$rc)"; }
+done
+[ -z "$bad" ] && exit 0
+echo "pre-push: REFUSED, wmb-nocargo-checks red on:$bad (fix the classification in a new commit, then push)" >&2; exit 1
