@@ -1082,7 +1082,7 @@ F
   printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\nexec %q "$@"\n' "$RR" >"$T/bin/fake-room-real"; chmod +x "$T/bin/fake-room-real"
   mi() { printf 'MemTotal:       15467572 kB\nMemFree:         1000000 kB\nMemAvailable:   %d kB\nSwapFree:       2097152 kB\n' $(($1 * 1024)) >"$T/meminfo"; }
   # R3 <ceiling> cmd...: run cmd with the REAL carbon-room.sh (fake meminfo, via a wrapper that logs the asked need) and SLOT_CEIL=<ceiling>
-  R3() { local ce="$1"; shift; ( export AIDE_VERIFIER_SLOT_CEIL="$ce" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room-real" CARBON_ROOM_HOST=carbon CARBON_ROOM_MEMINFO="$T/meminfo" CARBON_ROOM_STATE="$T/rs.json" CARBON_ROOM_LEDGER="$T/rl.jsonl"; "$@" ); }
+  R3() { local ce="$1"; shift; ( unset CARBON_ROOM_RESERVE_MB; export AIDE_VERIFIER_SLOT_CEIL="$ce" AIDE_VERIFIER_ROOM_CMD="$T/bin/fake-room-real" CARBON_ROOM_HOST=carbon CARBON_ROOM_MEMINFO="$T/meminfo" CARBON_ROOM_STATE="$T/rs.json" CARBON_ROOM_LEDGER="$T/rl.jsonl"; "$@" ); }   # the selftest sizes room with carbon-room.sh's own default reserve (3072): a host env CARBON_ROOM_RESERVE_MB (RB sets 4096) must not decide (7c)
   mem3() { mkdir -p "$T/mem"; local u; for u in a b c; do echo $(($1 * 1048576)) >"$T/mem/$2-verifier-$u.service"; done; }
   r429() { mkdir -p "$1/$2"; printf '{"is_error":true,"api_error_status":429,"result":"rate limited"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
   rok() { mkdir -p "$1/$2"; printf '{"is_error":false,"api_error_status":null,"result":"ok"}' >"$1/$2/result.json"; touch -d "$3" "$1/$2/result.json"; }
