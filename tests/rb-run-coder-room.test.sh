@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rb-run-coder-room.test.sh - rcr: the ROOM gate (exit 78) in rb-run-coder.sh, cases a-k plus RedBaron cases l-p.
+# rb-run-coder-room.test.sh - rcr: the ROOM gate (exit 78) in rb-run-coder.sh, cases a-k plus RedBaron cases l-p; the memcap gate (exit 71), cases mc1-mc2.
 # Every case runs under a fresh HOME=$(mktemp -d) with stub claude/seat-event/journalctl/systemctl and fake room binaries; the real claude,
 # carbon-room.sh, user journal and fleet-dash state are never touched (CARBON_ROOM_STATE/LEDGER point into the case HOME).
 set -u
@@ -19,7 +19,9 @@ printf '#!/usr/bin/env bash\nexit 64\n' > "$R/usage-fake"
 printf '#!/usr/bin/env bash\necho hello\nexit 0\n' > "$R/junk-fake"
 printf '#!/usr/bin/env bash\necho "room n/a: not carbon"\nexit 0\n' > "$R/na-fake"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$R/ok-hold"
-chmod +x "$R"/*-fake "$R/ok-hold"
+printf '#!/usr/bin/env bash\necho "memcap ok: unit=rb-coder-t.service high=12884901888 max=15032385536"\n' > "$R/ok-memcap"
+printf '#!/usr/bin/env bash\necho "memcap NO: not in a .service unit (cgroup=/user.slice/tmux.scope)"\nexit 3\n' > "$R/no-memcap"
+chmod +x "$R"/*-fake "$R/ok-hold" "$R"/*-memcap
 
 # case <name> <room-bin> <journal-text> <systemctl-text> [env assignments...]; sets H (home), D, rc
 case_() {
@@ -38,7 +40,7 @@ case_() {
   printf '#!/usr/bin/env bash\ncat "%s/systemctl.txt"\nexit 0\n' "$H" > "$H/.local/bin/systemctl"
   chmod +x "$H/.local/bin/"*
   printf '%s' "$jtxt" > "$H/journal.txt"; printf '%s' "$stxt" > "$H/systemctl.txt"
-  env HOME="$H" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
+  env HOME="$H" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
     bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 }
 jline() { printf 'rb-launch-x%s.service: Consumed 3min 38.580s CPU time over 12min 26.464s wall clock time, %s memory peak, 3.1M memory swap peak.\n' "$1" "$2"; }
@@ -90,9 +92,17 @@ if [ $rc = 0 ] && [ "$argv" = 1500 ] && [[ $room == *'peak_src=journal(n=2)+floo
 # (k) systemctl failure -> active=? and n_active=0
 case_ k "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900
 printf '#!/usr/bin/env bash\nexit 1\n' > "$H/.local/bin/systemctl"
-HOME=$H RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
+HOME=$H RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 room=$(cat "$D/t.room" 2>/dev/null)
 [ $rc = 0 ] && [[ $room == *active=\?* ]] && pass "(k) systemctl failure -> '$room'" || bad "(k) rc=$rc room='$room'"
+# (mc1) memcap NO (room ok) -> 71, report REFUSED memcap rc=3:, event, no claude (memcap gate, Fable CORRECT fcdf/05b3)
+case_ mc1 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_MEMCAP_BIN="$R/no-memcap"
+rep=$(cat "$D/t.report.md" 2>/dev/null)
+if [ $rc = 71 ] && [[ $rep == "REFUSED memcap rc=3: memcap NO:"* ]] && [ ! -e "$H/claude.ran" ] && grep -q 'RB-CODER t REFUSED memcap rc=3' "$H/events"; then
+  pass "(mc1) memcap NO -> rc=71, report '$rep', claude not run"; else bad "(mc1) rc=$rc rep='$rep' ran=$(ls "$H/claude.ran" 2>&1)"; fi
+# (mc2) missing memcap binary -> 71 (fail closed); (a) above already proves ok-memcap writes t.memcap
+case_ mc2 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_MEMCAP_BIN="$R/does-not-exist"
+[ $rc = 71 ] && [ ! -e "$H/claude.ran" ] && [ -e "$R/a/.cache/rb-seat/coders/t.memcap" ] && pass "(mc2) missing RB_MEMCAP_BIN -> rc=71; (a) wrote t.memcap" || bad "(mc2) rc=$rc"
 
 # --- RedBaron cases (l-p): host != carbon -> the real carbon-room.sh is forced (CARBON_ROOM_HOST) against a fake meminfo, plus the MemGate sigma.
 realroom="$here/../.local/bin/carbon-room.sh"

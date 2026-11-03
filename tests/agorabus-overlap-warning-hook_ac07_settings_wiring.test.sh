@@ -20,8 +20,9 @@ mrc="model-role-check.sh\\\"; exit 0'\""
 # aide-inbox.sh (10-23, the aide inbox) is also appended after this PRD, as the last entry; it is excluded here and checked by tests/aide-inbox.test.sh.
 # owed-now.sh (10-31) likewise; checked by tests/owed-now.test.sh.
 # skill-marker.sh + analysis-skill-router.sh (10-24) likewise; checked by tests/analysis-page-gate.test.sh + tests/analysis-skill-router.test.sh.
-assert_eq "$(jq -c "$ups | map(select(. != \"agorabus-overlap.sh\" and . != \"skill-marker.sh\" and . != \"analysis-skill-router.sh\" and (startswith(\"aide-inbox.sh\") | not) and (startswith(\"owed-now.sh\") | not)))" "$S")" \
+# login-ledger.sh (11-01, A264) likewise; checked by tests/login-ledger.test.sh.
+assert_eq "$(jq -c "$ups | map(select(. != \"agorabus-overlap.sh\" and . != \"skill-marker.sh\" and . != \"analysis-skill-router.sh\" and . != \"login-ledger.sh\" and (startswith(\"aide-inbox.sh\") | not) and (startswith(\"owed-now.sh\") | not)))" "$S")" \
   '["peon.sh","hook-handle-use.sh","hook-handle-rename.sh","recall-user-prompt.sh","recall-search-inject.sh","summa-lookup-inject.sh","dream-marker.sh","agorabus-intent.sh","operator-notices.sh","'"$mrc"']' \
   "existing UserPromptSubmit hooks unchanged"
-assert_eq "$(jq -r '[.hooks.UserPromptSubmit[] | select(.hooks[0].command | test("aide-inbox[.]sh|owed-now[.]sh") | not)][-1].hooks[0] | "\(.type) \(.timeout)"' "$S")" "command 5" "entry shape matches sibling hooks"
+assert_eq "$(jq -r '[.hooks.UserPromptSubmit[] | select(.hooks[0].command | test("aide-inbox[.]sh|owed-now[.]sh|login-ledger[.]sh") | not)][-1].hooks[0] | "\(.type) \(.timeout)"' "$S")" "command 5" "entry shape matches sibling hooks"
 exit $fail
