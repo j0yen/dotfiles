@@ -161,7 +161,9 @@ rep=$(cat "$D/t.report.md" 2>/dev/null)
 [ $rc = 78 ] && [[ $rep == "REFUSED room rc=3: memgate NO: free_mb=0 < need_mb=900"* ]] && pass "(q2) no db -> largest cap, '$rep'" || bad "(q2) rc=$rc rep='$rep'"
 
 # --- watchman reap (ctl k1039): a process named watchman listed in a fake cgroup.procs; only the unit's own cgroup is reaped
-mkdir -p "$R/wm" "$R/cg/u/rb-coder-t.service" "$R/cg/u/rb-coder-other.service"; cp "$(command -v sleep)" "$R/wm/watchman"
+# fake = a direct #!/bin/bash script (comm = its file name; env would re-exec as bash; a copied sleep breaks on multicall coreutils), exits 143 on TERM
+mkdir -p "$R/wm" "$R/cg/u/rb-coder-t.service" "$R/cg/u/rb-coder-other.service"
+printf '#!/bin/bash\ntrap '"'"'kill "$c"; exit 143'"'"' TERM\nsleep 30 & c=$!\nwait "$c"\n' > "$R/wm/watchman"; chmod +x "$R/wm/watchman"
 "$R/wm/watchman" 30 & wpid=$!
 echo "$wpid" > "$R/cg/u/rb-coder-other.service/cgroup.procs"; echo "$wpid" > "$R/cg/u/rb-coder-t.service/cgroup.procs"
 # (w1) cgroup of another unit -> watchman left alone
