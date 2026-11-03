@@ -493,8 +493,18 @@ cmd_launch() {
     [[ "$lpath" =~ ^/[A-Za-z0-9._/+@%=,-]+$ ]] || die 2 "lint: --log must be an absolute path (optionally redbaron: or ryzen7: prefixed) of [A-Za-z0-9._/+@%=,-] only (got '$LOG')"
     if [ "$LOGHOST" = local ]; then LOGFETCH="cp $lpath {{DIR}}/bundle.log"; else LOGFETCH="scp -q $LOGHOST:$lpath {{DIR}}/bundle.log"; fi
     LOGFETCH="${LOGFETCH//'{{DIR}}'/$ROOT/$NAME}"
-    SUITE="${TOKEN% EXIT=0}"   # the G3 lint compares the token prefix with the suite CMD; in log mode the CMD is the log's own trailer, which the prompt checks (CMDCHECK)
-    [ "$SUITE" = "$TOKEN" ] || CMDCHECK=" The CMD line must contain \`$SUITE\` (check it with \`grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log | grep -cF -- '$SUITE'\`, 1 or more)."
+    # A649: suite.txt = the log's exact `WM-VERIFY CMD=` trailer (rb-merge.sh admits only the log whose CMD equals it; a token-prefix suite gave exit 6 suite-mismatch)
+    local logcmd SUITE_PFX
+    if [ -n "${AIDE_VERIFIER_LOGCMD_CMD:-}" ]; then logcmd="$(timeout "$CMD_TIMEOUT_S" $AIDE_VERIFIER_LOGCMD_CMD "$LOGHOST" "$lpath" 2>/dev/null | head -n1)"   # tests: prints the CMD trailer line of <host> <path>
+    elif [ "$LOGHOST" = local ]; then logcmd="$(grep -m1 '^WM-VERIFY CMD=' "$lpath" 2>/dev/null)"
+    else logcmd="$(timeout "$CMD_TIMEOUT_S" ssh -o BatchMode=yes -o ConnectTimeout=8 "$LOGHOST" "grep -m1 '^WM-VERIFY CMD=' $lpath" 2>/dev/null | head -n1)"; fi
+    [[ "$logcmd" == "WM-VERIFY CMD="?* ]] || die 2 "lint: cannot read a 'WM-VERIFY CMD=' trailer from --log $LOG (missing log, unreachable host, or no CMD trailer)"
+    SUITE="${logcmd#WM-VERIFY CMD=}"
+    SUITE_PFX="${TOKEN% EXIT=0}"
+    if [ "$SUITE_PFX" != "$TOKEN" ] && [[ "$SUITE" != *"$SUITE_PFX"* ]]; then
+      die 2 "lint: the log's CMD '$SUITE' does not contain the token prefix '$SUITE_PFX' (--token '$TOKEN'): wrong log or wrong token"
+    fi
+    [ "$SUITE_PFX" = "$TOKEN" ] || CMDCHECK=" The CMD line must contain \`$SUITE_PFX\` (check it with \`grep '^WM-VERIFY CMD=' {{DIR}}/bundle.log | grep -cF -- '$SUITE_PFX'\`, 1 or more)."
     LOGNOTE="; log-only (suite ran on $LOGHOST under wm-verify-run)"
     STEP4_TXT="$(step4_log)"
   else
