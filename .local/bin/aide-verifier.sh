@@ -38,7 +38,7 @@
 #         units (their current RSS is already out of MemAvailable, their remaining ramp is not); `carbon-room.sh <need> --json` must exit 0: else exit 3 without --queue, else wait.
 #         MemoryMax=2G per unit stays the kill ceiling, not the price. Then systemd-run (lock fd closed for the unit).
 #       5 LOAD     load1 (first field of /proc/loadavg; AIDE_VERIFIER_LOADAVG_FILE overrides, tests) + 2 x active (aide|rb|r7)-verifier-* units (own excluded) must be
-#         < AIDE_VERIFIER_MAX_LOAD (default 2 x nproc, caps C182, A650; minimum 1; an integer >= 1 else exit 9): exit 13 without --queue, else wait up to AIDE_VERIFIER_LOAD_WAIT_S
+#         < AIDE_VERIFIER_MAX_LOAD (default 2 x nproc, caps C186, A650; minimum 1; an integer >= 1 else exit 9): exit 13 without --queue, else wait up to AIDE_VERIFIER_LOAD_WAIT_S
 #         (default = QUEUE_MAX_S) then exit 6. Evaluated under the same lock as the launch. A loaded host makes pytest skip its load-guarded tests (SYNTHORG_LOAD_GUARD=1), see finish.
 #         cmd_launch also exports PYTEST_ADDOPTS=<caller's> -rs from the unit's launch.sh so every skip is itemized as a `SKIPPED [n] file:line: reason` line.
 #       --queue waits (poll AIDE_VERIFIER_POLL_S=10, up to AIDE_VERIFIER_QUEUE_MAX_S=3600, then exit 6) with the lock RELEASED. Any other gate in front of a verifier launch
