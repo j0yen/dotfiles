@@ -2,6 +2,9 @@
 # Test: aide-launch.sh flips projects[$HOME].hasTrustDialogAccepted to true, keeps other keys, then execs the claude bin.
 set -u
 d=$(mktemp -d); cj="$d/claude.json"
+# own HOME fixture: aide-launch.sh sources the fleet token conf under $HOME/.config/environment.d, absent on RB / a fresh HOME
+export HOME="$d/home"; mkdir -p "$HOME/.config/environment.d"
+printf 'CLAUDE_CODE_OAUTH_TOKEN=fixture-not-a-token\n' > "$HOME/.config/environment.d/90-claude-oauth.conf"
 printf '{"projects":{"%s":{"hasTrustDialogAccepted":false,"keep":1},"/other":{"x":2}},"top":3}\n' "$HOME" > "$cj"
 printf '#!/bin/sh\necho STUB-RAN "$@"\n' > "$d/stub"; chmod +x "$d/stub"
 out=$(AIDE_CLAUDE_JSON="$cj" AIDE_CLAUDE_BIN="$d/stub" "${AIDE_LAUNCH:-$(dirname "$0")/../.local/bin/aide-launch.sh}" --model x 2>&1)
