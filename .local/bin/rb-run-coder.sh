@@ -87,9 +87,44 @@ if act_out=$(timeout 20 systemctl --user list-units 'rb-launch-*' --state=active
   n_active=$(printf '%s\n' "$act_out" | awk -v self="rb-launch-$n.service" '$1 ~ /^rb-launch-.*\.service$/ && $1 != self' | grep -c .); act_txt=$n_active
 else n_active=0; act_txt='?'; fi
 need_mb=$(( peak_mb * (1 + n_active) ))
-room_out=$(CARBON_ROOM_CALLER="rb-run-coder:$n" "$room_bin" "$need_mb" 2>&1); rc_r=$?
+# Non-carbon host (RedBaron): carbon-room.sh would print `room n/a: not carbon`, so force its measure with CARBON_ROOM_HOST and a reserve of
+# mem_headroom_gb (config.toml [cargo_jobs], default 4; env RB_ROOM_HEADROOM_MB), then check MemGate's own Σ: budget (mem_budget_gb, default 26;
+# env RB_ROOM_BUDGET_MB; config path env RB_ROOM_CONFIG) minus the class caps of the live `wm-build builder cargo-jobs list` slots (env RB_ROOM_MEMGATE_SUM_MB) must cover need.
+# Class = run-name prefix (land|inner|gate|hand); anything else takes the largest cap. Sigma unreadable = refuse (memgate NO).
+room_host=${RB_ROOM_HOSTNAME:-$(hostname 2>/dev/null)}; mg_txt=''; mg_no=''; room_env=()
+if [ "$room_host" != carbon ]; then
+  mg_cfg=${RB_ROOM_CONFIG:-$HOME/.config/wm-build/config.toml}
+  mg_cfgout=$(python3 -I -c 'import sys,tomllib
+try: c=tomllib.load(open(sys.argv[1],"rb")).get("cargo_jobs",{})
+except Exception: c={}
+print(int(float(c.get("mem_budget_gb",26))*1024),int(float(c.get("mem_headroom_gb",4))*1024))' "$mg_cfg" 2>/dev/null) || mg_cfgout=''
+  read -r mg_budget mg_head <<< "${mg_cfgout:-26624 4096}"
+  mg_budget=${RB_ROOM_BUDGET_MB:-$mg_budget}; mg_head=${RB_ROOM_HEADROOM_MB:-$mg_head}
+  room_env=(CARBON_ROOM_HOST="$room_host" CARBON_ROOM_RESERVE_MB="$mg_head")
+  if [ -n "${RB_ROOM_MEMGATE_SUM_MB:-}" ]; then mg_sum=$RB_ROOM_MEMGATE_SUM_MB
+  else
+    mg_sum=$(cd ~ && timeout 30 "${RB_ROOM_WMB_BIN:-$HOME/.cargo/bin/wm-build}" builder cargo-jobs list 2>/dev/null | python3 -I -c 'import sys,tomllib,re
+try: caps=tomllib.load(open(sys.argv[1],"rb")).get("cargo_jobs",{}).get("mem_caps_gb",{})
+except Exception: caps={}
+caps={k:float(v) for k,v in caps.items() if not isinstance(v,dict)}
+big=max(caps.values(),default=12.5); rows=sys.stdin.read().splitlines()
+if not rows or rows[0].split("\t")[:5]!=["id","run","producer","pid","alive"]: sys.exit(1)
+t=0.0
+for r in rows[1:]:
+    f=r.split("\t")
+    if len(f)<7: sys.exit(1)
+    if f[4]!="yes": continue
+    m=re.match(r"(land|inner|gate|hand)(?:[-.]|$)",f[1]); t+=caps.get(m.group(1),big) if m else big
+print(int(t*1024))' "$mg_cfg" 2>/dev/null) || mg_sum=''
+  fi
+  if [[ $mg_sum =~ ^[0-9]+$ ]]; then mg_free=$(( mg_budget - mg_sum )); mg_txt="memgate free_mb=$mg_free sum_mb=$mg_sum budget_mb=$mg_budget"
+    [ "$mg_free" -lt "$need_mb" ] && mg_no="memgate NO: free_mb=$mg_free < need_mb=$need_mb"
+  else mg_no="memgate NO: sigma unreadable"; mg_txt="memgate sigma=unreadable"; fi
+fi
+room_out=$(env "${room_env[@]}" CARBON_ROOM_CALLER="rb-run-coder:$n" "$room_bin" "$need_mb" 2>&1); rc_r=$?
 room_l1=$(printf '%s\n' "$room_out" | head -n 1)
-room_tail="need_mb=$need_mb peak_mb=$peak_mb peak_src=$peak_src active=$act_txt"
+room_tail="need_mb=$need_mb peak_mb=$peak_mb peak_src=$peak_src active=$act_txt${mg_txt:+ $mg_txt}"
+if [ "$rc_r" = 0 ] && [[ $room_l1 =~ ^room\ (ok|n/a): ]] && [ -n "$mg_no" ]; then rc_r=3; room_l1=$mg_no; fi
 if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
   echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
 fi

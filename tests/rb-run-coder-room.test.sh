@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# rb-run-coder-room.test.sh - rcr: the ROOM gate (exit 78) in rb-run-coder.sh, cases a-j.
+# rb-run-coder-room.test.sh - rcr: the ROOM gate (exit 78) in rb-run-coder.sh, cases a-k plus RedBaron cases l-p.
 # Every case runs under a fresh HOME=$(mktemp -d) with stub claude/seat-event/journalctl/systemctl and fake room binaries; the real claude,
 # carbon-room.sh, user journal and fleet-dash state are never touched (CARBON_ROOM_STATE/LEDGER point into the case HOME).
 set -u
+unset CARBON_ROOM_HOST CARBON_ROOM_RESERVE_MB CARBON_ROOM_HOSTNAME   # an ambient CARBON_ROOM_HOST would hide the host guard the RedBaron cases exercise
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 runc=${RB_RUN_CODER_UNDER_TEST:-$here/../.local/bin/rb-run-coder.sh}   # the mutation proofs point this at a throwaway copy
 fail=0; npass=0
@@ -26,14 +27,18 @@ case_() {
   H=$R/$name; D=$H/.cache/rb-seat/coders
   mkdir -p "$H/.config/environment.d" "$H/.local/bin" "$D"
   : > "$H/.config/environment.d/90-claude-oauth.conf"
-  head -c 400 /dev/zero | tr '\0' 'x' > "$H/prompt.md"
+  { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; } > "$H/prompt.md"
+  # fvg: the fable-verdict gate (80) refuses a spec-less prompt, so the prompt carries a Hatch row that exists in a fixture DB
+  hid=d-20261102-000000-rb-0001; printf '\nHatch: %s\n' "$hid" >> "$H/prompt.md"
+  psha=$(grep -v '^Hatch: ' "$H/prompt.md" | sha256sum | cut -d' ' -f1)
+  rm -f "$H/decisions.fixture.sqlite"; python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN room test", "sha256:" + sys.argv[3], None)); d.commit()' "$H/decisions.fixture.sqlite" "$hid" "$psha"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/events"\n' "$H" > "$H/.local/bin/seat-event.sh"
   printf '#!/usr/bin/env bash\ntouch "%s/claude.ran"\nexit 0\n' "$H" > "$H/.local/bin/claude"
   printf '#!/usr/bin/env bash\ncat "%s/journal.txt"\nexit 0\n' "$H" > "$H/.local/bin/journalctl"
   printf '#!/usr/bin/env bash\ncat "%s/systemctl.txt"\nexit 0\n' "$H" > "$H/.local/bin/systemctl"
   chmod +x "$H/.local/bin/"*
   printf '%s' "$jtxt" > "$H/journal.txt"; printf '%s' "$stxt" > "$H/systemctl.txt"
-  env HOME="$H" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
+  env HOME="$H" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_ROOM_BIN="$room" CARBON_ROOM_STATE="$H/room-state.json" CARBON_ROOM_LEDGER="$H/room-ledger.jsonl" "$@" \
     bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 }
 jline() { printf 'rb-launch-x%s.service: Consumed 3min 38.580s CPU time over 12min 26.464s wall clock time, %s memory peak, 3.1M memory swap peak.\n' "$1" "$2"; }
@@ -85,9 +90,41 @@ if [ $rc = 0 ] && [ "$argv" = 1500 ] && [[ $room == *'peak_src=journal(n=2)+floo
 # (k) systemctl failure -> active=? and n_active=0
 case_ k "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900
 printf '#!/usr/bin/env bash\nexit 1\n' > "$H/.local/bin/systemctl"
-HOME=$H RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
+HOME=$H RB_DECISIONS_DB="$H/decisions.fixture.sqlite" RB_ROOM_HOSTNAME=carbon RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 room=$(cat "$D/t.room" 2>/dev/null)
 [ $rc = 0 ] && [[ $room == *active=\?* ]] && pass "(k) systemctl failure -> '$room'" || bad "(k) rc=$rc room='$room'"
+
+# --- RedBaron cases (l-p): host != carbon -> the real carbon-room.sh is forced (CARBON_ROOM_HOST) against a fake meminfo, plus the MemGate sigma.
+realroom="$here/../.local/bin/carbon-room.sh"
+printf '#!/usr/bin/env bash\nprintf "id\\trun\\tproducer\\tpid\\talive\\ttaken\\tage\\n"\nprintf "1\\thand-11\\tcargo-slot\\t11\\tyes\\tt\\t5s\\n2\\tinner-12\\tcargo-slot\\t12\\tyes\\tt\\t5s\\n3\\thand-13\\tcargo-slot\\t13\\tno\\tt\\t5s\\n"\n' > "$R/wmb-two"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$R/wmb-fail"
+printf '#!/usr/bin/env bash\necho garbage\n' > "$R/wmb-junk"
+chmod +x "$R"/wmb-*
+printf '[cargo_jobs]\nmem_budget_gb = 26\nmem_headroom_gb = 4\n[cargo_jobs.mem_caps_gb]\nland = 12.5\ninner = 12.0\ngate = 13\nhand = 9\n[cargo_jobs.mem_caps_gb.wm-build]\nhand = 5\n' > "$R/wmb.toml"
+meminfo() { printf 'MemTotal: 31000000 kB\nMemAvailable: %d kB\n' $(( $1 * 1024 )) > "$R/mi-$1"; echo "$R/mi-$1"; }
+rbcase() { local name=$1; shift; case_ "$name" "$realroom" "" "" RB_ROOM_HOSTNAME=redbaron RB_ROOM_CONFIG="$R/wmb.toml" RB_ROOM_PEAK_MB=900 "$@"; }
+# (l) RB, MemAvailable 20000 ok, sigma = hand 9 + inner 12 (dead hand skipped) = 21 G -> free 5.5 G >= 900
+rbcase l CARBON_ROOM_MEMINFO="$(meminfo 20000)" RB_ROOM_WMB_BIN="$R/wmb-two"
+room=$(cat "$D/t.room" 2>/dev/null)
+if [ $rc = 0 ] && [ -e "$H/claude.ran" ] && [[ $room == "room ok: avail=20000 need=900 reserve=4096 "* && $room == *"memgate free_mb=5120 sum_mb=21504 budget_mb=26624"* ]]; then pass "(l) RB room+memgate ok -> .room='$room'"; else bad "(l) rc=$rc room='$room'"; fi
+# (m) RB, MemAvailable 3000 < 900 + 4096 reserve -> 78 room NO
+rbcase m CARBON_ROOM_MEMINFO="$(meminfo 3000)" RB_ROOM_WMB_BIN="$R/wmb-two"
+rep=$(cat "$D/t.report.md" 2>/dev/null)
+[ $rc = 78 ] && [[ $rep == "REFUSED room rc=3: room NO:"* ]] && [ ! -e "$H/claude.ran" ] && pass "(m) RB MemAvailable short -> 78, '$rep'" || bad "(m) rc=$rc rep='$rep'"
+# (n) RB, sigma 18432 of 26624, need 9000 -> 78 memgate NO
+rbcase n CARBON_ROOM_MEMINFO="$(meminfo 20000)" RB_ROOM_PEAK_MB=9000 RB_ROOM_MEMGATE_SUM_MB=18432 RB_ROOM_BUDGET_MB=26624 RB_ROOM_HEADROOM_MB=1024
+rep=$(cat "$D/t.report.md" 2>/dev/null)
+[ $rc = 78 ] && [[ $rep == "REFUSED room rc=3: memgate NO:"* ]] && [ ! -e "$H/claude.ran" ] && pass "(n) RB sigma full -> 78, '$rep'" || bad "(n) rc=$rc rep='$rep'"
+# (o) RB, sigma unreadable (command fails / garbage output) -> 78 memgate NO
+for w in wmb-fail wmb-junk; do
+  rbcase o CARBON_ROOM_MEMINFO="$(meminfo 20000)" RB_ROOM_WMB_BIN="$R/$w"
+  rep=$(cat "$D/t.report.md" 2>/dev/null)
+  [ $rc = 78 ] && [[ $rep == "REFUSED room rc=3: memgate NO: sigma unreadable"* ]] && [ ! -e "$H/claude.ran" ] && pass "(o) RB $w -> 78, '$rep'" || bad "(o) $w rc=$rc rep='$rep'"
+done
+# (p) carbon host unchanged: no memgate text, room bin gets no forced reserve, even with an unreadable sigma
+case_ p "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_ROOM_WMB_BIN="$R/wmb-fail"
+room=$(cat "$D/t.room" 2>/dev/null)
+[ $rc = 0 ] && [[ $room != *memgate* && $room == "room ok: "* ]] && pass "(p) carbon unchanged -> .room='$room'" || bad "(p) rc=$rc room='$room'"
 
 echo "pass=$npass fail=$fail"
 [ $fail = 0 ] && echo "ALL PASS ($npass checks)"
