@@ -42,7 +42,8 @@ case " $* " in
 esac
 STUB
   chmod +x "$T/bin/curl"; printf 'PERMANENT HETZNER BOXES ONLY\n' > "$T/claude.md"
-  STUB_DIR=$T PATH="$T/bin:$PATH" HZG_STATE=$T/s HZG_TOKEN=$T/tok HZG_PREMISE_FILE=$T/claude.md WP_STATE=$T/wp WP_DECIDE_BIN=none-here bash "$0" >/dev/null 2>&1
+  [ -r "$WP_LIB" ] || WP_LIB="$(dirname "$(readlink -f "$0")")/../lib/watcher-premise.sh"   # no installed copy (fresh HOME / RB): use the repo lib
+  STUB_DIR=$T PATH="$T/bin:$PATH" WP_LIB=$WP_LIB HZG_STATE=$T/s HZG_TOKEN=$T/tok HZG_PREMISE_FILE=$T/claude.md WP_STATE=$T/wp WP_DECIDE_BIN=none-here bash "$0" >/dev/null 2>&1
   [ "$(wc -l < "$T/deletes")" -eq 1 ] && grep -q '/v1/servers/9$' "$T/deletes" || { echo "SELFTEST FAIL: delete set"; exit 1; }
   echo "SELFTEST ok"; exit 0 ;;
 "") ;;
