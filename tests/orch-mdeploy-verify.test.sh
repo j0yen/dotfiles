@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/orch-mdeploy-verify.test.sh: orch-mdeploy-verify.sh refuses bad sha / non-orch host, writes WM-VERIFY trailers with pytest's rc, keeps TMPDIR in the sha dir, never writes the live checkout.
+# tests/orch-mdeploy-verify.test.sh: orch-mdeploy-verify.sh refuses bad sha / non-orch host, writes WM-VERIFY trailers with pytest's rc, keeps TMPDIR short (/tmp/mdv-<sha12>, 24f76b1), never writes the live checkout.
 # Stubs uv, git, hostname in a throwaway HOME. Run: bash tests/orch-mdeploy-verify.test.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd); script="$here/../.local/bin/orch-mdeploy-verify.sh"
@@ -47,7 +47,7 @@ for rc in 0 1; do
   for t in HOST= HEAD="$sha" DIRTY=0; do grep -q "^WM-VERIFY $t" "$log" && pass "trailer $t" || bad "trailer $t missing"; done
   printf '%s\n' "$out" | grep -q '^sha256: ' && pass "sha256 printed" || bad "sha256 not printed"
 done
-grep -q "^TMPDIR=$th/.cache/mdeploy-verify/$sha/tmp " "$log" && pass "TMPDIR inside the sha dir" || bad "TMPDIR outside the sha dir"
+grep -q "^TMPDIR=/tmp/mdv-${sha:0:12} " "$log" && pass "TMPDIR is the short /tmp/mdv-<sha12> dir (ssh control paths stay under 100 chars; 24f76b1)" || bad "TMPDIR is not the short /tmp/mdv-<sha12> dir"
 grep -q 'HERMETIC=1' "$log" && pass "gate hermetic flag set" || bad "hermetic flag missing"
 cmdline=$(grep '^WM-VERIFY CMD=' "$log")
 [ "$(printf '%s' "$cmdline" | grep -o 'not live and not slow and not www_pin' | wc -l)" = 1 ] && pass "CMD has the marker expression once" || bad "marker expression count wrong"

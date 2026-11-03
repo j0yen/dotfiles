@@ -12,12 +12,16 @@ ok()  { n=$((n+1)); echo "ok - rb-merge chain guard: $1"; }
 bad() { n=$((n+1)); echo "NOT OK - rb-merge chain guard: $1"; fail=1; }
 check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3: got '$1', want '$2'"; fi; }
 
-OID=a1b2c3d4e5f60123456789abcdef0123456789ab
+RBF_ROOT="$tmp"; . "$here/tests/rb_merge_fixture.sh"
+export AIDE_VERIFIER_GATE_ROOT; AIDE_VERIFIER_GATE_ROOT="$(rbf_gate_root)"   # pre-gate A imports the live gate tree's parse_attachments (read-only)
+export WM_DECIDE_STATE="$tmp/state" RB_MERGE_LOG_DIR="$tmp/logs"
+rbf_init
+OID="$RBF_HEAD"   # the stub gate's oid = the fixture repo HEAD that pre-gate A's suite log and the ADV-PASS row vouch for
 cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
 printf 'wmd %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1" in
-  list) STUB_ROWS="${STUB_ROWS:-[]}" python3 -I -c 'import json,os; r=json.loads(os.environ["STUB_ROWS"]); r.append({"id":"d-20261027-210000-r7-abcd","agent":"r7","via":"verifier"}); print(json.dumps(r))'; exit 0 ;;
+  list) STUB_ROWS="${STUB_ROWS:-[]}" python3 -I -c 'import json,os; r=json.loads(os.environ["STUB_ROWS"]); r += [{"id":i,"agent":"r7","via":"verifier"} for i in ("d-20261027-210000-r7-abcd","d-20261027-210000-r7-abce")]; print(json.dumps(r))'; exit 0 ;;
   merge-gate) echo "PASS verdict=$2 pr=$5#$4 oid=$STUB_OID"; exit 0 ;;
   merge-done) exit 0 ;;
 esac
@@ -26,7 +30,7 @@ cat > "$tmp/gh" <<'S'
 #!/usr/bin/env bash
 printf 'gh %s\n' "$*" >> "$STUB_LOG/calls"
 case "$1 $2" in
-  "pr view") case "$*" in *mergeCommit*) echo b1b2c3d4e5f60123456789abcdef0123456789ab ;; *) echo '{"title":"T","body":"b"}' ;; esac ;;
+  "pr view") case "$*" in *mergeCommit*) echo b1b2c3d4e5f60123456789abcdef0123456789ab ;; *headRefOid*) echo "$STUB_OID" ;; *) echo '{"title":"T","body":"b"}' ;; esac ;;
   "api repos/"*"/pulls/"*"/commits") echo "aaaaaaaaaaaa false" ;;
   "api repos/"*) echo "T" ;;
 esac
@@ -34,7 +38,10 @@ exit 0
 S
 chmod +x "$tmp/wm-decide" "$tmp/gh"
 export STUB_LOG="$tmp" STUB_OID="$OID" WM_DECIDE_BIN="$tmp/wm-decide" RB_MERGE_GH="$tmp/gh"
-V=d-20261027-210000-r7-abcd; H=d-20261027-212000-aide-1234
+V=d-20261027-210000-r7-abcd; V2=d-20261027-210000-r7-abce; H=d-20261027-212000-aide-1234
+# pre-gate A (vtg1) and the ADV pre-check run for every merge that gets past the chain guard: a verdict row + suite log + ADV-PASS per (repo, PR)
+rbf_pg $V j0yen/synthorg 449 "$OID"; rbf_ledger $V j0yen/synthorg 449 "$OID" adv
+rbf_pg $V2 j0yen/dotfiles 7 "$OID"; rbf_ledger $V2 j0yen/dotfiles 7 "$OID"
 REFUSED='rb-merge: REFUSED discovery chain PR j0yen/synthorg#449 needs WM_SEAT=aide or --handoff <aide d-id> (approval 51)'
 row() { printf '[{"id":"%s","agent":"%s","what":"%s"}]' "$H" "$1" "$2"; }
 run() { : > "$tmp/calls"; "$@" >/dev/null 2>"$tmp/err"; rc=$?; }
@@ -59,7 +66,7 @@ check "$rc:$(merges)" "3:0" "f2: --handoff row naming a different PR -> refused"
 run env WM_SEAT=r7 STUB_ROWS="[]" bash "$wrap" $V 449 j0yen/synthorg --handoff $H
 check "$rc:$(merges)" "3:0" "h: --handoff id with no such row -> refused"
 check "$(grep -c '^wmd \(record\|merge-done\)' "$tmp/calls")" "0" "the guard only reads (no record / write call)"
-run env -u WM_SEAT bash "$wrap" $V 7 j0yen/dotfiles
+run env -u WM_SEAT bash "$wrap" $V2 7 j0yen/dotfiles
 check "$rc:$(grep -c '^wmd merge-gate' "$tmp/calls"):$(merges):$(wc -c <"$tmp/err")" "0:1:1:0" "g: non-chain repo, WM_SEAT unset -> today's path, unchanged"
 
 for sp in J0yen/Synthorg https://github.com/j0yen/synthorg j0yen/synthorg.git; do
