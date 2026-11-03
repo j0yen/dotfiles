@@ -49,6 +49,7 @@ C036	aide-verifier CMD_TIMEOUT_S	120 s	carbon,ryzen7,orch	~/.local/bin/aide-veri
 C037	aide-verifier VTIMEOUT	2400 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:341	hang-guard	none found	KEEP	aide	-			
 C038	aide-verifier QUEUE_MAX_S	3600 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:38,388	hang-guard	none found	KEEP	aide	-			
 C039	aide-verifier WATCH_MAX_S	3000 s	carbon	~/.local/bin/aide-verifier.sh:539	hang-guard	none found	KEEP	aide	-			
+C186	aide-verifier MAX_LOAD	2 × nproc (16 on carbon)	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:546	safety	A650 rb 11-02 (was nproc - 3 = 5 on carbon, which never admitted at carbon load 7.5-12; dot266-v3/dot267-v3 waited 10 min)	KEEP	rb	load1 + 2 x running verifier units must stay under MAX_LOAD; overload guard for load-guarded pytest skips	carbon normal 1-min load 6-12 from seat hooks		
 C040	verifier-cap-watch CAP / PEAK_MB	4 / 1024	carbon,ryzen7,orch	~/.local/bin/verifier-cap-watch.sh:23-24	memory	none found	KEEP	r7	-			
 C041	verifier-cap-watch EXPIRES	2026-11-06T00:00-07:00	carbon,ryzen7,orch	~/.config/systemd/user/verifier-cap-watch.service:11	expiry	watcher premise+expiry rule	KEEP	r7	-		2026-11-06	
 C042	grand-loop MAX_TICKS_PER_DAY	4	carbon,ryzen7,orch	~/.local/bin/grand-loop-tick.sh:59 ; grand-loop-status:39	rationing	none found; Joe 09-12 "remove daily cap"	DROP	aide A298	daily count cap with no memory or safety reason (#195)			
