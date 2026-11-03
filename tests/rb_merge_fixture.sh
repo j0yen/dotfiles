@@ -41,8 +41,18 @@ rbf_log_at() {   # rbf_log_at <head> <cmd> -> path of a log in wm-verify-run's f
   printf '%s' "$p"
 }
 rbf_pg() {   # rbf_pg <verdict id> <owner/name> <pr> <commit>: what pre-gate A needs for a stubbed merge -- a launcher record, a clean suite log at <commit>, a MERGE-OK row in RB_DECISIONS_DB
-  rbf_launch fxs 'echo fixture-suite'
-  RBF_REPO="$2" RBF_PR="$3" rbf_row "$1" "$4" fxs "$(rbf_log_at "$4" 'echo fixture-suite')"
+  # the attach block is built ONCE per commit by rbf_row (it imports the live gate tree, 0.5 s); later calls copy that evidence into a row for the new id/repo/pr
+  [ -d "$AIDE_VERIFIER_DIR/fxs" ] || rbf_launch fxs 'echo fixture-suite'
+  [ -f "$RBF_ROOT/pg-seed-$4" ] || { RBF_REPO=j0yen/seed RBF_PR=1 rbf_row "pg-seed-$4" "$4" fxs "$(rbf_log_at "$4" 'echo fixture-suite')"; : > "$RBF_ROOT/pg-seed-$4"; }
+  python3 -I -B - "$RB_DECISIONS_DB" "$@" <<'PY'
+import sqlite3, sys
+db, vid, repo, prn, commit = sys.argv[1:]
+d = sqlite3.connect(db)
+ev = d.execute("SELECT evidence FROM decisions WHERE id = ?", ("pg-seed-" + commit,)).fetchone()[0]
+what = "MERGE-OK %s#%s COMMIT=%s agent=verifier:rb-verifier-fxs recorded_by=unit:rb-verifier-fxs" % (repo, prn, commit)
+d.execute("INSERT OR REPLACE INTO decisions (id, what, evidence) VALUES (?,?,?)", (vid, what, ev))
+d.commit()
+PY
 }
 rbf_ledger() {   # rbf_ledger <verdict id> <owner/name> <pr> <commit> [adv]: what the ADV pre-check reads from $WM_DECIDE_STATE/decisions.sqlite -- gated row G + verdict V (+ an ADV-PASS row when "adv")
   mkdir -p "$WM_DECIDE_STATE"; : > "$RBF_ROOT/adv-pass.log"; echo "adversarial verifier output" > "$RBF_ROOT/adv-pass.log"
