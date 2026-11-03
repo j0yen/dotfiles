@@ -35,6 +35,10 @@ PY
 printf '#!/usr/bin/env bash\necho "memcap ok: unit=rb-coder-t.service high=12884901888 max=15032385536"\n' > "$R/ok-memcap"
 printf '#!/usr/bin/env bash\necho "memcap NO: not in a .service unit (cgroup=/user.slice/tmux.scope)"\nexit 3\n' > "$R/no-memcap"
 chmod +x "$R"/*-fake "$R/ok-hold" "$R"/*-memcap
+# fable-verdict gate (80) is not under test here: every case prompt carries a valid Hatch row in a fixture DB (sha = prompt minus the Hatch line)
+export RB_DECISIONS_DB=$R/decisions.fixture.sqlite
+HID=d-$(date +%Y%m%d-%H%M%S)-rb-0001; PSHA=$({ { head -c 400 /dev/zero | tr '\0' 'x'; printf '\nkill only pids you started, by pid\nLIVE CLONES (never commit, checkout, reset or edit in place; clone them into a mktemp -d instead):\n'; }; printf '\n'; } | sha256sum | cut -d' ' -f1)
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table decisions (id text, ts text, kind text, model text, what text, evidence text, regrade text)"); d.execute("insert into decisions values (?,?,?,?,?,?,?)", (sys.argv[2], "t", "decision", None, "NO-SPEC-SPAWN room test", "sha256:" + sys.argv[3], None)); d.commit()' "$RB_DECISIONS_DB" "$HID" "$PSHA"
 
 # case <name> <room-bin> <journal-text> <systemctl-text> [env assignments...]; sets H (home), D, rc
 case_() {
