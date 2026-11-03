@@ -4,6 +4,8 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../.local/bin/aide-verifier.sh"
+# host load is not under test: the launch load gate (MAX_LOAD) refused with rc=13 on ryzen7 at load 17-20 (lanes dot264b/dot270b 11-03)
+export AIDE_VERIFIER_MAX_LOAD="${AIDE_VERIFIER_MAX_LOAD:-999}"
 fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
