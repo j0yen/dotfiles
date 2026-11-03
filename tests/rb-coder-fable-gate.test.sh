@@ -58,7 +58,7 @@ case_() {
   local label=$1 erc=$2 ereason=$3 db=$4 pf=$5; shift 5; n=$((n+1))
   rm -f "$R/claude.ran" "$CD/c$n.report.md"; : > "$R/events.log"
   local before=""; [ ! -f "$db" ] || before=$(sha256sum "$db" | cut -d' ' -f1)
-  HOME=$H RB_DECISIONS_DB=$db RB_SPAWN_HOLD_BIN=$R/hold.stub RB_ROOM_BIN=$R/room.stub RB_ROOM_PEAK_MB=1 RB_MEMCAP_BIN=$R/memcap-ok.stub RB_FABLE_GATE_TIMEOUT=${GATE_TO:-0.3} bash "$runc" "c$n" "$pf" "$@" >/dev/null 2>&1; local rc=$?
+  HOME=$H RB_ROOM_HOSTNAME=carbon RB_DECISIONS_DB=$db RB_SPAWN_HOLD_BIN=$R/hold.stub RB_ROOM_BIN=$R/room.stub RB_ROOM_PEAK_MB=1 RB_MEMCAP_BIN=$R/memcap-ok.stub RB_FABLE_GATE_TIMEOUT=${GATE_TO:-0.3} bash "$runc" "c$n" "$pf" "$@" >/dev/null 2>&1; local rc=$?
   local rep; rep=$(cat "$CD/c$n.report.md" 2>/dev/null)
   local after=""; [ ! -f "$db" ] || after=$(sha256sum "$db" | cut -d' ' -f1)
   local ok=1 why=""
