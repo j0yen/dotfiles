@@ -124,6 +124,8 @@ wp_emit_write() { # KIND TARGET WHAT EVIDENCE REVERSE
   [ -n "${WP_NAME:-}" ] || return 1
   local kind=$1 target=$2 what=$3 evid=$4 rev=$5 decide=none line ob ts id out rc
   command -v "${WP_DECIDE_BIN:-wm-decide}" >/dev/null 2>&1 && decide=attempt
+  # ctl 7e07: a missing wm-decide binary used to drop the decision row silently (3 guard writes 10-30); the write still proceeds, loudly
+  [ "$decide" = attempt ] || { wp_log "DECIDE BIN MISSING ${WP_DECIDE_BIN:-wm-decide} -- guard write goes to the outbox only, no wm-decide row"; echo "watcher-premise: DECIDE BIN MISSING ${WP_DECIDE_BIN:-wm-decide} (${WP_NAME:-?}): guard write unrecorded in wm-decide" >&2; }
   line=$(python3 -I -c '
 import json,sys,hashlib,time,datetime
 kind,target,what,evid,rev,watcher,host,pid,unit,by,premise,verdict,expires,decide,owner=sys.argv[1:16]
@@ -234,8 +236,8 @@ r=json.loads(open(sys.argv[1]).readline()); print(sorted(r)==sorted([\"ev\",\"id
   _st_ok owner-aide "rc=0 agent=1 r7=0 owner=1"
   ENVV="WP_STUB_RC=2" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r"; echo "rc=$? lines=$(wc -l < $WP_STATE/outbox-*.jsonl) rec=$(grep -c "\"ev\":\"recorded\"" $WP_STATE/outbox-*.jsonl) dec=$(grep -c "\"decide\":\"attempt\"" $WP_STATE/outbox-*.jsonl)"'
   _st_ok decide-fails-write-proceeds "rc=0 lines=1 rec=0 dec=1"
-  ENVV="WP_DECIDE_BIN=nonexistent-wm-decide" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r"; echo "rc=$? dec=$(grep -c "\"decide\":\"none\"" $WP_STATE/outbox-*.jsonl)"'
-  _st_ok no-decide-binary "rc=0 dec=1"
+  ENVV="WP_DECIDE_BIN=nonexistent-wm-decide" BODY="$pre"'wp_arm t1 "exit 0" "'"$FUT"'"; wp_gate; wp_emit_write limit "host=h" "w" "e" "r" 2>$HOME/err; echo "rc=$? dec=$(grep -c "\"decide\":\"none\"" $WP_STATE/outbox-*.jsonl) log=$(grep -c "DECIDE BIN MISSING nonexistent-wm-decide" $WP_STATE/t1.log) err=$(grep -c "DECIDE BIN MISSING" $HOME/err)"'
+  _st_ok no-decide-binary "rc=0 dec=1 log=1 err=1"
   BODY="$pre"'wp_arm my-guard "exit 0" "'"$FUT"'"; echo "$(wp_by)"; WP_GUARD_NAME=other; echo "$(wp_by)"'; got=$(_st_run ${ENVV:-WP_X=1}); ENVV=
   if [ "$(printf '%s\n' "$got" | sed -n 1p | grep -cE '^joe-[0-9]{8}\+my-guard$')$(printf '%s\n' "$got" | sed -n 2p | grep -cE '^joe-[0-9]{8}\+other$')" = 11 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL by-tag: $got"; fi
   rm -rf "$T"
