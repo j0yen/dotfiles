@@ -14,15 +14,16 @@ check() { if [ -e "$tmp/tripwire" ]; then bad "$3: a real gh/wm-decide on PATH w
 # tripwire: PATH shims for the REAL gh / wm-decide; the stubs under test are reached only through WM_DECIDE_BIN / RB_MERGE_GH
 mkdir -p "$tmp/trip"
 for b in gh wm-decide; do printf '#!/bin/sh\ntouch "%s/tripwire"\nexit 99\n' "$tmp" > "$tmp/trip/$b"; chmod +x "$tmp/trip/$b"; done
+RBF_ROOT="$tmp"; RBF_REPO=j0yen/swarm-decide
+. "$here/tests/rb_merge_fixture.sh"
+export AIDE_VERIFIER_GATE_ROOT; AIDE_VERIFIER_GATE_ROOT="$(rbf_gate_root)"   # resolved BEFORE HOME moves; the live tree is only imported
 export PATH="$tmp/trip:$PATH" HOME="$tmp/home"; mkdir -p "$HOME"
 
 # pre-gate A (vtg1) needs a launcher record + a clean suite log in a fixture DB; the gate stub's oid is the fixture repo's real HEAD
-RBF_ROOT="$tmp"; RBF_REPO=j0yen/swarm-decide
-. "$here/tests/rb_merge_fixture.sh"
 wvr_real="$(command -v wm-verify-run || echo /home/jsy/.local/bin/wm-verify-run)"; export PATH="$(dirname "$wvr_real"):$PATH"
 rbf_init
 rbf_launch w1 'echo wrapper-suite'
-rbf_row d-20261022-140000-rb-abcd "$RBF_HEAD" w1 "$(rbf_log 'echo wrapper-suite')"
+L_W1="$(rbf_log 'echo wrapper-suite')"
 OID="$RBF_HEAD"
 cat > "$tmp/wm-decide" <<'S'
 #!/usr/bin/env bash
@@ -65,6 +66,7 @@ chmod +x "$tmp/wm-decide" "$tmp/gh"
 export WM_DECIDE_STATE="$tmp/state"
 ids="$(python3 -I "$here/tests/fixtures/rb-merge-adv/mkledger.py" "$WM_DECIDE_STATE" '{"repo":"j0yen/swarm-decide","pr":7}')" || { echo "NOT OK - rb-merge: ledger fixture"; exit 1; }
 V="$(printf '%s' "$ids" | cut -d' ' -f2)"
+rbf_row "$V" "$RBF_HEAD" w1 "$L_W1"   # pre-gate A reads the verdict V (the ledger fixture's id) from RB_DECISIONS_DB since the ADV fixture ids replaced the fixed one
 ROW='{"id":"%s","kind":"verdict","agent":"r7","what":"CONFIRM x COMMIT=%s"%s}'
 DEFAULT_LIST="[$(printf "$ROW" $V $OID ',"via":"verifier"')]"
 export STUB_LIST_JSON="$DEFAULT_LIST"
