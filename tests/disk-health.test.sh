@@ -3,6 +3,8 @@
 # FAILED + kernel I/O + 100 % inodes, needs-sudo, no tools) plus the unit pair's shape. No sudo, no real smartctl is run.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# run from a pipe (bash <(git show origin/main:tests/disk-health.test.sh)) BASH_SOURCE is /dev/fd/N: fall back to the git toplevel of $PWD
+[ -f "$here/../.local/bin/disk-health.sh" ] || here=$(git rev-parse --show-toplevel 2>/dev/null)/tests
 script=$here/../.local/bin/disk-health.sh
 unit=$here/../.config/systemd/user
 fail=0
