@@ -153,7 +153,8 @@ real="$(merge "$root/.config/systemd/user" "${extra[@]}" 2>&1)"; rc=$?
 [ "$rc" = 0 ] || printf '%s\n' "$real" | grep ' FAIL ' | sed 's/^/    /'
 printf '%s\n' "$real" | grep -q '^seat-tick@\.timer PASS'; chk "(a) seat-tick@.timer (template + 50-drain-brake.conf) is evaluated and PASSES" $?
 printf '%s\n' "$real" | grep -q '^swarm-decide-regrade\.timer PASS'; chk "(a) swarm-decide-regrade.timer (15min.conf) is evaluated and PASSES" $?
-[ -f "$root/.config/systemd/user/seat-tick@.timer.d/50-drain-brake.conf" ] && [ -f "$root/.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf" ]; chk "(a) both timer drop-ins are tracked in dotfiles" $?
+# 24e320d removed seat-tick@.timer.d/50-drain-brake.conf on purpose (quota-era drop-in, voided by #151/#195): it must stay gone; 15min.conf stays tracked.
+[ ! -e "$root/.config/systemd/user/seat-tick@.timer.d/50-drain-brake.conf" ] && [ -f "$root/.config/systemd/user/swarm-decide-regrade.timer.d/15min.conf" ]; chk "(a) 15min.conf is tracked in dotfiles and the voided 50-drain-brake.conf stays removed (24e320d)" $?
 
 # ---------- (c) live drop-ins are symlinks into dotfiles or allowlisted ----------
 # allowlist_live <allowlist> -> prints the live (unexpired) entry paths, one per line. W6: the EXPIRES is machine-read, never prose.
