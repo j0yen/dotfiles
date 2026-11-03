@@ -50,7 +50,8 @@ rbf_launch n1 "$SUITE"
 rbf_launch nml "$SUITE_ML"
 
 # run <verdict-id>: wrapper rc in $rc, stderr in $err (a file), calls in $RBF_ROOT/calls
-run() { : > "$RBF_ROOT/calls"; bash "$wrap" "$1" 7 j0yen/dotfiles >/dev/null 2>"$RBF_ROOT/err"; rc=$?; }
+export WM_DECIDE_STATE="$RBF_ROOT/ledger"   # the ADV pre-check (non-trigger repo) reads a gated row + verdict row per id from here, after pre-gate A
+run() { rbf_ledger "$1" j0yen/dotfiles 7 "$RBF_HEAD"; : > "$RBF_ROOT/calls"; bash "$wrap" "$1" 7 j0yen/dotfiles >/dev/null 2>"$RBF_ROOT/err"; rc=$?; }
 merges() { grep -c 'pr merge' "$RBF_ROOT/calls" || true; }
 done_n() { grep -c 'merge-done' "$RBF_ROOT/calls" || true; }
 # refused <verdict-id> <reason> <label>: rc 6, the reason + verdict on stderr, no gh pr merge, no merge-done

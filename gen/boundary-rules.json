@@ -21,6 +21,6 @@
   ],
   "exempt": {
     "doc": "scripts CLAUDE.md names that are tools, hooks owned by other rows, or not refusals",
-    "names": ["aide-inbox.sh", "aide-launch.sh", "aide-relaunch.sh", "analysis-escape-count.sh", "analysis-skill-router.sh", "approve.sh", "dream-persist.sh", "fleet-token-rotate.sh", "fleet-token-store.sh", "lint-page.sh", "model-role-check.sh", "orch-mcphost-test.sh", "orch-mdeploy-verify.sh", "rb-run-coder.sh", "ref.sh", "seat-ask.sh", "seat-context-start.sh", "seat-event.sh", "test.sh"]
+    "names": ["aide-account-follow.sh", "aide-inbox.sh", "aide-launch.sh", "aide-relaunch.sh", "analysis-escape-count.sh", "analysis-skill-router.sh", "approve.sh", "dream-persist.sh", "fleet-token-rotate.sh", "fleet-token-store.sh", "lint-page.sh", "model-role-check.sh", "orch-mcphost-test.sh", "orch-mdeploy-verify.sh", "rb-run-coder.sh", "ref.sh", "seat-ask.sh", "seat-context-start.sh", "seat-event.sh", "test.sh"]
   }
 }

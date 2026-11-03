@@ -99,14 +99,14 @@ echo "sha=$sha"; echo "tree=$tree"; echo "sbr=$(@G@ symbolic-ref --short -q HEAD
 purl=$(@G@ remote get-url --push origin 2>/dev/null); echo "purl=$purl"; inc=$(@G@ config --local --name-only --get-regexp "^include" 2>/dev/null | wc -l);
 inc=$((inc+0)); echo "inc=$inc";
 ok=0; if printf %s "$purl" | grep -Eq "$re"; then ok=1; elif rb=$(basename "${repo%/}") && [ "${rb%.git}" = fleet-dash ] && [ "$purl" = "$fdu" ]; then ok=1; elif [ "$tst" = 1 ] && printf %s "$purl" | grep -Eq "^/[A-Za-z0-9._/-]+$"; then ok=1; fi;
-if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >/dev/null 2>&1; then echo "old=$(@G@ rev-parse --verify FETCH_HEAD 2>/dev/null)"; if @G@ merge-base --is-ancestor FETCH_HEAD "$sha" 2>/dev/null; then echo anc=yes; else echo anc=no; fi; else echo "old="; fi;'
+if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >/dev/null 2>&1; then echo "old=$(@G@ rev-parse --verify FETCH_HEAD 2>/dev/null)"; if @G@ merge-base --is-ancestor FETCH_HEAD "$sha" 2>/dev/null; then echo anc=yes; else echo anc=no; fi; else echo "old="; if [ "$ok" = 1 ] && [ "$inc" = 0 ]; then nl=$(@G@ ls-remote origin "refs/heads/$branch" 2>/dev/null); nrc=$?; if [ "$nrc" = 0 ] && [ -z "$nl" ]; then echo newbr=1; fi; fi; fi;'
   [ $check = 1 ] && ic="$ic"'if [ "$ok" = 1 ] && [ "$inc" = 0 ]; then lsr=$(@G@ ls-remote origin "refs/heads/$branch" 2>/dev/null); echo "lsrc=$?"; echo "lsr=$(printf %s "$lsr" | cut -f1)"; fi;'
   ic="${ic//@G@/$GC}"
   out=$(rsh "$host" "$ic" 2>/dev/null); irc=$?
   [ $irc = 0 ] || refuse "ssh-failed rc=$irc" "${host:-local}"
-  local head="" tree="" sbr="" old="" anc="" lsrc="" lsr="" purl="" inc="" k v
+  local head="" tree="" sbr="" old="" anc="" lsrc="" lsr="" purl="" inc="" newbr="" k v
   while IFS== read -r k v; do
-    case "$k" in sha) head=$v ;; tree) tree=$v ;; sbr) sbr=$v ;; old) old=$v ;; anc) anc=$v ;; lsrc) lsrc=$v ;; lsr) lsr=$v ;; purl) purl=$v ;; inc) inc=$v ;; esac
+    case "$k" in sha) head=$v ;; tree) tree=$v ;; sbr) sbr=$v ;; old) old=$v ;; anc) anc=$v ;; lsrc) lsrc=$v ;; lsr) lsr=$v ;; purl) purl=$v ;; inc) inc=$v ;; newbr) newbr=$v ;; esac
   done <<<"$out"
   [[ "$head" =~ ^[0-9a-f]{40,64}$ ]] && [[ "$tree" =~ ^[0-9a-f]{40,64}$ ]] || refuse not-a-repo "$repo"
   local h8=${head:0:8} t8=${tree:0:8}
@@ -148,7 +148,12 @@ print(str(v).upper())' 2>/dev/null)
     case "$rv" in CORRECT) refuse regrade-correct "$id" ;; DISAGREE) refuse regrade-disagree "$id" ;; esac
   fi
   # 4. fast-forward only (fetched + tested in the round trip above, against the sha captured there)
-  [[ "$old" =~ ^[0-9a-f]{40,64}$ ]] || refuse fetch-failed "origin $branch"
+  # a new branch (absent on origin, ls-remote ok and empty) is accepted as old=empty only when the CONFIRM row names the branch as a whole word (A537)
+  local od=${old:0:8}
+  if [[ ! "$old" =~ ^[0-9a-f]{40,64}$ ]]; then
+    [ "$newbr" = 1 ] && word "$what" "$branch" || refuse fetch-failed "origin $branch"
+    anc=yes; od=new-branch
+  fi
   [ "$anc" = yes ] || refuse non-ff "origin/$branch ${old:0:8} is not an ancestor of HEAD $h8"
   if [ $check = 1 ]; then
     [ "$lsrc" = 0 ] || refuse ls-remote-failed "origin $branch"
@@ -157,7 +162,7 @@ print(str(v).upper())' 2>/dev/null)
   # 5. log, push, log
   mkdir -p "$(dirname "$LOG")" || refuse log-unwritable "$LOG"
   local line hostf=""; [ -n "$host" ] && hostf=" host=$host"
-  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) pushing $id confirm_ts=$cts agent=${CLAUDE_AGENT_ID:-${WM_SEAT:-unknown}} $branch ${old:0:8}..${h8}$hostf"
+  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) pushing $id confirm_ts=$cts agent=${CLAUDE_AGENT_ID:-${WM_SEAT:-unknown}} $branch $od..${h8}$hostf"
   printf '%s\n' "$line" >> "$LOG" || refuse log-unwritable "$LOG"
   rsh "$host" "$GC -C $qr push -q origin $head:refs/heads/$qb"; local prc=$?
   if [ $prc = 0 ]; then line="${line/ pushing / pushed }"; else line="${line/ pushing / push-failed rc=$prc }"; fi
@@ -236,6 +241,11 @@ EOS
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8";                    case_ branch-mismatch branch-mismatch "$ok" wm-build/y
   REPO="$T/wtd";                                                                                case_ detached-head-unnamed branch-mismatch "$ok"; REPO="$T/wt"; clear
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM wm-build/y tree $t8";         case_ what-names-branch PUSHED "$ok" wm-build/y; clear
+  # --- new branch absent on origin (A537): accepted only when the row names the branch
+  git -C "$T/wt" worktree add -q -b wm-build/z "$T/wtz" HEAD
+  row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8"
+  REPO="$T/wtz";                                                                                case_ new-branch-unnamed fetch-failed "$ok" wm-build/z; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM wm-build/z tree $t8";         case_ new-branch-named PUSHED "$ok" wm-build/z; REPO="$T/wt"; clear
   git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
   # --- remote mode over the fake ssh
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8"
