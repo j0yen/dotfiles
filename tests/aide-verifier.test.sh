@@ -234,11 +234,11 @@ out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld4); rc=$
 printf '5.50 1 1 1/1 1\n' >"$vc/lo"
 out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" AIDE_VERIFIER_MAX_LOAD=8 vl ld5); rc=$?
 [ "$rc" = 0 ] && pass "vguard (g) load 5.5 + 2 x 1 running unit < 8 -> launches" || bad "vguard (g) unit term pass (rc=$rc: $out)"
-# default MAX_LOAD = nproc - 3 (min 1): a fake nproc of 6 -> 3, of 2 -> 1
-printf '' >"$vc/units"; printf '#!/bin/bash\necho 6\n' >"$vc/bin/nproc"; chmod +x "$vc/bin/nproc"; printf '3.20 1 1 1/1 1\n' >"$vc/lo"
-out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld6); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 3"* ]] && pass "vguard (g) default MAX_LOAD = nproc - 3 (6 -> 3)" || bad "vguard (g) default 3 (rc=$rc: $out)"
-printf '#!/bin/bash\necho 2\n' >"$vc/bin/nproc"; printf '1.20 1 1 1/1 1\n' >"$vc/lo"
-out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld7); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 1"* ]] && pass "vguard (g) default MAX_LOAD floors at 1 (nproc 2 -> 1)" || bad "vguard (g) default floor (rc=$rc: $out)"
+# default MAX_LOAD = 2 x nproc (min 1; caps C182, A650): a fake nproc of 6 -> 12, of 0 -> 1
+printf '' >"$vc/units"; printf '#!/bin/bash\necho 6\n' >"$vc/bin/nproc"; chmod +x "$vc/bin/nproc"; printf '12.50 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld6); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 12"* ]] && pass "vguard (g) default MAX_LOAD = 2 x nproc (6 -> 12)" || bad "vguard (g) default 12 (rc=$rc: $out)"
+printf '#!/bin/bash\necho 0\n' >"$vc/bin/nproc"; printf '1.20 1 1 1/1 1\n' >"$vc/lo"
+out=$(AIDE_VERIFIER_LOADAVG_FILE="$vc/lo" vl ld7); rc=$?; [ "$rc" = 13 ] && [[ "$out" == *"MAX_LOAD 1"* ]] && pass "vguard (g) default MAX_LOAD floors at 1 (nproc 0 -> 1)" || bad "vguard (g) default floor (rc=$rc: $out)"
 rm -f "$vc/bin/nproc"
 # the load wait is bounded by AIDE_VERIFIER_LOAD_WAIT_S -> exit 6
 printf '9.50 1 1 1/1 1\n' >"$vc/lo"
