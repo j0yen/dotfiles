@@ -36,18 +36,27 @@ avail_gb() { if [ -n "${WMB_FAKE_AVAIL_FILE:-}" ]; then tr -dc 0-9 < "$WMB_FAKE_
 sizef=$troot/.wmbvs-last-gb-debug$CARGO_PROFILE_DEV_DEBUG
 est=$(tr -dc 0-9 < "$sizef" 2>/dev/null); est=${est:-${WMB_TARGET_EST_GB:-150}}
 floor=${WMB_TARGET_FLOOR_GB:-50}; need=$((est + floor)); waited=0
-while a=$(avail_gb); [ "${a:-0}" -lt "$need" ]; do
-  [ "$waited" -ge "${WMB_TARGET_WAIT_S:-7200}" ] && { echo "TARGET-WAIT-TIMEOUT root=$troot free=${a}G need=${need}G after ${waited}s"; exit 75; }
-  echo "target-wait root=$troot free=${a}G need=${need}G (estimate ${est}G + floor ${floor}G) waited=${waited}s"
+# concurrent legs share the root (aide 1:09 AM amendment): each running leg holds a reservation of its estimate in
+# <root>/.wmbvs-reserve/<pid>.gb; a leg starts only when free minus the live legs' reservations covers its own estimate
+# plus the floor. A reservation whose pid is gone is dropped. Check and claim run under one flock.
+resd=$troot/.wmbvs-reserve
+{ mkdir -p "$resd" && exec 9>"$resd/.lock"; } || { echo "TARGET-REFUSED cannot create $resd"; exit 75; }
+reserved_gb() { local s=0 f p v; for f in "$resd"/*.gb; do [ -f "$f" ] || continue; p=${f##*/}; p=${p%.gb}
+  if kill -0 "$p" 2>/dev/null; then v=$(tr -dc 0-9 < "$f"); s=$((s + ${v:-0})); else rm -f -- "$f"; fi; done; echo "$s"; }
+while flock 9 || { echo "TARGET-REFUSED flock $resd/.lock"; exit 75; }; a=$(avail_gb); r=$(reserved_gb); [ $(( ${a:-0} - r )) -lt "$need" ]; do
+  flock -u 9
+  [ "$waited" -ge "${WMB_TARGET_WAIT_S:-7200}" ] && { echo "TARGET-WAIT-TIMEOUT root=$troot free=${a}G reserved=${r}G need=${need}G after ${waited}s"; exit 75; }
+  echo "target-wait root=$troot free=${a}G reserved=${r}G need=${need}G (estimate ${est}G + floor ${floor}G) waited=${waited}s"
   sleep "${WMB_TARGET_POLL_S:-60}"; waited=$((waited + ${WMB_TARGET_POLL_S:-60}))
 done
-run=$(mktemp -d -p "$troot" "wmbvs-${head:0:12}.XXXX") || { echo "TARGET-REFUSED mktemp in $troot"; exit 75; }
-echo "targets=$run free=${a}G need=${need}G"
+echo "$est" > "$resd/$$.gb"; flock -u 9
+run=$(mktemp -d -p "$troot" "wmbvs-${head:0:12}.XXXX") || { rm -f -- "$resd/$$.gb"; echo "TARGET-REFUSED mktemp in $troot"; exit 75; }
+echo "targets=$run free=${a}G reserved=${r}G need=${need}G"
 work=$(mktemp -d -p "${TMPDIR:-/tmp}" wmbvs.XXXX)
 cleanup() {
   git worktree remove --force "$work/base" >/dev/null 2>&1; rm -rf -- "${work:?}"
   gb=$(du -s --block-size=1G "$run" 2>/dev/null | cut -f1); [ "${gb:-0}" -gt 0 ] && echo "$gb" > "$sizef"
-  rm -rf -- "${run:?}"
+  rm -rf -- "${run:?}"; rm -f -- "$resd/$$.gb"
 }
 trap cleanup EXIT
 echo "head=$head base=$base"

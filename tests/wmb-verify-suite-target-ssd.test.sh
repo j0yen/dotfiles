@@ -1,7 +1,7 @@
 #!/bin/bash
 # wmb-verify-suite.sh target placement (A672, Joe 11-03 12:58 AM "Ryzen has an ssd"): targets go to the mounted SSD
 # run dir, an unmounted SSD path refuses (no root fallback), the suite waits below estimate + floor, the measured
-# size is reused, the run dir is removed on exit, debuginfo is off. Fake slot + fake df; no real target is touched.
+# size is reused, concurrent legs reserve their estimate, the run dir is removed on exit, debuginfo is off. Fake slot + fake df; no real target is touched.
 set -u
 S=$(cd "$(dirname "$0")/.." && pwd)/.local/bin/wmb-verify-suite.sh
 T=$(mktemp -d); trap 'rm -rf -- "$T"' EXIT
@@ -12,6 +12,7 @@ cat > "$T/slot" <<'EOF'
 #!/bin/bash
 echo "$1 $CARGO_TARGET_DIR debug=${CARGO_PROFILE_DEV_DEBUG:-unset}" >> "$SLOT_LOG"
 mkdir -p "$CARGO_TARGET_DIR" && head -c 2048 /dev/zero > "$CARGO_TARGET_DIR/obj"
+[ -n "${RESV_DIR:-}" ] && ls "$RESV_DIR" >> "$RESV_LOG"
 exit 0
 EOF
 chmod +x "$T/slot"
@@ -69,6 +70,27 @@ run nossd WMB_TARGET_MNT="$T/no-such-mnt"
 ok "nossd rc 0" '[ "$(cat $T/nossd.rc)" = 0 ]'
 ok "nossd: targets under the clone run dir" '! grep -v " $T/clone/wmbvs-" $T/nossd.slot | grep -q .'
 ok "nossd: run dir removed" '! ls -d $T/clone/wmbvs-* 2>/dev/null | grep -q .'
+
+# 7 another live leg's reservation counts against free space: 320G free - 200G reserved < 150G + 50G floor -> wait, 75
+R=$T/ssd/cargo-target/.wmbvs-reserve; rm -f "$T"/ssd/cargo-target/.wmbvs-last-gb-*; echo 320 > "$T/avail"
+sleep 30 & P=$!; echo 200 > "$R/$P.gb"
+run otherleg WMB_TARGET_WAIT_S=1
+kill "$P" 2>/dev/null; wait "$P" 2>/dev/null
+ok "otherleg rc 75" '[ "$(cat $T/otherleg.rc)" = 75 ]'
+ok "otherleg logs reserved=200G" 'grep -q "target-wait .*reserved=200G need=200G" $T/otherleg.out'
+ok "otherleg: slot never ran" '[ ! -s $T/otherleg.slot ]'
+
+# 8 a reservation whose pid has exited is dropped, and the leg runs
+sh -c 'exit 0' & D=$!; wait "$D"; echo 200 > "$R/$D.gb"
+run deadleg
+ok "deadleg rc 0" '[ "$(cat $T/deadleg.rc)" = 0 ]'
+ok "deadleg: dead reservation removed" '[ ! -f "$R/$D.gb" ]'
+
+# 9 the leg holds its own reservation while it builds and drops it on exit
+run ownresv RESV_DIR="$R" RESV_LOG="$T/ownresv.ls"
+ok "ownresv rc 0" '[ "$(cat $T/ownresv.rc)" = 0 ]'
+ok "ownresv: reservation held during the build" 'grep -q "^[0-9]*\.gb$" $T/ownresv.ls'
+ok "ownresv: reservation removed on exit" '! ls "$R"/*.gb 2>/dev/null | grep -q .'
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
