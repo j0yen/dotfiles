@@ -92,5 +92,29 @@ ok "ownresv rc 0" '[ "$(cat $T/ownresv.rc)" = 0 ]'
 ok "ownresv: reservation held during the build" 'grep -q "^[0-9]*\.gb$" $T/ownresv.ls'
 ok "ownresv: reservation removed on exit" '! ls "$R"/*.gb 2>/dev/null | grep -q .'
 
+# 10 the fleet-dash producer: a waiting leg is listed in state.json with its need; after it starts the list is empty
+ST=$T/state; rm -f "$T"/ssd/cargo-target/.wmbvs-last-gb-*; echo 10 > "$T/avail"
+( for i in $(seq 1 40); do grep -q '"waits":\[{' "$ST/state.json" 2>/dev/null && break; sleep 0.2; done
+  cp "$ST/state.json" "$T/state.during" 2>/dev/null; echo 500 > "$T/avail" ) &
+run producer WMB_STATE_DIR="$ST" WMB_TARGET_WAIT_S=30
+wait
+ok "producer rc 0" '[ "$(cat $T/producer.rc)" = 0 ]'
+ok "producer: waiting leg listed with need 200" 'grep -q "\"waits\":\[{\"pid\":[0-9]*,\"since\":[0-9]*,\"need_gb\":200}\]" $T/state.during'
+ok "producer: est and floor recorded" 'grep -q "\"est_gb\":150,\"floor_gb\":50" $T/state.during'
+ok "producer: state names the ssd root" 'grep -q "\"root\":\"$T/ssd/cargo-target\"" $ST/state.json'
+ok "producer: no wait listed after the leg ran" 'grep -q "\"waits\":\[\]" $ST/state.json'
+ok "producer: wait marker removed" '! ls $T/ssd/cargo-target/.wmbvs-reserve/*.wait 2>/dev/null | grep -q .'
+
+# 11 a timed-out leg leaves no wait listed
+echo 10 > "$T/avail"
+run producer_to WMB_STATE_DIR="$ST" WMB_TARGET_WAIT_S=1
+ok "producer timeout rc 75" '[ "$(cat $T/producer_to.rc)" = 75 ]'
+ok "producer timeout: no wait listed" 'grep -q "\"waits\":\[\]" $ST/state.json'
+echo 500 > "$T/avail"
+
+# 12 incremental compilation off (CARGO_INCREMENTAL=0, page grading 2) and the base worktree lives in the run dir
+ok "incremental off in the suite" 'grep -q "^export CARGO_INCREMENTAL=\${CARGO_INCREMENTAL:-0}" "$S"'
+ok "base worktree under the run dir" 'grep -q "work=\$(mktemp -d -p \"\$run\"" "$S"'
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

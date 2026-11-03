@@ -22,6 +22,7 @@ base=$(git rev-parse "$base^{commit}")
 
 # verdicts read exit codes, test names and warning text only, never backtrace line numbers: no debuginfo (A672 item 2)
 export CARGO_PROFILE_DEV_DEBUG=${CARGO_PROFILE_DEV_DEBUG:-0} CARGO_PROFILE_TEST_DEBUG=${CARGO_PROFILE_TEST_DEBUG:-0}
+export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-0}
 mnt=${WMB_TARGET_MNT:-/mnt/ssd}
 if [ -n "${WMB_TARGET_ROOT:-}" ]; then troot=$WMB_TARGET_ROOT
 elif [ -d "$mnt" ]; then
@@ -43,20 +44,31 @@ resd=$troot/.wmbvs-reserve
 { mkdir -p "$resd" && exec 9>"$resd/.lock"; } || { echo "TARGET-REFUSED cannot create $resd"; exit 75; }
 reserved_gb() { local s=0 f p v; for f in "$resd"/*.gb; do [ -f "$f" ] || continue; p=${f##*/}; p=${p%.gb}
   if kill -0 "$p" 2>/dev/null; then v=$(tr -dc 0-9 < "$f"); s=$((s + ${v:-0})); else rm -f -- "$f"; fi; done; echo "$s"; }
+# fleet-dash producer (A672 mechanism 3): <state>/state.json = this root's estimate, floor, free, reservations and the
+# legs waiting for space (<root>/.wmbvs-reserve/<pid>.wait = "<since-epoch> <need-gb>"), written under the flock at
+# every wait poll, claim and exit; collect.sh reads it as wmbvs_raw and disk_free.py alarms on it.
+stated=${WMB_STATE_DIR:-$HOME/.local/state/wmbvs}
+write_state() { local f p ws="" since nd mp
+  for f in "$resd"/*.wait; do [ -f "$f" ] || continue; p=${f##*/}; p=${p%.wait}
+    if kill -0 "$p" 2>/dev/null; then read -r since nd < "$f"; ws="$ws${ws:+,}{\"pid\":$p,\"since\":${since:-0},\"need_gb\":${nd:-0}}"; else rm -f -- "$f"; fi; done
+  mp=$(df --output=target "$troot" 2>/dev/null | tail -n 1)
+  mkdir -p "$stated" 2>/dev/null && printf '{"root":"%s","mount":"%s","est_gb":%s,"floor_gb":%s,"free_gb":%s,"reserved_gb":%s,"waits":[%s],"ts":%s}\n' \
+    "$troot" "$mp" "$est" "$floor" "${1:-0}" "${2:-0}" "$ws" "$(date +%s)" > "$stated/state.json.$$" && mv -f -- "$stated/state.json.$$" "$stated/state.json"; }
 while flock 9 || { echo "TARGET-REFUSED flock $resd/.lock"; exit 75; }; a=$(avail_gb); r=$(reserved_gb); [ $(( ${a:-0} - r )) -lt "$need" ]; do
-  flock -u 9
-  [ "$waited" -ge "${WMB_TARGET_WAIT_S:-7200}" ] && { echo "TARGET-WAIT-TIMEOUT root=$troot free=${a}G reserved=${r}G need=${need}G after ${waited}s"; exit 75; }
+  [ "$waited" -ge "${WMB_TARGET_WAIT_S:-7200}" ] && { rm -f -- "$resd/$$.wait"; write_state "$a" "$r"; flock -u 9; echo "TARGET-WAIT-TIMEOUT root=$troot free=${a}G reserved=${r}G need=${need}G after ${waited}s"; exit 75; }
+  [ -f "$resd/$$.wait" ] || echo "$(date +%s) $need" > "$resd/$$.wait"; write_state "$a" "$r"; flock -u 9
   echo "target-wait root=$troot free=${a}G reserved=${r}G need=${need}G (estimate ${est}G + floor ${floor}G) waited=${waited}s"
   sleep "${WMB_TARGET_POLL_S:-60}"; waited=$((waited + ${WMB_TARGET_POLL_S:-60}))
 done
-echo "$est" > "$resd/$$.gb"; flock -u 9
+echo "$est" > "$resd/$$.gb"; rm -f -- "$resd/$$.wait"; write_state "$a" "$((r + est))"; flock -u 9
 run=$(mktemp -d -p "$troot" "wmbvs-${head:0:12}.XXXX") || { rm -f -- "$resd/$$.gb"; echo "TARGET-REFUSED mktemp in $troot"; exit 75; }
 echo "targets=$run free=${a}G reserved=${r}G need=${need}G"
-work=$(mktemp -d -p "${TMPDIR:-/tmp}" wmbvs.XXXX)
+work=$(mktemp -d -p "$run" work.XXXX)
 cleanup() {
   git worktree remove --force "$work/base" >/dev/null 2>&1; rm -rf -- "${work:?}"
   gb=$(du -s --block-size=1G "$run" 2>/dev/null | cut -f1); [ "${gb:-0}" -gt 0 ] && echo "$gb" > "$sizef"
   rm -rf -- "${run:?}"; rm -f -- "$resd/$$.gb"
+  flock 9 && { write_state "$(avail_gb)" "$(reserved_gb)"; flock -u 9; }
 }
 trap cleanup EXIT
 echo "head=$head base=$base"
