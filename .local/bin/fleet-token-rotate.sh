@@ -125,6 +125,12 @@ rotate() {
   if [ -n "$bu" ]; then buep="$(ft_parse_la_date "$bu")" || { echo "fleet-token-rotate: cannot parse --blocked-until '$bu' as a date" >&2; usage 'unparseable --blocked-until'; }; fi
 
   [ -f "$FT_STORE/$acct" ] || { echo "fleet-token-rotate: REFUSED: no store entry for '$acct' (fleet-token-store.sh add $acct)" >&2; return 1; }
+  # A blocked target (fleet-token-store.sh block: depleted to its reset, A872) is never placed by the watcher, the schedule or a hand switch;
+  # only Joe's word (--trigger joe-<date>) lifts it, because a placement past the block is the hand bypass that the block exists to stop.
+  local blk; blk="$(ft_block_reason "$acct" "$(ft_now)")"
+  if [ -n "$blk" ] && [[ "$trigger" != joe-* ]]; then
+    echo "fleet-token-rotate: REFUSED: '$acct' is $blk (fleet-token-store.sh unblock $acct, or --trigger joe-<date> on Joe's word)" >&2; return 1
+  fi
   if [ "$CHECK" = 1 ]; then echo "check ok: $acct (trigger $trigger, by $by)"; return 0; fi
   mkdir -p "$FT_STATE" "$FT_DASH"
   exec 8>>"$FT_STATE/rotate.lock"
@@ -245,6 +251,12 @@ selftest() {
     # a candidate holding the SAME token as the current one is not a rotation
     run acctDup --by t --trigger hand; rc=$?
     [ "$rc" = 1 ] && grep -q 'same token' "$e" && [ -z "$(fl place)" ]; ft_st_chk "same token (sha256 prefix equal) as the current account: refused, nothing placed" $?
+    # a blocked target is refused for 429/schedule/hand; Joe's word (--trigger joe-<date>) passes; the block stays
+    ft_block acctB $((NOW+3600)) "weekly limit" >/dev/null
+    run acctB --by t --trigger 429; rc=$?; [ "$rc" = 1 ] && grep -q "REFUSED: 'acctB' is blocked until" "$e" && [ -z "$(fl place)" ] && [ -z "$(fl verify)" ]; ft_st_chk "blocked target (429): refused (exit 1), nothing verified or placed" $?
+    run --check acctB --by t --trigger hand; rc=$?; [ "$rc" = 1 ] && grep -q 'blocked until' "$e"; ft_st_chk "blocked target (--check hand): refused too" $?
+    run --check acctB --by joe-2026-11-01 --trigger joe-2026-11-01; rc=$?; [ "$rc" = 0 ] && grep -q '^check ok: acctB' "$o" && [ -n "$(ft_block_reason acctB "$NOW")" ]; ft_st_chk "blocked target on Joe's word (--trigger joe-<date>): check ok, block kept" $?
+    ft_unblock acctB >/dev/null; [ -z "$(ft_block_reason acctB "$NOW")" ]; ft_st_chk "unblock restores the candidate" $?
 
     # 3. pre-verify failure
     run acctBad --by t --trigger 429; rc=$?
