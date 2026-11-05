@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# wm-build-limits-guard: single source of truth for cost-bearing wm-build limits.
+# Subcommands: check | enforce | set <key>=<value> --by <who> "<quote>"
+set -euo pipefail
+CONFIG="$HOME/.config/wm-build/config.toml"
+LOCK="$HOME/.config/wm-build/limits.lock"
+STATE_DIR="$HOME/.local/state/wm-build"
+LOGFILE="$STATE_DIR/limits-guard.log"
+JOURNAL="$STATE_DIR/journal.jsonl"
+MARK="# limits.lock — one record; see wm-build-limits-guard"
+DOTKEYS=(box.grace_minutes builder.idle_minutes box.roles.coder.max_boxes box.roles.coder.max_leases_per_box max_runs builder.type)
+SECTIONS=(box builder box.roles.coder box.roles.coder "" builder)
+TOMLKEYS=(grace_minutes idle_minutes max_boxes max_leases_per_box max_runs type)
+QUOTED=(0 0 0 0 0 1)
+esc() { printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g'; }
+section_range() {
+  local sec="$1" total first_hdr start next
+  total=$(wc -l < "$CONFIG")
+  if [ -z "$sec" ]; then
+    first_hdr=$(grep -n '^\[' "$CONFIG" | head -1 | cut -d: -f1 || true)
+    if [ -z "${first_hdr:-}" ]; then echo "1 $total"; else echo "1 $((first_hdr - 1))"; fi
+    return
+  fi
+  start=$(grep -n "^\[$(esc "$sec")\]" "$CONFIG" | head -1 | cut -d: -f1 || true)
+  if [ -z "${start:-}" ]; then echo "0 0"; return; fi
+  next=$(awk -v s="$start" 'NR>s && /^\[/{print NR; exit}' "$CONFIG")
+  if [ -z "${next:-}" ]; then echo "$start $total"; else echo "$start $((next - 1))"; fi
+}
+live_value() {
+  local sec="$1" key="$2" start end ek
+  read -r start end <<<"$(section_range "$sec")"
+  [ "$start" = "0" ] && { echo ""; return; }
+  ek=$(esc "$key")
+  sed -n "${start},${end}p" "$CONFIG" \
+    | grep -E "^[[:blank:]]*${ek}[[:blank:]]*=" | head -1 \
+    | sed -E "s/^[[:blank:]]*${ek}[[:blank:]]*=[[:blank:]]*//; s/[[:blank:]]*#.*\$//; s/^\"//; s/\"\$//; s/[[:blank:]]*\$//"
+}
+lock_value() { grep "^${1}=" "$LOCK" | head -1 | cut -d'=' -f2-; }
+rewrite_key() {
+  local sec="$1" key="$2" newval="$3" quoted="$4" start end ek val
+  read -r start end <<<"$(section_range "$sec")"
+  [ "$start" = "0" ] && { echo "section [$sec] not found" >&2; return 1; }
+  ek=$(esc "$key")
+  val="$newval"; [ "$quoted" = "1" ] && val="\"$newval\""
+  sed -i "${start},${end}s|^[[:blank:]]*${ek}[[:blank:]]*=.*|${key} = ${val}  ${MARK}|" "$CONFIG"
+}
+cmd_check() {
+  local i dk sec tk live lock drift=0
+  for i in "${!DOTKEYS[@]}"; do
+    dk="${DOTKEYS[$i]}"; sec="${SECTIONS[$i]}"; tk="${TOMLKEYS[$i]}"
+    live=$(live_value "$sec" "$tk"); lock=$(lock_value "$dk")
+    if [ "$live" = "$lock" ]; then
+      echo "key=$dk live=$live lock=$lock status=ok"
+    else
+      echo "key=$dk live=$live lock=$lock status=DRIFT"; drift=1
+    fi
+  done
+  return $drift
+}
+cmd_enforce() {
+  local i dk sec tk q live lock stamp backup utc reverted=0
+  mkdir -p "$STATE_DIR"
+  for i in "${!DOTKEYS[@]}"; do
+    dk="${DOTKEYS[$i]}"; sec="${SECTIONS[$i]}"; tk="${TOMLKEYS[$i]}"; q="${QUOTED[$i]}"
+    live=$(live_value "$sec" "$tk"); lock=$(lock_value "$dk")
+    [ "$live" = "$lock" ] && continue
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    backup="${CONFIG}.pre-limits-guard-${stamp}"
+    cp -p "$CONFIG" "$backup"
+    rewrite_key "$sec" "$tk" "$lock" "$q"
+    if PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" wm-build config show >/dev/null 2>&1; then
+      utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      echo "$utc limits-drift key=$dk live=$live lock=$lock action=reverted" >>"$LOGFILE"
+      printf '{"op":"limits-drift","row":{"key":"%s","live":"%s","lock":"%s","action":"reverted"},"table":"operator","ts":"%s"}\n' \
+        "$dk" "$live" "$lock" "$utc" >>"$JOURNAL"
+      echo "key=$dk live=$live lock=$lock action=reverted backup=$backup"
+      reverted=1
+    else
+      cp -p "$backup" "$CONFIG"
+      echo "key=$dk action=revert-failed config-show-rejected restored=$backup" >&2
+      exit 1
+    fi
+  done
+  [ "$reverted" = "0" ] && echo "no drift; nothing enforced"
+  return 0
+}
+cmd_set() {
+  local kv="${1:-}" by="" quote=""
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) by="${2:-}"; shift 2 ;;
+      *) quote="$1"; shift ;;
+    esac
+  done
+  local key="${kv%%=*}" value="${kv#*=}" arm=""
+  case "$by" in
+    joe-*) : ;;
+    watcher:*) watcher_admit "${by#watcher:}" "$key" "$value" || exit 1 ;;
+    *) echo "refused: --by must start with 'joe-' or 'watcher:' (got '${by}')" >&2; exit 1 ;;
+  esac
+  if [ -z "$key" ] || ! grep -q "^${key}=" "$LOCK"; then
+    echo "refused: unknown protected key '${key}'" >&2; exit 1
+  fi
+  local tmp="${LOCK}.tmp.$$"
+  awk -v k="$key" -v v="$value" 'BEGIN{FS=OFS="="} $1==k{$0=k"="v} {print}' "$LOCK" >"$tmp"
+  mv "$tmp" "$LOCK"
+  mkdir -p "$STATE_DIR"
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) limits-set key=${key} value=${value} by=${by}${arm:+ arm=${arm}} quote=\"${quote}\"" >>"$LOGFILE"
+  echo "lock updated: ${key}=${value} (by ${by})"
+}
+# --by watcher:<name> (ctl k1050): a premise-gated watcher may move max_runs only, only while its
+# watcher-premise arm is live, and only to 1 or back to exactly the value its pause lowered from,
+# never above the lock value recorded when the guard accepted the lowering. Sets: arm.
+WATCHERS="rb-reprice-watch"
+WP_STATE_DIR="${WP_STATE:-$HOME/.local/state/watcher-premise}"
+T4R_STATE_FILE="${LG_T4R_STATE:-${RW_T4R_STATE:-/mnt/data/hand/rb-reprice-watch.t4r.state}}"
+ARM_FRESH_S="${LG_ARM_FRESH_S:-300}"
+watcher_admit() {
+  local name="$1" key="$2" value="$3" tsv a=() now exp lockv armlock from cap
+  case " $WATCHERS " in *" $name "*) : ;; *) echo "refused: watcher '${name}' is not in the guard's set ($WATCHERS)" >&2; return 1 ;; esac
+  [ "$key" = max_runs ] || { echo "refused: watcher:${name} may set max_runs only (got '${key}')" >&2; return 1; }
+  case "$value" in ''|*[!0-9]*) echo "refused: watcher:${name} value '${value}' is not a number" >&2; return 1 ;; esac
+  tsv="$WP_STATE_DIR/$name.tsv"
+  [ -r "$tsv" ] || { echo "refused: watcher:${name} has no arm record ($tsv)" >&2; return 1; }
+  IFS=$'\037' read -r -a a < <(head -n1 "$tsv" | tr '\t' '\037') || true
+  now=$(date +%s); exp=$(date -d "${a[4]-}" +%s 2>/dev/null || echo "")
+  [ "${a[0]-}" = "$name" ] && [ "${a[5]-}" = 1 ] && [ "${a[3]-}" != GONE ] \
+    || { echo "refused: watcher:${name} arm not live (armed=${a[5]-?} verdict=${a[3]-?})" >&2; return 1; }
+  [ -n "$exp" ] && [ "$now" -le "$exp" ] || { echo "refused: watcher:${name} arm expired or unreadable (expires=${a[4]-?})" >&2; return 1; }
+  case "${a[7]-}" in ''|*[!0-9]*) a[7]=0 ;; esac
+  [ $((now - a[7])) -le "$ARM_FRESH_S" ] || { echo "refused: watcher:${name} premise last checked $((now - a[7]))s ago (> ${ARM_FRESH_S}s)" >&2; return 1; }
+  lockv=$(lock_value max_runs); armlock="$STATE_DIR/limits-guard.watcher-${name}.armlock"
+  if [ "$value" = 1 ]; then
+    mkdir -p "$STATE_DIR"
+    case "$lockv" in ''|*[!0-9]*) : ;; *) [ "$lockv" -gt 1 ] && echo "$lockv" > "$armlock" ;; esac
+  else
+    from=$(grep -E '^lowered_from=' "$T4R_STATE_FILE" 2>/dev/null | head -n1 | cut -d= -f2)
+    [ -n "$from" ] && [ "$value" = "$from" ] || { echo "refused: watcher:${name} max_runs=${value} is not 1 nor the logged lowered_from (${from:-none})" >&2; return 1; }
+    cap=$(cat "$armlock" 2>/dev/null || echo "")
+    case "$cap" in ''|*[!0-9]*) echo "refused: watcher:${name} no lock value recorded at arm time; only 1 is allowed" >&2; return 1 ;; esac
+    [ "$value" -le "$cap" ] || { echo "refused: watcher:${name} max_runs=${value} is above the lock value at arm time (${cap})" >&2; return 1; }
+    rm -f -- "$armlock"
+  fi
+  arm="${name}@${a[4]}#checked=${a[7]}"
+  return 0
+}
+case "${1:-}" in
+  check) cmd_check ;;
+  enforce) cmd_enforce ;;
+  set) shift; cmd_set "$@" ;;
+  *) echo "usage: wm-build-limits-guard check|enforce|set <key>=<value> --by <who> \"<quote>\"" >&2; exit 2 ;;
+esac
