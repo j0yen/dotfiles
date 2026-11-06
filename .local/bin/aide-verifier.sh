@@ -614,6 +614,15 @@ cmd_launch() {
     sleep "$POLL"; waited=$((waited + POLL))
   done
   [ -z "$probe_key" ] || echo "probe $probe_key" >>"$BSTATE"
+  # G1-post (ctl fc1d / A1095): the queue wait can outlive the PR. Re-read the live head and state
+  # after the wait; a moved head or a non-OPEN PR refuses with exit 12 and records no row.
+  local post
+  if post="$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state --jq '.headRefOid+" "+.state' 2>&1)"; then
+    [ "${post%% *}" = "$HEAD" ] || die 12 "G1-post: the live head of $REPO#$PR moved to ${post%% *} (was ${HEAD:0:12}) during the queue wait; no row recorded, relaunch with the new head"
+    [ "${post#* }" = OPEN ] || die 12 "G1-post: $REPO#$PR is ${post#* }, not OPEN, after the queue wait; no row recorded"
+  else
+    die 12 "G1-post: cannot re-read $REPO#$PR after the queue wait (gh pr view failed: $(printf '%s' "$post" | head -n1 | cut -c1-160))"
+  fi
   # ---- write ----
   local unit="$AGENT-verifier-$NAME" claude="${AIDE_VERIFIER_CLAUDE:-$HOME/.npm-global/bin/claude}" oauth="${AIDE_VERIFIER_OAUTH_CONF:-$HOME/.config/environment.d/90-claude-oauth.conf}"
   mkdir -p "$DIR" || die 2 "cannot create $DIR"
@@ -799,7 +808,8 @@ F
   printf '#!/bin/bash\nprintf "%%s|%%s\\n" "${EVENT_SOURCE:-}" "$*" >>"$FAKE_DIR/bell.log"\n' >"$T/bin/fake-bell"
   printf '#!/bin/bash\necho "$1" >>"$FAKE_DIR/room.log"\n[ -z "${FAKE_ROOM_HANG:-}" ] || exec sleep 30\nif [ "${FAKE_ROOM:-ok}" = ok ]; then echo "{\\"ok\\":true,\\"room_mb\\":9000}"; else echo "{\\"ok\\":false,\\"room_mb\\":-5}"; exit 1; fi\n' >"$T/bin/fake-room"
   # gh: a fake on PATH (G1 reads the live head); FAKE_GH_HEAD overrides, FAKE_GH_FAIL fails
-  printf '#!/bin/bash\n[ -z "${FAKE_GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }\nprintf "%%s\\n" "${FAKE_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"\n' >"$T/bin/gh"
+  # a state read (G1-post, --json headRefOid,state) prints "<sha> <state>"; FAKE_GH_POST_HEAD/FAKE_GH_POST_STATE/FAKE_GH_POST_FAIL override it alone
+  printf '#!/bin/bash\n[ -z "${FAKE_GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }\nh="${FAKE_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"\ncase " $* " in *" headRefOid,state "*) [ -z "${FAKE_GH_POST_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; printf "%%s %%s\\n" "${FAKE_GH_POST_HEAD:-$h}" "${FAKE_GH_POST_STATE:-OPEN}";; *) printf "%%s\\n" "$h";; esac\n' >"$T/bin/gh"
   # the fake merge-gate tree: a package stub exposing the names the lint imports (tests/aide-verifier-gate-nodrift.test.sh checks the REAL tree has them)
   mkgate() {  # mkgate <root> <repo_tokens json> [renamed]
     mkdir -p "$1/wm_decide" "$1/gen"; : >"$1/wm_decide/__init__.py"
@@ -944,6 +954,12 @@ F
   [ "$rc" = 2 ] && [[ "$out" == *"lint: G1"* ]] && none gl-g1; chk "gate lint (V6): --head != the live PR head -> exit 2, G1" $?
   out="$(FAKE_GH_FAIL=1 GL gl-g2)"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"lint: G1: cannot read the live head"* ]] && none gl-g2; chk "gate lint (V6): a gh failure -> exit 2, G1 (fail closed)" $?
+  out="$(FAKE_GH_POST_HEAD=ffffffffffffffffffffffffffffffffffffffff L gl-p1 "${A[@]}" --head "$H" --queue)"; rc=$?
+  [ "$rc" = 12 ] && [[ "$out" == *"G1-post: the live head"*"moved"* ]] && none gl-p1; chk "gate lint (G1-post): the head moved during the queue wait -> exit 12, no unit, no row" $?
+  out="$(FAKE_GH_POST_STATE=MERGED L gl-p2 "${A[@]}" --head "$H" --queue)"; rc=$?
+  [ "$rc" = 12 ] && [[ "$out" == *"G1-post: j0yen/dotfiles#7 is MERGED, not OPEN"* ]] && none gl-p2; chk "gate lint (G1-post): the PR is not OPEN after the queue wait -> exit 12, no unit, no row" $?
+  out="$(FAKE_GH_POST_FAIL=1 L gl-p3 "${A[@]}" --head "$H" --queue)"; rc=$?
+  [ "$rc" = 12 ] && [[ "$out" == *"G1-post: cannot re-read"* ]] && none gl-p3; chk "gate lint (G1-post): a gh failure on the post-wait read -> exit 12 (fail closed)" $?
   # L-KIND (V9 + W1-W6): the --gated row must be a GATED row for this repo#pr whose single COMMIT= is the full --head. kc <case> <FAKE head-less args...>
   kref() {  # kref <label> <row id> <expect substring> [extra GL args]  (refused: exit 2, a KIND line naming the part, nothing started)
     local lbl="$1" id="$2" want="$3"; shift 3
