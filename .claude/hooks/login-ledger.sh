@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # login-ledger: a carbon Claude session's account change is recorded the turn it happens (A264; Joe 10-31 10:19 PM "document it. keep it consistent.", approvals #171).
 # Account = oauthAccount.emailAddress in $LOGIN_LEDGER_CLAUDE_JSON (default ~/.claude.json), an address, never a token.
-# Class = $WM_SEAT, else "plain". When the account differs from the last `/login → <account>` line for that class in $LOGIN_LEDGER_MEMORY
+# Class = the actual $WM_SEAT value (aide, or ctl since the 2026-11-06 rename), else "plain". When the account differs from the last `/login → <account>` line for that class in $LOGIN_LEDGER_MEMORY
 #   (default the quota-ledger memory file), append `- <date> <time>: <class> /login → <account>` and write the class's account to $LOGIN_LEDGER_STATE
 #   (default ~/.cache/fleet-dash/login-ledger.json, key accounts.<class>) for the fleet-dash collector to merge into status.json.
 # Hook (SessionStart / UserPromptSubmit): stdin ignored, never fails a turn, prints nothing. `--selftest` runs the cases in a throwaway dir.
@@ -39,6 +39,7 @@ selftest() {
   (unset WM_SEAT; run); chk "changed account appended" "$(grep -c 'plain /login → b@x.dev' "$d/m.md")" 1
   chk "state accounts.plain" "$(jq -r .accounts.plain "$d/s.json")" b@x.dev
   chk "state accounts.aide" "$(jq -r .accounts.aide "$d/s.json")" b@x.dev
+  (WM_SEAT=ctl run); chk "WM_SEAT=ctl is its own class (reads ctl, not aide)" "$(grep -c 'ctl /login → b@x.dev' "$d/m.md")" 1
   chk "token never written" "$(cat "$d/m.md" "$d/s.json" | grep -c SECRET)" 0
   rm -rf "$d"; echo "selftest: $p PASS $f FAIL"; [ "$f" = 0 ]
 }

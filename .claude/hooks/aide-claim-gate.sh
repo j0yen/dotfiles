@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # aide-claim-gate.sh -- PreToolUse hook (Bash): two aide lanes must not act on the same PR (aide-lanes 10-27, mechanism 6; decisions/2026-10-27-aide-lanes-wwhtbt.md).
-# Scope: acts ONLY when WM_SEAT=aide; every other process exits 0 with no output. Inert until a claim file exists: ${FLEET_DASH_DIR:-~/.cache/fleet-dash}/claims/ is
+# Scope: acts ONLY when WM_SEAT=aide or ctl (carbon executor seat); every other process exits 0 with no output. Inert until a claim file exists: ${FLEET_DASH_DIR:-~/.cache/fleet-dash}/claims/ is
 # created by the first `aide-claim.sh take` or the first claim-on-act below.
 # Rule: for every PR object the command acts on, read claims/<repo>#<pr> (lines lane= sid= expires=<epoch>):
 #   - held by ANOTHER lane and unexpired -> deny, exit 2: `aide-claim-gate: <repo>#<pr> claimed by lane <lane> (sid ..., expires <time>); aide-claim.sh show <repo>#<pr>; ... release <repo>#<pr> --force` (steal, logged)
@@ -20,7 +20,7 @@
 # ADVISORY: task objects `task:<slug>` are claim-by-convention only, never parsed here: run `aide-claim.sh take task:<slug>` before a hand task.
 # Fails OPEN on a missing jq/python3 or a non-Bash payload.
 set -uo pipefail
-[ "${WM_SEAT:-}" = aide ] || exit 0
+case "${WM_SEAT:-}" in aide|ctl) ;; *) exit 0 ;; esac
 JQ=$(command -v jq) || exit 0
 PY=$(command -v python3) || exit 0
 INPUT=$(cat) || exit 0

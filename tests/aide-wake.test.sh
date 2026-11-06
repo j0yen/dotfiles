@@ -19,6 +19,8 @@ echo "more" >> "$t/ev/aide-events.log"
 out="$(echo '{"hook_event_name":"Stop"}' | env -u AIDE_WAKE_NOW WM_SEAT=plain "$H")"; [ -z "$out" ] && ok "non-aide session ignored" || bad "non-aide session ignored"
 out="$(echo '{"hook_event_name":"Stop"}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"
 jq -e '.decision=="block"' <<<"$out" >/dev/null 2>&1 && ok "blocks with pending work and no wake" || bad "blocks with pending work and no wake"
+out="$(echo '{"hook_event_name":"Stop"}' | env -u AIDE_WAKE_NOW WM_SEAT=ctl "$H")"
+jq -e '.decision=="block"' <<<"$out" >/dev/null 2>&1 && ok "WM_SEAT=ctl blocks with pending work and no wake (transition aide|ctl)" || bad "WM_SEAT=ctl blocks with pending work and no wake"
 [ -s "$t/state/heartbeat" ] && ok "heartbeat written" || bad "heartbeat written"
 out="$(echo '{"stop_hook_active":true}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "stop_hook_active allows" || bad "stop_hook_active allows"
 out="$(echo '{"agent_id":"x"}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "subagent allowed" || bad "subagent allowed"
@@ -39,6 +41,8 @@ jq -e '[.hooks.Stop[].hooks[] | select(.command=="/home/jsy/.claude/hooks/aide-w
 grep -q '^ExecStart=.*aide-wake.sh check' "$here/.config/systemd/user/aide-wake.service" && [ -f "$here/.config/systemd/user/aide-wake.timer" ] && ok "unit + timer present" || bad "unit + timer present"
 # launcher: records the pane inside tmux
 mkdir -p "$t/home/.config/environment.d"; echo 'CLAUDE_CODE_OAUTH_TOKEN=fake' > "$t/home/.config/environment.d/90-claude-oauth.conf"; echo '{}' > "$t/home/.claude.json"; printf '#!/bin/sh\nexit 0\n' > "$t/claude"; chmod +x "$t/claude"
-TMUX=x TMUX_PANE=%9 HOME="$t/home" AIDE_CLAUDE_BIN="$t/claude" AIDE_WAKE_DIR="$t/lp" AIDE_CLAUDE_JSON="$t/home/.claude.json" bash "$here/.local/bin/aide-launch.sh" >/dev/null 2>&1
-[ "$(cat "$t/lp/pane" 2>/dev/null)" = %9 ] && ok "aide-launch records TMUX_PANE" || bad "aide-launch records TMUX_PANE"
+TMUX=x TMUX_PANE=%9 HOME="$t/home" AIDE_CLAUDE_BIN="$t/claude" AIDE_WAKE_DIR="$t/lp" AIDE_CLAUDE_JSON="$t/home/.claude.json" bash "$here/.local/bin/ctl-launch.sh" >/dev/null 2>&1
+[ "$(cat "$t/lp/pane" 2>/dev/null)" = %9 ] && ok "ctl-launch records TMUX_PANE" || bad "ctl-launch records TMUX_PANE"
+rm -f "$t/lp/pane"; TMUX=x TMUX_PANE=%8 HOME="$t/home" AIDE_CLAUDE_BIN="$t/claude" AIDE_WAKE_DIR="$t/lp" AIDE_CLAUDE_JSON="$t/home/.claude.json" bash "$here/.local/bin/aide-launch.sh" >/dev/null 2>&1
+[ "$(cat "$t/lp/pane" 2>/dev/null)" = %8 ] && ok "aide-launch.sh shim records TMUX_PANE via ctl-launch.sh" || bad "aide-launch.sh shim records TMUX_PANE"
 exit $fail

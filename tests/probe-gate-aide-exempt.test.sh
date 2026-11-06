@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# probe-gate exemption for Joe's own sessions: the aide (WM_SEAT=aide, exported
-# only by aide-launch.sh) and a plain `claude` (no WM_SEAT, approvals #195 11-01)
-# are NOT gated; a fleet seat (WM_SEAT=ctl/rb) IS gated (exit 2).
+# probe-gate exemption for Joe's own sessions: the carbon executor seat (WM_SEAT=ctl,
+# exported only by ctl-launch.sh since 2026-11-06; WM_SEAT=aide before, still accepted)
+# and a plain `claude` (no WM_SEAT, approvals #195 11-01) are NOT gated;
+# a fleet seat (WM_SEAT=rb) IS gated (exit 2).
 set -uo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 gate="$here/.claude/hooks/probe-gate.sh"
@@ -22,9 +23,11 @@ run aide-marker-exempt-anyhost 0 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=aide
 run plain-carbon-exempt        0 PROBE_GATE_HOSTNAME=carbon
 run plain-tmux-exempt          0 PROBE_GATE_HOSTNAME=carbon TMUX=/tmp/tmux-1000/default,1,0
 run plain-other-host-exempt    0 PROBE_GATE_HOSTNAME=redbaron
-run seat-ctl-gated             2 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
+run ctl-marker-exempt          0 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
+run ctl-marker-exempt-anyhost  0 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=ctl
+run seat-r7-gated              2 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=r7
 run seat-rb-gated              2 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=rb
-grep -q '"${WM_SEAT:-}" = aide' "$gate" && echo "PASS gate-has-aide-predicate" || { echo "FAIL gate-has-aide-predicate"; fail=1; }
-grep -q -- '-z "${WM_SEAT:-}"' "$gate" && echo "PASS gate-has-plain-predicate" || { echo "FAIL gate-has-plain-predicate"; fail=1; }
+grep -qE '""\|aide\|ctl\)' "$gate" && echo "PASS gate-has-aide-and-ctl-predicate" || { echo "FAIL gate-has-aide-and-ctl-predicate"; fail=1; }
+grep -qF 'case "${WM_SEAT:-}" in ""' "$gate" && echo "PASS gate-has-plain-predicate" || { echo "FAIL gate-has-plain-predicate"; fail=1; }
 if sed 's/#.*//' "$gate" | grep -q 'hostname'; then echo "FAIL gate-still-reads-hostname"; fail=1; else echo "PASS gate-does-not-infer-aide-from-hostname"; fi
 exit $fail

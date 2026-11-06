@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # model-role-check.sh: warn loudly when a session's live model differs from its role's required model.
 # Registered on SessionStart + UserPromptSubmit. Never blocks: always exits 0.
-# PREMISE: role from WM_SEAT (rb/r7/ctl/aide; aide set only by aide-launch.sh) or tmux session name; a plain session has no role; EXPIRES: 2026-11-21
-# Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats) FIRST, else the tmux session name.
-# Roles: tmux rb|r7 -> that role; tmux ctl -> controller; non-tmux on carbon -> aide (a label: NO table row, any model allowed, silent).
+# PREMISE: role from WM_SEAT (rb/r7/ctl/aide; ctl = the carbon executor seat set only by ctl-launch.sh, aide before 2026-11-06) or tmux session name (legacy: session ctl -> controller); a plain session has no role; EXPIRES: 2026-11-21
+# Seat identity: env WM_SEAT (rb|r7|ctl|aide; systemd-unit seats) FIRST, else the tmux session name.
+# Roles: WM_SEAT ctl -> role ctl (its table row arrives in hermes-handover 2.3; no row = silent); tmux rb|r7 -> that role; tmux ctl -> controller (legacy); WM_SEAT aide -> aide (a label: NO table row, any model allowed, silent).
 # Table: /home/jsy/.claude/state/controller-model-required ("<role> <model-id>" per line).
 # Test hooks (selftest only): MRC_TABLE, MRC_FORCE_ROLE, MRC_SKIP_FALLBACK.
 set -u
@@ -37,7 +37,7 @@ print(g(paths.get(f,[])))' "$1" 2>/dev/null
 
 detect_role() {
   if [ -n "${MRC_FORCE_ROLE:-}" ]; then printf '%s' "$MRC_FORCE_ROLE"; return; fi
-  case "${WM_SEAT:-}" in rb|r7|aide) printf '%s' "$WM_SEAT"; return ;; ctl) printf 'controller'; return ;; esac
+  case "${WM_SEAT:-}" in rb|r7|aide|ctl) printf '%s' "$WM_SEAT"; return ;; esac
   if [ -n "${TMUX:-}" ]; then
     local s
     if [ -n "${TMUX_PANE:-}" ]; then s=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
@@ -109,7 +109,7 @@ check() {
 }
 
 selftest() {
-  echo "PREMISE: role from WM_SEAT (rb/r7/ctl/aide; aide set only by aide-launch.sh) or tmux session name; a plain session has no role; EXPIRES: 2026-11-21"
+  echo "PREMISE: role from WM_SEAT (rb/r7/ctl/aide; ctl = the carbon executor seat set only by ctl-launch.sh, aide before 2026-11-06) or tmux session name (legacy: session ctl -> controller); a plain session has no role; EXPIRES: 2026-11-21"
   local d fail=0 out
   d=$(mktemp -d /home/jsy/.cache/tmp/mrc-selftest.XXXXXX) || { echo "FAIL setup"; return 1; }
   printf 'controller claude-fable-5-1\nrb claude-opus-5-5\nr7 claude-fable-5-1\n' > "$d/table"
@@ -134,10 +134,10 @@ selftest() {
   done
   for sn in rb r7 ctl aide bogus; do
     out=$(unset TMUX TMUX_PANE MRC_FORCE_ROLE; WM_SEAT=$sn detect_role)
-    case "$sn:$out" in rb:rb|r7:r7|ctl:controller|aide:aide) echo "PASS WM_SEAT=$sn (no tmux) -> role '$out'" ;; bogus:) echo "PASS WM_SEAT=bogus ignored -> '<none>'" ;; *) echo "FAIL WM_SEAT=$sn -> '$out'"; fail=1 ;; esac
+    case "$sn:$out" in rb:rb|r7:r7|ctl:ctl|aide:aide) echo "PASS WM_SEAT=$sn (no tmux) -> role '$out'" ;; bogus:) echo "PASS WM_SEAT=bogus ignored -> '<none>'" ;; *) echo "FAIL WM_SEAT=$sn -> '$out'"; fail=1 ;; esac
   done
   printf '#!/bin/sh\necho rb\n' > "$d/bin/tmux"; out=$(unset TMUX_PANE MRC_FORCE_ROLE WM_SEAT; PATH="$d/bin:$PATH" TMUX=fake WM_SEAT=ctl detect_role)
-  [ "$out" = controller ] && echo "PASS WM_SEAT wins over tmux session name" || { echo "FAIL WM_SEAT vs tmux: '$out'"; fail=1; }
+  [ "$out" = ctl ] && echo "PASS WM_SEAT wins over tmux session name" || { echo "FAIL WM_SEAT vs tmux: '$out'"; fail=1; }
   out=$(unset TMUX TMUX_PANE MRC_FORCE_ROLE WM_SEAT; detect_role)
   [ -z "$out" ] && echo "PASS no WM_SEAT, no tmux -> no role (plain session, not the aide)" || { echo "FAIL plain session -> '$out'"; fail=1; }
   out=$(check aide "$d/mismatch.jsonl")

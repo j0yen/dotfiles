@@ -36,6 +36,8 @@ a="$("$ASK" tst "rb 6:1x AM: ask body" 2>&1)"
 # aide lanes (step 3b ii): seat_stamp_source
 src() { env -i PATH="$PATH" "$@" bash -c ". '$here/.local/lib/seat-time-stamp.sh'; seat_stamp_source"; }
 [ "$(src WM_SEAT=aide WM_AIDE_LANE=build)" = "aide:build" ]; ok "WM_SEAT=aide WM_AIDE_LANE=build -> source aide:build" $?
+[ "$(src WM_SEAT=ctl WM_AIDE_LANE=build)" = "aide:build" ]; ok "WM_SEAT=ctl WM_AIDE_LANE=build -> source aide:build (lane inbox stays aide-addressed)" $?
+[ "$(src WM_SEAT=ctl)" = "ctl" ]; ok "WM_SEAT=ctl, no lane -> source ctl" $?
 [ "$(src WM_SEAT=aide WM_AIDE_LANE=main)" = "aide" ]; ok "WM_AIDE_LANE=main -> source aide" $?
 [ "$(src WM_SEAT=aide)" = "aide" ]; ok "WM_AIDE_LANE unset -> source aide" $?
 [ "$(src WM_SEAT=aide WM_AIDE_LANE=build EVENT_SOURCE=x)" = "x" ]; ok "EVENT_SOURCE=x wins over the lane" $?

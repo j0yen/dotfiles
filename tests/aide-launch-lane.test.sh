@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# aide-launch.sh --lane (aide-lanes step 3): main default, 65 without the lane-branch marker, ROOM check (75) for non-main only, 64 bad name.
+# ctl-launch.sh --lane (aide-lanes step 3; the launcher is ctl-launch.sh since 2026-11-06, aide-launch.sh = shim, hermes-handover 2.1): main default, 65 without the lane-branch marker, ROOM check (75) for non-main only, 64 bad name.
 # Throwaway HOME, stub claude binary (prints WM_SEAT / WM_AIDE_LANE by name and the args), never a real claude.
 set -u
-L="$(cd "$(dirname "$0")/.." && pwd)/.local/bin/aide-launch.sh"
+L="$(cd "$(dirname "$0")/.." && pwd)/.local/bin/ctl-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 fail=0; ok() { echo "PASS $1"; }; bad() { echo "FAIL $1"; fail=1; }
 mkdir -p "$T/.config/environment.d" "$T/.cache/fleet-dash"
@@ -19,7 +19,7 @@ go() { # <meminfo> <hook> args... ; extra env via E=
   env HOME="$T" STUBLOG="$T/stublog" AIDE_CLAUDE_BIN="$T/stub" AIDE_LANE_MEMINFO="$mem" AIDE_INBOX_HOOK="$hook" $E bash "$L" "$@" >"$T/out" 2>"$T/err"; rc=$?
 }
 E=; go "$T/mem-small" "$T/hook-no"
-[ $rc = 0 ] && grep -q 'WM_SEAT=aide WM_AIDE_LANE=main' "$T/stublog" && ! grep -q disallowedTools "$T/stublog"; [ $? = 0 ] && ok "no flag: WM_AIDE_LANE=main, no --disallowedTools, no room check even at 2000000 kB, no marker needed" || bad "no flag path"
+[ $rc = 0 ] && grep -q 'WM_SEAT=ctl WM_AIDE_LANE=main' "$T/stublog" && ! grep -q disallowedTools "$T/stublog"; [ $? = 0 ] && ok "no flag: WM_AIDE_LANE=main, no --disallowedTools, no room check even at 2000000 kB, no marker needed" || bad "no flag path"
 grep -q -- '--dangerously-skip-permissions' "$T/stublog" && ok "main args keep --dangerously-skip-permissions" || bad "main args"
 go "$T/mem-big" "$T/hook-no" --lane build
 [ $rc = 65 ] && [ ! -s "$T/stublog" ] && grep -q 'needs the lane branch deployed' "$T/err" && ok "--lane build without marker: exit 65, stub never called" || bad "marker refusal rc=$rc"
@@ -37,9 +37,18 @@ go "$T/mem-big" "$T/hook-yes" --lane build --model x
 grep -q -- '--disallowedTools ScheduleWakeup --model' "$T/stublog" && ok "caller claude args follow the lane flags" || bad "arg order"
 go "$T/mem-big" "$T/hook-yes" --lane build --resume abc
 grep -q -- '--resume abc' "$T/stublog" && ok "--resume passes through" || bad "resume passthrough"
+# compat shim: aide-launch.sh execs ctl-launch.sh (same stub, same WM_SEAT=ctl) and carries no launcher logic of its own
+SH="$(dirname "$L")/aide-launch.sh"
+: >"$T/stublog"; env HOME="$T" STUBLOG="$T/stublog" AIDE_CLAUDE_BIN="$T/stub" bash "$SH" --model x >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && grep -q 'WM_SEAT=ctl WM_AIDE_LANE=main' "$T/stublog" && ok "aide-launch.sh shim reaches the stub with WM_SEAT=ctl" || bad "shim launch rc=$rc"
+grep -q 'ctl-launch.sh' "$SH" && [ "$(grep -vc '^#' "$SH")" -le 3 ] && ok "aide-launch.sh is a shim that names ctl-launch.sh" || bad "aide-launch.sh not a shim"
+grep -q '^export WM_SEAT=ctl$' "$L" && ! grep -q '^export WM_SEAT=aide' "$L" && ok "ctl-launch.sh exports WM_SEAT=ctl" || bad "ctl-launch.sh WM_SEAT assignment"
 # AIDE CARD: a lane prints `lane: <name>`; main's card has no lane line (byte-for-byte)
 H="$(cd "$(dirname "$L")/../.." && pwd)/.claude/hooks/seat-context-start.sh"
 card() { env -u TMUX HOME="$T" WM_SEAT=aide WM_AIDE_LANE="$1" bash "$H" </dev/null 2>/dev/null | head -n3; }
 card build | grep -qx 'lane: build' && ok "AIDE CARD shows 'lane: build'" || bad "card lane line"
 card main | grep -q '^lane:' && bad "main card gained a lane line" || ok "main card unchanged (no lane line)"
+cardc() { env -u TMUX HOME="$T" WM_SEAT="$1" bash "$H" </dev/null 2>/dev/null | head -n3; }
+cardc ctl | grep -q '^=== CTL CARD' && ok "WM_SEAT=ctl prints CTL CARD" || bad "ctl card header"
+cardc aide | grep -q '^=== AIDE CARD' && ok "WM_SEAT=aide still prints AIDE CARD" || bad "aide card header"
 exit $fail

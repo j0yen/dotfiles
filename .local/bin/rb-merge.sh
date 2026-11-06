@@ -52,7 +52,7 @@ WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
 
 # DISCOVERY CHAIN GUARD (r7 9:26 PM, ctl 382b, approval 51): r7 merged synthorg #449 from its own seat; r7 verifies and gates, the AIDE runs this script.
-# A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
+# A PR in a CHAIN_REPOS repo merges only with WM_SEAT=aide or ctl, or with --handoff <d-id> naming a wm-decide row (read-only `list --json`) whose agent is aide and whose text names this repo and pr=N / #N.
 CHAIN_REPOS=(j0yen/synthorg)   # the ONE place the discovery chain repos are listed (no other dotfiles script keeps this set: hand-pr-land-driver HPLD_REPOS is the wider hand-PR set)
 chain_guard() {
   local r in_chain=0
@@ -63,7 +63,7 @@ chain_guard() {
   fi
   for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$NREPO" ] && in_chain=1; done
   [ "$in_chain" = 1 ] || return 0
-  [ "${WM_SEAT:-}" = aide ] && return 0
+  case "${WM_SEAT:-}" in aide|ctl) return 0 ;; esac
   if [ -n "$handoff" ]; then
     local rows
     if rows="$("$WM_DECIDE" list --since 30d --json 2>/dev/null)" && printf '%s' "$rows" | python3 -I -c '

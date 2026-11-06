@@ -30,10 +30,11 @@ state_dir() { printf "%s" "${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"; }
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
   [ -s "$f" ] && [ -n "$seat" ] || return 0
-  awk -F'\t' -v seat="$seat" -v now="$now" -v grace="$((GRACE * 60))" '
+  local alt=""; case "$seat" in aide) alt=ctl ;; ctl) alt=aide ;; esac   # carbon executor seat: rows owned by aide or ctl (hermes-handover 2.2)
+  awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" '
     $0 == "# CLOSED" { exit }
     /^#/ || NF < 7 { next }
-    seat != "-" && $3 != seat { next }
+    seat != "-" && $3 != seat && (alt == "" || $3 != alt) { next }
     $2 ~ /^(MET|DONE|CANCELLED|MOOT)/ { next }
     {
       due = $4; gsub(/T/, " ", due); gsub(/[+-][0-9][0-9]:?[0-9][0-9]$|Z$/, "", due)
@@ -161,6 +162,8 @@ selftest() {
   t "$([ -z "$out" ] && echo 0 || echo 1)" "subagent never blocked"
   out="$(WM_SEAT=aide hook <<<'{"hook_event_name":"UserPromptSubmit","session_id":"zz"}')"
   t "$(jq -e '.hookSpecificOutput.additionalContext|test("A1")' <<<"$out" >/dev/null && echo 0 || echo 1)" "UserPromptSubmit lists rows for WM_SEAT"
+  out="$(WM_SEAT=ctl hook <<<'{"hook_event_name":"UserPromptSubmit","session_id":"zz"}')"
+  t "$(jq -e '.hookSpecificOutput.additionalContext|test("A1")' <<<"$out" >/dev/null && echo 0 || echo 1)" "WM_SEAT=ctl lists the aide-owned rows (carbon executor seat, transition aide|ctl)"
   out="$(printf '{"hook_event_name":"Stop","session_id":"nobody","stop_hook_active":false}' | hook)"
   t "$([ -z "$out" ] && echo 0 || echo 1)" "plain session (no seat) passes"
   out="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"sid-rb"}' | hook >/dev/null; for i in 1 2 3 4; do r="$(printf '{"hook_event_name":"Stop","session_id":"sid-rb","stop_hook_active":true}' | hook)"; [ -z "$r" ] && echo pass || jq -r '.decision' <<<"$r"; done | tr '\n' ' ')"

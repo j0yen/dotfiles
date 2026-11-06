@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# aide-wake-stop.sh: Stop hook, aide only (WM_SEAT=aide). Joe 10-31 10:33 AM "NEVER EVER BE IDLE", approvals #127; open-asks A7.
+# aide-wake-stop.sh: Stop hook, carbon executor seat only (WM_SEAT=aide or ctl). Joe 10-31 10:33 AM "NEVER EVER BE IDLE", approvals #127; open-asks A7.
 # Records the turn end (heartbeat). Blocks the turn end ONCE when the aide has pending work (unread inbox lines, DELAY/OVERDUE rows) and no live
 # wake is armed (aide-wake.sh arm <minutes>, called after CronCreate). stop_hook_active true = allow (one block per turn). Subagents are never blocked.
 # Any failure allows. Env: AIDE_WAKE_BIN (default ~/.local/bin/aide-wake.sh), AIDE_WAKE_DIR.
 set -u
-[ "${WM_SEAT:-}" = aide ] || exit 0
+case "${WM_SEAT:-}" in aide|ctl) ;; *) exit 0 ;; esac
 in="$(cat 2>/dev/null)"
 command -v jq >/dev/null 2>&1 || exit 0
 [ -z "$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)" ] || exit 0

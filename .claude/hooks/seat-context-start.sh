@@ -2,17 +2,18 @@
 # SessionStart hook: in an rb/r7/ctl seat (tmux session named rb, r7 or ctl),
 # print goal.md § Stage and the fleet-operations playbook so the seat starts on
 # the current stage without anyone remembering to paste it. In the aide
-# (WM_SEAT=aide, set only by aide-launch.sh) print the short AIDE CARD instead.
+# (WM_SEAT=aide, or ctl since the 2026-11-06 rename, set only by ctl-launch.sh) print the short AIDE CARD (CTL CARD under ctl) instead.
 # Silent elsewhere, including a plain `claude` on carbon (Joe's own session, 10-23).
-# PREMISE: seats are identified by WM_SEAT (systemd units) or tmux session names; the seats live in tmux sessions named rb/r7/ctl on carbon (CLAUDE.md § Hosts); the aide is WM_SEAT=aide.
+# PREMISE: seats are identified by WM_SEAT (systemd units) or tmux session names; the seats live in tmux sessions named rb/r7/ctl on carbon (CLAUDE.md § Hosts); the carbon executor seat is WM_SEAT=ctl (aide before 2026-11-06, still accepted).
 set -u
 aide_card() {  # <= 8 lines; every source optional; never fails
   local fd="$HOME/.cache/fleet-dash" tmr=disabled lt=none last fs fsl age tick ts tt
   [ "$(timeout 5 systemctl --user is-enabled seat-tick@ctl.timer 2>/dev/null)" = enabled ] && tmr=enabled
   lt=$(timeout 5 jq -r '.last_tick.epoch // empty' "$fd/ctl-tick.json" 2>/dev/null); [ -n "$lt" ] && lt=$(date -d "@$lt" '+%-I:%M %p' 2>/dev/null); [ -n "$lt" ] || lt=none
-  echo "=== AIDE CARD (carbon, this session is Joe's channel) ==="
+  local card=AIDE role=aide; [ "${WM_SEAT:-}" = ctl ] && { card=CTL; role=ctl; }
+  echo "=== $card CARD (carbon, this session is Joe's channel) ==="
   [ "${WM_AIDE_LANE:-main}" = main ] || echo "lane: $WM_AIDE_LANE"   # aide-lanes: non-main lanes only, main's card stays byte-for-byte
-  echo "role: aide · controller: unit seat-tick@ctl (timer: $tmr, last tick: $lt) · approvals: ~/.claude/state/approvals.log (writer: approve.sh \"<quote>\" \"<re>\")"
+  echo "role: $role · controller: unit seat-tick@ctl (timer: $tmr, last tick: $lt) · approvals: ~/.claude/state/approvals.log (writer: approve.sh \"<quote>\" \"<re>\")"
   last=$(timeout 5 "$HOME/.local/bin/approve.sh" --last 2 2>/dev/null | cut -c1-200)
   if [ -n "$last" ] && [ "$last" != none ]; then
     echo "last approvals: $(printf '%s\n' "$last" | head -n1)"; printf '%s\n' "$last" | sed -n '2p' | sed 's/^/                /'
@@ -57,7 +58,12 @@ fu_print() {
   return 0
 }
 # Seat identity: env WM_SEAT (rb|r7|ctl; systemd-unit seats, no tmux) FIRST, else the tmux session name.
-case "${WM_SEAT:-}" in rb|r7|ctl) sess="$WM_SEAT" ;; aide) aide_card; owed_lines aide; fu_print aide; timers_check; exit 0 ;; *) sess="" ;; esac
+case "${WM_SEAT:-}" in
+  rb|r7) sess="$WM_SEAT" ;;
+  aide) aide_card; owed_lines aide; fu_print aide; timers_check; exit 0 ;;
+  ctl) aide_card; owed_lines ctl; fu_print ctl; owed_lines aide; fu_print aide; timers_check; exit 0 ;;   # ctl = carbon executor seat (aide merged in, Joe 11-06 #244): card + both names' owed lines
+  *) sess="" ;;
+esac
 if [ -z "$sess" ]; then
   [ -z "${TMUX:-}" ] && exit 0
   sess=$(tmux display-message -p '#S' 2>/dev/null) || exit 0
