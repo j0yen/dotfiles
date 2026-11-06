@@ -61,7 +61,8 @@ fu_print() {
 case "${WM_SEAT:-}" in
   rb|r7) sess="$WM_SEAT" ;;
   aide) aide_card; owed_lines aide; fu_print aide; timers_check; exit 0 ;;
-  ctl) aide_card; owed_lines ctl; fu_print ctl; owed_lines aide; fu_print aide; timers_check; exit 0 ;;   # ctl = carbon executor seat (aide merged in, Joe 11-06 #244): card + both names' owed lines
+  ctl) if [ -n "${WM_AIDE_LANE:-}" ]; then aide_card; owed_lines ctl; fu_print ctl; owed_lines aide; fu_print aide; timers_check; exit 0; fi   # ctl + WM_AIDE_LANE = the carbon executor launched by ctl-launch.sh (aide merged in, Joe 11-06 #244): card + both names' owed lines
+       sess=ctl ;;   # ctl without WM_AIDE_LANE = the seat-tick@ctl controller unit: compact/resume § Stage payload (tests/seat-compact-payload.test.sh)
   *) sess="" ;;
 esac
 if [ -z "$sess" ]; then
