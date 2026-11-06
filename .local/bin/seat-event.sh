@@ -209,7 +209,7 @@ if inbox_seat "$SEAT"; then { flock 7; bump inbox_only; } 7>>"$DIR/$SEAT-events.
 [ "${SEAT_EVENT_NOWAKE:-}" = 1 ] && exit 0
 
 # hold gate (hermes-handover 2.4): only the wake (systemd-run seat-tick --event / .wake) is gated; the log append above is the receipt channel and has already happened, so the exit stays 0
-"$HOME/.local/bin/hold-gate.sh" "seat-event:$SEAT" || exit 0
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" "seat-event:$SEAT" || exit 0
 
 # wake: is a turn running? (flock -n, released at once; the lock file is the one seat-tick.sh holds for a whole turn)
 if ( flock -n 9 ) 9>>"$DIR/$SEAT.lock" 2>/dev/null; then
