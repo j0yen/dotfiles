@@ -48,7 +48,9 @@ H="$(cd "$(dirname "$L")/../.." && pwd)/.claude/hooks/seat-context-start.sh"
 card() { env -u TMUX HOME="$T" WM_SEAT=aide WM_AIDE_LANE="$1" bash "$H" </dev/null 2>/dev/null | head -n3; }
 card build | grep -qx 'lane: build' && ok "AIDE CARD shows 'lane: build'" || bad "card lane line"
 card main | grep -q '^lane:' && bad "main card gained a lane line" || ok "main card unchanged (no lane line)"
-cardc() { env -u TMUX HOME="$T" WM_SEAT="$1" bash "$H" </dev/null 2>/dev/null | head -n3; }
-cardc ctl | grep -q '^=== CTL CARD' && ok "WM_SEAT=ctl prints CTL CARD" || bad "ctl card header"
+# WM_SEAT=ctl is shared: ctl-launch.sh exports it WITH WM_AIDE_LANE (card); the seat-tick@ctl unit has no lane (compact/resume payload, tests/seat-compact-payload.test.sh)
+cardc() { env -u TMUX -u WM_AIDE_LANE HOME="$T" WM_SEAT="$1" ${2:+WM_AIDE_LANE="$2"} bash "$H" </dev/null 2>/dev/null | head -n3; }
+cardc ctl main | grep -q '^=== CTL CARD' && ok "WM_SEAT=ctl + WM_AIDE_LANE prints CTL CARD" || bad "ctl card header"
+cardc ctl | grep -q '^=== CTL CARD' && bad "WM_SEAT=ctl without WM_AIDE_LANE printed the card (seat-tick@ctl unit path)" || ok "WM_SEAT=ctl without a lane skips the card"
 cardc aide | grep -q '^=== AIDE CARD' && ok "WM_SEAT=aide still prints AIDE CARD" || bad "aide card header"
 exit $fail
