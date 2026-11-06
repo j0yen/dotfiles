@@ -4,7 +4,7 @@
 #            (the aide is an INBOX-ONLY seat in seats.tsv: never woken, only appended to; row: `seat-event.sh --inbox-row aide`)
 #   cursor = $EVENTS_DIR/aide-events.cursor (byte offset into the log; missing or malformed = 0; beyond EOF = the log was rotated/truncated, reset to 0)
 #   output = header, the new lines verbatim (each at most 2000 chars, longer ones cut with `…`; control bytes dropped), a footer. NOTHING when there is nothing new.
-# Runs only in the aide: WM_SEAT=aide, exported by aide-launch.sh alone (the predicate of probe-gate.sh § 1b / seat-context-start.sh; a plain `claude` on carbon is Joe's own session, 10-23).
+# Runs only in the carbon executor seat: WM_SEAT=aide or ctl (ctl-launch.sh exports ctl since 2026-11-06, hermes-handover 2.2; aide kept for the transition), exported by ctl-launch.sh alone (the predicate of probe-gate.sh § 1b / seat-context-start.sh; a plain `claude` on carbon is Joe's own session, 10-23).
 #   AIDE_INBOX_HOSTNAME (else PROBE_GATE_HOSTNAME) overrides the hostname for tests.
 # Event name: $1, else .hook_event_name of the stdin JSON; only UserPromptSubmit / SessionStart (or none: manual run) act.
 # Also records the aide's session id: when the stdin JSON carries .session_id (every real hook call), it is appended once to
@@ -39,7 +39,7 @@ run() {
     [ -n "$ev" ] || ev="$(printf '%s' "$in" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
   fi
   case "$ev" in ""|UserPromptSubmit|SessionStart) ;; *) return 0 ;; esac
-  [ "${WM_SEAT:-}" = aide ] || return 0
+  case "${WM_SEAT:-}" in aide|ctl) ;; *) return 0 ;; esac
   local dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
   local log="$dir/aide-events.log" cur="$dir/aide-events.cursor" sids="$dir/aide-sids" sid
   # lanes (aide-lanes 10-27): WM_AIDE_LANE unset/main = the paths above, byte-for-byte; a lane L reads its own addressed log + cursor
@@ -142,10 +142,11 @@ selftest() {
   ! printf '%s' "$out" | grep -q $'\033' && printf '%s' "$out" | grep -q 'esc \[31mred\[0m end'; chk "control bytes (ESC) stripped" $?
   # non-aide envs: silent and the cursor untouched
   printf 'e | f | unread\n' >>"$L"; before="$(cat "$C")"
-  out="$(env -u TMUX EVENTS_DIR="$D" HOME="$T" WM_SEAT=ctl AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "WM_SEAT=ctl: silent, cursor untouched" $?
+  out="$(env -u TMUX EVENTS_DIR="$D" HOME="$T" WM_SEAT=rb AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "WM_SEAT=rb: silent, cursor untouched" $?
   out="$(env -u WM_SEAT -u TMUX EVENTS_DIR="$D" HOME="$T" AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "plain carbon session (no WM_SEAT, no tmux): silent, cursor untouched" $?
   out="$(env -u WM_SEAT EVENTS_DIR="$D" HOME="$T" TMUX=/tmp/x,1,0 AIDE_INBOX_HOSTNAME=carbon bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ] && [ "$(cat "$C")" = "$before" ]; chk "TMUX set, no marker: silent, cursor untouched" $?
   out="$(aide bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; printf '%s\n' "$out" | head -n1 | grep -q 'AIDE INBOX: 1 new'; chk "back in the aide env the unread line is delivered" $?
+  printf 'ctl | rb | ctl-unread\n' >>"$L"; out="$(env -u TMUX EVENTS_DIR="$D" HOME="$T" WM_SEAT=ctl bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; printf '%s\n' "$out" | head -n1 | grep -q 'AIDE INBOX: 1 new' && printf '%s' "$out" | grep -q ctl-unread; chk "WM_SEAT=ctl runs the inbox like the aide (transition aide|ctl)" $?
   # never fails the prompt: unwritable events dir / bad cursor path
   mkdir -p "$T/ro"; printf 'g | h | i\n' >"$T/ro/aide-events.log"; chmod 500 "$T/ro"
   env -u TMUX EVENTS_DIR="$T/ro" HOME="$T" WM_SEAT=aide bash "$SELF" UserPromptSubmit </dev/null >/dev/null 2>&1; chk "unwritable events dir: exit 0" $?
@@ -164,7 +165,7 @@ selftest() {
   printf 'not json' >"$E/status.json"; out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: unparseable status.json: silent, exit 0" $?
   printf '{"timers_stalled":[{"host":"h","unit":"u.timer","reason":"no_next"}]}' >"$E/status.json"; printf 'a | b | c\n' >"$E/aide-events.log"
   out="$(ta bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ "$(printf '%s\n' "$out" | head -n1 | cut -c1-6)" = ALARM: ] && printf '%s' "$out" | grep -q 'AIDE INBOX: 1 new'; chk "timers alarm: printed before the inbox block" $?
-  out="$(env -u TMUX EVENTS_DIR="$E" HOME="$T" WM_SEAT=ctl bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: non-aide seat: silent" $?
+  out="$(env -u TMUX EVENTS_DIR="$E" HOME="$T" WM_SEAT=rb bash "$SELF" UserPromptSubmit </dev/null 2>&1)"; [ -z "$out" ]; chk "timers alarm: non-aide seat: silent" $?
   # lanes: a lane reads only its own addressed log/cursor and leaves the main cursor alone; sid line carries the lane
   local LD="$T/lane"; mkdir -p "$LD"; printf 'm | rb | main only\n' >"$LD/aide-events.log"; printf 'b | pc | lane only\n' >"$LD/aide-build-events.log"
   out="$(printf '{"session_id":"sid-lane-0001"}' | env -u TMUX EVENTS_DIR="$LD" HOME="$T" WM_SEAT=aide WM_AIDE_LANE=build bash "$SELF" SessionStart 2>&1)"

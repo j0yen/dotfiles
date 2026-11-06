@@ -22,7 +22,7 @@ syn_repo="${HANDOFF_SYNTHORG_REPO:-$HOME/repos/synthorg}"
 out="$memdir/handoff-generated-$(hostname -s 2>/dev/null || echo unknown).md" # per-host: concurrent hosts never share a file (Fable review 10-20)
 # aide lanes (10-27): a non-main lane writes its own file, so its SessionEnd never clobbers the main aide's per-host handoff; main/unset unchanged
 lane_applied=0; _lane="${WM_AIDE_LANE:-main}"
-if [ "${WM_SEAT:-}" = aide ] && [ "$_lane" != main ] && [[ "$_lane" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+if { [ "${WM_SEAT:-}" = aide ] || [ "${WM_SEAT:-}" = ctl ]; } && [ "$_lane" != main ] && [[ "$_lane" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
   out="$memdir/handoff-generated-$(hostname -s 2>/dev/null || echo unknown)-$_lane.md"; lane_applied=1
 fi
 while [ $# -gt 0 ]; do

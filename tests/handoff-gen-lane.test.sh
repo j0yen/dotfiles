@@ -12,6 +12,9 @@ env WM_SEAT=aide WM_AIDE_LANE=build "$HGEN"
 [ ! -e "$HANDOFF_MEMORY_DIR/handoff-generated-$host.md" ]; assert_eq "$?" "0" "lane build: per-host handoff-generated-$host.md absent (main's file never clobbered)"
 assert_eq "$(cmp "$m" "$work/before.md" && echo same)" "same" "lane build: MEMORY.md byte-identical (no index block)"
 rm -f "$HANDOFF_MEMORY_DIR"/handoff-generated-*
+env WM_SEAT=ctl WM_AIDE_LANE=build "$HGEN"
+[ -s "$HANDOFF_MEMORY_DIR/handoff-generated-$host-build.md" ] && [ ! -e "$HANDOFF_MEMORY_DIR/handoff-generated-$host.md" ]; assert_eq "$?" "0" "WM_SEAT=ctl lane build: lane file written, per-host file absent (transition aide|ctl)"
+rm -f "$HANDOFF_MEMORY_DIR"/handoff-generated-*
 env WM_SEAT=aide WM_AIDE_LANE=main "$HGEN"
 [ -s "$HANDOFF_MEMORY_DIR/handoff-generated-$host.md" ] && [ ! -e "$HANDOFF_MEMORY_DIR/handoff-generated-$host-main.md" ]; assert_eq "$?" "0" "lane main: today's per-host file name"
 assert_eq "$(grep -c 'handoff-generated-' "$m")" "1" "lane main: index line added once"

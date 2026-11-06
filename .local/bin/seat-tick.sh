@@ -170,7 +170,7 @@ has_tty_or_tmux() {   # has_tty_or_tmux <pid>: 0 = tty (tty_nr != 0) or tmux anc
   return 1
 }
 
-# The aide seat is keyed on WM_SEAT=aide (set only by aide-launch.sh), never on any interactive claude: a plain carbon `claude` that holds a tty is Joe's own session (A276).
+# The aide seat is keyed on WM_SEAT=aide or ctl (set only by ctl-launch.sh; ctl since 2026-11-06, hermes-handover 2.2), never on any interactive claude: a plain carbon `claude` that holds a tty is Joe's own session (A276).
 # is_aide_holder <pid>: 0 unless SEAT is aide and the process environment names a different WM_SEAT; unreadable environ = cannot tell = holder. Selftest hook:
 # SEAT_GUARD_WMSEAT_OVERRIDE=<pid>:<value>[,...] decides for the listed pids (value `-` = unset), honoured only under SEAT_TICK_SELFTEST=1.
 is_aide_holder() {
@@ -178,11 +178,11 @@ is_aide_holder() {
   [ "${SEAT:-}" = aide ] || return 0
   if [ "${SEAT_TICK_SELFTEST:-}" = 1 ] && [ -n "${SEAT_GUARD_WMSEAT_OVERRIDE:-}" ]; then
     IFS=, read -ra ov <<<"$SEAT_GUARD_WMSEAT_OVERRIDE"
-    for o in "${ov[@]}"; do [ "${o%%:*}" = "$pid" ] && { [ "${o#*:}" = aide ]; return; }; done
+    for o in "${ov[@]}"; do [ "${o%%:*}" = "$pid" ] && { [ "${o#*:}" = aide ] || [ "${o#*:}" = ctl ]; return; }; done
   fi
   [ -r "/proc/$pid/environ" ] || return 0
   val="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^WM_SEAT=//p' | tail -n1)" || return 0
-  [ "$val" = aide ]
+  [ "$val" = aide ] || [ "$val" = ctl ]
 }
 
 # guard: returns 1 and prints the reason (with the pid it actually found) if the INTERACTIVE seat is alive; returns 0 and prints a note otherwise.

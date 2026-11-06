@@ -27,9 +27,11 @@ grep -Eq -- 'rotate\.sh acctB joe-20261101 joe-0930 .*aide-relaunch\.sh joe-swit
 [ ! -e "$t/ran.log" ] && ok "dry-run ran no stub" || bad "dry-run ran a stub"
 # arm path with the systemd-run stub
 bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && grep -q 'STUB-RAN systemd-run' "$t/ran.log" && ok "armed through the systemd-run stub" || bad "arm via stub"
-# missing aide-relaunch.sh -> exit 2, nothing armed
+# missing aide-relaunch.sh -> exit 2, nothing armed. The script also looks beside itself ($here), and the repo ships
+# .local/bin/aide-relaunch.sh (a ctl-relaunch.sh shim since the ctl handover), so this case runs a copy from an empty dir.
 rm -f "$t/stub/aide-relaunch.sh" "$t/ran.log"
-bash "$h" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && rc=0 || rc=$?
+cp "$h" "$t/empty/fleet-token-switch-at.sh"
+bash "$t/empty/fleet-token-switch-at.sh" acctB 09:30 --by joe-20261101 >/dev/null 2>&1 && rc=0 || rc=$?
 [ "$rc" = 2 ] && [ ! -e "$t/ran.log" ] && ok "absent aide-relaunch.sh: exit 2, nothing armed" || bad "absent relaunch (rc=$rc)"
 # --check at arm time: a rotate stub exiting 64 on --check -> nothing armed, rc 64
 printf '#!/bin/sh\n[ "$1" = --check ] && exit 64\necho STUB-RAN rotate >> "%s/ran.log"\n' "$t" >"$t/stub/fleet-token-rotate.sh"
