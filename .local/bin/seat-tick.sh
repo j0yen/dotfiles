@@ -1216,6 +1216,7 @@ while [ $# -gt 0 ]; do
 done
 [ "$MODE" = selftest ] && { selftest; exit $?; }
 [ -n "$SEAT" ] || usage
+case "$MODE" in status|guard) ;; *) "$HOME/.local/bin/hold-gate.sh" "seat-tick:$SEAT" || exit 1 ;; esac   # hold gate (hermes-handover 2.4): every turn kind (tick/ask/event); read-only modes pass
 load_seat "$SEAT" || { echo "seat-tick: unknown seat '$SEAT' (or malformed row) in $SEATS" >&2; exit 64; }
 STATE="$DASH/$SEAT-tick.json"
 ASKQ="$DASH/$SEAT-asks.pending"; ASKLOCK="$DASH/$SEAT-asks.lock"; EVJ="$DASH/$SEAT-events.json"

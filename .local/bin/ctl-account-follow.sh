@@ -29,6 +29,8 @@ done
 now=$(date +%s); last=$(cat "$STAMP" 2>/dev/null || echo 0)
 if [ $((now - last)) -lt 1200 ]; then echo "$(date +%FT%T%z) aide not on fleet=$fleet but a relaunch ran $(( (now-last)/60 )) min ago: wait" >> "$LOG"; exit 0; fi
 echo "$(date +%FT%T%z) aide ($seen pid) not on fleet account $fleet: aide account switch -> ctl-relaunch.sh $fleet" >> "$LOG"
+# hold gate (hermes-handover 2.4): the relaunch step only; the account read/compare above still runs so status lines keep working
+"$HOME/.local/bin/hold-gate.sh" aide-account-follow || exit 1
 [ "${AAF_DRY:-0}" = 1 ] && { echo "DRY: ctl-relaunch.sh $fleet"; exit 0; }
 echo "$now" > "$STAMP"
 seat-event.sh aide "aide-account-follow $(date +%I:%M%p): fleet account is $fleet, the aide was not on it: aide account switch running (ctl-relaunch.sh $fleet); check ctl-relaunch-check.sh $fleet" >/dev/null 2>&1 || true

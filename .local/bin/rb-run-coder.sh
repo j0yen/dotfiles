@@ -25,6 +25,7 @@ hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="
 # host gate (aide A25, rb row d-20261031-152854-rb-9122; Joe 10-27 "Carbon is for administration and monitoring. Nothing should be built nor coded on carbon"):
 # a coder session runs on redbaron or ryzen7 only; any other host exits 79 before the OAuth source, every other gate and STEP 0.
 h="$(hostname -s 2>/dev/null)"; case "$h" in redbaron|ryzen7) ;; *) echo "REFUSED host=${h:-unknown} (rb-run-coder.sh runs on redbaron or ryzen7 only)" >&2; exit 79 ;; esac
+"$HOME/.local/bin/hold-gate.sh" rb-run-coder || exit 1   # hold gate (hermes-handover 2.4): after the host gate, before the credential source and any spawn step
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
 cd "$HOME"

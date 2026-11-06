@@ -511,6 +511,7 @@ cmd_launch() {
     STEP4_TXT="$(step4_suite)"
   fi
   [ -n "${SUITE//[[:space:]]/}" ] || die 2 "lint: --suite is empty"
+  [ -z "$SUITE" ] || "$HOME/.local/bin/hold-gate.sh" aide-verifier:suite || exit 1   # hold gate (hermes-handover 2.4): a --suite launch runs a suite; a --log launch (LOG-ONLY verdict, dot290 precedent) is not gated
   [ -n "$LOG" ] || [ "$(hostname -s 2>/dev/null)" != carbon ] || die 3 "carbon runs no suites (CLAUDE.md CARBON): ask r7 (seat-ask.sh r7)"   # carbon-no-build (Joe 10-27, approvals #47): before the fleet gate, any clone or unit
   [ -z "$PRIO" ] || [[ "$PRIO" =~ ^[01]$ ]] || die 2 "lint: --prio must be 0 or 1"
   [ -n "$CLONE_URL" ] || CLONE_URL="https://github.com/$REPO.git"

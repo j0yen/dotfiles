@@ -7,6 +7,7 @@
 set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
 ACCT="${1:?account}"; shift; WHY="${*:-relaunch}"
+"$HOME/.local/bin/hold-gate.sh" ctl-relaunch || exit 1   # hold gate (hermes-handover 2.4): before anything is stopped or launched; aide-relaunch.sh (shim) inherits
 SID="$(cat "$HOME/.config/aide/session-id")"
 LOG="$HOME/.local/state/aide/relaunch.log"; mkdir -p "$(dirname "$LOG")"
 TTY="$(cat "$HOME/.config/aide/joe-tty" 2>/dev/null || true)"
