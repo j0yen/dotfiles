@@ -149,6 +149,30 @@ done
 case_ p "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_ROOM_WMB_BIN="$R/wmb-fail"
 room=$(cat "$D/t.room" 2>/dev/null)
 [ $rc = 0 ] && [[ $room != *memgate* && $room == "room ok: "* ]] && pass "(p) carbon unchanged -> .room='$room'" || bad "(p) rc=$rc room='$room'"
+# (q) RB, numeric run names classed from state.db (ctl k1036): 1084 via=inner -> 12.0, 1090 via=hand prefix=wm-build -> 5 = 17 G
+printf '#!/usr/bin/env bash\nprintf "id\\trun\\tproducer\\tpid\\talive\\ttaken\\tage\\n"\nprintf "7\\t1084\\trowless\\t71\\tyes\\tt\\t5s\\n8\\t1090\\trowless\\t81\\tyes\\tt\\t5s\\n"\n' > "$R/wmb-num"; chmod +x "$R/wmb-num"
+python3 -I -c 'import sqlite3,sys; d=sqlite3.connect(sys.argv[1]); d.execute("create table builder_cargo_jobs (id integer primary key, run_id text, via text, prefix text)"); d.executemany("insert into builder_cargo_jobs values (?,?,?,?)", [(7,"1084","inner",""),(8,"1090","hand","wm-build")]); d.commit()' "$R/state.db"
+rbcase q CARBON_ROOM_MEMINFO="$(meminfo 20000)" RB_ROOM_WMB_BIN="$R/wmb-num" RB_ROOM_STATE_DB="$R/state.db"
+room=$(cat "$D/t.room" 2>/dev/null)
+[ $rc = 0 ] && [[ $room == *"memgate free_mb=9216 sum_mb=17408 budget_mb=26624"* ]] && pass "(q) db classes -> .room='$room'" || bad "(q) rc=$rc room='$room'"
+# (q2) same slots, no state.db -> numeric names fall back to the largest cap (13+13 = 26 G) -> 78 memgate NO
+rbcase q2 CARBON_ROOM_MEMINFO="$(meminfo 20000)" RB_ROOM_WMB_BIN="$R/wmb-num" RB_ROOM_STATE_DB="$R/no-such.db"
+rep=$(cat "$D/t.report.md" 2>/dev/null)
+[ $rc = 78 ] && [[ $rep == "REFUSED room rc=3: memgate NO: free_mb=0 < need_mb=900"* ]] && pass "(q2) no db -> largest cap, '$rep'" || bad "(q2) rc=$rc rep='$rep'"
+
+# --- watchman reap (ctl k1039): a process named watchman listed in a fake cgroup.procs; only the unit's own cgroup is reaped
+# fake = a direct #!/bin/bash script (comm = its file name; env would re-exec as bash; a copied sleep breaks on multicall coreutils), exits 143 on TERM
+mkdir -p "$R/wm" "$R/cg/u/rb-coder-t.service" "$R/cg/u/rb-coder-other.service"
+printf '#!/bin/bash\ntrap '"'"'kill "$c"; exit 143'"'"' TERM\nsleep 30 & c=$!\nwait "$c"\n' > "$R/wm/watchman"; chmod +x "$R/wm/watchman"
+"$R/wm/watchman" 30 & wpid=$!
+echo "$wpid" > "$R/cg/u/rb-coder-other.service/cgroup.procs"; echo "$wpid" > "$R/cg/u/rb-coder-t.service/cgroup.procs"
+# (w1) cgroup of another unit -> watchman left alone
+case_ w1 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_CODER_CGROUP=/u/rb-coder-other.service RB_CODER_CGROUP_FS="$R/cg"
+[ $rc = 0 ] && kill -0 "$wpid" 2>/dev/null && pass "(w1) other unit's cgroup -> watchman $wpid untouched" || bad "(w1) rc=$rc alive=$(kill -0 "$wpid" 2>&1 && echo yes)"
+# (w2) this unit's cgroup -> watchman TERMed on exit (wait status 143), coder rc unchanged
+case_ w2 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_CODER_CGROUP=/u/rb-coder-t.service RB_CODER_CGROUP_FS="$R/cg"
+wait "$wpid"; ws=$?
+[ $rc = 0 ] && [ $ws = 143 ] && pass "(w2) own cgroup -> watchman reaped (wait=$ws), rc=0" || bad "(w2) rc=$rc wait=$ws"
 
 echo "pass=$npass fail=$fail"
 [ $fail = 0 ] && echo "ALL PASS ($npass checks)"

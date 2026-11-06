@@ -92,7 +92,9 @@ need_mb=$(( peak_mb * (1 + n_active) ))
 # Non-carbon host (RedBaron): carbon-room.sh would print `room n/a: not carbon`, so force its measure with CARBON_ROOM_HOST and a reserve of
 # mem_headroom_gb (config.toml [cargo_jobs], default 4; env RB_ROOM_HEADROOM_MB), then check MemGate's own Σ: budget (mem_budget_gb, default 26;
 # env RB_ROOM_BUDGET_MB; config path env RB_ROOM_CONFIG) minus the class caps of the live `wm-build builder cargo-jobs list` slots (env RB_ROOM_MEMGATE_SUM_MB) must cover need.
-# Class = run-name prefix (land|inner|gate|hand); anything else takes the largest cap. Sigma unreadable = refuse (memgate NO).
+# Class (ctl k1036, 11-03): the slot's own via + prefix from state.db builder_cargo_jobs (env RB_ROOM_STATE_DB, read-only), charged as wm-build's
+# cap_gb does (prefix sub-table override, else the class cap), so a numeric run name (1084, via=inner) is charged 12.0 G, not the largest cap.
+# A slot absent from the db falls back to the run-name prefix (land|inner|gate|hand), then the largest cap. Sigma unreadable = refuse (memgate NO).
 room_host=${RB_ROOM_HOSTNAME:-$(hostname 2>/dev/null)}; mg_txt=''; mg_no=''; room_env=()
 if [ "$room_host" != carbon ]; then
   mg_cfg=${RB_ROOM_CONFIG:-$HOME/.config/wm-build/config.toml}
@@ -105,19 +107,24 @@ print(int(float(c.get("mem_budget_gb",26))*1024),int(float(c.get("mem_headroom_g
   room_env=(CARBON_ROOM_HOST="$room_host" CARBON_ROOM_RESERVE_MB="$mg_head")
   if [ -n "${RB_ROOM_MEMGATE_SUM_MB:-}" ]; then mg_sum=$RB_ROOM_MEMGATE_SUM_MB
   else
-    mg_sum=$(cd ~ && timeout 30 "${RB_ROOM_WMB_BIN:-$HOME/.cargo/bin/wm-build}" builder cargo-jobs list 2>/dev/null | python3 -I -c 'import sys,tomllib,re
+    mg_sum=$(cd ~ && timeout 30 "${RB_ROOM_WMB_BIN:-$HOME/.cargo/bin/wm-build}" builder cargo-jobs list 2>/dev/null | python3 -I -c 'import sys,tomllib,re,sqlite3
 try: caps=tomllib.load(open(sys.argv[1],"rb")).get("cargo_jobs",{}).get("mem_caps_gb",{})
 except Exception: caps={}
+pcaps={k:v for k,v in caps.items() if isinstance(v,dict)}
 caps={k:float(v) for k,v in caps.items() if not isinstance(v,dict)}
 big=max(caps.values(),default=12.5); rows=sys.stdin.read().splitlines()
 if not rows or rows[0].split("\t")[:5]!=["id","run","producer","pid","alive"]: sys.exit(1)
+try: slot={str(i):(v or "",p or "") for i,v,p in sqlite3.connect("file:"+sys.argv[2]+"?mode=ro",uri=True).execute("select id,via,prefix from builder_cargo_jobs")}
+except Exception: slot={}
 t=0.0
 for r in rows[1:]:
     f=r.split("\t")
     if len(f)<7: sys.exit(1)
     if f[4]!="yes": continue
+    v,p=slot.get(f[0],("",""))
+    if v in caps: t+=float(pcaps.get(p,{}).get(v,caps[v])); continue
     m=re.match(r"(land|inner|gate|hand)(?:[-.]|$)",f[1]); t+=caps.get(m.group(1),big) if m else big
-print(int(t*1024))' "$mg_cfg" 2>/dev/null) || mg_sum=''
+print(int(t*1024))' "$mg_cfg" "${RB_ROOM_STATE_DB:-$HOME/.local/state/wm-build/state.db}" 2>/dev/null) || mg_sum=''
   fi
   if [[ $mg_sum =~ ^[0-9]+$ ]]; then mg_free=$(( mg_budget - mg_sum )); mg_txt="memgate free_mb=$mg_free sum_mb=$mg_sum budget_mb=$mg_budget"
     [ "$mg_free" -lt "$need_mb" ] && mg_no="memgate NO: free_mb=$mg_free < need_mb=$need_mb"
@@ -143,6 +150,16 @@ echo "$mc_l1" > "$D/$n.memcap"
 # wmb-nocargo-checks.sh on a wm-build tree and refuse a red commit or push. Fails CLOSED (exit 70) when the hooks dir is missing.
 if [ "$nocargo" = 1 ]; then rb_hooks="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/rb-git-hooks" 2>/dev/null && pwd)"; [ -x "$rb_hooks/pre-commit" ] && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$rb_hooks" || {
   echo "REFUSED nocargo-hooks: rb-git-hooks missing" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED nocargo-hooks: rb-git-hooks missing" || true; exit 70; }; fi
+# watchman reap (ctl k1039, 11-03): rb-coder-rcpt9 failed 06:44:40 on a stop-sigterm timeout; the watchman server its coder started lived in the
+# unit's cgroup and outlived claude until SIGKILL. On exit (TERM included), TERM then KILL only watchman pids in THIS unit's cgroup
+# (rb-coder-$n.service), by pid; a watchman in any other cgroup is untouched. Env (tests): RB_CODER_CGROUP, RB_CODER_CGROUP_FS.
+wm_reap() { local cg fs p pids=() live=() i; cg=${RB_CODER_CGROUP:-$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)}; fs=${RB_CODER_CGROUP_FS:-/sys/fs/cgroup}
+  [[ $cg == */rb-coder-"$n".service ]] || return 0
+  for p in $(cat "$fs$cg/cgroup.procs" 2>/dev/null); do [ "$(cat "/proc/$p/comm" 2>/dev/null)" = watchman ] && pids+=("$p"); done
+  [ ${#pids[@]} -gt 0 ] || return 0; kill -TERM "${pids[@]}" 2>/dev/null
+  for i in 1 2 3 4 5; do live=(); for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && live+=("$p"); done; [ ${#live[@]} -gt 0 ] || return 0; sleep 1; done
+  kill -KILL "${live[@]}" 2>/dev/null; return 0; }
+trap wm_reap EXIT; trap 'exit 143' TERM
 claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc
