@@ -86,7 +86,7 @@ printf '#!/bin/bash\nexit 0\n' >"$vc/bin/fake-bell"
 VH=0123456789abcdef0123456789abcdef01234567; VG=d-20261023-055214-aide-49cf
 printf '[{"id":"%s","agent":"aide","what":"GATED j0yen/dotfiles#7 COMMIT=%s agent=coder:avl done","why":"","evidence":""}]\n' "$VG" "$VH" >"$vc/rows.json"
 printf '#!/bin/bash\n[ "$1" = list ] && [ "$2" = --json ] && cat "$FAKE_DIR/rows.json"\nexit 0\n' >"$vc/bin/fake-wmd"
-printf '#!/bin/bash\nprintf "%%s\\n" "%s"\n' "$VH" >"$vc/bin/gh"
+printf '#!/bin/bash\ncase " $* " in *" headRefOid,state "*) printf "%%s OPEN\\n" "%s";; *) printf "%%s\\n" "%s";; esac\n' "$VH" "$VH" >"$vc/bin/gh"
 mkdir -p "$vc/gate/wm_decide" "$vc/gate/gen"; : >"$vc/gate/wm_decide/__init__.py"
 printf '{"repo_tokens": {"j0yen/dotfiles": ["tests/*.test.sh EXIT=0"]}}\n' >"$vc/gate/gen/merge-gate.json"
 printf 'def canon_agent(a):\n    return {"coder:aide": "aide"}.get(a, a)\n' >"$vc/gate/wm_decide/contract.py"
