@@ -28,7 +28,7 @@ t nophrase allow "All finished, tests pass."
 t notdone block "That has not been done."
 grep -q 'refuse' "$T/fires.log" && grep -q 'allow-after-match' "$T/fires.log" && echo "ok fires logged" || { echo "FAIL fires log"; fail=1; }
 before=$(wc -l <"$T/fires.log")
-out=$(printf 'not json{' | "$H"); rc=$?
+out=$(printf 'not json{' | WM_SEAT=rb "$H"); rc=$?
 [ -z "$out" ] && [ $rc = 0 ] && [ "$(wc -l <"$T/fires.log")" -gt "$before" ] && grep -q 'error allow' "$T/fires.log" && echo "ok malformed allow+log" || { echo "FAIL malformed"; fail=1; }
 jq -e '.hooks.Stop[] | .hooks[] | select(.command|endswith("aside-followup-stop.sh"))' "$S" >/dev/null && echo "ok wired" || { echo "FAIL wired"; fail=1; }
 exit $fail
