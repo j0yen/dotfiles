@@ -152,8 +152,8 @@ selftest() {
   rm -rf "$T/fakebin2"
   # 9. ctl alias (hermes-handover 2.3): with only a ctl inbox row, `aide` is accepted and both names write aide-events.log
   printf '# t\nctl\tinbox\tsid-c\t0\t0\t-\t-\n' >"$SEATS_TABLE"
-  "$SELF" aide "ctl -> hermes: alias line" >/dev/null 2>&1; r1=$?
-  "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
+  SEAT_EVENT_DRY=1 "$SELF" aide "ctl -> hermes: alias line" >/dev/null 2>&1; r1=$?
+  SEAT_EVENT_DRY=1 "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
   [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ ! -e "$EVENTS_DIR/ctl-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 2 ]; chk "ctl alias: aide + ctl both append to aide-events.log (2 lines, no ctl-events.log)" $?
   "$SELF" nosuch "x" >/dev/null 2>&1; [ $? = 64 ]; chk "ctl alias does not admit other unknown seats (64)" $?
   # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
