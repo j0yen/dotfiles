@@ -17,6 +17,7 @@ W
 chmod +x "$T/start.sh"; export CDC_SELF="$S" DP_START="$T/start.sh"
 printf '# a\nDispatch: ctl\n' > "$T/fb/a.task.md"          # preexisting, marked
 printf '# old\nno marker\n'   > "$T/fb/old.task.md"        # preexisting, unmarked
+touch -d "-10 sec" "$T"/fb/*.task.md
 export DP_HOLD="false"
 out=$($S scan); ck "held: nothing claimed" '[ ! -d "$T/st/claims" ] || [ -z "$(ls "$T/st/claims")" ]'
 ck "held: reports held" 'echo "$out" | grep -q ^held'
@@ -27,11 +28,11 @@ ck "unmarked task skipped, not run" '! grep -q old.task.md "$T/runs" && $S statu
 ck "receipt written done" '$S status | grep -q "claimed/done a.task.md"'
 $S scan >/dev/null; sleep 0.3
 ck "replay scan does not re-run" '[ "$(grep -c a.task.md "$T/runs")" = 1 ]'
-printf '# b\nDispatch: ctl\n' > "$T/fb/b.task.md"
+printf '# b\nDispatch: ctl\n' > "$T/fb/b.task.md"; touch -d "-10 sec" "$T/fb/b.task.md"
 for i in 1 2 3 4 5; do $S scan >/dev/null & done; wait; sleep 0.8
 ck "5 concurrent scans -> new task ran exactly once" '[ "$(grep -c b.task.md "$T/runs")" = 1 ]'
 # restart: claim exists, start never happened (crash between claim and start)
-printf '# c\nDispatch: ctl\n' > "$T/fb/c.task.md"
+printf '# c\nDispatch: ctl\n' > "$T/fb/c.task.md"; touch -d "-10 sec" "$T/fb/c.task.md"
 k=$(printf '%s\0' "$T/fb/c.task.md" | cat - "$T/fb/c.task.md" | sha256sum | cut -c1-16)
 mkdir -p "$T/st/claims/$k"; python3 -c "import json;json.dump({'source':'$T/fb/c.task.md','key':'$k','state':'claimed'},open('$T/st/claims/$k/claim.json','w'))"
 sleep 1.2; $S scan >/dev/null; sleep 0.6
@@ -39,14 +40,19 @@ ck "crash before start: stale claim retried once" '[ "$(grep -c c.task.md "$T/ru
 sleep 1.2; $S scan >/dev/null; sleep 0.3
 ck "retry is not repeated" '[ "$(grep -c c.task.md "$T/runs")" = 1 ]'
 # failure after effect: worker rc!=0 -> failed receipt, no rerun
-printf '# d\nDispatch: ctl\n' > "$T/fb/d.task.md"; W_RC=3 $S scan >/dev/null; sleep 0.8
+printf '# d\nDispatch: ctl\n' > "$T/fb/d.task.md"; touch -d "-10 sec" "$T/fb/d.task.md"; W_RC=3 $S scan >/dev/null; sleep 0.8
 ck "worker failure recorded failed" '$S status | grep -q "claimed/failed d.task.md"'
 $S scan >/dev/null; sleep 0.3
 ck "failed started task not re-executed" '[ "$(grep -c d.task.md "$T/runs")" = 1 ]'
 # changed content = new claim
-printf '# a2\nDispatch: ctl\n' > "$T/fb/a.task.md"; $S scan >/dev/null; sleep 0.6
+printf '# a2\nDispatch: ctl\n' > "$T/fb/a.task.md"; touch -d "-10 sec" "$T/fb/a.task.md"; $S scan >/dev/null; sleep 0.6
 ck "edited task gets a new claim" '[ "$(grep -c a.task.md "$T/runs")" = 2 ]'
 # start failure keeps claim, owned
-export DP_START="false"; printf '# e\nDispatch: ctl\n' > "$T/fb/e.task.md"; o=$($S scan); 
+export DP_START="false"; printf '# e\nDispatch: ctl\n' > "$T/fb/e.task.md"; touch -d "-10 sec" "$T/fb/e.task.md"; o=$($S scan); 
 ck "start failure reported" 'echo "$o" | grep -q start-failed'
+# retry also fails -> stuck is reported once and owned
+export DP_START="true"; printf '# g\nDispatch: ctl\n' > "$T/fb/g.task.md"; touch -d "-10 sec" "$T/fb/g.task.md"; $S scan >/dev/null; sleep 1.2; $S scan >/dev/null; sleep 1.2; $S scan >/dev/null; sleep 1.2; $S scan >/dev/null
+ck "never-started after retry becomes failed-owned" '$S status | grep -q "claimed/failed-owned g.task.md"'
+printf '# h\nDispatch: ctl\n' > "$T/fb/h.task.md"; o=$($S scan); ck "file written <2s ago not claimed" '! echo "$o" | grep -q h.task.md'
+[ -n "${DBG:-}" ] && { $S status; ls $T/st/claims/*; }
 rm -rf "$T"; echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS

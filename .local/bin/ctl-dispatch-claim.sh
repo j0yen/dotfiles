@@ -47,6 +47,7 @@ cmd_scan(){
   n=0
   for f in "$FB"/*.task.md; do
     [ -f "$f" ] || continue
+    [ $(( $(date +%s) - $(stat -c %Y "$f") )) -ge 2 ] || continue   # skip a file still being written
     k="$(keyof "$f")"; d="$ST/claims/$k"
     if ! mkdir "$d" 2>/dev/null; then
       # existing claim: recover stale unstarted / unfinished
@@ -54,7 +55,9 @@ cmd_scan(){
       c="$(jget "$d/claim.json" state 2>/dev/null)"; [ "$c" = skipped ] && continue
       age=$(( $(date +%s) - $(stat -c %Y "$d/claim.json" 2>/dev/null || date +%s) ))
       if [ ! -f "$d/started" ]; then
-        if [ "$age" -ge "$STALE" ] && [ ! -f "$d/retried" ]; then touch "$d/retried"; start_worker "$k" && echo "retried-unstarted $k" && n=$((n+1)); fi
+        if [ "$age" -ge "$STALE" ] && [ ! -f "$d/retried" ]; then touch "$d/retried"; start_worker "$k" && echo "retried-unstarted $k" && n=$((n+1))
+        elif [ "$age" -ge $((STALE*2)) ] && [ -f "$d/retried" ] && [ ! -f "$d/stuck" ]; then touch "$d/stuck"
+          jw "$d/receipt.json" source="$f" key="$k" rc=-2 state=failed-owned started= finished="$(ts)"; note "task $k ($(basename "$f")) never started after retry; failed-owned"; fi
       else
         sage=$(( $(date +%s) - $(stat -c %Y "$d/started") ))
         if [ "$sage" -ge "$STALE" ] && [ ! -f "$d/orphan" ] && ! systemctl --user is-active --quiet "ctl-dispatch-$k" 2>/dev/null && [ -z "${DP_START:-}" ]; then
