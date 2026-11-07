@@ -51,7 +51,19 @@ json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"
   mv "$BR/queue/$id.json.tmp" "$BR/queue/$id.json"; printf '%s' "$id"
 }
 
-route_pending() { # route each queued id once; ack non-fable ids only after the router's cache file exists
+OAF="${RT_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
+cached_route() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" route; }
+deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes never reach the pane
+  [ "${BR_ROUTE:-1}" = 0 ] && return 0
+  local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
+}
+evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in open-asks
+  local id="$1" r="$RTD/results/$1.json" c="$RTD/routed/$1.json" row
+  [ -f "$r" ] && [ -n "$(jget "$r" exit)" ] || return 1
+  row="$(jget "$c" row)"
+  [ -z "$row" ] || grep -qF "event:$id" "$OAF" 2>/dev/null
+}
+route_pending() { # route each queued id once; ack deterministic/haiku ids only after consumer evidence exists
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
   [ -x "$RTB" ] || return 0
   local f id c rt
@@ -59,10 +71,12 @@ route_pending() { # route each queued id once; ack non-fable ids only after the 
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     c="$RTD/routed/$id.json"
-    [ -f "$c" ] || RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
+    [ -f "$c" ] || RT_DIR="$RTD" RT_OPEN_ASKS="$OAF" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
     [ -f "$c" ] || continue
     rt="$(jget "$c" route)"
-    if [ "$rt" = deterministic ] || [ "$rt" = haiku ]; then ackone "$f"; fi
+    if [ "$rt" = deterministic ] || [ "$rt" = haiku ]; then
+      if evidence_ok "$id"; then ackone "$f"; else echo "$(iso) ack-refused $id no-consumer-evidence" >> "$BR/deliveries.log"; fi
+    fi
   done
 }
 reason_of() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" reason | tr -d '\n|' | cut -c1-120; }
@@ -72,6 +86,7 @@ deliver() { # one line for every pending id
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; kind="$(jget "$f" event.event)"
+    deliverable "$id" || continue
     n=$((n+1)); ids="$ids $id"; summary="${summary:+$summary | }$id $kind reason=$(reason_of "$id")"
   done
   [ "$n" -gt 0 ] || return 0
@@ -94,6 +109,7 @@ due_redelivery() { # true when any queued file is undelivered or older than RETR
   local f ld t; t="$(epoch)"
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
+    deliverable "$(jget "$f" id)" || continue
     ld="$(jget "$f" last_delivery)"; ld="${ld:-0}"
     [[ "$ld" =~ ^[0-9]+$ ]] || ld=0
     if [ "$ld" -eq 0 ] || [ $((t - ld)) -ge "$RETRY" ]; then return 0; fi
