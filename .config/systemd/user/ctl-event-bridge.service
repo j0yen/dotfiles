@@ -1,0 +1,14 @@
+[Unit]
+Description=ctl event bridge: durable waiter loop, delivers actionable events to the ctl tmux pane with ack/retry (Hermes recovery 11-06)
+ConditionHost=carbon
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ctl-event-bridge.sh run
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target
