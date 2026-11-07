@@ -18,6 +18,8 @@ claude-build.timer	mechanical	fleet	no	yes
 claude-vibeloop-digest.service	mechanical	fleet	no	no
 claude-vibeloop-measure.service	mechanical	fleet	no	no
 claude-vibeloop.service	mechanical	fleet	no	no
+ctl-silence-recover.service	mechanical	fleet	yes	no
+ctl-silence-recover.timer	mechanical	fleet	no	yes
 disk-health.service	mechanical	fleet	no	no
 disk-health.timer	mechanical	fleet	no	yes
 dotfiles-hook-sync.service	mechanical	fleet	no	no
