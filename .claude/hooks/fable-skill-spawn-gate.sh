@@ -3,7 +3,7 @@
 # skill whose SKILL.md frontmatter says `fable-spawn: true` is told to spawn a
 # Fable subagent instead.
 #
-# Those skills pin `model: fable` + `effort: max` (/dream vibecode-kit#4,
+# Those skills pin `model: fable` + their own `effort:` (the recipe below reads it from the SKILL.md frontmatter) (/dream vibecode-kit#4,
 # /5whysandrhyme, /wwhtbt; Joe 2026-10-24). Invoked inline from an Opus seat
 # (rb/r7/ctl/aide), the pin switches the session model for that turn, and a
 # model switch rebuilds the whole prompt cache. A subagent runs in its own
@@ -78,15 +78,19 @@ case "$MODEL_LC" in
     *fable*) allow ;;
 esac
 
+EFFORT=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$SKILL_MD" \
+    | sed -n 's/^effort:[[:space:]]*\([A-Za-z]*\)[[:space:]]*$/\1/p' | head -1)
+[ -n "$EFFORT" ] || EFFORT=xhigh   # approved default (Joe 11-06) when a skill pins none
+
 case "$NAME" in
     dream) RET="the PRD paths, lint result, review verdict lines" ;;
     *)     RET="the page path, lint result, review verdict lines, the weakest link and each mechanism with its state" ;;
 esac
 
 {
-    echo "fable-skill-spawn-gate: /${NAME} runs on Fable max (SKILL.md fable-spawn: true); calling it inline from ${MODEL} switches this session's model and rebuilds its prompt cache."
+    echo "fable-skill-spawn-gate: /${NAME} runs on Fable ${EFFORT} (SKILL.md fable-spawn: true); calling it inline from ${MODEL} switches this session's model and rebuilds its prompt cache."
     echo "Spawn it instead (one Agent call, the seat's cache stays warm):"
-    echo "  Agent(subagent_type=general-purpose, model=fable, effort=max,"
+    echo "  Agent(subagent_type=general-purpose, model=fable, effort=${EFFORT},"
     echo "        prompt=\"Invoke the ${NAME} skill (Skill tool, skill: ${NAME}, args: ${ARGS:-<args>}). Context + evidence: <paste>. Return ${RET}, and any finding for Joe, as one line each.\")"
     echo "Then log the result as a DECISION row as usual."
 } >&2

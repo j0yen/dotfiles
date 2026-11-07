@@ -7,7 +7,7 @@ S="$(dirname "$0")/../.claude/settings.json"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export FABLE_SKILLS_DIR="$T/skills" SKILL_MARKER_DIR="$T/marks"
 fm(){ mkdir -p "$T/skills/$1"; printf -- "---\nname: %s\nmodel: fable\n$2---\n# x\nfable-spawn: true\n" "$1" >"$T/skills/$1/SKILL.md"; }
-fm dream 'fable-spawn: true\n'; fm 5whysandrhyme 'fable-spawn: true\n'; fm wwhtbt 'fable-spawn: true\n'
+fm dream 'effort: max\nfable-spawn: true\n'; fm 5whysandrhyme 'effort: xhigh\nfable-spawn: true\n'; fm wwhtbt 'effort: xhigh\nfable-spawn: true\n'; fm nopin 'fable-spawn: true\n'
 fm write ''   # body mentions fable-spawn: true, frontmatter does not → not gated
 fail=0
 mk(){ printf '{"type":"assistant","message":{"model":"%s","content":[{"type":"tool_use","id":"tu1"}]}}\n' "$1" >"$T/t.jsonl"; }
@@ -28,17 +28,23 @@ rm -f "$T/t.jsonl";   chk "unknown model allowed" dream 0
 mk claude-opus-5-5
 out=$(printf '{"tool_name":"Skill","tool_input":{"skill":"wwhtbt","args":"plan X"},"transcript_path":"%s","tool_use_id":"tu1"}' "$T/t.jsonl" | "$H" 2>&1 >/dev/null)
 printf '%s' "$out" | grep -q 'skill: wwhtbt, args: plan X' && echo "ok recipe names skill+args" || { echo "FAIL recipe: $out"; fail=1; }
+rec(){ mk claude-sonnet-5-5; printf '{"tool_name":"Skill","tool_input":{"skill":"%s"},"transcript_path":"%s","tool_use_id":"tu1"}' "$1" "$T/t.jsonl" | "$H" 2>&1 >/dev/null; }
+rec 5whysandrhyme | grep -q 'model=fable, effort=xhigh' && echo "ok sonnet-denied 5whys recipe effort=xhigh" || { echo "FAIL 5whys recipe effort"; fail=1; }
+rec wwhtbt | grep -q 'effort=xhigh' && echo "ok wwhtbt recipe xhigh" || { echo "FAIL wwhtbt effort"; fail=1; }
+rec dream | grep -q 'model=fable, effort=max' && echo "ok dream recipe keeps its own max" || { echo "FAIL dream effort not max"; fail=1; }
+rec nopin | grep -q 'effort=xhigh' && echo "ok unpinned skill defaults xhigh" || { echo "FAIL unpinned default"; fail=1; }
+mk claude-fable-5-1; chk "fable allowed with effort pin" dream 0
 jq -e '.hooks.PreToolUse[] | select(.matcher=="Skill") | .hooks[0] | select(.command|endswith("fable-skill-spawn-gate.sh"))' "$S" >/dev/null \
   && echo "ok wired first on Skill" || { echo "FAIL not wired first in settings.json"; fail=1; }
 jq -e '[.. | .command? // empty | strings | select(endswith("dream-spawn-gate.sh"))] | length == 0' "$S" >/dev/null \
   && echo "ok old dream-spawn-gate unwired" || { echo "FAIL dream-spawn-gate.sh still wired"; fail=1; }
-# No drift: every live fable-spawn skill on this host pins model: fable + effort: max.
+# No drift: every live fable-spawn skill on this host pins model: fable + an effort (max or xhigh).
 for f in "$HOME"/.claude/skills/*/SKILL.md; do
   [ -r "$f" ] || continue
   fmx=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$f")
   printf '%s\n' "$fmx" | grep -qE '^fable-spawn:[[:space:]]*true' || continue
-  if printf '%s\n' "$fmx" | grep -qE '^model:[[:space:]]*fable' && printf '%s\n' "$fmx" | grep -qE '^effort:[[:space:]]*max'; then
+  if printf '%s\n' "$fmx" | grep -qE '^model:[[:space:]]*fable' && printf '%s\n' "$fmx" | grep -qE '^effort:[[:space:]]*(max|xhigh)'; then
     echo "ok pins $(basename "$(dirname "$f")")"
-  else echo "FAIL $f fable-spawn without model: fable + effort: max"; fail=1; fi
+  else echo "FAIL $f fable-spawn without model: fable + effort max|xhigh"; fail=1; fi
 done
 exit $fail

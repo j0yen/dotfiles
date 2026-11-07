@@ -18,6 +18,10 @@ while :; do   # --account and --lane, either order, before the claude args
     *) break ;;
   esac
 done
+# Reject wrong models/efforts before credentials, tmux or a provider are touched.
+. "$HOME/.local/lib/ctl-model-policy.sh" || exit 64
+ctl_model_policy "$@" || exit $?
+set -- "${CTL_POLICY_ARGS[@]}"
 _self="$(readlink -f "${BASH_SOURCE[0]}")"
 for _l in "${AIDE_LANE_LIB:-}" "$(dirname "$_self")/../lib/aide-lane.sh" "$HOME/.local/lib/aide-lane.sh"; do [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
 type aide_lane_valid >/dev/null 2>&1 || { echo "ctl-launch: aide-lane.sh lib not found (AIDE_LANE_LIB, ../lib, ~/.local/lib)" >&2; exit 1; }
@@ -34,12 +38,7 @@ else
 fi
 [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || { echo "ctl-launch: no token found" >&2; exit 1; }
 cd "$HOME" || exit 70
-# Model = the ctl row of the seat-model hold (falls back to the aide row; Joe 10-23 approvals #18), unless the caller passes --model.
-# Without this a bare launch fell back to settings.local.json's default (Fable) — 10-23 12:02 PM aide opened on Fable.
-case " $* " in *" --model "*|*" --model="*) ;; *)
-  m="$(jq -r '.ctl.model // .aide.model // empty' "$HOME/.config/wm-decide/seat-model-hold.json" 2>/dev/null)"
-  [ -n "$m" ] && { set -- --model "$m" "$@"; echo "ctl-launch: model $m (seat-model-hold ctl/aide row)" >&2; } ;;
-esac
+# Model and effort were validated and explicitly pinned before authentication.
 # agentns-claude is a compiled wrapper with an unverified argument contract: opt in with AIDE_USE_AGENTNS=1
 # The ONLY place the carbon executor identity is set (Joe 2026-10-23; renamed ctl 2026-11-06): hooks exempt/card/inbox/ledger key on WM_SEAT=ctl (WM_SEAT=aide still accepted); a plain `claude` on carbon is Joe's own session.
 export WM_SEAT=ctl
