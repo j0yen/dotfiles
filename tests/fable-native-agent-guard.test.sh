@@ -12,7 +12,7 @@ o=$(call jyen.pm ""); ck "jyen.pm parent: omitted model (named coder) denied" 'd
 o=$(printf '{"tool_name":"Agent","tool_input":{"subagent_type":"triage","prompt":"x"}}' | FABLE_LAUNCH_ACCOUNT=jyen.pm "$G"); ck "jyen.pm parent: model key absent (triage) denied" 'denied "$o"'
 o=$(call jyen.pm fable ""); ck "jyen.pm parent: fable without effort denied" 'denied "$o"'
 o=$(call jyen.pm fable low); ck "jyen.pm parent: fable low effort denied" 'denied "$o"'
-o=$(call jyen.pm fable max); ck "jyen.pm parent: fable max allowed" '[ -z "$o" ]'
+o=$(call jyen.pm fable max); ck "jyen.pm parent: fable max denied (launcher is xhigh only)" 'denied "$o"'
 o=$(printf 'not json' | FABLE_LAUNCH_ACCOUNT=jyen.pm "$G"); ck "jyen.pm parent: malformed input fails closed" 'denied "$o"'
 o=$(printf 'not json' | FABLE_LAUNCH_ACCOUNT=josephsyen "$G"); ck "josephsyen parent: malformed input fails open (declared residual)" '[ -z "$o" ]'
 o=$(call josephsyen sonnet); ck "josephsyen parent: native sonnet allowed" '[ -z "$o" ]'

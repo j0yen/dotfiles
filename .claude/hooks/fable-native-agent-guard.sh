@@ -21,8 +21,8 @@ isf(){ case "$1" in fable|claude-fable-*) return 0;; *) return 1;; esac; }
 if [ "$ACCT" = jyen.pm ]; then
   [ -z "$M" ] && deny "fable-native-agent-guard: under jyen.pm a native Agent needs an explicit Fable model; an omitted model lets a named agent (coder, triage, ...) pin a non-Fable model on the jyen.pm token. Run non-Fable helpers via fable-launch.sh --helper --model <m> -p \"<prompt>\" (A1169)."
   if isf "$M"; then
-    case "$E" in xhigh|max) exit 0;; esac
-    deny "fable-native-agent-guard: a native Fable Agent under jyen.pm needs explicit effort xhigh (or max); none given. Prefer fable-launch.sh --model claude-fable-5-1 --effort xhigh -p \"<prompt>\" (A1169)."
+    [ "$E" = xhigh ] && exit 0
+    deny "fable-native-agent-guard: a native Fable Agent under jyen.pm needs explicit effort xhigh (got: ${E:-none}); max is not allowed without a ledger-backed path. Prefer fable-launch.sh --model claude-fable-5-1 --effort xhigh -p \"<prompt>\" (A1169)."
   fi
   deny "fable-native-agent-guard: this session runs Fable on jyen.pm; a native Agent child (model=$M) inherits that account. Run non-Fable helpers as a separate josephsyen process: ~/.local/bin/fable-launch.sh --helper --model <sonnet|haiku> -p \"<prompt>\" (A1169)."
 fi
