@@ -33,7 +33,7 @@ S
 chmod +x "$T"/bin/*
 export HM_T="$T"
 cat > "$T/cfg.json" <<E2
-{"target":"discord:TEST","stale_minutes":30,"units":["ctl-dispatch.path"],
+{"target":"discord:TEST","tasks":[],"cutover":{"id":"model-free","timer":"t.timer"},"stale_minutes":30,"units":["ctl-dispatch.path"],
  "receipts":[{"id":"rcpt","path":"$T/fb/r.md","kind":"md"},{"id":"proof","path":"$T/fb/p.json","kind":"json"}],
  "progress_paths":["$T/fb/work-*"],
  "deadlines":[{"id":"cut","due":"2026-11-07T01:30:00-08:00","satisfied_by":"receipt:rcpt"}],

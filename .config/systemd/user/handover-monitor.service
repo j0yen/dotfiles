@@ -1,0 +1,8 @@
+[Unit]
+Description=Model-free Stage A handover monitor (collect, diff, stall detection, deterministic alerts)
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HM_TRIGGER=timer
+ExecStart=/usr/bin/python3 %h/.local/bin/handover-monitor.py run
+TimeoutStartSec=300

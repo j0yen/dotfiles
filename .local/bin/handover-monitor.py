@@ -27,7 +27,18 @@ DEFAULT_CFG = {
     ],
     "progress_paths": [FB + "/*.receipt.md", FB + "/*.task.md", HOME + "/Notes/ctl-*-2026*.md",
                        HOME + "/.cache/aide/event-bridge/status.json"],
-    "deadlines": [{"id": "model-free-cutover", "due": "2026-11-07T01:30:00-08:00", "satisfied_by": "receipt:model-free-receipt"}],
+    "deadlines": [{"id": "model-free-cutover", "due": "2026-11-07T01:30:00-08:00", "satisfied_by": "cutover:model-free"}],
+    "cutover": {"id": "model-free", "timer": "handover-monitor.timer"},
+    "stall": {"substantive_minutes": 10, "ack_minutes": 5, "ctl_seat": "ctl", "hermes_seat": "hermes"},
+    "tasks": [{"id": "model-free-monitor", "title": "model-free handover monitor replacement (A1150)",
+               "receipt": FB + "/model-free-handover-monitor-20261106.receipt.md",
+               "evidence_paths": [HOME + "/.cache/coder-clones/dotfiles-model-free-monitor/.local/bin/*.py",
+                                  HOME + "/.cache/coder-clones/dotfiles-model-free-monitor/tests/*.sh",
+                                  HOME + "/.cache/coder-clones/dotfiles-model-free-monitor/.config/systemd/user/*"],
+               "git_dir": HOME + "/.cache/coder-clones/dotfiles-model-free-monitor",
+               "worker_stream_globs": [HOME + "/wintermute-operations/*model-free*.jsonl"],
+               "worker_units": ["ctl-model-free*"],
+               "done_requires": "cutover:model-free"}],
     "cron_file": HOME + "/.hermes/cron/jobs.json",
     "cron_ids": ["378a97370a05"],
     "hold_file": HOME + "/wintermute-operations/quota-conservation/HOLD.json",
@@ -124,6 +135,7 @@ def collect(cfg):
         if j.get("id") in cfg.get("cron_ids", []):
             facts["cron"][j["id"]] = {"enabled": j.get("enabled"), "state": j.get("state"),
                                       "last_status": j.get("last_status"), "last_error": j.get("last_error")}
+    facts["cutover"] = cutover_facts(cfg, facts)
     if cfg.get("hold_file"):
         facts["hold"] = read_evidence(cfg["hold_file"], "json")
     if cfg.get("ledger"):
@@ -144,6 +156,32 @@ def read_evidence(path, kind):
         return "malformed:unparseable"
 
 
+def cutover_facts(cfg, facts):
+    """Cutover = installed timer active AND a scheduled (timer-triggered) run executed AND a real delivery succeeded.
+    A receipt file existing is NOT cutover."""
+    c = cfg.get("cutover") or {}
+    d = os.environ.get("HM_STATE") or HOME + "/.cache/aide/handover-monitor"
+    sysctl = os.environ.get("HM_SYSTEMCTL") or "systemctl"
+    timer = c.get("timer", "")
+    try:
+        out = subprocess.run([sysctl, "--user", "show", "-p", "ActiveState", timer], capture_output=True, text=True, timeout=20).stdout
+        active = "ActiveState=active" in out
+    except Exception:
+        active = False
+    def has(name, needle):
+        try:
+            return any(needle in l for l in open(os.path.join(d, name)))
+        except Exception:
+            return False
+    sched = has("runs.log", "trigger=timer")
+    allow_test = bool(os.environ.get("HM_TEST_CUTOVER"))     # stub deliveries (HM_SEND) count only inside tests
+    try:
+        deliv = any(" ok " in l + " " and (allow_test or not l.rstrip().endswith(" test")) for l in open(os.path.join(d, "delivery.log")))
+    except Exception:
+        deliv = False
+    return {"timer_active": active, "scheduled_run": sched, "delivery_ok": deliv, "ok": active and sched and deliv}
+
+
 # ---------------------------------------------------------------- derive
 def progress_sig(facts):
     blob = json.dumps([facts["progress"], facts["receipts"]], sort_keys=True)
@@ -160,6 +198,8 @@ def satisfied(spec, facts):
         return facts["receipts"].get(name, "missing").startswith("ok:")
     if kind == "unit":
         return facts["units"].get(name, "").endswith("/active")
+    if kind == "cutover":
+        return facts.get("cutover", {}).get("ok", False)
     return False
 
 
@@ -259,17 +299,23 @@ def deliver(msg, cfg, st):
     send = os.environ.get("HM_SEND") or "hermes"
     try:
         p = subprocess.run([send, "send", "--to", cfg["target"], msg], capture_output=True, text=True, timeout=60)
-        return p.returncode == 0
+        ok = p.returncode == 0
     except Exception:
-        return False
+        ok = False
+    st.log("delivery.log", "%s %s %s" % (iso(now()), "ok" if ok else "fail", cfg["target"]) + (" test" if os.environ.get("HM_SEND") else ""))
+    return ok
 
 
 def seat_event(line):
+    return seat_event_to("ctl", line)
+
+
+def seat_event_to(seat, line):
     cmd = os.environ.get("HM_SEAT_EVENT") or HOME + "/.local/bin/seat-event.sh"
     try:
-        subprocess.run([cmd, "ctl", line], capture_output=True, timeout=30)
+        return subprocess.run([cmd, seat, line], capture_output=True, timeout=30).returncode == 0
     except Exception:
-        pass
+        return False
 
 
 def send_or_spool(msg, cfg, st, t):
@@ -297,6 +343,109 @@ def flush_outbox(cfg, st, t):
     if st.meta.pop("notify_failing", None) and sent:
         st.log("runs.log", "%s notification delivery recovered, flushed=%d" % (iso(t), sent))
     return sent, True
+
+
+# ---------------------------------------------------------------- task stall supervision (no model)
+def task_evidence_sig(task):
+    """Substantive evidence only: receipt CONTENT, task code/test file content, git HEAD. Never mtimes, never other tasks' files."""
+    parts = []
+    for fp in [task.get("receipt", "")] + [f for pat in task.get("evidence_paths", []) for f in sorted(glob.glob(pat))[:100]]:
+        try:
+            parts.append((fp, sha(fp)))
+        except Exception:
+            parts.append((fp, "-"))
+    if task.get("git_dir"):
+        try:
+            parts.append(("HEAD", subprocess.run(["git", "-C", task["git_dir"], "rev-parse", "HEAD"], capture_output=True,
+                                                 text=True, timeout=20).stdout.strip()))
+        except Exception:
+            pass
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def worker_active(task, cfg, t):
+    """A genuine task-linked worker: a matching unit is active AND its task-linked stream file grew within the window.
+    A live PID/unit alone (no fresh task output) is NOT proof of work."""
+    sysctl = os.environ.get("HM_SYSTEMCTL") or "systemctl"
+    unit_up = False
+    for u in task.get("worker_units", []):
+        try:
+            out = subprocess.run([sysctl, "--user", "show", "-p", "ActiveState", u], capture_output=True, text=True, timeout=20).stdout
+            unit_up = unit_up or "ActiveState=active" in out
+        except Exception:
+            pass
+    window = cfg["stall"]["substantive_minutes"] * 60
+    fresh = any(t - os.path.getmtime(f) < window for pat in task.get("worker_stream_globs", []) for f in glob.glob(pat))
+    return unit_up and fresh
+
+
+def stall_pass(cfg, st, t):
+    sc = cfg["stall"]
+    stalls = st.meta.setdefault("stalls", {})
+    for task in cfg.get("tasks", []):
+        tid = task["id"]
+        rec = stalls.setdefault(tid, {})
+        sig = task_evidence_sig(task)
+        done = satisfied(task["done_requires"], {"cutover": cutover_facts(cfg, None), "receipts": {}, "units": {}}) if task.get("done_requires") else False
+        if rec.get("sig") != sig:
+            rec["sig"], rec["last_substantive"] = sig, t
+            if rec.get("stalled"):          # substantive evidence after detection clears it
+                st.log("runs.log", "%s stall %s CLEARED by substantive evidence" % (iso(t), tid))
+                seat_event_to(sc["ctl_seat"], "handover-monitor: stall on %s cleared (substantive evidence resumed)" % tid)
+                rec.pop("stalled", None); rec.pop("ack", None)
+        rec.setdefault("last_substantive", t)
+        if done:
+            rec.pop("stalled", None)
+            continue
+        idle = t - rec["last_substantive"] >= sc["substantive_minutes"] * 60
+        if not rec.get("stalled"):
+            if idle and not worker_active(task, cfg, t):
+                ev = {"task": tid, "title": task.get("title"), "detected": iso(t), "last_substantive": iso(rec["last_substantive"]),
+                      "owner": sc["ctl_seat"], "rule": "no substantive evidence for %d min and no task-linked active worker" % sc["substantive_minutes"]}
+                os.makedirs(st.dir + "/stalls", exist_ok=True)
+                wjson("%s/stalls/%s-%d.json" % (st.dir, tid, t), ev)
+                rec["stalled"] = {"since": t, "notified": {}, "last_nag": 0, "event": ev}
+            else:
+                continue
+        s_ = rec["stalled"]
+        ack = rec.get("ack")
+        # ack without resumed work: re-detect after another substantive window
+        if ack and t - ack["at"] >= sc["substantive_minutes"] * 60:
+            s_["last_nag"] = 0
+            rec["ack"] = None
+            ack = None
+            s_["reopened"] = t
+        if ack:
+            continue
+        due_nag = (t - s_["last_nag"] >= sc["ack_minutes"] * 60)
+        if not due_nag and s_["notified"].get("ctl") and s_["notified"].get("hermes"):
+            continue
+        first = not s_["last_nag"]
+        n = s_.get("count", 0) + (1 if due_nag else 0)
+        msg = "%sSTALL %s: %s. %s. Owner ctl; unresolved until a substantive ack/action receipt: `handover-monitor.py stall-ack %s --action TEXT` then real evidence." % (
+            "" if first else "ESCALATED (no ack, notice %d) " % n, tid, s_["event"]["title"], s_["event"]["rule"], tid)
+        ok1 = seat_event_to(sc["ctl_seat"], msg)
+        ok2 = seat_event_to(sc["hermes_seat"], msg)
+        ok3 = send_or_spool(msg, cfg, st, t)
+        s_["notified"] = {"ctl": ok1 or s_["notified"].get("ctl"), "hermes": (ok2 or ok3) or s_["notified"].get("hermes")}
+        if due_nag or first:
+            s_["last_nag"], s_["count"] = t, n
+        if not (ok1 and (ok2 or ok3)):
+            s_["last_nag"] = 0          # failed delivery: retry next run, do not mark delivered
+            st.log("runs.log", "%s stall %s delivery incomplete ctl=%s hermes=%s" % (iso(t), tid, ok1, ok2 or ok3))
+
+
+def stall_ack(tid, action):
+    st = State()
+    rec = st.meta.get("stalls", {}).get(tid)
+    if not rec or not rec.get("stalled"):
+        print("no active stall for", tid); return
+    if not action.strip():
+        print("ack needs --action text"); return
+    rec["ack"] = {"at": now(), "action": action[:300]}
+    st.log("runs.log", "%s stall %s acked: %s (stays open until substantive evidence)" % (iso(now()), tid, action[:100]))
+    wjson(st.dir + "/meta.json", st.meta)
+    print("acked; stall remains open until substantive evidence")
 
 
 # ---------------------------------------------------------------- run
@@ -362,7 +511,9 @@ def run():
             st.alerts[k] = {"first": prev.get("first", t), "last_sent": t, "acked": False, "kind": kind}
             if kind in LOCAL_KINDS and k in new:
                 seat_event("handover-monitor %s: %s" % (kind, d))
-    st.log("runs.log", "%s sig=%s new=%d remind=%d calls=%d" % (iso(t), sig, len(new), len(remind), calls))
+    stall_pass(cfg, st, t)
+    st.log("runs.log", "%s sig=%s new=%d remind=%d calls=%d trigger=%s" % (
+        iso(t), sig, len(new), len(remind), calls, os.environ.get("HM_TRIGGER", "manual")))
     st.save(cur)
     return 0
 
@@ -384,6 +535,9 @@ def status():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "stall-ack" and len(sys.argv) > 4 and sys.argv[3] == "--action":
+        stall_ack(sys.argv[2], " ".join(sys.argv[4:]))
+        sys.exit(0)
     if cmd == "run":
         sys.exit(run())
     if cmd == "ack" and len(sys.argv) > 2:
