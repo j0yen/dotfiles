@@ -5,8 +5,9 @@ here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"; S="$here/.local/bin/c
 fail=0; ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; fail=1; }
 t="$(mktemp -d)"; sess="silrec$$"; unset TMUX TMUX_PANE; trap 'tmux -L "$sess" kill-server 2>/dev/null; rm -rf "$t"' EXIT
 printf '#!/bin/sh\nexec tmux -L %s "$@"\n' "$sess" > "$t/tmuxw"; chmod +x "$t/tmuxw"; export SR_TMUX_BIN="$t/tmuxw"
-mkdir -p "$t/ev" "$t/aw" "$t/home"; echo "work" > "$t/ev/aide-events.log"; : > "$t/tr.jsonl"
-export SR_DIR="$t/sr" SR_EVENTS_DIR="$t/ev" AIDE_WAKE_DIR="$t/aw" SR_TRANSCRIPT="$t/tr.jsonl" SR_NOTIFY_BIN="$t/notify" SR_NOW=1000000
+mkdir -p "$t/ev" "$t/aw" "$t/home"; echo "work" > "$t/ev/aide-events.log"; echo x > "$t/tr.jsonl"
+export SR_DIR="$t/sr" SR_EVENTS_DIR="$t/ev" AIDE_WAKE_DIR="$t/aw" SR_TRANSCRIPT="$t/tr.jsonl" SR_NOTIFY_BIN="$t/notify" SR_NOW=1000000 SR_SID=11111111-2222-3333-4444-555555555555
+printf '#!/bin/sh\nexit 1\n' > "$t/pg-none"; printf '#!/bin/sh\nexit 0\n' > "$t/pg-live"; chmod +x "$t/pg-none" "$t/pg-live"; export SR_PGREP_BIN="$t/pg-none"
 printf '#!/bin/sh\necho "$@" >> %s/notify.log\n' "$t" > "$t/notify"; chmod +x "$t/notify"
 touch -d @990000 "$t/tr.jsonl"   # 10000 s quiet
 # alive-idle: a real tmux pane whose current command is node (a fake "claude") reading a file the poke lands in
@@ -29,8 +30,16 @@ export SR_LAUNCH_CMD="echo relaunch >> $t/launch.log"
 out="$("$S")"; [ "$out" = relaunched ] && grep -q relaunch "$t/launch.log" && ok "dead pane + gate allows -> launcher invoked" || bad "dead relaunch ($out)"
 rm -f "$t/sr/incident.json"
 printf '#!/bin/sh\necho "hold-gate: HOLD blocks ctl-recover" >&2\nexit 1\n' > "$t/hold-no"; chmod +x "$t/hold-no"; export SR_HOLD_BIN="$t/hold-no"; rm -f "$t/launch.log"
-out="$("$S")"; [ "$out" = blocked-by-hold ] && [ ! -e "$t/launch.log" ] && grep -q 'blocked-by-hold' "$t/notify.log" && ok "hold refusal: no launch, persistent incident, notified (no bypass)" || bad "hold refusal ($out)"
+out="$("$S")"; [ "$out" = blocked-by-hold ] && [ ! -e "$t/launch.log" ] && grep -q 'blocked-by-hold' "$t/notify.log" && [ -s "$t/sr/incident.json" ] && ok "hold refusal: no launch, persistent incident, notified (no bypass)" || bad "hold refusal ($out)"
+out2="$("$S")"; [ "$out2" = open:blocked-by-hold ] && ok "refused incident stays open on replay" || bad "refused replay ($out2)"
+export SR_HOLD_BIN="$t/hold-ok"; out2="$("$S")"; [ "$out2" = relaunched ] && grep -q relaunch "$t/launch.log" && ok "hold lifts -> blocked incident retried and relaunched" || bad "retry after lift ($out2)"
+export SR_HOLD_BIN="$t/hold-no"; rm -f "$t/launch.log" "$t/sr/incident.json"; "$S" >/dev/null
 [ "$(cat "$t/ev/aide-events.log")" = work ] && ok "queue untouched" || bad "queue untouched"
+# guards: a live ctl elsewhere and a bad sid are never relaunched over
+rm -f "$t/sr/incident.json"; export SR_HOLD_BIN="$t/hold-ok" SR_PGREP_BIN="$t/pg-live"; rm -f "$t/launch.log"
+out="$("$S")"; [ "$out" = live-elsewhere ] && [ ! -e "$t/launch.log" ] && ok "live ctl process elsewhere: no relaunch" || bad "live-elsewhere ($out)"
+rm -f "$t/sr/incident.json"; export SR_PGREP_BIN="$t/pg-none"; out="$(SR_SID=bogus "$S")"; [ "$out" = bad-sid ] && [ ! -e "$t/launch.log" ] && ok "bad sid: no relaunch, escalated" || bad "bad-sid ($out)"
+rm -f "$t/sr/incident.json"
 # provider outage: gate allows, launcher fails
 rm -f "$t/sr/incident.json"; export SR_HOLD_BIN="$t/hold-ok" SR_LAUNCH_CMD="exit 7"; : > "$t/notify.log"
 out="$("$S")"; [ "$out" = launch-failed ] && grep -q 'launch-failed' "$t/notify.log" && ok "provider outage: detection+queue preserved, deterministic escalation" || bad "provider outage ($out)"

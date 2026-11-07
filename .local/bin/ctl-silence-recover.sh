@@ -30,6 +30,9 @@ if [ -s "$INC" ]; then   # open incident: consumed?
   if [ "$off" -gt "$base" ] || { [ "$poked" -gt 0 ] && [ "$tw" -gt "$poked" ]; }; then
     log "incident closed: consumed (cursor $base->$off transcript_write=$tw poked=$poked)"; mv -f "$INC" "$D/closed-$T.json"; echo consumed; exit 0
   fi
+  if [[ "$(field state)" =~ ^blocked-by-hold$ ]] && "$HG" ctl-recover >"$D/gate.out" 2>&1; then
+    log "incident retry: gate now allows"; mv -f "$INC" "$D/retried-$T.json"; exec "$0"
+  fi
   if [ $(( T - last )) -ge "$ESC" ]; then
     st="$(field state)"; notify "incident $st unconsumed $(( (T - $(num "$(field opened)")) / 60 )) min, unread=$unread bytes, owner=hermes next=read $INC"
     wr "$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));d["last_esc"]=int(sys.argv[2]);print(json.dumps(d))' "$INC" "$T")"
@@ -45,16 +48,20 @@ state=""; poked=0
 if [ "$alive" = yes ]; then
   "$TM" send-keys -t "$pane" "silence-recover: unread inbox work, work the owed list" Enter 2>/dev/null && { state=poked; poked="$T"; }
   [ -n "$state" ] || state=poke-failed
+elif ! [[ "$sid" =~ ^[0-9a-f-]{36}$ ]] || [ ! -s "$tr_f" ]; then
+  state=bad-sid
+elif "${SR_PGREP_BIN:-pgrep}" -f -- "claude.*--resume $sid|claude.*$sid" >/dev/null 2>&1; then
+  state=live-elsewhere
 else
   if "$HG" ctl-recover >"$D/gate.out" 2>&1; then
-    lc="${SR_LAUNCH_CMD:-$HOME/.local/bin/ctl-launch.sh --resume $sid}"
+    export SID="$sid"; lc="${SR_LAUNCH_CMD:-$HOME/.local/bin/ctl-launch.sh --resume \"\$SID\"}"
     if (set -o pipefail; bash -c "$lc" >"$D/launch.out" 2>&1); then state=relaunched; poked="$T"; else state=launch-failed; fi
   else state=blocked-by-hold; fi
 fi
 set -o noclobber
 if wr_ok=$(printf '{"opened":%s,"state":"%s","base_off":%s,"poked_at":%s,"last_esc":%s,"sid":"%s","pane":"%s","unread":%s}\n' "$T" "$state" "$off" "$poked" "$T" "$sid" "$pane" "$unread" > "$INC" 2>&1); then
   log "incident opened: $state unread=$unread quiet=${quiet}s"
-  case "$state" in blocked-by-hold|launch-failed|poke-failed) notify "$state: executor silent $((quiet/60)) min, unread=$unread; owner=hermes next=$(head -c 160 "$D/gate.out" "$D/launch.out" 2>/dev/null | tr '\n' ' ')";; esac
+  case "$state" in blocked-by-hold|launch-failed|poke-failed|bad-sid|live-elsewhere) notify "$state: executor silent $((quiet/60)) min, unread=$unread; owner=hermes next=$(head -c 160 "$D/gate.out" "$D/launch.out" 2>/dev/null | tr '\n' ' ')";; esac
   echo "$state"
 else echo duplicate-run; fi
 exit 0
