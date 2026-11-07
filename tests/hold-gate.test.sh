@@ -52,10 +52,10 @@ bash "$G" seat-tick:x >/dev/null 2>&1; [ $? = 1 ]; chk "d2: HOLD.json without a 
 echo '{"reason":"r","preserved":["a"]}' >"$F"
 out="$(bash "$G" --explain)"; rc=$?; [ "$rc" = 0 ] && [[ "$out" == *"$F"* ]] && [[ "$out" == *'["a"]'* ]]; chk "e: --explain prints the path and preserved list, exit 0" $?
 
-# seat-event: log append survives the hold; wake is skipped
+# seat-event: log append survives the hold; wake is skipped (ctl writes aide-events.log, the path aide-inbox.sh reads; hermes-handover 2.3)
 E="$T/ev"; mkdir -p "$E"
 out="$(EVENTS_DIR="$E" SEAT_EVENT_DRY=1 bash "$bin/seat-event.sh" ctl "hold probe line" 2>"$T/e2")"; rc=$?
-[ "$rc" = 0 ] && grep -q 'hold probe line' "$E/ctl-events.log" 2>/dev/null && ! grep -q systemd-run <<<"$out"; chk "f: seat-event.sh appends the receipt line and skips the wake under HOLD" $?
+[ "$rc" = 0 ] && grep -q 'hold probe line' "$E/aide-events.log" 2>/dev/null && ! grep -q systemd-run <<<"$out"; chk "f: seat-event.sh appends the receipt line and skips the wake under HOLD" $?
 
 [ "$fail" = 0 ] && echo "ALL PASS hold-gate.test.sh" || echo "SOME FAIL hold-gate.test.sh"
 exit "$fail"
