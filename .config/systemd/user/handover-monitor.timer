@@ -1,0 +1,8 @@
+[Unit]
+Description=Run the model-free handover monitor every 5 min
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=15s
+[Install]
+WantedBy=timers.target
