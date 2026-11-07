@@ -51,7 +51,7 @@ stop)
   list="$(paste -sd' ' - <<<"$ids")"
   reason="Seat $seat has overdue follow-ups this turn did not cite: $list. Cite one of these ids in full (clear it or say what you did) or print 'FOLLOWUPS $seat owed <n>-><n>'."
   flog "BLOCK $list"
-  jq -nc --arg r "$reason" '{decision:"block",reason:$r}'
+  if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$reason")"; else jq -nc --arg r "$reason" '{decision:"block",reason:$r}'; fi
   exit 0 ;;
 *) echo "usage: seat-followups.sh line|stop" >&2; exit 0 ;;
 esac

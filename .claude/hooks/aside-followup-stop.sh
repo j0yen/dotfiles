@@ -5,6 +5,8 @@
 # and no "done" claim. A49 D3, Joe 10-31 6:4x PM. Fast, no network; allows on any error.
 # Env: ASIDE_OPEN_ASKS (rows file), ASIDE_STOP_LOG (fires log).
 set -u
+# Scoped to WM_SEAT sessions (handover 2.7): a plain/director session is never gated.
+[ -n "${WM_SEAT:-}" ] || exit 0
 export ASIDE_OPEN_ASKS="${ASIDE_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
 export ASIDE_STOP_LOG="${ASIDE_STOP_LOG:-$HOME/.local/state/aside-stop/fires.log}"
 python3 -I -c '

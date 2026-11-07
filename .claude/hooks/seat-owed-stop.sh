@@ -41,5 +41,5 @@ while IFS= read -r id; do
 done <<<"$ids"
 [ -n "$missing" ] || exit 0
 reason="Seat $seat has overdue follow-ups the final message does not cite:${missing}. Cite each id in full with what was done, or print 'FOLLOWUPS $seat owed <n>-><n>'."
-jq -nc --arg r "$reason" '{decision:"block",reason:$r}'
+if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$reason")"; else jq -nc --arg r "$reason" '{decision:"block",reason:$r}'; fi
 exit 0
