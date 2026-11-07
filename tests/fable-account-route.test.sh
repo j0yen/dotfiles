@@ -10,7 +10,7 @@ case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in TOKEN-PM-*) a=jyen.pm;; TOKEN-JOSEPH-*) a
 echo "spy acct=$a name=${FABLE_LAUNCH_ACCOUNT:-} args=$*" >> "$SPYLOG"
 S
 chmod +x "$T/claude"
-export FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
+export FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
 run(){ : > "$SPYLOG"; "$L" "$@" 2>"$T/err"; echo $? > "$T/rc"; }
 run --model claude-fable-5-1 --effort xhigh; ck "fable -> jyen.pm xhigh" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort xhigh" $SPYLOG'
@@ -33,4 +33,9 @@ SID=11111111-2222-3333-4444-555555555555; sleep 30 --x-$SID 2>/dev/null & sp=$!;
 run --model fable --resume $SID; ck "duplicate resume refused (73)" '[ "$(cat $T/rc)" = 73 ] && [ ! -s $SPYLOG ]'
 kill $dp $sp 2>/dev/null; wait 2>/dev/null
 run --model fable --resume 99999999-2222-3333-4444-555555555555; ck "no duplicate -> resume proceeds" 'grep -q "acct=jyen.pm" $SPYLOG'
+run --model fable --model sonnet; ck "duplicate --model refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
+run --model sonnet --effort low --effort=high; ck "duplicate --effort refused" '[ "$(cat $T/rc)" = 64 ]'
+: > "$SPYLOG"; FABLE_LAUNCH_TEST=0 FABLE_ACCOUNT=josephsyen "$L" --model fable 2>"$T/err"; rc=$?; ck "production FABLE_ACCOUNT override refused" '[ $rc = 64 ] && [ ! -s $SPYLOG ]'
+: > "$SPYLOG"; FABLE_LAUNCH_TEST=0 FABLE_BASE_ACCOUNT=jyen.pm "$L" --model sonnet 2>"$T/err"; rc=$?; ck "production FABLE_BASE_ACCOUNT override refused" '[ $rc = 64 ] && [ ! -s $SPYLOG ]'
+run --model fable; ck "marker exports account+model" 'grep -q "name=jyen.pm" $SPYLOG'
 echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS

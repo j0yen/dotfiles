@@ -4,18 +4,26 @@
 # Process-local only: exports CLAUDE_CODE_OAUTH_TOKEN for the exec'd claude. No rotation, no shared default edits, no token output.
 # A Fable parent's native child agents inherit this env (jyen.pm); use `fable-launch.sh --helper --model sonnet ...` for separate-process helpers on josephsyen.
 set -u
-STORE="${FABLE_TOKEN_STORE:-$HOME/.config/fleet-token/store}"
-CLAUDE_BIN="${FABLE_CLAUDE_BIN:-$HOME/.npm-global/bin/claude}"
-FABLE_ACCT="${FABLE_ACCOUNT:-jyen.pm}"; BASE_ACCT="${FABLE_BASE_ACCOUNT:-josephsyen}"
+# Production pins the split: the account names, store and claude binary cannot be overridden from the environment.
+# Overrides are honored only under FABLE_LAUNCH_TEST=1 (the test file sets it); anywhere else a set override is refused.
+if [ "${FABLE_LAUNCH_TEST:-0}" = 1 ]; then
+  STORE="${FABLE_TOKEN_STORE:-$HOME/.config/fleet-token/store}"; CLAUDE_BIN="${FABLE_CLAUDE_BIN:-$HOME/.npm-global/bin/claude}"
+  FABLE_ACCT="${FABLE_ACCOUNT:-jyen.pm}"; BASE_ACCT="${FABLE_BASE_ACCOUNT:-josephsyen}"
+else
+  for _v in FABLE_ACCOUNT FABLE_BASE_ACCOUNT FABLE_TOKEN_STORE FABLE_CLAUDE_BIN; do
+    [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (account split is fixed)" >&2; exit 64; }
+  done
+  STORE="$HOME/.config/fleet-token/store"; CLAUDE_BIN="$HOME/.npm-global/bin/claude"; FABLE_ACCT=jyen.pm; BASE_ACCT=josephsyen
+fi
 HELPER=0; [ "${1:-}" = --helper ] && { HELPER=1; shift; }
 model=""; effort=""; sid=""; args=("$@"); out=(); i=0
 while [ $i -lt ${#args[@]} ]; do
   a="${args[$i]}"
   case "$a" in
-    --model) model="${args[$((i+1))]:-}"; out+=("$a" "$model"); i=$((i+2)); continue ;;
-    --model=*) model="${a#--model=}"; out+=("$a") ;;
-    --effort) effort="${args[$((i+1))]:-}"; i=$((i+2)); continue ;;
-    --effort=*) effort="${a#--effort=}" ;;
+    --model) [ -z "$model" ] || { echo "fable-launch: duplicate --model refused" >&2; exit 64; }; model="${args[$((i+1))]:-}"; out+=("$a" "$model"); i=$((i+2)); continue ;;
+    --model=*) [ -z "$model" ] || { echo "fable-launch: duplicate --model refused" >&2; exit 64; }; model="${a#--model=}"; out+=("$a") ;;
+    --effort) [ -z "$effort" ] || { echo "fable-launch: duplicate --effort refused" >&2; exit 64; }; effort="${args[$((i+1))]:-}"; i=$((i+2)); continue ;;
+    --effort=*) [ -z "$effort" ] || { echo "fable-launch: duplicate --effort refused" >&2; exit 64; }; effort="${a#--effort=}" ;;
     --resume|-r) sid="${args[$((i+1))]:-}"; out+=("$a" "$sid"); i=$((i+2)); continue ;;
     --resume=*) sid="${a#--resume=}"; out+=("$a") ;;
     *) out+=("$a") ;;
@@ -45,6 +53,6 @@ if [ -n "$sid" ] && [[ "$sid" =~ ^[0-9a-f-]{36}$ ]]; then
 fi
 tok="$(cat "$f")"
 export CLAUDE_CODE_OAUTH_TOKEN="$tok"; unset tok
-export FABLE_LAUNCH_ACCOUNT="$ACCT"
+export FABLE_LAUNCH_ACCOUNT="$ACCT" FABLE_LAUNCH_MODEL="$model"
 echo "fable-launch: account=$ACCT model=$model${effort:+ effort=$effort}" >&2
 if [ -n "$effort" ]; then exec "$CLAUDE_BIN" "${out[@]}" --effort "$effort"; else exec "$CLAUDE_BIN" "${out[@]}"; fi
