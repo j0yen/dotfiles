@@ -1,0 +1,5 @@
+[Unit]
+Description=Sync open-asks.tsv into wm-decide asks (A1235)
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ctl-asks-sync.sh
