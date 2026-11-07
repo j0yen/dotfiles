@@ -12,6 +12,7 @@ Env (tests): HM_CONFIG HM_STATE HM_CLAUDE HM_SEND HM_SYSTEMCTL HM_SEAT_EVENT HM_
 """
 import fcntl, glob, hashlib, json, os, re, subprocess, sys, time
 
+HAIKU_EFFORT = "low"   # pinned explicitly; claude --help lists low|medium|high|xhigh|max
 HAIKU = "claude-haiku-5-5"   # real ID, seen rc=0 in ~/.cache/aide/event-route/model-calls.log with claude CLI 2.1.293
 HOME = os.path.expanduser("~")
 FB = HOME + "/wintermute-operations/feedback"
@@ -25,10 +26,10 @@ DEFAULT_CFG = {
         {"id": "model-free-receipt", "path": FB + "/model-free-handover-monitor-20261106.receipt.md", "kind": "md"},
         {"id": "router-proof", "path": HOME + "/wintermute-operations/ctl-pre-fable-routing-proof-20261106.json", "kind": "json"},
     ],
-    "progress_paths": [FB + "/*.receipt.md", FB + "/*.task.md", HOME + "/Notes/ctl-*-2026*.md",
-                       HOME + "/.cache/aide/event-bridge/status.json"],
-    "deadlines": [{"id": "model-free-cutover", "due": "2026-11-07T01:30:00-08:00", "satisfied_by": "cutover:model-free"}],
+    "progress_paths": [FB + "/*.receipt.md", FB + "/*.task.md", HOME + "/Notes/ctl-*-2026*.md"],
+    "deadlines": [{"id": "model-free-cutover", "due": "2026-11-07T01:30:00-08:00", "satisfied_by": "cutover:model-free+accept:model-free"}],
     "cutover": {"id": "model-free", "timer": "handover-monitor.timer"},
+    "acceptance_file": FB + "/model-free-handover-monitor-20261106.acceptance.json",
     "stall": {"substantive_minutes": 10, "ack_minutes": 5, "ctl_seat": "ctl", "hermes_seat": "hermes"},
     "tasks": [{"id": "model-free-monitor", "title": "model-free handover monitor replacement (A1150)",
                "receipt": FB + "/model-free-handover-monitor-20261106.receipt.md",
@@ -38,7 +39,7 @@ DEFAULT_CFG = {
                "git_dir": HOME + "/.cache/coder-clones/dotfiles-model-free-monitor",
                "worker_stream_globs": [HOME + "/wintermute-operations/*model-free*.jsonl"],
                "worker_units": ["ctl-model-free*"],
-               "done_requires": "cutover:model-free"}],
+               "done_requires": "cutover:model-free+accept:model-free"}],
     "cron_file": HOME + "/.hermes/cron/jobs.json",
     "cron_ids": ["378a97370a05"],
     "hold_file": HOME + "/wintermute-operations/quota-conservation/HOLD.json",
@@ -136,6 +137,7 @@ def collect(cfg):
             facts["cron"][j["id"]] = {"enabled": j.get("enabled"), "state": j.get("state"),
                                       "last_status": j.get("last_status"), "last_error": j.get("last_error")}
     facts["cutover"] = cutover_facts(cfg, facts)
+    facts["accept"] = accept_facts(cfg)
     if cfg.get("hold_file"):
         facts["hold"] = read_evidence(cfg["hold_file"], "json")
     if cfg.get("ledger"):
@@ -192,8 +194,21 @@ def due_epoch(s):
     return int(subprocess.run(["date", "-d", s, "+%s"], capture_output=True, text=True).stdout.strip() or 0)
 
 
+def accept_facts(cfg):
+    """Acceptance = an acceptance file with independent_verified, effort_pinned true and quiet_checks >= 3.
+    Timer + delivery alone (cutover) never completes the task."""
+    a = rjson(cfg.get("acceptance_file", ""), {}) if cfg.get("acceptance_file") else {}
+    ok = bool(isinstance(a, dict) and a.get("independent_verified") is True and a.get("effort_pinned") is True
+              and isinstance(a.get("quiet_checks"), int) and a.get("quiet_checks") >= 3)
+    return {"ok": ok}
+
+
 def satisfied(spec, facts):
+    if "+" in spec:
+        return all(satisfied(x, facts) for x in spec.split("+"))
     kind, _, name = spec.partition(":")
+    if kind == "accept":
+        return facts.get("accept", {}).get("ok", False)
     if kind == "receipt":
         return facts["receipts"].get(name, "missing").startswith("ok:")
     if kind == "unit":
@@ -268,7 +283,7 @@ def triage(events, st, t):
     rec = {"ts": iso(t), "model": HAIKU, "events": len(events), "rc": None}
     out = err = ""
     try:
-        p = subprocess.run([claude, "-p", "--model", HAIKU, "--output-format", "json", "--tools", "", "--no-session-persistence",
+        p = subprocess.run([claude, "-p", "--model", HAIKU, "--effort", HAIKU_EFFORT, "--output-format", "json", "--tools", "", "--no-session-persistence",
                             "--disable-slash-commands", "--setting-sources", ""], input=prompt, capture_output=True,
                            text=True, timeout=120, env=dict(os.environ, WM_ROUTER="1"))
         rec["rc"], out, err = p.returncode, p.stdout, p.stderr
@@ -386,7 +401,7 @@ def stall_pass(cfg, st, t):
         tid = task["id"]
         rec = stalls.setdefault(tid, {})
         sig = task_evidence_sig(task)
-        done = satisfied(task["done_requires"], {"cutover": cutover_facts(cfg, None), "receipts": {}, "units": {}}) if task.get("done_requires") else False
+        done = satisfied(task["done_requires"], {"cutover": cutover_facts(cfg, None), "accept": accept_facts(cfg), "receipts": {}, "units": {}}) if task.get("done_requires") else False
         if rec.get("sig") != sig:
             rec["sig"], rec["last_substantive"] = sig, t
             if rec.get("stalled"):          # substantive evidence after detection clears it
