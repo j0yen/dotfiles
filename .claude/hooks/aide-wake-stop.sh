@@ -16,5 +16,6 @@ why="$("$bin" pending 2>/dev/null)" || exit 0
 d="${AIDE_WAKE_DIR:-$HOME/.cache/aide}"
 armed="$(head -c 20 "$d/wake-armed" 2>/dev/null)"; [[ "$armed" =~ ^[0-9]+$ ]] || armed=0
 [ "$armed" -gt "$(date +%s)" ] && exit 0
-jq -nc --arg r "Aide has pending work and no wake armed ($(tr '\n' ' ' <<<"$why")). Work it, or arm a wake: CronCreate a sweep, then run aide-wake.sh arm <minutes>." '{decision:"block",reason:$r}'
+r="Aide has pending work and no wake armed ($(tr '\n' ' ' <<<"$why")). Work it, or arm a wake: CronCreate a sweep, then run aide-wake.sh arm <minutes>."
+if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$r")"; else jq -nc --arg r "$r" '{decision:"block",reason:$r}'; fi
 exit 0

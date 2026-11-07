@@ -74,7 +74,8 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
     n="$(cat "$cf" 2>/dev/null || echo 0)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
     [ "$n" -lt "$STOPMAX" ] || return 0          # bounded push: STOPMAX blocks per turn, never a loop
     echo $((n + 1)) >"$cf"
-    jq -cn --arg r "$body (Stop block $((n + 1))/$STOPMAX this turn)" '{decision:"block", reason:$r}'
+    if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$body")"; else
+    jq -cn --arg r "$body (Stop block $((n + 1))/$STOPMAX this turn)" '{decision:"block", reason:$r}'; fi
   else
     echo 0 >"$cf"
     jq -cn --arg r "$body" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'

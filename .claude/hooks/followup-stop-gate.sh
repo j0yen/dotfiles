@@ -52,7 +52,8 @@ gate() {
   if [ "$cnt" -ge 2 ]; then fire "FOLLOWUP-STOP-OVERRIDE seat=$seat n=$n ids=$(tr ' ' ',' <<<"${cited# }")"; rm -f "$cf"; return 0; fi
   echo $((cnt + 1)) >"$cf" 2>/dev/null
   fire "FOLLOWUP-STOP-REFUSED seat=$seat n=$n refusal=$((cnt + 1)) ids=$(tr ' ' ',' <<<"${cited# }")"
-  jq -nc --arg r "FOLLOW-UPS OVERDUE (seat $seat): cite the full id in a row or in your final text, or clear it, before ending this sweep: $ids5$more" '{decision:"block",reason:$r}'
+  local r="FOLLOW-UPS OVERDUE (seat $seat): cite the full id in a row or in your final text, or clear it, before ending this sweep: $ids5$more"
+  if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$r")"; else jq -nc --arg r "$r" '{decision:"block",reason:$r}'; fi
 }
 in="$(cat 2>/dev/null)" || exit 0
 gate "$in" || true
