@@ -2,25 +2,155 @@
   "version": 1,
   "doc": "L4 boundary rule table (A237). One table read by .claude/hooks/boundary-gate.sh and by tests/boundary-no-drift.test.sh. status: installed = file must exist; spec = named in CLAUDE.md, file not shipped yet; judgment = predicate needs judgment, no classifier form, listed under claude_operated. A rule with a classifier carries event + pattern (+ tool for PreToolUse, when_env to scope).",
   "rules": [
-    {"id": "ask-user-question-deny", "claude_md": "AskUserQuestion deny", "status": "installed", "hook": ".claude/hooks/boundary-gate.sh", "event": "PreToolUse", "tool": "^AskUserQuestion$", "when_env": "WM_SEAT", "reason": "no session asks Joe to approve or choose (CLAUDE.md ACT, LOG, REPORT)"},
-    {"id": "never-ask-joe", "claude_md": "never-ask-joe", "status": "installed", "hook": ".claude/hooks/boundary-gate.sh", "event": "Stop", "when_env": "WM_SEAT", "pattern": "(reply yes|reply with yes|do you want me to|would you like me to|shall I proceed|let me know (if|whether) you)", "reason": "final message is shaped as an ask; act on the recommendation and report"},
-    {"id": "promise-P-row", "claude_md": "promise phrase", "status": "installed", "hook": ".claude/hooks/boundary-gate.sh", "event": "Stop", "when_env": "WM_SEAT", "pattern": "\\bI will\\b", "unless_pattern": "\\bP[0-9]+\\b", "reason": "an I-will promise needs a P row id in the message (open-asks.tsv)"},
-    {"id": "aside-phrase", "claude_md": "aside-phrase", "status": "installed", "hook": ".claude/hooks/aside-followup-stop.sh", "event": "Stop"},
-    {"id": "carbon-no-build", "claude_md": "carbon-no-build.sh", "status": "installed", "hook": ".claude/hooks/carbon-no-build.sh", "event": "PreToolUse"},
-    {"id": "cargo-block-carbon", "claude_md": "cargo-block-carbon.sh", "status": "installed", "hook": ".claude/hooks/cargo-block-carbon.sh", "event": "PreToolUse"},
-    {"id": "git-no-force-push", "claude_md": "git-no-force-push", "status": "installed", "hook": ".claude/hooks/git-no-force-push.sh", "event": "PreToolUse"},
-    {"id": "answers-first", "claude_md": "answers-first.sh", "status": "installed", "hook": ".claude/hooks/answers-first.sh", "event": "PreToolUse"},
-    {"id": "owed-now", "claude_md": "owed-now.sh", "status": "installed", "hook": ".claude/hooks/owed-now.sh", "event": "Stop"},
-    {"id": "probe-gate", "claude_md": "probe-gate.sh", "status": "installed", "hook": ".claude/hooks/probe-gate.sh", "event": "PreToolUse"},
-    {"id": "prd-write-gate", "claude_md": "prd-write-gate.sh", "status": "installed", "hook": ".claude/hooks/prd-write-gate.sh", "event": "PreToolUse"},
-    {"id": "analysis-page-gate", "claude_md": "analysis-page-gate.sh", "status": "installed", "hook": ".claude/hooks/analysis-page-gate.sh", "event": "PreToolUse"},
-    {"id": "fable-skill-spawn-gate", "claude_md": "fable-skill-spawn-gate.sh", "status": "installed", "hook": ".claude/hooks/fable-skill-spawn-gate.sh", "event": "PreToolUse"},
-    {"id": "pr-wip", "claude_md": "pr-wip", "status": "judgment", "reason": "dropped by approvals #194 (MERGE THEM ALL NOW); no gate"},
-    {"id": "memory-tone-lint", "claude_md": "memory-tone-lint.sh", "status": "spec", "hook": ".local/bin/memory-tone-lint.sh", "event": "timer"},
-    {"id": "zero-runs-condition", "claude_md": "0/no open runs", "status": "spec", "hook": "swarm-decide wm_decide/record.py", "event": "record", "note": "A53, lives in swarm-decide"}
+    {
+      "id": "ask-user-question-deny",
+      "claude_md": "AskUserQuestion deny",
+      "status": "installed",
+      "hook": ".claude/hooks/boundary-gate.sh",
+      "event": "PreToolUse",
+      "tool": "^AskUserQuestion$",
+      "when_env": "WM_SEAT",
+      "reason": "no session asks Joe to approve or choose (CLAUDE.md ACT, LOG, REPORT)"
+    },
+    {
+      "id": "never-ask-joe",
+      "claude_md": "never-ask-joe",
+      "status": "installed",
+      "hook": ".claude/hooks/boundary-gate.sh",
+      "event": "Stop",
+      "when_env": "WM_SEAT",
+      "pattern": "(reply yes|reply with yes|do you want me to|would you like me to|shall I proceed|let me know (if|whether) you)",
+      "reason": "final message is shaped as an ask; act on the recommendation and report"
+    },
+    {
+      "id": "promise-P-row",
+      "claude_md": "promise phrase",
+      "status": "installed",
+      "hook": ".claude/hooks/boundary-gate.sh",
+      "event": "Stop",
+      "when_env": "WM_SEAT",
+      "pattern": "\\bI will\\b",
+      "unless_pattern": "\\bP[0-9]+\\b",
+      "reason": "an I-will promise needs a P row id in the message (open-asks.tsv)"
+    },
+    {
+      "id": "aside-phrase",
+      "claude_md": "aside-phrase",
+      "status": "installed",
+      "hook": ".claude/hooks/aside-followup-stop.sh",
+      "event": "Stop"
+    },
+    {
+      "id": "carbon-no-build",
+      "claude_md": "carbon-no-build.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/carbon-no-build.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "cargo-block-carbon",
+      "claude_md": "cargo-block-carbon.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/cargo-block-carbon.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "git-no-force-push",
+      "claude_md": "git-no-force-push",
+      "status": "installed",
+      "hook": ".claude/hooks/git-no-force-push.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "answers-first",
+      "claude_md": "answers-first.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/answers-first.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "owed-now",
+      "claude_md": "owed-now.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/owed-now.sh",
+      "event": "Stop"
+    },
+    {
+      "id": "probe-gate",
+      "claude_md": "probe-gate.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/probe-gate.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "prd-write-gate",
+      "claude_md": "prd-write-gate.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/prd-write-gate.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "analysis-page-gate",
+      "claude_md": "analysis-page-gate.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/analysis-page-gate.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "fable-skill-spawn-gate",
+      "claude_md": "fable-skill-spawn-gate.sh",
+      "status": "installed",
+      "hook": ".claude/hooks/fable-skill-spawn-gate.sh",
+      "event": "PreToolUse"
+    },
+    {
+      "id": "pr-wip",
+      "claude_md": "pr-wip",
+      "status": "judgment",
+      "reason": "dropped by approvals #194 (MERGE THEM ALL NOW); no gate"
+    },
+    {
+      "id": "memory-tone-lint",
+      "claude_md": "memory-tone-lint.sh",
+      "status": "spec",
+      "hook": ".local/bin/memory-tone-lint.sh",
+      "event": "timer"
+    },
+    {
+      "id": "zero-runs-condition",
+      "claude_md": "0/no open runs",
+      "status": "spec",
+      "hook": "swarm-decide wm_decide/record.py",
+      "event": "record",
+      "note": "A53, lives in swarm-decide"
+    }
   ],
   "exempt": {
     "doc": "scripts CLAUDE.md names that are tools, hooks owned by other rows, or not refusals",
-    "names": ["aide-account-follow.sh", "aide-inbox.sh", "aide-launch.sh", "aide-relaunch.sh", "analysis-escape-count.sh", "analysis-skill-router.sh", "approve.sh", "dream-persist.sh", "fleet-token-rotate.sh", "fleet-token-store.sh", "lint-page.sh", "model-role-check.sh", "orch-mcphost-test.sh", "orch-mdeploy-verify.sh", "rb-run-coder.sh", "ref.sh", "seat-ask.sh", "seat-context-start.sh", "seat-event.sh", "test.sh"]
+    "names": [
+      "aide-account-follow.sh",
+      "aide-inbox.sh",
+      "aide-launch.sh",
+      "aide-relaunch.sh",
+      "analysis-escape-count.sh",
+      "analysis-skill-router.sh",
+      "approve.sh",
+      "ctl-launch.sh",
+      "ctl-relaunch.sh",
+      "dream-persist.sh",
+      "fleet-token-rotate.sh",
+      "fleet-token-store.sh",
+      "hold-gate.sh",
+      "lint-page.sh",
+      "model-role-check.sh",
+      "orch-mcphost-test.sh",
+      "orch-mdeploy-verify.sh",
+      "rb-run-coder.sh",
+      "ref.sh",
+      "seat-ask.sh",
+      "seat-context-start.sh",
+      "seat-event.sh",
+      "test.sh"
+    ]
   }
 }
