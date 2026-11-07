@@ -150,6 +150,12 @@ selftest() {
   PATH="$T/fakebin2:$PATH" "$SELF" tst "normal row still wakes" >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q -- '--unit seat-event-tst-' "$T/sr-called" 2>/dev/null; chk "normal (role rb) row still wakes: systemd-run called for seat-event-tst-" $?
   rm -rf "$T/fakebin2"
+  # 9. ctl alias (hermes-handover 2.3): with only a ctl inbox row, `aide` is accepted and both names write aide-events.log
+  printf '# t\nctl\tinbox\tsid-c\t0\t0\t-\t-\n' >"$SEATS_TABLE"
+  "$SELF" aide "ctl -> hermes: alias line" >/dev/null 2>&1; r1=$?
+  "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
+  [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ ! -e "$EVENTS_DIR/ctl-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 2 ]; chk "ctl alias: aide + ctl both append to aide-events.log (2 lines, no ctl-events.log)" $?
+  "$SELF" nosuch "x" >/dev/null 2>&1; [ $? = 64 ]; chk "ctl alias does not admit other unknown seats (64)" $?
   # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
   [ "$("$SELF" --inbox-row aide)" = "$(printf 'aide\tinbox\t-\t0\t0\t-\t-')" ]; chk "--inbox-row aide prints the tab-separated row" $?
   "$SELF" --inbox-row 'bad name' >/dev/null 2>&1; [ $? = 64 ]; chk "--inbox-row refuses a bad seat name (64)" $?
@@ -164,6 +170,9 @@ if [ "${1:-}" = "--inbox-row" ]; then   # the seats.tsv row for an inbox-only se
 fi
 [ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --inbox-row <seat>  |  seat-event.sh --selftest' >&2; exit 64; }
 SEAT="$1"; shift
+# ctl = the aide since 11-06 (#244, hermes-handover 2.3): `aide` is an alias of `ctl` once seats.tsv carries only the ctl row, and both write
+# aide-events.log, the path aide-inbox.sh reads (internal file names keep the old seat name; CLAUDE.md § CTL).
+[ "$SEAT" = aide ] && ! known_seat aide && known_seat ctl && SEAT=ctl
 known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
 [ -n "$LINE" ] || { echo 'seat-event: empty line' >&2; exit 2; }
@@ -176,7 +185,8 @@ fi
 DIR="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
 ( umask 077; mkdir -p "$DIR" ) || exit 1
 # aide lanes (10-27): `aide:<lane>` is a seat name; its files map `:` -> `-` (aide-build-events.log), `aide` itself is unchanged
-LOG="$DIR/${SEAT//:/-}-events.log"; JSON="$DIR/${SEAT//:/-}-events.json"
+LOGSEAT="$SEAT"; [ "$SEAT" = ctl ] && LOGSEAT=aide   # ctl writes the aide log (see alias above)
+LOG="$DIR/${LOGSEAT//:/-}-events.log"; JSON="$DIR/${LOGSEAT//:/-}-events.json"
 SRC="$(seat_stamp_source)"
 seat_stamp_apply "$SRC" "$LINE"; STAMPED="$SEAT_STAMPED"; TYPED="$SSP_TYPED"
 
