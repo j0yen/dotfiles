@@ -13,7 +13,7 @@ mkdir -p "$tmp/ev"
 git -C "$here" show "$ref:.local/bin/followup-eval.py" >"$tmp/ev/followup-eval.py" 2>"$tmp/show.err" || { echo "FAIL cannot extract followup-eval.py from $ref: $(cat "$tmp/show.err")"; exit 1; }
 cat >"$tmp/asks-view" <<'F'
 #!/usr/bin/env bash
-printf 'A1\t2020-01-01T00:00\tctl\tx\ty\tgh pr view 1\tz\n'
+printf 'A1\t2019-12-01T00:00\tctl\t2020-01-01T00:00\ty\tgh pr view 1\tz\n'
 F
 printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/wm-asks"; chmod +x "$tmp/asks-view" "$tmp/wm-asks"
 run() { ASKS_VIEW_BIN="$tmp/asks-view" WM_ASKS_CMD="$tmp/wm-asks" ACCEPT_LOG="$tmp/log" FOLLOWUP_STATE_DIR="$tmp/state" FOLLOWUP_EVAL_BIN="$1" FOLLOWUP_DELIVER_CMD=true ACCEPT_NOW=2026-11-08T10:00:00 "$S" >/dev/null 2>&1; RC=$?; }

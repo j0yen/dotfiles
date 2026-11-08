@@ -124,4 +124,9 @@ sed 's/"new", "emit", "replay"/"new", "replay"/' "$EV" >"$base/ev-noemit.py"
 EVX="$base/ev-noemit.py" contract bad; bad=$?
 contract good; good=$?
 [ "$good" = 0 ] && [ "$bad" != 0 ]; chk "13: known-bad evaluator without emit fails the contract check (good $good, bad $bad)" $?
+# 14: live-schema contract against the REAL wm-asks when present (skipped on hosts without it): the call the evaluator makes returns a list of dicts with ask_id
+if command -v wm-asks >/dev/null 2>&1; then
+  wm-asks asks query --status open --json 2>/dev/null | python3 -c 'import json,sys;r=json.load(sys.stdin);assert isinstance(r,list) and all(isinstance(x.get("ask_id"),str) for x in r)'; chk "14: real wm-asks asks query --status open --json matches the evaluator contract" $?
+  FOLLOWUP_STATE_DIR="$base/real-state" python3 "$EV" new --seat ctl 2>/dev/null | grep -q ledger-unreadable; [ $? != 0 ]; chk "14: real evaluator run reports no ledger-unreadable" $?
+fi
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
