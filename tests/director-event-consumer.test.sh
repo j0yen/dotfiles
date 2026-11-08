@@ -63,8 +63,8 @@ fresh 1; ev "just chatter, no marker A100"; run
 chk "known-bad control: no marker => no claim, no launch" '[ "$(cnt claim calls.log)" = 0 ] && [ ! -e "$STUB/launch.log" ] && [ "$(cat $DIRECTOR_STATE/offset)" -gt 0 ]'
 
 fresh 2; ev "$M do the thing"; run
-chk "actionable: one claim" '[ "$(cnt "asks claim A100 --worker director-evt-0001 --by hermes" calls.log)" = 1 ]'
-chk "actionable: one launch" '[ "$(cnt director-run-evt-0001 launch.log)" = 1 ]'
+chk "actionable: one claim" '[ "$(cnt "asks claim A100 --worker director-evt-0001.c0 --by hermes --expect-rev 3" calls.log)" = 1 ]'
+chk "actionable: one launch" '[ "$(cnt director-run-evt-0001-a1 launch.log)" = 1 ]'
 chk "actionable: state launched + hold gate asked" 'grep -q "\"state\": \"launched\"" $DIRECTOR_STATE/runs/evt-0001.json && grep -q "director-consumer:A100" $STUB/hold.log'
 chk "envelope: mode 600, event text only in quoted block" '[ "$(stat -c %a $DIRECTOR_STATE/runs/evt-0001.envelope.md)" = 600 ] && grep -q "^> .*do the thing" $STUB/last-envelope.md && [ "$(grep -c "do the thing" $STUB/last-envelope.md)" = "$(grep -c "^> .*do the thing" $STUB/last-envelope.md)" ]'
 chk "decisions printed and appended" 'grep -q launched $T/out.txt && grep -q launched $DIRECTOR_STATE/decisions.jsonl'
@@ -81,14 +81,14 @@ chk "complete refuses missing effect" '[ $rc -ne 0 ] && [ ! -e $DIRECTOR_STATE/r
 : > "$T/empty.json"; python3 "$C" complete evt-0001 --effect "$T/empty.json" >/dev/null 2>&1; rc=$?
 chk "complete refuses empty effect" '[ $rc -ne 0 ]'
 python3 "$C" complete evt-0001 --effect "$T/effect.json" >/dev/null 2>&1; rc=$?
-chk "complete writes receipt, state=completed, ask not closed" '[ $rc -eq 0 ] && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/evt-0001.json && grep -q "director-evt-0001" $DIRECTOR_STATE/runs/evt-0001.receipt.json && grep -q "\"ask_status\": \"open\"" $DIRECTOR_STATE/runs/evt-0001.receipt.json && [ "$(cnt "asks \(resolve\|accept\|close\)" calls.log)" = 0 ]'
+chk "complete writes receipt, state=completed, ask not closed" '[ $rc -eq 0 ] && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/evt-0001.json && grep -q "director-evt-0001.c0" $DIRECTOR_STATE/runs/evt-0001.receipt.json && grep -q "\"ask_status\": \"open\"" $DIRECTOR_STATE/runs/evt-0001.receipt.json && [ "$(cnt "asks \(resolve\|accept\|close\)" calls.log)" = 0 ]'
 
 # crash after launch before receipt
 fresh 3; ev "$M x"; run
 touch "$STUB/active"; : > "$STUB/calls.log"; run recover
 chk "recover: unit active => left alone" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt claim calls.log)" = 0 ]'
 rm "$STUB/active"; run recover
-chk "crash before receipt: single relaunch, same claim/event id" '[ "$(cnt director-run-evt-0001 launch.log)" = 2 ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && grep -q "\"claim\": \"director-evt-0001\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "crash before receipt: single relaunch, same claim/event id" '[ "$(cnt director-run-evt-0001 launch.log)" = 2 ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && grep -q "\"claim\": \"director-evt-0001.c0\"" $DIRECTOR_STATE/runs/evt-0001.json'
 run recover
 chk "second crash: stuck, no third launch" '[ "$(cnt director-run launch.log)" = 2 ] && grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json'
 chk "stuck: one owned note with --by hermes --expect-rev, no date change" '[ "$(cnt "asks update A100 --by hermes --expect-rev" calls.log)" = 1 ] && ! grep -q -- "--due" $STUB/calls.log'
@@ -143,16 +143,16 @@ import json,os
 p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
 PY
 run recover
-chk "ready row => event ready-A100-3, one claim, one launch" '[ "$(cnt director-run-ready-A100-3 launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+chk "ready row => event ready-A100-3, one claim, one launch" '[ "$(cnt director-run-ready-A100-3-a1 launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
 touch "$STUB/active"; run recover
 chk "ready row claimed => not re-acted" '[ "$(cnt "asks claim" calls.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 1 ]'
 
 # unchanged state
 fresh 11; run recover
 chk "recover on empty state dir: exit 0" 'python3 "$C" recover >/dev/null 2>&1'
-before="$(cd $DIRECTOR_STATE && find . -type f ! -name lock -exec md5sum {} + | sort | md5sum)"
+before="$(cd $DIRECTOR_STATE && find . -type f ! -name '*.lock' ! -name '*.flock' -exec md5sum {} + | sort | md5sum)"
 : > "$STUB/calls.log"; run recover
-after="$(cd $DIRECTOR_STATE && find . -type f ! -name lock -exec md5sum {} + | sort | md5sum)"
+after="$(cd $DIRECTOR_STATE && find . -type f ! -name '*.lock' ! -name '*.flock' -exec md5sum {} + | sort | md5sum)"
 chk "unchanged recover: no writes, no launches, no ledger writes" '[ "$before" = "$after" ] && [ ! -e $STUB/launch.log ] && [ "$(cnt "asks \(claim\|update\)" calls.log)" = 0 ]'
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "FAILURES: $fails"; exit 1; }
