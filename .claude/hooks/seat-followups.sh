@@ -36,6 +36,14 @@ stop)
   in="$(cat 2>/dev/null)"
   command -v jq >/dev/null 2>&1 || exit 0
   [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0
+  if ev="$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh" 2>/dev/null; fu_eval_bin)" && [ -n "$ev" ]; then   # A1346: the shared evaluator, one fingerprint file with owed-now.sh
+    . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
+    new="$(fu_new_obligations "$seat")"; fu_outbox_replay
+    [ -n "$new" ] || exit 0
+    reason="$(fu_block_reason "$new")"; flog "BLOCK-NEW $(jq -r '.id' <<<"$new" | paste -sd, -)"
+    if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$reason"; else jq -nc --arg r "$reason" '{decision:"block",reason:$r}'; fi
+    exit 0
+  fi
   if ! fetch; then flog "ALLOW wm-decide unavailable: $WHY"; exit 0; fi
   ids="$(oldest5)"; [ -n "$ids" ] || exit 0
   tp="$(jq -r '.transcript_path // empty' <<<"$in" 2>/dev/null)"

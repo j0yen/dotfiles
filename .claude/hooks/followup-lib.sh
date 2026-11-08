@@ -149,3 +149,19 @@ fu_outbox_replay() {
 fu_block_reason() {
   jq -rs '"FOLLOW-UP ACTION REQUIRED (escalated once, queued in the outbox; an unchanged id is not recited): " + ([.[0:5][] | "\(.id) [\(.kind)] \(.detail) -> next: " + (if .kind=="stale-claim" then "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)" elif .kind=="verifier-pending" then "run the required verifier and record a PASS acceptance before the ending action; a FAIL or missing verdict keeps it blocked" elif .kind=="ledger-unreadable" then "repair the canonical ledger query (wm-asks query --status open --json)" else "claim it with a live worker, record a structured blocker (owner, dependency, next check), or resolve it with a PASS acceptance" end)] | join("; ")) + (if length > 5 then " and \(length - 5) more" else "" end)' <<<"$1"
 }
+
+# ---- shared evaluator (ledger ask A1346): when .local/bin/followup-eval.py is found, every hook below delegates to it, so owed-now.sh,
+# followup-stop-gate.sh and seat-followups.sh read and write ONE fingerprint file (fingerprints.json) and one outbox. Without it the bash path above runs.
+fu_eval_bin() {
+  local c here
+  here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  for c in "${FOLLOWUP_EVAL:-}" "$here/../../.local/bin/followup-eval.py" "$HOME/.local/bin/followup-eval.py"; do [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }; done
+  return 1
+}
+_fu_bash_new_obligations() { :; }
+eval "$(declare -f fu_new_obligations | sed '1s/fu_new_obligations/_fu_bash_new_obligations/')"
+eval "$(declare -f fu_outbox_replay | sed '1s/fu_outbox_replay/_fu_bash_outbox_replay/')"
+eval "$(declare -f fu_block_reason | sed '1s/fu_block_reason/_fu_bash_block_reason/')"
+fu_new_obligations() { local ev; ev="$(fu_eval_bin)" || { _fu_bash_new_obligations "$@"; return; }; python3 -I "$ev" new --seat "$1" 2>/dev/null | jq -c '.new[]?' 2>/dev/null; return 0; }
+fu_outbox_replay() { local ev; ev="$(fu_eval_bin)" || { _fu_bash_outbox_replay "$@"; return; }; python3 -I "$ev" replay >/dev/null 2>&1; return 0; }
+fu_block_reason() { local ev; ev="$(fu_eval_bin)" || { _fu_bash_block_reason "$@"; return; }; python3 -I "$ev" reason <<<"$1" 2>/dev/null; }
