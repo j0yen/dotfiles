@@ -24,23 +24,39 @@ n=\$(grep -c "^\$role " $T/calls.log)
 r=$T/reply.\$role.\$n; [ -f \$r ] || r=$T/reply.\$role
 cat \$r
 SPY
-chmod +x "$T/tmux" "$T/ew" "$T/claude"
+# wm-asks stub (A1255 canonical ledger): "asks query --json --status all --text M | --ids I" and "asks add --owner --due --key --check --what --by"; store = $T/asks.jsonl, ids continue from A1149
+cat > "$T/wma" <<'WMA'
+#!/usr/bin/env python3
+import json, sys, os
+a = sys.argv[1:]; st = os.environ["ASKS_STORE"]
+rows = [json.loads(l) for l in open(st)] if os.path.exists(st) else []
+if a[:2] == ["asks", "query"]:
+    o = a[2:]; txt = o[o.index("--text") + 1] if "--text" in o else None; ids = o[o.index("--ids") + 1] if "--ids" in o else None
+    print(json.dumps([r for r in rows if (txt is None or txt in r["what"]) and (ids is None or r["ask_id"] == ids)])); sys.exit(0)
+if a[:2] == ["asks", "add"]:
+    o = a[2:]; g = lambda k: o[o.index(k) + 1]
+    r = {"ask_id": "A%d" % (1149 + len(rows)), "owner": g("--owner"), "due": g("--due"), "key": g("--key"), "check": g("--check"), "what": g("--what"), "by": g("--by")}
+    open(st, "a").write(json.dumps(r) + "\n"); print(r["ask_id"]); sys.exit(0)
+sys.exit(2)
+WMA
+printf '#!/bin/sh\ncat %s/asks.jsonl 2>/dev/null\n' "$T" > "$T/asksview"   # asks-view stub: the bridge greps it for the event marker before acking
+chmod +x "$T/tmux" "$T/ew" "$T/claude" "$T/wma" "$T/asksview"
 wrap() { python3 -I -c 'import json,sys; print(json.dumps({"type":"result","is_error":False,"session_id":"spy-sess","usage":{"input_tokens":11,"output_tokens":7},"total_cost_usd":0.0001,"result":sys.argv[1]}))' "$2" > "$T/$1"; }
 cls() { wrap "reply.cls${2:+.$2}" "$1"; }
 exe() { wrap "reply.exe${2:+.$2}" "$1"; }
 env_() { env -i HOME="$T/home" PATH="$PATH" BR_DIR="$T/br" EW_BIN="$T/ew" TMUX_BIN="$T/tmux" CTL_PANE=t:0.0 RETRY_SEC=1 WAIT_MAX_SEC=1 \
-  BR_ROUTE="${BR_ROUTE:-1}" RT_BIN="${XRT_BIN:-$RTS}" RT_DIR="$T/rt" RT_STATE="$T/rt/state.json" RT_OPEN_ASKS="$T/oa.tsv" \
+  BR_ROUTE="${BR_ROUTE:-1}" RT_BIN="${XRT_BIN:-$RTS}" RT_DIR="$T/rt" RT_STATE="$T/rt/state.json" WM_ASKS_CMD="$T/wma" ASKS_VIEW_BIN="$T/asksview" ASKS_STORE="$T/asks.jsonl" \
   RT_CLAUDE_BIN="${XCLAUDE:-$T/claude}" "$@"; }
 br() { env_ BR_CYCLES="${BR_CYCLES:-3}" bash "$BR" "$@"; }
 fresh() { rm -rf "$T/br" "$T/rt" "$T"/reply.* "$T"/rc.* "$T"/last-prompt.*; : > "$T/tmux.log"; : > "$T/calls.log"; : > "$T/ev"
-  printf '# header\nA7\t2026-10-31T10:35\trb\t2026-11-03T09:30\tx\ty\tz\nA1148\t2026-11-06T23:06\tctl\t2026-11-07T00:06\tx\ty\tz\n# CLOSED\nA5\tdone row\n' > "$T/oa.tsv"; }
+  printf '# header\nA7\t2026-10-31T10:35\trb\t2026-11-03T09:30\tx\ty\tz\nA1148\t2026-11-06T23:06\tctl\t2026-11-07T00:06\tx\ty\tz\n# CLOSED\nA5\tdone row\n' > "$T/oa.tsv"; : > "$T/asks.jsonl"; }
 calls() { grep -c . "$T/calls.log"; }
 rolecalls() { grep -c "^$1 " "$T/calls.log"; }
 sends() { local c; c=$(grep -c -- '-l ctl-event' "$T/tmux.log" 2>/dev/null); echo "${c:-0}"; }
 q() { ls "$T/br/queue"/*.json 2>/dev/null | wc -l; }
 d() { ls "$T/br/done"/*.json 2>/dev/null | wc -l; }
 acks() { grep -c ' ack ' "$T/br/deliveries.log"; }
-rows() { sed -n '/^# CLOSED/q;p' "$T/oa.tsv" | grep -c 'event:'; }
+rows() { grep -c 'event:' "$T/asks.jsonl"; }
 jf() { python3 -I -c 'import json,sys; v=json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
 for k in sys.argv[2].split("."): v=v.get(k) if isinstance(v,dict) else None
 print("" if v is None else v)' "$1" "$2"; }
@@ -87,8 +103,8 @@ r="$(only "$T/rt/routed")"; [ "$(jf "$r" route)" = deterministic ] && [ "$(jf "$
 [ "$(rows)" = 0 ]; chk "(a) a pass outcome opens no row" $?
 fresh; echo "$EV_FAIL" > "$T/ev"; br run
 [ "$(calls)" = 0 ] && [ "$(sends)" = 0 ] && [ "$(d)" = 1 ] && [ "$(rows)" = 1 ]; chk "(a2) verifier FAIL in the artifact: surfaced as an owned open-asks row, 0 calls, acked after the row" $?
-row="$(grep 'event:' "$T/oa.tsv")"; printf '%s' "$row" | grep -q $'\tctl\t20' && printf '%s' "$row" | grep -q 'waits-on=' && printf '%s' "$row" | grep -qP '^A1149\t\d{4}-\d\d-\d\dT\d\d:\d\d\tctl\t\d{4}-\d\d-\d\dT\d\d:\d\d\t'; chk "(a2) row: next A id, owner ctl, date -d due, waits-on= stated" $?
-awk '/^# CLOSED/{c=1} /event:/{ if (c) bad=1 } END{exit bad}' "$T/oa.tsv"; chk "(a2) row sits above # CLOSED" $?
+row="$(grep 'event:' "$T/asks.jsonl")"; printf '%s' "$row" | grep -q '"owner": "ctl"' && printf '%s' "$row" | grep -q 'waits-on=' && printf '%s' "$row" | grep -qP '"ask_id": "A1149".*"due": "\d{4}-\d\d-\d\dT\d\d:\d\d"'; chk "(a2) row: next A id, owner ctl, date -d due, waits-on= stated" $?
+grep -q '"check": "test -e ' "$T/asks.jsonl"; chk "(a2) row carries a done-check on the handled receipt" $?
 fresh; echo "$EV_ERR" > "$T/ev"; br run
 [ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(calls)" = 0 ]; chk "(a3) errored verifier run (is_error): owned row, acked, 0 calls" $?
 fresh; echo "$EV_TOKSTR" > "$T/ev"; br run
@@ -116,7 +132,7 @@ fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe "I think this is fine."
 r="$(only "$T/rt/results")"; [ "$(jf "$r" exit)" = 2 ] && [ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(sends)" = 0 ]; chk "(c2) executor with no OUTCOME: owned row created, exit 2 recorded, acked after the row" $?
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe 'cannot
 OUTCOME: BLOCKED gate denied'; br run
-[ "$(rows)" = 1 ] && grep 'event:' "$T/oa.tsv" | grep -q 'gate denied'; chk "(c2) OUTCOME: BLOCKED opens an owned row naming the reason" $?
+[ "$(rows)" = 1 ] && grep 'event:' "$T/asks.jsonl" | grep -q 'gate denied'; chk "(c2) OUTCOME: BLOCKED opens an owned row naming the reason" $?
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; echo 1 > "$T/rc.exe"; br run
 [ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(jf "$(only "$T/rt/results")" exit)" = 2 ]; chk "(c3) failure before completion (executor exits 1): obligation preserved as an owned row" $?
 
