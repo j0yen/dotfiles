@@ -129,4 +129,14 @@ if command -v wm-asks >/dev/null 2>&1; then
   wm-asks asks query --status open --json 2>/dev/null | python3 -c 'import json,sys;r=json.load(sys.stdin);assert isinstance(r,list) and all(isinstance(x.get("ask_id"),str) for x in r)'; chk "14: real wm-asks asks query --status open --json matches the evaluator contract" $?
   FOLLOWUP_STATE_DIR="$base/real-state" python3 "$EV" new --seat ctl 2>/dev/null | grep -q ledger-unreadable; [ $? != 0 ]; chk "14: real evaluator run reports no ledger-unreadable" $?
 fi
+# 15: flat canonical acceptance shape (accept_result/accept_current/verdict_row), scoped disposition
+{ row F1 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":"d-1"}'
+  row F2 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1"}'
+  row F3 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null}'
+  row F4 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1","verifier_required":true,"ending":true}'
+  row F5 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null,"verifier_required":true,"ending":true}'; } | asks
+[ "$(disp F1)" = verified ]; chk "15: current flat PASS with a verdict row is verified" $?
+[ "$(disp F2)" != verified ]; chk "15: stale accept_current=false is never verified" $?
+[ "$(disp F3)" != verified ]; chk "15: file-only flat PASS (no verdict_row) is not verified" $?
+[ "$(disp F4)" = blocked ] && [ "$(disp F5)" = blocked ]; chk "15: verifier-required ending rows stay blocked on stale or file-only PASS" $?
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
