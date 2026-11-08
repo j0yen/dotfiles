@@ -16,8 +16,8 @@ Parallel consumers: any number of consumer identities (DIRECTOR_CONSUMER, defaul
 ledger. No global lock: a per-event flock (runs/<id>.lock) serializes one event, a per-ask flock (locks/ask-<ask>.lock) one ask,
 offset.lock only the log offset. The ledger claim (worker director-<event>.<owner>, --expect-rev) is the single owner of a task.
 A claim is a coordination token, never a runtime cap: recovery looks at worker liveness (unit ActiveState) and the effect ledger
-runs/<id>.effect (one line per durable step, final line DONE), never at an age. ask rows may carry scope=a,b (live-settings,
-migration, promote:<target>): scopes are taken all-or-nothing in sorted order and released when the run completes or is stuck.
+runs/<id>.effect (one line per durable step, final line DONE), never at an age. ask rows may carry scope=a,b as a scope field or a `scope=a,b` token in the what text (real ledger rows have no
+scope field; claims read back as <worker>@<timestamp>) (live-settings, migration, promote:<target>): scopes are taken all-or-nothing in sorted order and released when the run completes or is stuck.
 Env seams (tests): DIRECTOR_STATE DIRECTOR_EVENTS_LOG HOLD_GATE WM_ASKS_CMD DIRECTOR_HERMES_CMD
                    DIRECTOR_LAUNCH_CMD (<unit> <envelope>; exit 75 = provider outage) DIRECTOR_ACTIVE_CMD (<unit>, exit 0 = active)
                    DIRECTOR_RESET_CMD (<unit>) DIRECTOR_CONSUMER DIRECTOR_CRASH_AT (after-seen | after-offset)
@@ -333,7 +333,25 @@ def set_wait(r, state, prev, **kw):
         decide(event_id=r["event_id"], ask=r["ask"], decision=state, **kw)
 
 
+def claim_worker(claim):
+    """Real wm-asks stores claim as '<worker>@<timestamp>'; the stub stores the bare worker. Compare the part before '@'."""
+    return str(claim).split("@", 1)[0] if claim else claim
+
+
+SCOPE_TOKEN_RE = re.compile(r"(?:^|\s)scope=([^\s]+)")
+
+
+def row_scopes(row):
+    """Scope carrier: a `scope` field when the ledger has one, else a `scope=a,b` token in the row's what text (real rows have no scope field)."""
+    raw = row.get("scope")
+    if not raw:
+        m = SCOPE_TOKEN_RE.search(str(row.get("what") or ""))
+        raw = m.group(1) if m else ""
+    return [x for x in str(raw).split(",") if x]
+
+
 def live_run_for_claim(claim):
+    claim = claim_worker(claim)
     for n in sorted(os.listdir(RUNS)):
         if n.endswith(".json") and not n.endswith(".receipt.json"):
             o = load_run(n[:-5])
@@ -406,7 +424,7 @@ def _process(eid, ask):
                 decide(event_id=eid, ask=ask, decision="revision-mismatch", event_rev=r.get("event_rev"), rev=rev)
                 return
         cur = row.get("claim")
-        if cur and cur != worker:
+        if cur and claim_worker(cur) != worker:
             if str(cur).startswith("director-") and live_run_for_claim(cur):
                 set_wait(r, "ask-busy", prev, claim=cur)
                 return
@@ -414,7 +432,7 @@ def _process(eid, ask):
             save_run(r)
             decide(event_id=eid, ask=ask, decision="claim-conflict", claim=cur)
             return
-        scopes = [x for x in str(row.get("scope") or "").split(",") if x]
+        scopes = row_scopes(row)
         if any(not SCOPE_RE.match(x) for x in scopes):
             r["state"] = "stuck"
             save_run(r)
@@ -426,13 +444,13 @@ def _process(eid, ask):
             if blocked:
                 set_wait(r, "scope-wait", prev, scope=blocked[0], holder=blocked[1])
                 return
-        if cur != worker:
+        if claim_worker(cur) != worker:
             rc, _, _ = sh(ASKS + ["asks", "claim", ask, "--worker", worker, "--by", "hermes", "--expect-rev", str(rev)])
             if rc != 0:
                 release_scopes(r)
                 again = asks_query("--ids", ask)
                 other = again[0].get("claim") if again else None
-                if other and other != worker:
+                if other and claim_worker(other) != worker:
                     if str(other).startswith("director-") and live_run_for_claim(other):
                         set_wait(r, "ask-busy", prev, claim=other)
                     else:
@@ -446,7 +464,7 @@ def _process(eid, ask):
                 return
         back = asks_query("--ids", ask)
         got = back[0].get("claim") if back else None
-        if got != worker:
+        if claim_worker(got) != worker:
             release_scopes(r)
             r["state"], r["claim"] = "claim-conflict", got
             save_run(r)
