@@ -10,9 +10,9 @@
 #   error          the classifier answered malformed/failed after one haiku retry and one Sonnet recovery call: owned open-asks row,
 #                  the queue item stays pending, NOTHING is sent to Fable
 # Consumer success = $RT_DIR/results/<id>.json with an "exit" field (a real recorded side effect or exit status) and, when work could not
-# finish, an owned actionable row in open-asks.tsv (above "# CLOSED", owner ctl, waits-on= stated, due by date -d, marker event:<id>).
+# finish, an owned actionable ask in the canonical wm-decide ledger (owner ctl, waits-on= stated, due by date -d, marker event:<id>).
 # A summary-only mechanical.log line is NOT consumer success. Replay reuses stage/results/cache files: no second model call, no duplicate row.
-# Env: RT_DIR (default ~/.cache/aide/event-route) RT_STATE RT_CLAUDE_BIN (default claude) RT_OPEN_ASKS RT_ROW_DUE (date -d offset, default "60 minutes")
+# Env: RT_DIR (default ~/.cache/aide/event-route) RT_STATE RT_CLAUDE_BIN (default claude) WM_ASKS_CMD RT_ROW_DUE (date -d offset, default "60 minutes")
 #      RT_TIMEOUT_S RT_EXEC_TIMEOUT_S RT_TEXT_MAX
 set -u
 export LC_ALL=C
@@ -28,7 +28,7 @@ qf = sys.argv[1]
 RT = os.environ.get("RT_DIR") or os.path.expanduser("~/.cache/aide/event-route")
 STATE = os.environ.get("RT_STATE") or os.path.join(RT, "state.json")
 CLAUDE = os.environ.get("RT_CLAUDE_BIN") or "claude"
-OA = os.environ.get("RT_OPEN_ASKS") or os.path.expanduser("~/.cache/aide/open-asks.tsv")
+WMA = os.environ.get("WM_ASKS_CMD") or "wm-asks"   # A1255: the canonical ledger; RT_OPEN_ASKS and the TSV are gone
 ROWDUE = os.environ.get("RT_ROW_DUE") or "60 minutes"
 TMO = int(os.environ.get("RT_TIMEOUT_S") or 120)
 XTMO = int(os.environ.get("RT_EXEC_TIMEOUT_S") or 900)
@@ -70,30 +70,23 @@ def readcap(path, n=None):
     except Exception: pass
     return None
 
+def asks_cmd(*args):
+    return subprocess.run([WMA, "asks", *args], capture_output=True, text=True)
+
 def open_row(what, waits):
-    """Append an owned actionable row above '# CLOSED' (idempotent by event marker); returns row id or None on failure."""
+    """Open an owned actionable ask in the CANONICAL ledger (A1255; idempotent by the event marker); returns the ask id or None on failure. No TSV is read or written."""
     marker = "event:" + eid
     try:
-        os.makedirs(os.path.dirname(OA), exist_ok=True)
-        with open(OA, "a+") as lk:
-            fcntl.flock(lk, fcntl.LOCK_EX)
-            lk.seek(0); text = lk.read()
-            for ln in text.splitlines():
-                if marker + " " in ln + " " and not ln.startswith("#"): return ln.split("\t")[0]
-            mx = max([int(m.group(1)) for m in re.finditer(r"(?m)^A(\d+)\t", text)] or [0])
-            rid = "A%d" % (mx + 1)
-            asked = subprocess.run(["date", "+%Y-%m-%dT%H:%M"], capture_output=True, text=True).stdout.strip()
-            due = subprocess.run(["date", "-d", "+" + ROWDUE, "+%Y-%m-%dT%H:%M"], capture_output=True, text=True).stdout.strip()
-            if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", asked) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", due): return None
-            what = re.sub(r"[\t\r\n]+", " ", what)[:600]
-            row = "\t".join([rid, asked, "ctl", due, eid, "-", "%s | waits-on=%s %s" % (what, waits, marker)]) + "\n"
-            if re.search(r"(?m)^# CLOSED", text):
-                new = re.sub(r"(?m)^# CLOSED", lambda m: row + "# CLOSED", text, count=1)
-            else:
-                new = text + ("" if text.endswith("\n") or not text else "\n") + row
-            with open(OA + ".tmp", "w") as f: f.write(new)
-            os.replace(OA + ".tmp", OA)
-            return rid
+        q = asks_cmd("query", "--json", "--status", "all", "--text", marker)
+        if q.returncode != 0: return None
+        hit = [r for r in json.loads(q.stdout or "[]") if marker + " " in r["what"] + " "]
+        if hit: return hit[0]["ask_id"]
+        due = subprocess.run(["date", "-d", "+" + ROWDUE, "+%Y-%m-%dT%H:%M"], capture_output=True, text=True).stdout.strip()
+        if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", due) or not re.fullmatch(r"[A-Za-z0-9._:-]+", eid): return None
+        what = re.sub(r"[\t\r\n]+", " ", what)[:600]
+        chk = "test -e %s/handled/%s" % (RT, eid)   # the handler touches this file when the event is handled
+        r = asks_cmd("add", "--owner", "ctl", "--due", due, "--key", eid, "--check", chk, "--what", "%s | waits-on=%s %s" % (what, waits, marker), "--by", "ctl-event-route")
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
     except Exception:
         return None
 
@@ -132,8 +125,9 @@ def event_text():
             t += "FILE %s:\n%s\n" % (p, c)
     if kind == "due":
         for i in detail.get("ids") or []:
-            for ln in (readcap(OA, 10**6) or "").splitlines():
-                if ln.startswith(str(i) + "\t"): t += "OPEN-ASK ROW: %s\n" % ln[:1200]
+            q = asks_cmd("query", "--json", "--status", "all", "--ids", str(i))
+            for r in (json.loads(q.stdout or "[]") if q.returncode == 0 else []):
+                t += "OPEN-ASK ROW: %s\n" % json.dumps(r)[:1200]
     return t
 
 CLS = ('You classify ONE queued event for a routing layer. Reply with STRICT JSON only, no prose, no code fence: '
@@ -169,6 +163,16 @@ def classify():
     wjson(st, {"verdict": None, "calls": calls}); return None, calls
 
 TERM = re.compile(r"\b(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b")
+VLINE = re.compile(r"^[\s>*_`#-]*VERDICT\s*:?[\s*_`]*(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b", re.I)
+LEAD = re.compile(r"^[\s>*_`#-]*(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b")
+def final_token(text):
+    """The verdict is the LAST `VERDICT: <token>` line, else the last line that leads with a terminal token; a token mentioned in prose ("no FAIL") never counts."""
+    lines = str(text).splitlines()
+    for rx in (VLINE, LEAD):
+        for ln in reversed(lines):
+            m = rx.match(ln)
+            if m: return m.group(1).upper()
+    return None
 def parse_artifacts():
     """Open each detail.files verifier artifact and return (outcomes, problems). Real shape: claude -p result.json."""
     outs, probs = [], []
@@ -176,8 +180,9 @@ def parse_artifacts():
         d = rjson(p) if os.path.isfile(p) else None
         if not isinstance(d, dict): probs.append("unreadable:%s" % p); continue
         if d.get("is_error") or d.get("subtype") not in (None, "success"): probs.append("run-error:%s subtype=%s" % (p, d.get("subtype"))); continue
-        tail = str(d.get("result", ""))[-800:]
-        outs.append({"file": p, "tokens": sorted(set(TERM.findall(tail))), "tail": tail[-300:]})
+        full = str(d.get("result", ""))
+        tok = final_token(full)
+        outs.append({"file": p, "tokens": [tok] if tok else [], "tail": full[-300:]})
     return outs, probs
 
 def finish(route, model, reason, result, exit_, extra=None, row=None, cont=None):

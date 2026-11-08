@@ -34,16 +34,36 @@ here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$here/followup-lib.sh" 2>/dev/null || true
 src() { if [ -n "${OWED_NOW_SOURCE:-}" ]; then printf '%s' "$OWED_NOW_SOURCE"; elif [ -n "${OPEN_ASKS:-}" ]; then printf tsv; else printf asks; fi; }
 
+# A row whose what-column carries a well-formed waits-on=<host|seat|person|event>:<target> is accounted, not OVERDUE, while the target is still plausible:
+# non-empty, not a "none/unknown/done/dead" placeholder, and the row is no more than OWED_WAITS_MAX_H hours (default 72) past due, so a stale marker cannot hide a row forever.
+# A row with no waits-on= is always reported.
+waits_plausible() {   # waits_plausible <detail> <due-epoch> <now-epoch>
+  local detail="$1" due="$2" now="$3" t
+  [[ "$detail" =~ waits-on=(host|seat|person|event):([^|]*) ]] || return 1
+  t="${BASH_REMATCH[2]}"; t="${t#"${t%%[![:space:]]*}"}"
+  [ -n "$t" ] || return 1
+  shopt -s nocasematch; [[ "$t" =~ ^(none|n/a|na|unknown|done|met|dead|gone|stale)([^[:alnum:]]|$) ]] && { shopt -u nocasematch; return 1; }; shopt -u nocasematch
+  [[ "$due" =~ ^[0-9]+$ ]] && [ $((now - due)) -gt $(( ${OWED_WAITS_MAX_H:-72} * 3600 )) ] && return 1
+  return 0
+}
+
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
   if [ "$(src)" = asks ] && [ "$seat" != - ]; then
     FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tcanonical ledger unreadable: %s\n' "$FU_REASON"; return 1; }
     [ "$FU_EVAL" != "[]" ] || return 0
-    jq -r '.[] | "OVERDUE\t\(.id)\tdue=\(.due)\t[\(.kind)] \(.detail)"' <<<"$FU_EVAL"; return 1
+    local rows="" id due kind detail de
+    while IFS=$'\t' read -r id due kind detail; do
+      de="$(date -d "${due/T/ }" +%s 2>/dev/null)"
+      waits_plausible "$detail" "$de" "$now" && continue
+      rows+="$(printf 'OVERDUE\t%s\tdue=%s\t[%s] %s' "$id" "$due" "$kind" "$detail")"$'\n'
+    done < <(jq -r '.[] | [.id, .due, .kind, (.detail // "" | gsub("[\t\n]"; " "))] | @tsv' <<<"$FU_EVAL")
+    [ -n "$rows" ] || return 0
+    printf '%s' "$rows"; return 1
   fi
   [ -s "$f" ] && [ -n "$seat" ] || return 0
   local alt=""; case "$seat" in aide) alt=ctl ;; ctl) alt=aide ;; esac   # carbon executor seat: rows owned by aide or ctl (hermes-handover 2.2)
-  awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" '
+  awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" -v maxh="${OWED_WAITS_MAX_H:-72}" '
     $0 == "# CLOSED" { exit }
     /^#/ || NF < 7 { next }
     seat != "-" && $3 != seat && (alt == "" || $3 != alt) { next }
@@ -53,7 +73,9 @@ lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
       if (due !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}/) { print "DELAY\t" $1 "\tdue=" $4 "\tunreadable due\t" substr($7, 1, 90); n++; next }
       cmd = "date -d \"" due "\" +%s 2>/dev/null"; cmd | getline e; close(cmd)
       if (e == "") { print "DELAY\t" $1 "\tdue=" $4 "\tunreadable due\t" substr($7, 1, 90); n++; next }
-      if (e + 0 <= now + 0) { print "OVERDUE\t" $1 "\tdue=" $4 "\t" substr($7, 1, 90); n++; next }
+      if (e + 0 <= now + 0) {
+        if ($7 ~ /waits-on=(host|seat|person|event):[^ \t|]/ && $7 !~ /waits-on=(host|seat|person|event):[ ]*(none|n\/a|unknown|done|met|dead|gone|stale)([^A-Za-z0-9]|$)/ && (now + 0 - e) <= maxh * 3600) next
+        print "OVERDUE\t" $1 "\tdue=" $4 "\t" substr($7, 1, 90); n++; next }
       if (e + 0 > now + grace && $7 !~ /waits-on=[^ \t]+/) { print "DELAY\t" $1 "\tdue=" $4 "\tno waits-on=\t" substr($7, 1, 90); n++ }
     }
     END { exit (n > 0) }' "$f"

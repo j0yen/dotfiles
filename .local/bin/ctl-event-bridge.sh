@@ -51,17 +51,17 @@ json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"
   mv "$BR/queue/$id.json.tmp" "$BR/queue/$id.json"; printf '%s' "$id"
 }
 
-OAF="${RT_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
+# A1255: the row marker is looked up in the canonical ledger (asks-view); no TSV file is read or passed on.
 cached_route() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" route; }
 deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes never reach the pane
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
-evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in open-asks
+evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in the canonical ledger
   local id="$1" r="$RTD/results/$1.json" c="$RTD/routed/$1.json" row
   [ -f "$r" ] && [ -n "$(jget "$r" exit)" ] || return 1
   row="$(jget "$c" row)"
-  [ -z "$row" ] || grep -qF "event:$id" "$OAF" 2>/dev/null
+  [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id"
 }
 route_pending() { # route each queued id once; ack deterministic/haiku ids only after consumer evidence exists
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
@@ -71,14 +71,19 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     c="$RTD/routed/$id.json"
-    [ -f "$c" ] || RT_DIR="$RTD" RT_OPEN_ASKS="$OAF" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
+    [ -f "$c" ] || RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
     [ -f "$c" ] || continue
     rt="$(jget "$c" route)"
+    if [ "$rt" = fable ] && [ "${BR_FABLE:-1}" != 0 ] && [ -x "$FEB" ]; then   # real escalation (A1148 defect 11-07): separate Fable process, once per id
+      ( setsid "$FEB" "$f" >> "$BR/fable-esc.log" 2>&1 & ) 
+    fi
     if [ "$rt" = deterministic ] || [ "$rt" = haiku ]; then
       if evidence_ok "$id"; then ackone "$f"; else echo "$(iso) ack-refused $id no-consumer-evidence" >> "$BR/deliveries.log"; fi
     fi
   done
 }
+FEB="${BR_FABLE_BIN:-$HOME/.local/bin/ctl-fable-escalate.sh}"
+fable_note() { local r="${FE_DIR:-$HOME/.cache/aide/fable-esc}/$1.json"; if [ -s "$r" ]; then printf ' fable-verdict=%s' "$r"; elif [ -e "${FE_DIR:-$HOME/.cache/aide/fable-esc}/$1.fail" ]; then printf ' fable=FAILED-owned'; else printf ' fable=pending'; fi; }
 reason_of() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" reason | tr -d '\n|' | cut -c1-120; }
 
 deliver() { # one line for every pending id
@@ -87,7 +92,7 @@ deliver() { # one line for every pending id
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; kind="$(jget "$f" event.event)"
     deliverable "$id" || continue
-    n=$((n+1)); ids="$ids $id"; summary="${summary:+$summary | }$id $kind reason=$(reason_of "$id")"
+    n=$((n+1)); ids="$ids $id"; summary="${summary:+$summary | }$id $kind reason=$(reason_of "$id")$( [ "$(cached_route "$id")" = fable ] && fable_note "$id")"
   done
   [ "$n" -gt 0 ] || return 0
   p="$(pane)"
@@ -164,7 +169,12 @@ ackone() {
   local f="$1" id; id="$(basename "$f" .json)"
   python3 -I -c 'import json,sys
 d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3],"w"))' "$f" "$(epoch)" "$BR/done/$id.json" && rm -f "$f" \
-    && echo "$(iso) ack $id" >> "$BR/deliveries.log"
+    && handled_receipt "$id" && echo "$(iso) ack $id" >> "$BR/deliveries.log"
+}
+# The ledger done-check for an event row is `test -e $RTD/handled/<id>`; the ack is the handler's completion, so it writes the receipt (atomic: tmp + mv).
+handled_receipt() {
+  local id="$1" h="$RTD/handled"
+  mkdir -p "$h" && : > "$h/.$id.tmp.$$" && mv -f "$h/.$id.tmp.$$" "$h/$id"
 }
 
 selftest() {
