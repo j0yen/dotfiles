@@ -91,4 +91,17 @@ c1="$(wc -l <"$FU_DELIVERED")"; python3 -I "$EV" replay >/dev/null 2>&1; [ "$(wc
 rm -rf "$FOLLOWUP_STATE_DIR"; echo 'not json' >"$FU_ASKS"; FU_ASKS_GARBAGE=1 python3 -I "$EV" new --seat ctl | jq -e '.new[0].id=="LEDGER"' >/dev/null; chk "11: garbage ledger is a visible LEDGER obligation" $?
 FU_ASKS_FAIL=3 python3 -I "$EV" eval --seat ctl | jq -e '.error != null' >/dev/null; chk "11: ledger command failure reports an error, never an empty pass" $?
 echo '[{"ask_id":"X1","rev":1}]' >"$FU_ASKS"; python3 -I "$EV" eval --seat ctl | jq -e '.dispositions[0].id=="X1"' >/dev/null; chk "11: a row missing fields is still evaluated, not dropped" $?
+# 12. known-bad control (the live loop): wm-decide owes ctl one overdue id X; three Stops must produce one BLOCK, then one more on escalation
+rm -rf "$FOLLOWUP_STATE_DIR"; echo '[]' >"$FU_ASKS"
+SFLOG="$base/sf-log"; rm -rf "$SFLOG"; X="d-20261108-022034-ctl-8aff"
+fakewd() { printf '%s\n' '#!/usr/bin/env bash' "echo '{\"owed\":1,\"overdue\":1,\"escalated\":0,\"ids\":[{\"id\":\"$X\",\"owner\":\"ctl\",\"age_h\":5.5,\"state\":\"$1\"}]}'" >"$base/wm-decide"; chmod +x "$base/wm-decide"; }
+sfstop() { printf '{"stop_hook_active":false}' | SEAT_FOLLOWUPS_LOG_DIR="$SFLOG" FOLLOWUP_EVAL="$EV" bash "$SF" stop 2>/dev/null; }
+fakewd overdue
+o1="$(sfstop)"; o2="$(sfstop)"; o3="$(sfstop)"
+grep -q "$X" <<<"$o1" && grep -q correction-owed <<<"$o1"; chk "12: first Stop blocks naming X with the correction-owed next action" $?
+[ -z "$o2" ] && [ -z "$o3" ]; chk "12: Stops 2 and 3 on the unchanged id are silent (before the delta: three BLOCK lines)" $?
+[ "$(grep -c "BLOCK-NEW $X" "$SFLOG/fires.log")" = 1 ] && ! grep -qE ' BLOCK d-' "$SFLOG/fires.log"; chk "12: fires.log holds exactly one BLOCK-NEW for X and no cite-or-clear BLOCK" $?
+fakewd escalated; o4="$(sfstop)"; o5="$(sfstop)"
+grep -q "$X" <<<"$o4" && [ -z "$o5" ]; chk "12: escalated state is one more block, then silent" $?
+[ "$(grep -c "BLOCK-NEW $X" "$SFLOG/fires.log")" = 2 ]; chk "12: two BLOCK-NEW lines in total" $?
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

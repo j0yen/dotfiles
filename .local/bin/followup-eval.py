@@ -136,7 +136,30 @@ def evaluate(seat, rows, now):
     return out
 
 
+def read_followups(seat):
+    """Overdue or escalated wm-decide follow-up ids owed by the seat, as correction-owed obligations. A missing binary, timeout or bad JSON yields none."""
+    bin_ = os.environ.get("WM_DECIDE_BIN", "wm-decide")
+    try:
+        p = subprocess.run(["timeout", os.environ.get("WM_FOLLOWUPS_TIMEOUT", "8"), bin_, "followups", "--json", "--agent", seat],
+                           capture_output=True, text=True, timeout=30)
+        if p.returncode != 0:
+            return []
+        ids = json.loads(p.stdout).get("ids")
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return []
+    out = []
+    for i in ids if isinstance(ids, list) else []:
+        if not isinstance(i, dict) or i.get("state") not in ("overdue", "escalated") or not isinstance(i.get("id"), str):
+            continue
+        age = i.get("age_h")
+        out.append({"id": i["id"], "rev": 0, "disposition": "overdue-ack", "kind": "correction-owed", "owner": seat, "next_check": "", "due": "",
+                    "detail": "correction owed on verdict row %s (%s, %s h)" % (i["id"], i["state"], age if age is not None else "?"),
+                    "actionable": True, "fp": "%s|wmdecide|%s" % (i["id"], i["state"])})
+    return out
+
+
 NEXT = {
+    "correction-owed": "record the applying row for the verdict (wm-decide record/verdict) or a MOOT row naming why",
     "dead-worker": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
     "lease-expired": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
     "stale-revision": "re-claim at the current revision (wm-asks claim <id> --worker <live worker>)",
@@ -178,6 +201,7 @@ def cmd_new(seat):
                 "detail": "ledger malformed or unreadable: " + why, "actionable": True, "fp": "LEDGER|0|ledger-unreadable|" + why}]
     else:
         obl = [d for d in evaluate(seat, rows, now_min()) if d["actionable"]]
+    obl += read_followups(seat)
     fp_path = os.path.join(sd, "fingerprints.json")
     try:
         seen = json.load(open(fp_path))
@@ -235,7 +259,7 @@ def main():
     a = ap.parse_args()
     if a.cmd == "eval":
         rows, why = read_ledger()
-        print(json.dumps({"dispositions": evaluate(a.seat, rows, now_min()) if rows is not None else [], "error": why or None}))
+        print(json.dumps({"dispositions": (evaluate(a.seat, rows, now_min()) if rows is not None else []) + read_followups(a.seat), "error": why or None}))
     elif a.cmd == "new":
         cmd_new(a.seat)
     elif a.cmd == "reason":   # stdin: one obligation JSON per line -> the one-line machine-actionable block text

@@ -2,6 +2,7 @@
 # followup loop repair (ledger ask A1307): the Stop gate blocks once per NEW actionable obligation (fingerprint persisted atomically), never recites an
 # unchanged historical id, re-escalates on a new id / changed rev / expired next-check, treats a valid structured blocker or live claim as accounted
 # (prose waits-on is not), fails visibly on a malformed ledger, and keeps an escalation outbox that survives delivery failure and replays.
+# Both sides run the one evaluator .local/bin/followup-eval.py (ledger ask A1346); the bash copy is gone.
 # The canonical ledger (wm-asks query --json) is a fixture; state lives in a tmp dir. No real ledger, no product build.
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -131,7 +132,7 @@ LEASE=2026-11-08T18:00
 # 13. one lock around outbox append and replay; outbox entry written before the fingerprint
 rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; row H1 1 2026-11-07T10:00 | asks
 (FOLLOWUP_OUTBOX=/nonexistent-dir/outbox.jsonl stop false >/dev/null)
-[ ! -s "$FOLLOWUP_STATE_DIR/delivered.fp" ]; chk "13: a failed outbox write leaves no fingerprint recorded (outbox entry is written first)" $?
+[ ! -s "$FOLLOWUP_STATE_DIR/fingerprints.json" ]; chk "13: a failed outbox write leaves no fingerprint recorded (outbox entry is written first)" $?
 o="$(stop false)"; blocks "$o" && grep -q H1 <<<"$o"; chk "13: and the next stop still escalates that obligation" $?
 rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; printf '{"id":"Z","fp":"Z|1|overdue|","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
 ( flock -x 9; sleep 3 ) 9>"$FOLLOWUP_STATE_DIR/lock" & sleep 0.4

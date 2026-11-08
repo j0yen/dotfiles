@@ -50,21 +50,20 @@ stop)
   command -v jq >/dev/null 2>&1 || exit 0
   [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0
   if ! fetch; then flog "ALLOW wm-decide unavailable: $WHY"; exit 0; fi
-  ids="$(oldest5)"; [ -n "$ids" ] || { shared_new; exit 0; }
-  tp="$(jq -r '.transcript_path // empty' <<<"$in" 2>/dev/null)"
-  turn=""
-  if [ -n "$tp" ] && [ -r "$tp" ]; then
-    # the turn = everything after the last real user message (a user entry that is not just tool results)
-    turn="$(jq -rs '
-      def real: .type=="user" and ((.message.content|type)=="string" or any(.message.content[]?; .type!="tool_result"));
-      ([to_entries[] | select(.value|real) | .key] | last // -1) as $i | .[($i+1):] | map(tostring) | join("\n")' "$tp" 2>/dev/null)"
+  ids="$(oldest5)"
+  if [ -n "$ids" ]; then
+    tp="$(jq -r '.transcript_path // empty' <<<"$in" 2>/dev/null)"
+    turn=""
+    if [ -n "$tp" ] && [ -r "$tp" ]; then
+      # the turn = everything after the last real user message (a user entry that is not just tool results)
+      turn="$(jq -rs '
+        def real: .type=="user" and ((.message.content|type)=="string" or any(.message.content[]?; .type!="tool_result"));
+        ([to_entries[] | select(.value|real) | .key] | last // -1) as $i | .[($i+1):] | map(tostring) | join("\n")' "$tp" 2>/dev/null)"
+    fi
+    while IFS= read -r id; do [ -n "$id" ] && grep -qF -- "$id" <<<"$turn" && exit 0; done <<<"$ids"
+    grep -Eq "FOLLOWUPS $seat owed [0-9]+->[0-9]+" <<<"$turn" && exit 0
   fi
-  while IFS= read -r id; do [ -n "$id" ] && grep -qF -- "$id" <<<"$turn" && exit 0; done <<<"$ids"
-  grep -Eq "FOLLOWUPS $seat owed [0-9]+->[0-9]+" <<<"$turn" && exit 0
-  list="$(paste -sd' ' - <<<"$ids")"
-  reason="Seat $seat has overdue follow-ups this turn did not cite: $list. Cite one of these ids in full (clear it or say what you did) or print 'FOLLOWUPS $seat owed <n>-><n>'."
-  flog "BLOCK $list"
-  emit "$reason"
+  shared_new   # the shared evaluator blocks once per fingerprint; an unchanged owed id is never recited again
   exit 0 ;;
 *) echo "usage: seat-followups.sh line|stop" >&2; exit 0 ;;
 esac
