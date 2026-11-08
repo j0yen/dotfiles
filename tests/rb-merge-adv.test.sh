@@ -112,7 +112,7 @@ case_run h $REPO $PR '[]'; echo "not a database" > "$tmp/st-h/decisions.sqlite"
 refused "(h) the ledger file is not readable (garbage): ADV-UNCHECKED" ADV-UNCHECKED
 rm -f "$tmp/st-h/decisions.sqlite"; : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-h" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?; G=-
 refused "(h) the ledger file is absent: ADV-UNCHECKED" ADV-UNCHECKED
-case_run h3 $REPO $PR '[]'; : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-h3" bash "$wrap" d-20261024-000000-r7-ffff $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?; G=-
+case_run h3 $REPO $PR '[]'; rbf_pg d-20261024-000000-r7-ffff "$REPO" "$PR" "$OID"; : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-h3" bash "$wrap" d-20261024-000000-r7-ffff $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?; G=-
 refused "(h) the verdict row is not in the ledger: ADV-UNCHECKED" ADV-UNCHECKED
 case_run i $REPO $PR "[$(adv "$PASSW" '"gates":"other"')]"; refused "(i) the ADV-PASS gates a different row: ADV-MISSING" ADV-MISSING
 case_run j $REPO $PR "[$(adv "$UNVW")]"; refused "(j) ADV-UNVERIFIED: ADV-NOT-PASS" ADV-NOT-PASS
@@ -151,6 +151,7 @@ case_run m8 $REPO 4 "[]"; PR=4; : > "$tmp/calls"
 python3 -I "$fx/mkledger.py" "$tmp/st-m9" "{\"repo\":\"$REPO\",\"pr\":43,\"suffix\":\"91\",\"rows\":[$(adv "$PASSW")]}" >/dev/null
 V9="$(python3 -I -c 'import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute("select id from decisions where id like \"%bb91\"").fetchone()[0])' "$tmp/st-m9/decisions.sqlite")"
 export STUB_VIDS="$STUB_VIDS $V9"
+rbf_pg "$V9" "$REPO" 4 "$OID"   # pre-gate A reads RB_DECISIONS_DB, apart from the ADV ledger: V9 needs its MERGE-OK row there to reach the ADV check
 : > "$tmp/calls"; WM_DECIDE_STATE="$tmp/st-m9" bash "$wrap" "$V9" 4 $REPO >/dev/null 2>"$tmp/err"; rc=$?; G=$(sed -n 's/^ADV-MISSING \([^ ]*\) .*/\1/p' "$tmp/err"); PR=4
 check "$rc:$(merged):$(grep -c "^ADV-MISSING $G $REPO#4\$" "$tmp/err")" "4:0:1" "(m9) an ADV-PASS for #43 does not satisfy PR #4 (ADV-MISSING)"
 PR=434

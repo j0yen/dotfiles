@@ -18,6 +18,9 @@ claude-build.timer	mechanical	fleet	no	yes
 claude-vibeloop-digest.service	mechanical	fleet	no	no
 claude-vibeloop-measure.service	mechanical	fleet	no	no
 claude-vibeloop.service	mechanical	fleet	no	no
+director-event-consumer-recover.service	mechanical	fleet	yes	no
+director-event-consumer-recover.timer	mechanical	fleet	no	yes
+director-event-consumer.service	mechanical	fleet	yes	no
 disk-health.service	mechanical	fleet	no	no
 disk-health.timer	mechanical	fleet	no	yes
 dotfiles-hook-sync.service	mechanical	fleet	no	no
@@ -30,6 +33,8 @@ fleet-token-429-watch.service	alarm	fleet	no	no
 fleet-token-429-watch.timer	alarm	fleet	no	yes
 fleet-token-schedule.service	mechanical	fleet	no	no
 fleet-token-schedule.timer	mechanical	fleet	no	yes
+followup-outbox-replay.service	mechanical	fleet	no	no
+followup-outbox-replay.timer	mechanical	fleet	no	yes
 grand-loop-demand.service	launching	hermes	yes	no
 grand-loop-demand.timer	launching	hermes	yes	yes
 grand-loop.service	mechanical	fleet	no	no
