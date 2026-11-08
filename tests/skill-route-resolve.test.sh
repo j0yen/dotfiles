@@ -49,7 +49,7 @@ chk "second review without reason denied" 2 '{"task_id":"A1300","skill":"5whysan
 chk "second review 'automatic' denied" 2 '{"task_id":"A1300","skill":"5whysandrhyme","review":{"reason":"automatic","evidence":'"$EV"'}}'
 chk "second review justified w/o evidence denied" 2 '{"task_id":"A1300","skill":"5whysandrhyme","review":{"reason":"contradiction"}}'
 chk "second review justified with evidence allowed" 0 '{"task_id":"A1300","skill":"5whysandrhyme","review":{"reason":"independent_verifier_required","evidence":'"$EV"'}}' '.review.model_id=="claude-fable-5-1" and .review.effort=="high"'
-chk "dream is ungoverned" 0 '{"skill":"dream"}' '.governed==false and .model_id==null'
+chk "ungoverned skill (beauty) passes through" 0 '{"skill":"beauty"}' '.governed==false and .model_id==null'
 chk "unrelated skill ungoverned (no task_id needed)" 0 '{"skill":"write"}' '.governed==false'
 # injection/quoting: hostile strings are data. A marker file must never appear and results stay correct.
 M="$T/pwned"
