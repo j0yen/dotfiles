@@ -14,7 +14,8 @@ cat > "$T/wm-asks" <<'PY'
 import json, os, sys
 S = os.environ["STUB"]
 open(S + "/calls.log", "a").write(" ".join(sys.argv[1:]) + "\n")
-if os.path.exists(S + "/down"): sys.exit(3)
+if os.path.exists(S + "/down"): sys.stderr.write(open(S + "/down").read()); sys.exit(3)
+if os.path.exists(S + "/down-ready") and "--ready" in sys.argv: sys.stderr.write(open(S + "/down-ready").read()); sys.exit(3)
 if os.path.exists(S + "/garbage"): print("not json {"); sys.exit(0)
 db = json.load(open(S + "/db.json"))
 a = sys.argv[1:]
@@ -22,6 +23,7 @@ def save(): json.dump(db, open(S + "/db.json", "w"))
 if a[:2] == ["asks", "query"]:
     rows = list(db.values())
     if "--ids" in a: rows = [db[a[a.index("--ids")+1]]] if a[a.index("--ids")+1] in db else []
+    if "--status" not in a or a[a.index("--status")+1] != "all": rows = [r for r in rows if r.get("status", "open") == "open"]
     if "--ready" in a: rows = [r for r in rows if r.get("ready") and not r.get("claim") and r["owner"] == "hermes"]
     print(json.dumps(rows)); sys.exit(0)
 if a[:2] == ["asks", "claim"]:
@@ -223,6 +225,76 @@ rm "$STUB/garbage"; touch "$STUB/down"; run recover; run recover
 chk "unavailable canonical: durable incident row says unavailable, not duplicated per tick" 'grep -q unavailable $DIRECTOR_STATE/incidents.jsonl && [ "$(grep -c "\"event_id\": \"evt-0001\"" $DIRECTOR_STATE/incidents.jsonl)" -le 2 ] && [ ! -e $STUB/launch.log ]'
 rm "$STUB/down"; run recover
 chk "canonical back: one claim, one launch, no TSV fallback read" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+
+# G-B: finish() reads the canonical row with --status all: a row closed during recovery still gets its receipt
+fresh 20; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+python3 "$C" complete evt-0001 --effect "$T/effect.json" >/dev/null 2>&1; rc=$?
+chk "G-B complete on a closed ask: rc 0, receipt written with ask_status closed, state completed" '[ $rc -eq 0 ] && grep -q "\"ask_status\": \"closed\"" $DIRECTOR_STATE/runs/evt-0001.receipt.json && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "G-B the finish read is exactly query --json --ids A100 --status all; no complete-read incident" 'grep -q "^asks query --json --ids A100 --status all$" $STUB/calls.log && ! grep -q complete-read $DIRECTOR_STATE/incidents.jsonl 2>/dev/null'
+fresh 21; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+chk "G-B recover after DONE on a closed ask: receipt from the ledger, no relaunch, no incident" '[ "$(cnt director-run launch.log)" = 1 ] && [ -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ] && [ ! -s $DIRECTOR_STATE/incidents.jsonl ]'
+fresh 23; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+touch "$STUB/down"; python3 "$C" complete evt-0001 --effect "$T/effect.json" >/dev/null 2>&1; rc=$?
+chk "G-B complete with the API down is still refused (rc 4), no receipt, durable complete-read incident" '[ $rc -eq 4 ] && [ ! -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ] && grep -q complete-read $DIRECTOR_STATE/incidents.jsonl'
+
+# G-C: ready-poll outage leaves a durable, deduped incident (never launches from stale data), recovered when the API resumes
+fresh 22
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
+PY
+echo 'wm-asks: db locked token=SECRET123 Authorization: Bearer abcdef0123456789' > "$STUB/down-ready"
+python3 "$C" consume >"$T/out.txt" 2>&1; rc=$?
+chk "G-C consume with the ready query failing: rc 0, nothing claimed or launched from stale data" '[ $rc -eq 0 ] && [ ! -e $STUB/launch.log ] && [ "$(cnt "asks claim" calls.log)" = 0 ]'
+chk "G-C one durable incident row with ts, command, rc and a scrubbed stderr tail" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && python3 -I -c "
+import json,sys
+r=[json.loads(l) for l in open(sys.argv[1])][0]
+assert r[\"kind\"]==\"canonical-ready-poll\" and r[\"state\"]==\"open\" and r[\"ts\"] and r[\"rc\"]==3, r
+assert \"--ready\" in r[\"command\"] and \"db locked\" in r[\"stderr\"], r
+assert \"SECRET123\" not in r[\"stderr\"] and \"abcdef0123456789\" not in r[\"stderr\"], r
+" $DIRECTOR_STATE/incidents.jsonl'
+run recover; run recover; run consume
+chk "G-C repeated outage polls dedupe to one open incident row" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && [ ! -e $STUB/launch.log ]'
+rm "$STUB/down-ready"; run recover
+chk "G-C API back: consume proceeds (one claim, one launch) and the incident is marked recovered" '[ "$(cnt director-run-ready-A100-3-a1 launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ] && grep -q "\"state\": \"recovered\"" $DIRECTOR_STATE/incidents.jsonl'
+run recover
+chk "G-C recovered once: further healthy polls write no more incident rows" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 2 ]'
+echo 'again' > "$STUB/down-ready"; run recover
+chk "G-C a later outage opens a new incident (fresh incident id)" '[ "$(grep -c "\"state\": \"open\"" $DIRECTOR_STATE/incidents.jsonl)" = 2 ] && [ "$(sed -n "s/.*\"incident_id\": \"\([^\"]*\)\".*/\1/p" $DIRECTOR_STATE/incidents.jsonl | sort -u | wc -l)" = 2 ]'
+# G-C durability: the incident row is appended+fsynced BEFORE the dedupe mark; a failure between the two never loses it
+G2D="$T/g2state"; rm -rf "$G2D"; mkdir -p "$G2D/runs" "$G2D/locks"
+python3 -I - "$C" "$G2D" >/dev/null <<'PY'
+import importlib.util, json, os, sys
+os.environ["DIRECTOR_STATE"] = sys.argv[2]
+sp = importlib.util.spec_from_file_location("dec", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+m._ASKS_FAULT[:] = ["unavailable rc=3"]
+real = m.atomic_write
+def boom(*a, **k): raise OSError("injected crash between incident append and dedupe mark")
+m.atomic_write = boom
+try: m.ready_poll_outage()
+except OSError: pass
+f = os.path.join(m.STATE, "incidents.jsonl")
+assert len(open(f).readlines()) == 1, "row lost"
+m.atomic_write = real; m.ready_poll_outage()       # restart: mark never persisted, row re-logged, never lost
+assert len(open(f).readlines()) == 2
+m.ready_poll_outage()
+assert len(open(f).readlines()) == 2
+PY
+rc=$?
+chk "G-C incident durability: row on disk after injected failure before the dedupe mark; deduped once recorded" '[ $rc -eq 0 ]'
 
 # exact task-revision mismatch still blocks
 fresh 18

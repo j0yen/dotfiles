@@ -27,6 +27,9 @@ No ledger fallback: a missing, failing or malformed canonical ledger records can
 incidents.jsonl and launches nothing; the event stays retryable. No attempt count or age ends a run: launch failures and
 workers that exit without a receipt are retried at every recover tick (one visibility note at NOTE_AT); a provider outage is
 never counted; an UNKNOWN effect (BEGIN with no END) is held in `reconcile-required` until `reconcile` records the owner's readback.
+A failing ready poll appends one durable incident row (ts, command, rc, scrubbed stderr tail) to incidents.jsonl before the dedupe mark
+(ready-poll.json): a standing outage is one open incident, marked recovered when the poll answers again. `complete` reads the ask
+with --status all, so a row closed meanwhile still gets its receipt.
 """
 import fcntl
 import json
@@ -107,13 +110,26 @@ def sh(argv, timeout=60):
 
 
 _ASKS_FAULT = []
+_ASKS_LAST = {}
+SECRET_RE = re.compile(r"(?i)\b(token|secret|password|passwd|api[_-]?key|authorization|bearer)\b([\s:=]+)(?:bearer\s+)?\S+")
+TOKEN_RE = re.compile(r"\b(?:sk|ghp|gho|xox[a-z])[-_][A-Za-z0-9_-]{8,}")
+
+
+def scrub(text, limit=300):
+    """One-line, printable, secret-free tail of a command's stderr for a durable record."""
+    t = "".join(ch if ch.isprintable() else " " for ch in text)
+    t = TOKEN_RE.sub("[redacted]", SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", t))
+    return " ".join(t.split())[-limit:]
 
 
 def asks_query(*args):
     """Canonical read. Returns list of rows, or None when the ledger is unavailable or malformed (no fallback).
-    The reason of the last failure is kept in _ASKS_FAULT[0] for the durable incident row."""
+    The reason of the last failure is kept in _ASKS_FAULT[0] (and command/rc/stderr tail in _ASKS_LAST) for the durable incident row."""
     del _ASKS_FAULT[:]
-    rc, out, _ = sh(ASKS + ["asks", "query", "--json"] + list(args))
+    _ASKS_LAST.clear()
+    argv = ASKS + ["asks", "query", "--json"] + list(args)
+    rc, out, err = sh(argv)
+    _ASKS_LAST.update(command=scrub(" ".join(shlex.quote(a) for a in argv), 400), rc=rc, stderr=scrub(err))
     if rc != 0:
         _ASKS_FAULT.append("unavailable rc=%d" % rc)
         return None
@@ -128,15 +144,19 @@ def asks_query(*args):
     return rows
 
 
+def append_incident(row):
+    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def incident(r, kind, **kw):
     """Explicit durable incident row (incidents.jsonl) for a canonical-API fault; the event keeps its retryable state."""
     kw.update(ts=now(), event_id=r["event_id"], ask=r["ask"], kind=kind, fault=(_ASKS_FAULT[0] if _ASKS_FAULT else kw.get("fault", "")))
     if r.get("last_incident") == kw["fault"]:
         return          # same fault still standing: one row per distinct fault, not one per tick
-    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:     # durable first: a crash before the dedupe mark re-logs, never loses
-        f.write(json.dumps(kw, sort_keys=True) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    append_incident(kw)     # durable first: a crash before the dedupe mark re-logs, never loses
     r["last_incident"] = kw["fault"]
     save_run(r)
 
@@ -599,10 +619,64 @@ def read_events():
         process_event(eid, ask, text, "log")
 
 
+READY_POLL = os.path.join(STATE, "ready-poll.json")
+
+
+def ready_poll_outage():
+    """The ready query failed: append+fsync one incident row BEFORE the dedupe mark (a crash between re-logs, never loses it).
+    A standing outage is one open incident; nothing is launched from stale data and no canonical write is attempted."""
+    fault = _ASKS_FAULT[0] if _ASKS_FAULT else "unavailable"
+    lk = open(os.path.join(LOCKS, "ready-poll.lock"), "a")
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    try:
+        try:
+            st = json.load(open(READY_POLL))
+        except (OSError, ValueError):
+            st = {}
+        if st.get("open") and st.get("fault") == fault:
+            return
+        iid = st["incident_id"] if st.get("open") else "rp-%s-%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid())
+        row = {"ts": now(), "kind": "canonical-ready-poll", "state": "open", "incident_id": iid, "fault": fault,
+               "command": _ASKS_LAST.get("command", ""), "rc": _ASKS_LAST.get("rc"), "stderr": _ASKS_LAST.get("stderr", "")}
+        append_incident(row)
+        atomic_write(READY_POLL, json.dumps({"open": True, "incident_id": iid, "fault": fault,
+                                             "first_ts": st.get("first_ts") if st.get("open") else row["ts"]}, sort_keys=True) + "\n")
+        decide(decision="ready-poll-unavailable", incident_id=iid, fault=fault)
+    finally:
+        lk.close()
+
+
+def ready_poll_ok():
+    """The ready query answered: an open outage incident is marked recovered (row first, then the mark)."""
+    try:
+        st = json.load(open(READY_POLL))
+    except (OSError, ValueError):
+        return
+    if not st.get("open"):
+        return
+    lk = open(os.path.join(LOCKS, "ready-poll.lock"), "a")
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    try:
+        try:
+            st = json.load(open(READY_POLL))
+        except (OSError, ValueError):
+            return
+        if not st.get("open"):
+            return
+        append_incident({"ts": now(), "kind": "canonical-ready-poll", "state": "recovered", "incident_id": st["incident_id"],
+                         "fault": st.get("fault", ""), "first_ts": st.get("first_ts")})
+        atomic_write(READY_POLL, json.dumps({"open": False, "incident_id": st["incident_id"], "recovered": now()}, sort_keys=True) + "\n")
+        decide(decision="ready-poll-recovered", incident_id=st["incident_id"])
+    finally:
+        lk.close()
+
+
 def poll_ready():
     rows = asks_query("--ready", "--owners", "hermes")
     if rows is None:
+        ready_poll_outage()
         return
+    ready_poll_ok()
     for row in rows:
         ask, rev = str(row.get("ask_id", "")), row.get("rev")
         if row.get("claim") or row.get("status", "open") != "open":
@@ -698,7 +772,7 @@ def recover_open(r):
 
 def finish(r, effect):
     eid = r["event_id"]
-    rows = asks_query("--ids", r["ask"])
+    rows = asks_query("--ids", r["ask"], "--status", "all")      # a row closed/completed during recovery still gets its receipt
     if not rows:
         incident(r, "complete-read")
         decide(event_id=eid, ask=r["ask"], decision="complete-refused", reason="canonical-unavailable")
