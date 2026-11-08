@@ -21,6 +21,19 @@ fetch() {  # sets J (json) and WHY (reason, empty when ok)
   return 0
 }
 oldest5() { jq -r '[.ids[] | select(.state=="overdue" or .state=="escalated")] | sort_by(-.age_h) | .[0:5][] | .id' <<<"$J" 2>/dev/null; }
+emit() {  # $1 = reason; WM_DIRECTOR=hermes reports one line and exits 0, otherwise a block decision
+  if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$1")"; else jq -nc --arg r "$1" '{decision:"block",reason:$r}'; fi
+}
+shared_new() {  # A1346: the shared evaluator (one fingerprint file with owed-now.sh); blocks only on a NEW obligation, never an unchanged delivered one
+  local ev new reason
+  ev="$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh" 2>/dev/null; fu_eval_bin)" && [ -n "$ev" ] || return 0
+  . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
+  new="$(fu_new_obligations "$seat")"; fu_outbox_replay
+  if jq -e 'select(.kind=="ledger-unreadable")' <<<"$new" >/dev/null 2>&1; then flog "ALLOW ledger unreadable: $(jq -r 'select(.kind=="ledger-unreadable") | .detail' <<<"$new" | head -1)"; new="$(jq -c 'select(.kind!="ledger-unreadable")' <<<"$new")"; fi   # an unreadable ledger fails open here and is logged; the other consumers report it
+  [ -n "$new" ] || return 0
+  reason="$(fu_block_reason "$new")"; flog "BLOCK-NEW $(jq -r '.id' <<<"$new" | paste -sd, -)"
+  emit "$reason"
+}
 case "$mode" in
 line)
   [ -n "$seat" ] || exit 0
@@ -36,16 +49,8 @@ stop)
   in="$(cat 2>/dev/null)"
   command -v jq >/dev/null 2>&1 || exit 0
   [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0
-  if ev="$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh" 2>/dev/null; fu_eval_bin)" && [ -n "$ev" ]; then   # A1346: the shared evaluator, one fingerprint file with owed-now.sh
-    . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
-    new="$(fu_new_obligations "$seat")"; fu_outbox_replay
-    [ -n "$new" ] || exit 0
-    reason="$(fu_block_reason "$new")"; flog "BLOCK-NEW $(jq -r '.id' <<<"$new" | paste -sd, -)"
-    if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$reason"; else jq -nc --arg r "$reason" '{decision:"block",reason:$r}'; fi
-    exit 0
-  fi
   if ! fetch; then flog "ALLOW wm-decide unavailable: $WHY"; exit 0; fi
-  ids="$(oldest5)"; [ -n "$ids" ] || exit 0
+  ids="$(oldest5)"; [ -n "$ids" ] || { shared_new; exit 0; }
   tp="$(jq -r '.transcript_path // empty' <<<"$in" 2>/dev/null)"
   turn=""
   if [ -n "$tp" ] && [ -r "$tp" ]; then
@@ -59,7 +64,7 @@ stop)
   list="$(paste -sd' ' - <<<"$ids")"
   reason="Seat $seat has overdue follow-ups this turn did not cite: $list. Cite one of these ids in full (clear it or say what you did) or print 'FOLLOWUPS $seat owed <n>-><n>'."
   flog "BLOCK $list"
-  if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$reason")"; else jq -nc --arg r "$reason" '{decision:"block",reason:$r}'; fi
+  emit "$reason"
   exit 0 ;;
 *) echo "usage: seat-followups.sh line|stop" >&2; exit 0 ;;
 esac
