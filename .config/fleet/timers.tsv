@@ -30,6 +30,8 @@ fleet-token-429-watch.service	alarm	fleet	no	no
 fleet-token-429-watch.timer	alarm	fleet	no	yes
 fleet-token-schedule.service	mechanical	fleet	no	no
 fleet-token-schedule.timer	mechanical	fleet	no	yes
+followup-outbox-replay.service	mechanical	fleet	no	no
+followup-outbox-replay.timer	mechanical	fleet	no	yes
 grand-loop-demand.service	launching	hermes	yes	no
 grand-loop-demand.timer	launching	hermes	yes	yes
 grand-loop.service	mechanical	fleet	no	no
