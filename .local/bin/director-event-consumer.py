@@ -9,6 +9,8 @@ Durable local event -> claim -> run -> receipt consumer for the Hermes director.
             Hermes run -> receipt. Event text is DATA: written into the run envelope inside a quoted block only.
   recover : replay pass over runs/<id>.json (claimed/launched/launch-failed without a receipt, held and
             canonical-unavailable retries) plus the ready poll. Unchanged state = no model call, no ledger write.
+  reconcile: releases the owned gate of a run that ended with an unknown effect (BEGIN step with no END/ABSENT in the
+            effect ledger): `reconcile <event_id> --verdict present|absent --by <who>`; the next recover relaunches.
   complete: verifies the effect path is non-empty, reads the claim back from the ledger, writes the receipt and
             state=completed. Never closes, resolves or accepts the ask.
 State dir ${DIRECTOR_STATE:-~/.local/state/director-consumer}: offset, events.jsonl, decisions.jsonl, runs/, locks/.
@@ -21,7 +23,10 @@ scope field; claims read back as <worker>@<timestamp>) (live-settings, migration
 Env seams (tests): DIRECTOR_STATE DIRECTOR_EVENTS_LOG HOLD_GATE WM_ASKS_CMD DIRECTOR_HERMES_CMD
                    DIRECTOR_LAUNCH_CMD (<unit> <envelope>; exit 75 = provider outage) DIRECTOR_ACTIVE_CMD (<unit>, exit 0 = active)
                    DIRECTOR_RESET_CMD (<unit>) DIRECTOR_CONSUMER DIRECTOR_CRASH_AT (after-seen | after-offset)
-No ledger fallback: a missing or failing canonical ledger records canonical-unavailable and launches nothing.
+No ledger fallback: a missing, failing or malformed canonical ledger records canonical-unavailable plus a durable row in
+incidents.jsonl and launches nothing; the event stays retryable. No attempt count or age ends a run: launch failures and
+workers that exit without a receipt are retried at every recover tick (one visibility note at NOTE_AT); a provider outage is
+never counted; an UNKNOWN effect (BEGIN with no END) is held in `reconcile-required` until `reconcile` records the owner's readback.
 """
 import fcntl
 import json
@@ -46,10 +51,10 @@ MARKER_RE = re.compile(r"DIRECTOR-ACTION ask=(\S+) event=(\S+)")
 CONSUMER = os.environ.get("DIRECTOR_CONSUMER") or "c0"
 SCOPE_RE = re.compile(r"^[A-Za-z0-9:._-]{1,80}$")
 RETRY_STATES = ("seen", "held", "canonical-unavailable", "scope-wait", "ask-busy")
-OPEN_STATES = ("claimed", "launched", "launch-failed", "provider-outage")
+OPEN_STATES = ("claimed", "launched", "launch-failed", "provider-outage", "reconcile-required")
 TERMINAL_STATES = ("completed", "stuck", "claim-conflict", "superseded")
 LIVE_UNIT = ("active", "activating", "deactivating", "reloading")
-MAX_ATTEMPTS = 2
+NOTE_AT = 2         # visibility only: at this many attempts one owned note says the run is still retrying. Never ends work.
 
 RUNS = os.path.join(STATE, "runs")
 LOCKS = os.path.join(STATE, "locks")
@@ -101,16 +106,37 @@ def sh(argv, timeout=60):
         return 127, "", str(e)
 
 
+_ASKS_FAULT = []
+
+
 def asks_query(*args):
-    """Canonical read. Returns list of rows, or None when the ledger is unavailable (no fallback)."""
+    """Canonical read. Returns list of rows, or None when the ledger is unavailable or malformed (no fallback).
+    The reason of the last failure is kept in _ASKS_FAULT[0] for the durable incident row."""
+    del _ASKS_FAULT[:]
     rc, out, _ = sh(ASKS + ["asks", "query", "--json"] + list(args))
     if rc != 0:
+        _ASKS_FAULT.append("unavailable rc=%d" % rc)
         return None
     try:
         rows = json.loads(out)
     except ValueError:
+        _ASKS_FAULT.append("malformed: output is not JSON")
         return None
-    return rows if isinstance(rows, list) else None
+    if not isinstance(rows, list) or any(not isinstance(x, dict) for x in rows):
+        _ASKS_FAULT.append("malformed: output is not a list of rows")
+        return None
+    return rows
+
+
+def incident(r, kind, **kw):
+    """Explicit durable incident row (incidents.jsonl) for a canonical-API fault; the event keeps its retryable state."""
+    kw.update(ts=now(), event_id=r["event_id"], ask=r["ask"], kind=kind, fault=(_ASKS_FAULT[0] if _ASKS_FAULT else kw.get("fault", "")))
+    if r.get("last_incident") == kw["fault"]:
+        return          # same fault still standing: one row per distinct fault, not one per tick
+    r["last_incident"] = kw["fault"]
+    save_run(r)
+    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:
+        f.write(json.dumps(kw, sort_keys=True) + "\n")
 
 
 def gate_ok(ask):
@@ -159,6 +185,25 @@ def effect_done(eid):
     except OSError:
         return False
     return any(ln.strip() == "DONE" for ln in lines)
+
+
+def unknown_steps(eid):
+    """Steps the effect ledger opened (`BEGIN <step>`) and never closed (`END <step>` or `ABSENT <step>`): their remote
+    effect is UNKNOWN until reconciled. Plain lines (legacy ledgers) count as closed steps."""
+    try:
+        lines = open(effect_path(eid)).read().split("\n")
+    except OSError:
+        return []
+    open_steps = []
+    for ln in lines:
+        w = ln.strip().split(None, 1)
+        if len(w) < 2:
+            continue
+        if w[0] == "BEGIN" and w[1] not in open_steps:
+            open_steps.append(w[1])
+        elif w[0] in ("END", "ABSENT") and w[1] in open_steps:
+            open_steps.remove(w[1])
+    return open_steps
 
 
 def scope_path(name):
@@ -219,6 +264,8 @@ claim: {claim}  (already held by this run; do not claim again)
 2. Perform ONLY the action the ask's `what` and `check` fields describe, using tools.
 3. Record every durable step as one appended line in the effect ledger {effect} (append, then fsync) and, when all steps
    are done and read back (run the ask's check), append the final line `DONE`. On a relaunch skip steps already recorded.
+   Bracket every step whose effect leaves this machine: append `BEGIN <step>` before it and `END <step>` after you read it
+   back. A `BEGIN` with no `END`/`ABSENT` is an unknown effect: the consumer holds the run for reconciliation.{reconciled}
 4. If the model provider is unavailable, write {outage} and exit; the consumer retries without counting an attempt.
 5. Write the completion receipt with exactly this command:
    `DIRECTOR_STATE={state} python3 {self} complete {eid} --effect {effect}`
@@ -232,7 +279,8 @@ and write the receipt; do not create a duplicate effect.
 {quoted}
 """.format(eid=r["event_id"], ask=r["ask"], claim=r.get("claim", ""), state=STATE, self=SELF,
            receipt=receipt, quoted=quote_block(r.get("text", "")), effect=effect_path(r["event_id"]),
-           outage=os.path.join(RUNS, r["event_id"] + ".outage"))
+           outage=os.path.join(RUNS, r["event_id"] + ".outage"),
+           reconciled=("\n   RECONCILED: %s" % "; ".join(r["reconciled"])) if r.get("reconciled") else "")
     atomic_write(path, body, 0o600)
     return path
 
@@ -273,14 +321,16 @@ def launch(r):
     r["last_error"] = (err or "launcher exit %d" % rc).strip()[:200]
     save_run(r)
     decide(event_id=r["event_id"], ask=r["ask"], decision="launch-failed", attempt=attempt, rc=rc)
-    if attempt >= MAX_ATTEMPTS:
-        mark_stuck(r, "launch failed %d times: %s" % (attempt, r["last_error"]))
+    # The launcher never started a worker, so no effect exists: the failure stays retryable at every recover tick.
+    if attempt >= NOTE_AT:
+        owned_note(r, "launch has failed %d times (%s); still retrying" % (attempt, r["last_error"]))
     return False
 
 
-def owned_note(r, blocker):
+def owned_note(r, blocker, key=None):
     """One owned note on the ask with the exact blocker; no date change."""
-    if r.get("note_written"):
+    key = "note_written" if key is None else key
+    if r.get(key):
         return
     rows = asks_query("--ids", r["ask"])
     if not rows:
@@ -290,7 +340,7 @@ def owned_note(r, blocker):
     msg = "director-consumer %s: %s (claim %s, attempts %d)" % (r["event_id"], blocker, r.get("claim", ""), r.get("attempts", 0))
     rc, _, _ = sh(ASKS + ["asks", "update", r["ask"], "--by", "hermes", "--expect-rev", str(rev), "--append", msg])
     if rc == 0:
-        r["note_written"] = now()
+        r[key] = now()
         save_run(r)
         decide(event_id=r["event_id"], ask=r["ask"], decision="noted", blocker=blocker)
     else:
@@ -409,6 +459,7 @@ def _process(eid, ask):
             return
         rows = asks_query("--ids", ask)
         if not rows:
+            incident(r, "canonical-read", fault="ask not found" if rows == [] and not _ASKS_FAULT else "")
             set_wait(r, "canonical-unavailable", prev)
             return
         row = rows[0]
@@ -416,6 +467,7 @@ def _process(eid, ask):
         if r.get("source") == "ready" and r.get("event_rev") != rev:
             ready = asks_query("--ready", "--owners", "hermes")
             if ready is None:
+                incident(r, "canonical-ready-read")
                 set_wait(r, "canonical-unavailable", prev)
                 return
             if ask not in [str(x.get("ask_id")) for x in ready]:
@@ -460,6 +512,7 @@ def _process(eid, ask):
                 else:
                     r["state"] = "canonical-unavailable"
                     save_run(r)
+                    incident(r, "claim-failed", fault="claim rc=%d" % rc)
                     decide(event_id=eid, ask=ask, decision="canonical-unavailable", reason="claim-failed", rc=rc)
                 return
         back = asks_query("--ids", ask)
@@ -472,6 +525,7 @@ def _process(eid, ask):
             return
         r["claim"], r["claimed_rev"] = got, rev
         r["state"] = "claimed"
+        r.pop("last_incident", None)
         r["claimed"] = now()
         save_run(r)
         decide(event_id=eid, ask=ask, decision="claimed", claim=got, rev=rev, consumer=CONSUMER)
@@ -604,10 +658,21 @@ def recover_open(r):
     if effect_done(eid):
         finish(r, effect_path(eid))      # crash after the effect: receipt, no relaunch
         return
-    if r["state"] != "provider-outage" and r["state"] != "claimed" and r.get("attempts", 0) >= MAX_ATTEMPTS:
-        mark_stuck(r, "run %s ended without a receipt after %d attempts%s" % (
-            eid, r.get("attempts", 0), (": " + r["last_error"]) if r.get("last_error") else ""))
+    if r["state"] == "reconcile-required":
+        return          # explicit owned gate: only `reconcile` releases it, never a tick or an attempt count
+    steps = unknown_steps(eid)
+    if steps:
+        r["state"] = "reconcile-required"
+        r["unknown_steps"] = steps
+        save_run(r)
+        decide(event_id=eid, ask=r["ask"], decision="reconcile-required", steps=steps, claim=r.get("claim"))
+        owned_note(r, "worker ended with unknown effect (steps opened, never closed: %s); held for reconciliation, "
+                      "`director-event-consumer.py reconcile %s --verdict present|absent`" % (", ".join(steps), eid),
+                   key="reconcile_note")
         return
+    if r["state"] not in ("provider-outage", "claimed") and r.get("attempts", 0) >= NOTE_AT:
+        owned_note(r, "run ended without a receipt %d times%s; still retrying" % (
+            r.get("attempts", 0), (" (" + r["last_error"] + ")") if r.get("last_error") else ""))
     if not gate_ok(r["ask"]):
         return
     launch(r)
@@ -617,6 +682,7 @@ def finish(r, effect):
     eid = r["event_id"]
     rows = asks_query("--ids", r["ask"])
     if not rows:
+        incident(r, "complete-read")
         decide(event_id=eid, ask=r["ask"], decision="complete-refused", reason="canonical-unavailable")
         return 4
     claim = rows[0].get("claim")
@@ -647,10 +713,42 @@ def cmd_complete(eid, effect):
         lk.close()
 
 
+def cmd_reconcile(eid, verdict, by):
+    """Release the reconciliation gate for a run whose last worker ended with an unknown effect. The verdict is the
+    owner's readback of the remote state: `present` closes the open steps as done, `absent` records they never happened."""
+    r = load_run(eid) if EVENT_RE.match(eid) else None
+    if r is None or r["state"] != "reconcile-required" or verdict not in ("present", "absent"):
+        decide(event_id=eid[:80], decision="reconcile-refused", reason="not-reconcilable-or-bad-verdict")
+        return 3
+    lk = open(os.path.join(RUNS, eid + ".lock"), "a")
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    try:
+        r = load_run(eid)
+        steps = unknown_steps(eid)
+        if r["state"] != "reconcile-required" or not steps:
+            decide(event_id=eid, ask=r["ask"], decision="reconcile-refused", reason="no-open-step")
+            return 3
+        word = "END" if verdict == "present" else "ABSENT"
+        with open(effect_path(eid), "a") as f:
+            for st in steps:
+                f.write("%s %s\n" % (word, st))
+            f.write("RECONCILED %s by %s at %s\n" % (verdict, by or "unknown", now()))
+            f.flush()
+            os.fsync(f.fileno())
+        r.setdefault("reconciled", []).append("%s %s (%s)" % (verdict, ",".join(steps), by or "unknown"))
+        r["state"] = "launch-failed"        # retryable: the next recover tick relaunches with the reconciled facts
+        r.pop("unknown_steps", None)
+        save_run(r)
+        decide(event_id=eid, ask=r["ask"], decision="reconciled", verdict=verdict, steps=steps, by=by or "unknown")
+        return 0
+    finally:
+        lk.close()
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "consume"
-    if cmd not in ("consume", "recover", "complete"):
-        print("usage: director-event-consumer.py [consume|recover|complete <event_id> --effect <path>]", file=sys.stderr)
+    if cmd not in ("consume", "recover", "complete", "reconcile"):
+        print("usage: director-event-consumer.py [consume|recover|complete <event_id> --effect <path>|reconcile <event_id> --verdict present|absent --by <who>]", file=sys.stderr)
         return 64
     os.makedirs(RUNS, exist_ok=True)
     os.makedirs(LOCKS, exist_ok=True)
@@ -660,6 +758,13 @@ def main(argv):
             return 64
         effect = argv[argv.index("--effect") + 1] if "--effect" in argv[3:] and argv.index("--effect") + 1 < len(argv) else ""
         return cmd_complete(argv[2], effect)
+    if cmd == "reconcile":
+        def opt(name):
+            return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else ""
+        if len(argv) < 3:
+            print("usage: reconcile <event_id> --verdict present|absent --by <who>", file=sys.stderr)
+            return 64
+        return cmd_reconcile(argv[2], opt("--verdict"), opt("--by"))
     if cmd == "consume":
         read_events()
     recover_runs(replay=(cmd == "recover"))
