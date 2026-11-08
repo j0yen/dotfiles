@@ -3,6 +3,8 @@
 
   followup-eval.py eval   --seat S   every open obligation with its disposition (read-only)
   followup-eval.py new    --seat S   the actionable ones whose fingerprint was never delivered: persisted atomically, queued in the outbox
+  followup-eval.py emit   --seat S --id I --rev R --kind K --fp F --detail D   persist ONE obligation through the same fingerprint file, flock and outbox as new
+                           (exit 2 missing/invalid args, JSON error on stderr; exit 3 state unwritable, visible error)
   followup-eval.py reason            stdin obligations (jsonl) -> the one-line block text
   followup-eval.py replay            deliver queued outbox entries; mark delivered on rc 0 only
 
@@ -222,6 +224,45 @@ def cmd_new(seat):
     print(json.dumps({"new": new, "reason": reason(new) if new else "", "error": why or None}))
 
 
+def die(code, msg):
+    print(json.dumps({"error": msg}), file=sys.stderr)
+    sys.exit(code)
+
+
+def cmd_emit(a):
+    missing = [n for n in ("seat", "id", "rev", "kind", "fp", "detail") if getattr(a, n) in (None, "")]
+    if missing:
+        die(2, "emit missing required args: " + ",".join("--" + m for m in missing))
+    try:
+        rev = int(a.rev)
+    except ValueError:
+        die(2, "emit --rev must be an integer")
+    o = {"id": a.id, "rev": rev, "disposition": "ready", "kind": a.kind, "owner": a.seat, "next_check": "", "due": "",
+         "detail": a.detail, "actionable": True, "fp": a.fp}
+    try:
+        sd = state_dir(); fh = locked(sd)
+        fp_path = os.path.join(sd, "fingerprints.json")
+        try:
+            seen = json.load(open(fp_path))
+            if not isinstance(seen, dict):
+                seen = {}
+        except (OSError, ValueError):
+            seen = {}
+        if a.fp in seen:
+            fh.close()
+            print(json.dumps({"emitted": False, "deduped": True}))
+            return
+        stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        with open(outbox_path(sd), "a") as ob:   # outbox first, as in new
+            ob.write(json.dumps(dict(o, seat=a.seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
+        seen[a.fp] = stamp
+        atomic_write(fp_path, json.dumps(seen, sort_keys=True))
+        fh.close()
+    except OSError as e:
+        die(3, "emit state unwritable: %s" % (e.strerror or type(e).__name__))
+    print(json.dumps({"emitted": True, "deduped": False}))
+
+
 def cmd_replay():
     sd = state_dir(); ob = outbox_path(sd)
     if not os.path.exists(ob):
@@ -255,13 +296,19 @@ def cmd_replay():
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "replay", "reason")); ap.add_argument("--seat", default=os.environ.get("WM_SEAT", "ctl"))
+    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason")); ap.add_argument("--seat")
+    for n in ("id", "rev", "kind", "fp", "detail"):
+        ap.add_argument("--" + n)
     a = ap.parse_args()
+    if a.cmd != "emit":
+        a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
     if a.cmd == "eval":
         rows, why = read_ledger()
         print(json.dumps({"dispositions": (evaluate(a.seat, rows, now_min()) if rows is not None else []) + read_followups(a.seat), "error": why or None}))
     elif a.cmd == "new":
         cmd_new(a.seat)
+    elif a.cmd == "emit":
+        cmd_emit(a)
     elif a.cmd == "reason":   # stdin: one obligation JSON per line -> the one-line machine-actionable block text
         print(reason([json.loads(l) for l in sys.stdin if l.strip()]))
     else:

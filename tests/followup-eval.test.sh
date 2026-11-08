@@ -104,4 +104,24 @@ grep -q "$X" <<<"$o1" && grep -q correction-owed <<<"$o1"; chk "12: first Stop b
 fakewd escalated; o4="$(sfstop)"; o5="$(sfstop)"
 grep -q "$X" <<<"$o4" && [ -z "$o5" ]; chk "12: escalated state is one more block, then silent" $?
 [ "$(grep -c "BLOCK-NEW $X" "$SFLOG/fires.log")" = 2 ]; chk "12: two BLOCK-NEW lines in total" $?
+# 13. emit: the consumer contract (PR 327 calls `followup-eval.py emit`) through the SAME fingerprint file, flock and outbox as new
+rm -rf "$FOLLOWUP_STATE_DIR"; echo '[]' >"$FU_ASKS"
+emit() { python3 -I "${EVX:-$EV}" emit --seat ctl --id E1 --rev 1 --kind probe --fp "${1:-E1|1|probe}" --detail "d" "${@:2}"; }
+contract() { python3 -I "${EVX:-$EV}" emit --seat ctl --id E1 --rev 1 --kind probe --fp "C|$1" --detail d 2>/dev/null | jq -e '.emitted==true and .deduped==false' >/dev/null; }
+emit | jq -e '.emitted==true and .deduped==false' >/dev/null; chk "13: first emit persists and reports emitted" $?
+[ "$(wc -l <"$FOLLOWUP_OUTBOX")" = 1 ] && jq -e '.id=="E1" and .delivered==false' "$FOLLOWUP_OUTBOX" >/dev/null && grep -q 'E1|1|probe' "$FOLLOWUP_STATE_DIR/fingerprints.json"; chk "13: one outbox line and the fingerprint file holds the fp" $?
+emit | jq -e '.emitted==false and .deduped==true' >/dev/null; chk "13: repeat fp is deduped" $?
+[ "$(wc -l <"$FOLLOWUP_OUTBOX")" = 1 ]; chk "13: deduped emit adds no outbox line" $?
+for i in 1 2 3 4 5 6; do emit "E2|1|conc" >"$base/e$i.out" 2>/dev/null & done; wait
+[ "$(grep -c 'E2|1|conc' "$FOLLOWUP_OUTBOX")" = 1 ] && [ "$(cat "$base"/e?.out | jq -r 'select(.emitted==true)|1' | wc -l)" = 1 ]; chk "13: six concurrent emits of one fp give one outbox line" $?
+python3 -I "$EV" new --seat ctl >/dev/null 2>&1; [ "$(grep -c 'E1|1|probe' "$FOLLOWUP_OUTBOX")" = 1 ]; chk "13: new shares the store (no second evaluator)" $?
+python3 -I "$EV" emit --seat ctl --id E3 2>"$base/err" >/dev/null; rc=$?
+[ "$rc" = 2 ] && jq -e '.error' "$base/err" >/dev/null; chk "13: missing args exit 2 with a JSON error on stderr (rc $rc)" $?
+FOLLOWUP_STATE_DIR=/proc/nope/state python3 -I "$EV" emit --seat ctl --id E4 --rev 1 --kind k --fp F4 --detail d 2>"$base/err" >"$base/out"; rc=$?
+[ "$rc" = 3 ] && jq -e '.error' "$base/err" >/dev/null && ! grep -q emitted "$base/out"; chk "13: unwritable state exits 3 with a visible error (rc $rc)" $?
+# known-bad: an evaluator copy with the emit subcommand removed must fail the consumer-contract check
+sed 's/"new", "emit", "replay"/"new", "replay"/' "$EV" >"$base/ev-noemit.py"
+EVX="$base/ev-noemit.py" contract bad; bad=$?
+contract good; good=$?
+[ "$good" = 0 ] && [ "$bad" != 0 ]; chk "13: known-bad evaluator without emit fails the contract check (good $good, bad $bad)" $?
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
