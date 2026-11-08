@@ -58,7 +58,7 @@ def alive(w):
 def read_ledger():
     bin_ = os.environ.get("WM_ASKS_BIN", "wm-asks")
     try:
-        p = subprocess.run([bin_, "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
+        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "ledger command failed: %s" % type(e).__name__
     if p.returncode != 0:

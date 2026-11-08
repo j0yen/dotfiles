@@ -11,7 +11,7 @@ EV="$here/.local/bin/followup-eval.py"; OWED="$here/.claude/hooks/owed-now.sh"; 
 [ -f "$EV" ]; chk "0: followup-eval.py exists" $?
 cat >"$base/wm-asks" <<'FAKE'
 #!/usr/bin/env bash
-[ "${1:-}" = query ] || exit 2
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2   # real CLI shape: wm-asks asks query
 [ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
 [ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
 cat "$FU_ASKS"
