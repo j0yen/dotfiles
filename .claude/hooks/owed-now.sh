@@ -26,9 +26,21 @@ GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
 MAXR="${OWED_NOW_MAX_ROWS:-15}"; [[ "$MAXR" =~ ^[0-9]{1,3}$ ]] || MAXR=15
 STOPMAX="${OWED_NOW_STOP_MAX:-3}"; [[ "$STOPMAX" =~ ^[0-9]{1,2}$ ]] || STOPMAX=3
 state_dir() { printf "%s" "${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"; }
+# Row source (ledger ask A1307): OWED_NOW_SOURCE=asks reads the canonical store through followup-lib.sh fu_eval (an overdue row with a live claim or a valid
+# structured blocker is accounted and never listed; a Stop escalates a new fingerprint once); =tsv reads the legacy file. Default: tsv when the file path env is set
+# explicitly (selftest, tests), else asks.
+here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# shellcheck disable=SC1091
+. "$here/followup-lib.sh" 2>/dev/null || true
+src() { if [ -n "${OWED_NOW_SOURCE:-}" ]; then printf '%s' "$OWED_NOW_SOURCE"; elif [ -n "${OPEN_ASKS:-}" ]; then printf tsv; else printf asks; fi; }
 
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
+  if [ "$(src)" = asks ] && [ "$seat" != - ]; then
+    FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tcanonical ledger unreadable: %s\n' "$FU_REASON"; return 1; }
+    [ "$FU_EVAL" != "[]" ] || return 0
+    jq -r '.[] | "OVERDUE\t\(.id)\tdue=\(.due)\t[\(.kind)] \(.detail)"' <<<"$FU_EVAL"; return 1
+  fi
   [ -s "$f" ] && [ -n "$seat" ] || return 0
   local alt=""; case "$seat" in aide) alt=ctl ;; ctl) alt=aide ;; esac   # carbon executor seat: rows owned by aide or ctl (hermes-handover 2.2)
   awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" '
@@ -62,6 +74,13 @@ hook() {
   [ -z "$aid" ] || return 0
   case "$ev" in UserPromptSubmit|Stop) ;; *) return 0 ;; esac
   seat="$(seat_of "$in")"; [ -n "$seat" ] || return 0
+  if [ "$(src)" = asks ] && [ "$ev" = Stop ]; then   # canonical mode: a Stop blocks only on a NEW fingerprint, never on a recital of unchanged ids
+    local new; new="$(fu_new_obligations "$seat")"; fu_outbox_replay >/dev/null 2>&1 || true
+    [ -n "$new" ] || return 0
+    body="$(fu_block_reason "$new")"
+    if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$body"; else jq -cn --arg r "$body" '{decision:"block", reason:$r}'; fi
+    return 0
+  fi
   rows="$(lint "$seat" "$(date +%s)")" && return 0
   n="$(printf '%s\n' "$rows" | grep -c .)"
   body="OWED NOW (seat $seat, $n row(s), $(LC_ALL=C date '+%-I:%M %p')): each row below is done this turn, or its what-column gets waits-on=<host|seat|person|event> naming what it waits for, or it is reported MISSED with the earliest real time. A due time is for work that waits on someone else; what this session can do, it does now (Joe 10-31 11:1x PM, approvals #181/#182).
