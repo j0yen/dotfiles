@@ -105,7 +105,7 @@ EFFORT=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$SKIL
 
 case "$NAME" in
     dream) RET="the PRD paths, lint result, review verdict lines" ;;
-    *)     RET="the page path, lint result, review verdict lines, the weakest link and each mechanism with its state" ;;
+    *)     RET="the page path, lint result, review verdict lines if a justified review ran, the weakest link and each mechanism with its state" ;;
 esac
 
 {

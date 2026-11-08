@@ -52,7 +52,7 @@
   },
   "review": {
     "automatic": false,
-    "reasons": ["unresolved_assumption", "contradiction", "independent_verifier_required"],
+    "reasons": ["unresolved_assumption", "contradiction", "independent_verifier_required", "prod_money_real_user_data", "low_confidence_weakest_link", "explicit_user_request"],
     "route": {"model": "claude-fable-5-1", "effort": "high"},
     "evidence": true
   }
