@@ -29,8 +29,9 @@ if a[:2] == ["asks", "query"]:
 if a[:2] == ["asks", "claim"]:
     r = db[a[2]]; w = a[a.index("--worker")+1]
     if "--expect-rev" in a and int(a[a.index("--expect-rev")+1]) != r["rev"]: sys.exit(1)
-    if r.get("claim") and r["claim"] != w: sys.exit(1)
-    r["claim"] = w; r["rev"] += 1; save(); sys.exit(0)
+    stamp = os.path.exists(S + "/stamp")   # like real wm-asks: claim is stored as "<worker>@<timestamp>"
+    if r.get("claim") and r["claim"].split("@")[0] != w: sys.exit(1)
+    r["claim"] = (w + "@2026-11-08T04:00") if stamp else w; r["rev"] += 1; save(); sys.exit(0)
 if a[:2] == ["asks", "update"]:
     r = db[a[2]]; r.setdefault("notes", []).append(a[a.index("--append")+1]); r["rev"] += 1; save(); sys.exit(0)
 sys.exit(2)
@@ -48,6 +49,7 @@ cat > "$T/hold" <<'SH'
 SH
 cat > "$T/active" <<'SH'
 #!/usr/bin/env bash
+[ -e "$STUB/inactive.$1" ] && exit 1
 [ -e "$STUB/active.$1" ] || [ -e "$STUB/active.all" ]
 SH
 cat > "$T/reset" <<'SH'
@@ -171,8 +173,32 @@ chk "independent unscoped task launches meanwhile" '[ "$(cnt director-run-ready-
 chk "blocked peers wait in scope-wait without a claim" '[ "$(grep -c "scope-wait" <(for f in $DIRECTOR_STATE/runs/*.json; do python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[\"state\"])" $f; done))" = 2 ] && [ "$(cnt "asks claim" calls.log)" = 2 ]'
 unset LAUNCH_DELAY
 first="$(grep -o -E "ready-A40[013]-1" $STUB/launch.log | head -1)"
-touch "$STUB/active.all"; printf 'DONE\n' > "$DIRECTOR_STATE/runs/$first.effect"; rm -f "$STUB/active.all"; touch "$STUB/active.director-run-ready-A402-1-a1" "$STUB/active.director-run-ready-A401-1-a1" "$STUB/active.director-run-ready-A403-1-a1"; as c1 recover
+# every unit is healthy except the finished owner's, so a waiter launched by the wake is not mistaken for a dead worker
+touch "$STUB/active.all" "$STUB/inactive.director-run-$first-a1"; printf 'DONE\n' > "$DIRECTOR_STATE/runs/$first.effect"; as c1 recover
 chk "owner done: scope released, next waiter launched by the wake" '[ "$(st $first)" = completed ] && [ "$(cat $STUB/launch.log | grep -c -E "A40[013]")" = 2 ]'
+fi
+
+if want stamped; then
+# real wm-asks stores claim as worker@timestamp (swarm-decide asks.py stamp); the stub does the same here
+fresh 19 "$(row A100 1)" "$(row A101 1)"; touch "$STUB/stamp"; ev A100 evt-0100; ev A101 evt-0101; export LAUNCH_DELAY=0.3
+as c1 consume & as c2 consume & as c3 recover & wait
+chk "stamped claims: ledger claim carries @timestamp" 'grep -q "director-evt-0100\.c[123]@2026" $STUB/db.json'
+chk "stamped claims: each task launched once (own claim is not a conflict)" '[ "$(cnt director-run-evt-0100-a1 launch.log)" = 1 ] && [ "$(cnt director-run-evt-0101-a1 launch.log)" = 1 ] && [ "$(st evt-0100)" = launched ]'
+fresh 20 "$(row A100 1 true)"; touch "$STUB/stamp"; export LAUNCH_DELAY=0.3
+for c in c1 c2 c3 c4 c5 c6; do as $c recover & done; wait
+chk "stamped claims, race x6: one claim write, one launch" '[ "$(cnt "asks claim A100" calls.log)" = 1 ] && [ "$(wc -l < $STUB/launch.log)" = 1 ]'
+fresh 21 "$(row A100 1)"; touch "$STUB/stamp"; ev A100 evt-first; as c1 consume; ev A100 evt-second; as c2 consume
+chk "stamped claims: second event for a busy ask is ask-busy, not claim-conflict" '[ "$(st evt-second)" = ask-busy ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+fresh 22 "$(row A100 1)"; touch "$STUB/stamp"; ev A100 evt-0100; as c1 consume; touch "$STUB/active.director-run-evt-0100-a1"; as c2 recover; as c3 recover
+chk "stamped claims: replay/recover keeps one claim and one launch" '[ "$(cnt "asks claim" calls.log)" = 1 ] && [ "$(wc -l < $STUB/launch.log)" = 1 ]'
+fi
+
+if want scopetoken; then
+# real rows have no scope field: the carrier is a `scope=a,b` token in the what text
+mk(){ printf '"%s":{"ask_id":"%s","rev":1,"owner":"hermes","status":"open","claim":null,"ready":true,"what":"w scope=promote:prod waits-on=row:Z1","check":"c"}' "$1" "$1"; }
+fresh 23 "$(mk A500)" "$(mk A501)"; touch "$STUB/stamp"; export LAUNCH_DELAY=0.2
+as c1 recover & as c2 recover & wait
+chk "scope token in what text serializes the shared target (no scope field, stamped claims)" '[ "$(wc -l < $STUB/launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
 fi
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "FAILURES: $fails"; exit 1; }
