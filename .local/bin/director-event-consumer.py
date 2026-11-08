@@ -599,10 +599,34 @@ def read_events():
         process_event(eid, ask, text, "log")
 
 
+def poll_incident():
+    """Ready-poll outage: no run exists yet, so the durable row is keyed to the poll itself. Appended and fsynced before the
+    dedupe mark; one row per distinct standing fault, re-armed when a poll succeeds."""
+    fault = _ASKS_FAULT[0] if _ASKS_FAULT else "unavailable"
+    mark = os.path.join(STATE, "ready-poll.fault")
+    try:
+        if open(mark).read() == fault:
+            return
+    except OSError:
+        pass
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:
+        f.write(json.dumps({"ts": now(), "event_id": "ready-poll", "ask": "", "kind": "canonical-ready-poll", "fault": fault}, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    atomic_write(mark, fault)
+    decide(event_id="ready-poll", decision="ready-poll-unavailable", fault=fault)
+
+
 def poll_ready():
     rows = asks_query("--ready", "--owners", "hermes")
     if rows is None:
+        poll_incident()      # visible and recoverable; nothing is claimed or launched from stale data
         return
+    try:
+        os.unlink(os.path.join(STATE, "ready-poll.fault"))
+    except OSError:
+        pass
     for row in rows:
         ask, rev = str(row.get("ask_id", "")), row.get("rev")
         if row.get("claim") or row.get("status", "open") != "open":
@@ -698,7 +722,7 @@ def recover_open(r):
 
 def finish(r, effect):
     eid = r["event_id"]
-    rows = asks_query("--ids", r["ask"])
+    rows = asks_query("--ids", r["ask"], "--status", "all")     # the ask may already be resolved: completion must still read it
     if not rows:
         incident(r, "complete-read")
         decide(event_id=eid, ask=r["ask"], decision="complete-refused", reason="canonical-unavailable")

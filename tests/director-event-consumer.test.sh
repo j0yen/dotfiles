@@ -21,7 +21,9 @@ a = sys.argv[1:]
 def save(): json.dump(db, open(S + "/db.json", "w"))
 if a[:2] == ["asks", "query"]:
     rows = list(db.values())
-    if "--ids" in a: rows = [db[a[a.index("--ids")+1]]] if a[a.index("--ids")+1] in db else []
+    st = a[a.index("--status")+1] if "--status" in a else "open"     # real API: open-only unless --status all
+    if st != "all": rows = [r for r in rows if r.get("status", "open") == st]
+    if "--ids" in a: rows = [r for r in rows if r["ask_id"] == a[a.index("--ids")+1]]
     if "--ready" in a: rows = [r for r in rows if r.get("ready") and not r.get("claim") and r["owner"] == "hermes"]
     print(json.dumps(rows)); sys.exit(0)
 if a[:2] == ["asks", "claim"]:
@@ -223,6 +225,29 @@ rm "$STUB/garbage"; touch "$STUB/down"; run recover; run recover
 chk "unavailable canonical: durable incident row says unavailable, not duplicated per tick" 'grep -q unavailable $DIRECTOR_STATE/incidents.jsonl && [ "$(grep -c "\"event_id\": \"evt-0001\"" $DIRECTOR_STATE/incidents.jsonl)" -le 2 ] && [ ! -e $STUB/launch.log ]'
 rm "$STUB/down"; run recover
 chk "canonical back: one claim, one launch, no TSV fallback read" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+
+# G-B: completion of a run whose ask was already resolved (closed) still reads the canonical row (--status all)
+fresh 19; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+echo '{"x":1}' > "$T/effect19.json"
+python3 "$C" complete evt-0001 --effect "$T/effect19.json" >/dev/null 2>&1; rc=$?
+chk "closed ask: complete reads the closed row (status all), writes receipt, no incident" '[ $rc -eq 0 ] && grep -q "\"ask_status\": \"closed\"" $DIRECTOR_STATE/runs/evt-0001.receipt.json && [ ! -e $DIRECTOR_STATE/incidents.jsonl ] && grep -q -- "--status all" $STUB/calls.log'
+
+# G-C: ready-poll outage leaves a durable incident (no claim/launch from stale data); repeated outage polls dedupe; API back resumes
+fresh 20
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
+PY
+touch "$STUB/down"; run recover; run recover; run recover
+chk "ready-poll outage: one durable incident (kind canonical-ready-poll), no claim, no launch, no TSV" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && [ ! -e $STUB/launch.log ] && [ ! -e $DIRECTOR_STATE/incidents.tsv ] && [ "$(grep -c ready-poll-unavailable $DIRECTOR_STATE/decisions.jsonl)" = 1 ]'
+rm "$STUB/down"; run recover
+chk "API restored: ready row claimed once and launched once, incident file kept" '[ "$(cnt "asks claim" calls.log)" = 1 ] && [ "$(cnt director-run-ready-A100-3-a1 launch.log)" = 1 ] && [ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ]'
+touch "$STUB/down"; run recover
+chk "a later, separate outage logs a new incident" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 2 ]'
 
 # exact task-revision mismatch still blocks
 fresh 18
