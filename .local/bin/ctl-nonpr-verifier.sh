@@ -10,9 +10,17 @@
 # Refusals (no row is written, exit nonzero):
 #   2 usage | 3 ask not found / closed | 4 no real done-check | 5 incorrect target (check sha / lease ask differs) | 6 lease expired (> 30 min) or missing
 #   7 self verdict (verdict agent is ctl, its owner alias, aide, hermes, or the ask owner) | 8 session left no verifiable row | 9 CORRECT outcome | 1 unit failed
-# Test overrides (WMA WMD FABLE_LAUNCH SD_RUN LEASE_DIR RUN_DIR NOW) are honored only under CTL_NONPR_TEST=1; elsewhere a set one is refused (exit 64).
+# Test overrides (WMA WMD FABLE_LAUNCH SD_RUN LEASE_DIR RUN_DIR NOW) are honored only with env CTL_NONPR_TEST=1 AND the argv flag --test; elsewhere a set one,
+# or --test without the env, is refused (exit 64). `launch` needs a lease from a prior `issue` (exit 6) and --check-sha (exit 2).
+# Session sandbox (systemd-run): ProtectHome=read-only, ReadWritePaths = run dir + ledger state dir + account-rr dir, NoNewPrivileges, PrivateTmp,
+# ~/.ssh ~/.git-credentials ~/.config/{wm-sudo,gh} inaccessible, ~/.config/fleet-token reduced to the josephsyen + jyen.tech store files,
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 and a private CLAUDE_CONFIG_DIR. Exit 10 = a token-shaped string was found in the session output.
 set -u
-if [ "${CTL_NONPR_TEST:-0}" = 1 ]; then
+ARGS=(); TESTFLAG=0
+for _a in "$@"; do if [ "$_a" = --test ]; then TESTFLAG=1; else ARGS+=("$_a"); fi; done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+[ "$TESTFLAG" = 0 ] || [ "${CTL_NONPR_TEST:-0}" = 1 ] || { echo "ctl-nonpr-verifier: --test needs CTL_NONPR_TEST=1" >&2; exit 64; }
+if [ "${CTL_NONPR_TEST:-0}" = 1 ] && [ "$TESTFLAG" = 1 ]; then
   WMA="${WMA:-wm-asks}"; WMD="${WMD:-wm-decide}"; FL="${FABLE_LAUNCH:-$HOME/.local/bin/fable-launch.sh}"; SDR="${SD_RUN:-systemd-run}"
   LEASE_DIR="${LEASE_DIR:-$HOME/.cache/ctl-nonpr/leases}"; RUN_DIR="${RUN_DIR:-$HOME/.cache/ctl-nonpr/runs}"; NOW="${NOW:-$(date +%s)}"
 else
@@ -41,7 +49,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case "$cmd" in issue) ;; launch) [ "$tc" = 1 ] || die 2 "launch needs --target-check (scope is the ask's done-check only)" ;; *) usage ;; esac
+case "$cmd" in issue) ;; launch) [ "$tc" = 1 ] || die 2 "launch needs --target-check (scope is the ask's done-check only)"; [ -n "$want_sha" ] || die 2 "launch needs --check-sha <sha of the ask's current check> (printed by issue)" ;; *) usage ;; esac
 
 # ---- read the ask (read-only query) ----
 mkdir -p "$RUN_DIR" "$LEASE_DIR" || die 70 "cannot create state dirs"
@@ -67,11 +75,11 @@ if [ -n "$want_sha" ] && [ "$want_sha" != "$sha" ]; then die 5 "incorrect target
 
 # ---- lease: ts + ask + sha, valid 30 min ----
 L="${lease:-$LEASE_DIR/$ask.lease}"
-if [ "$cmd" = issue ] || { [ -z "$lease" ] && [ ! -f "$L" ]; }; then
+if [ "$cmd" = issue ]; then
   printf 'ts=%s\nask=%s\nsha=%s\n' "$NOW" "$ask" "$sha" > "$L.tmp" && mv -f "$L.tmp" "$L" || die 70 "cannot write lease"
-  [ "$cmd" = issue ] && { echo "lease $L ts=$NOW ask=$ask sha=$sha"; exit 0; }
+  echo "lease $L ts=$NOW ask=$ask sha=$sha"; exit 0
 fi
-[ -f "$L" ] || die 6 "lease file $L missing"
+[ -f "$L" ] || die 6 "no lease from a prior issue ($L missing): run '$0 issue $ask' first"
 l_ts="$(sed -n 's/^ts=//p' "$L")"; l_ask="$(sed -n 's/^ask=//p' "$L")"; l_sha="$(sed -n 's/^sha=//p' "$L")"
 [[ "$l_ts" =~ ^[0-9]+$ ]] || die 6 "lease has no valid ts"
 [ "$l_ask" = "$ask" ] || die 5 "incorrect target: lease is for ask '$l_ask', launch is for '$ask'"
@@ -107,9 +115,16 @@ P
 echo "label=$label unit=$unit agent=$vagent owner=$owner row=$rowid sha=$sha lease_age=${age}s"
 if [ "$dry" = 1 ]; then echo "DRY-RUN prompt: $DIR/prompt.txt"; exit 0; fi
 prompt="$(cat "$DIR/prompt.txt")"
-"$SDR" --user --wait --collect --unit="$unit" -p MemoryMax=2G -p RuntimeMaxSec=1800 -p "StandardOutput=file:$DIR/session.log" -p "StandardError=append:$DIR/session.log" \
+mkdir -p "$DIR/claude-home" "$HOME/.cache/aide/account-rr" || die 70 "cannot create session dirs"
+SB=(-p ProtectHome=read-only -p "ReadWritePaths=$DIR $HOME/.local/state/swarm-decide $HOME/.cache/aide/account-rr" -p NoNewPrivileges=yes -p PrivateTmp=yes
+    -p "InaccessiblePaths=-$HOME/.ssh -$HOME/.git-credentials -$HOME/.config/wm-sudo -$HOME/.config/gh"
+    -p "TemporaryFileSystem=$HOME/.config/fleet-token:ro" -p "BindReadOnlyPaths=$HOME/.config/fleet-token/store/josephsyen $HOME/.config/fleet-token/store/jyen.tech"
+    -E CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 -E "CLAUDE_CONFIG_DIR=$DIR/claude-home")
+"$SDR" --user --wait --collect --unit="$unit" -p MemoryMax=2G -p RuntimeMaxSec=1800 "${SB[@]}" -p "StandardOutput=file:$DIR/session.log" -p "StandardError=append:$DIR/session.log" \
   "$FL" --helper --model sonnet --effort medium -p "$prompt" --allowedTools "Bash Read Grep Glob" --disallowedTools "Edit Write NotebookEdit" > "$DIR/run.out" 2>&1 \
   || die 1 "verifier unit $unit failed (see $DIR/session.log)"
+# a token-shaped string anywhere in the session output: drop the output and refuse
+if grep -rqE 'sk-ant-[A-Za-z0-9_-]{8,}|CLAUDE_CODE_OAUTH_TOKEN=[^ ]{8,}' "$DIR" 2>/dev/null; then rm -f "$DIR/session.log" "$DIR/run.out" "$DIR/check.out"; die 10 "token-shaped string found in session output; outputs removed, no verdict taken"; fi
 
 # ---- re-read the row the session wrote ----
 [ -s "$R" ] || die 8 "session wrote no $R"

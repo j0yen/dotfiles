@@ -20,6 +20,7 @@ cat "$FX/rows.json"
 X
 cat > "$T/systemd-run" <<'X'
 #!/usr/bin/env bash
+printf '%s\n' "$@" > "$FX/sd-args"
 while [ $# -gt 0 ] && [ "$1" != "$FABLE_LAUNCH" ]; do shift; done
 exec "$@"
 X
@@ -27,6 +28,7 @@ cat > "$T/fable-launch" <<'X'
 #!/usr/bin/env bash
 # stub claude: no network. Reads the prompt (arg after -p), writes the row the session would record, and the result line.
 touch "$FX/session-ran"
+[ -z "${STUB_LEAK:-}" ] || echo "oops sk-ant-oat01-AAAAAAAAAAAAAAAAAAAA"
 p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && { p="$2"; break; }; shift; done
 R="$(printf '%s\n' "$p" | sed -n 's/^5\. Write one line to \(.*\): VERDICT=.*/\1/p')"
 agent="$(printf '%s\n' "$p" | sed -n 's/.*record --agent \([^ ]*\) --via.*/\1/p' | head -1)"
@@ -58,10 +60,14 @@ PY
 }
 rowcount() { python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$FX/rows.json"; }
 CHK='bash tests/foo.test.sh at head 0123456789abcdef prints PASS'
+sh16() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+SHA="$(sh16 "$CHK")"
+I() { "$S" issue A9 --test "$@"; }                                   # lease from a prior issue
+Lc() { "$S" launch A9 --target-check --check-sha "$SHA" --test "$@"; }  # launch with the required sha
 
 # 1. positive
 newfx rb "$CHK"
-out="$("$S" launch A9 --target-check 2>&1)"; rc=$?
+I >/dev/null; out="$(Lc 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "positive: exit 0" || bad "positive: exit $rc: $out"
 case "$out" in *"VERDICT-ROW d-test-0001"*) ok "positive: prints verdict row id" ;; *) bad "positive: no row id: $out" ;; esac
 case "$out" in *"--verdict-row d-test-0001"*) ok "positive: prints resolve line for ctl" ;; *) bad "positive: no resolve line" ;; esac
@@ -71,58 +77,84 @@ case "$out" in *"coder:ctl-nonpr-A9-"*) ok "positive: independent verdict agent"
 # 2. self verdict (closer ctl, owner, aide, hermes)
 for a in coder:ctl aide:ctl coder:rb coder:controller aide:aide verifier:ctl; do
   newfx rb "$CHK"
-  "$S" launch A9 --target-check --verdict-agent "$a" >/dev/null 2>&1; rc=$?
+  I >/dev/null; Lc --verdict-agent "$a" >/dev/null 2>&1; rc=$?
   { [ "$rc" = 7 ] && [ "$(rowcount)" = 0 ] && [ ! -e "$FX/session-ran" ]; } && ok "self verdict $a refused (exit 7, no row, no session)" || bad "self verdict $a: rc=$rc rows=$(rowcount)"
 done
 newfx ctl "$CHK"   # owner is ctl itself: the default independent agent is fine, an owner-named one is not
-"$S" launch A9 --target-check --verdict-agent coder:ctl >/dev/null 2>&1; rc=$?
+I >/dev/null; Lc --verdict-agent coder:ctl >/dev/null 2>&1; rc=$?
 [ "$rc" = 7 ] && ok "owner ctl: self verdict refused" || bad "owner ctl rc=$rc"
 
 # 3. incorrect target
 newfx rb "$CHK"
-"$S" launch A9 --target-check --check-sha deadbeefdeadbeef >/dev/null 2>&1; rc=$?
+I >/dev/null; "$S" launch A9 --target-check --check-sha deadbeefdeadbeef --test >/dev/null 2>&1; rc=$?
 { [ "$rc" = 5 ] && [ ! -e "$FX/session-ran" ] && [ "$(rowcount)" = 0 ]; } && ok "launch check sha differs from the ask's current check: refused (5)" || bad "wrong sha rc=$rc"
-newfx rb "$CHK"; "$S" issue A9 >/dev/null 2>&1
+newfx rb "$CHK"; I >/dev/null 2>&1
 python3 -I - "$FX/asks.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d[0]["check"] = "a different done-check"; json.dump(d, open(sys.argv[1], "w"))
 PY
-"$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+Lc >/dev/null 2>&1; rc=$?
 { [ "$rc" = 5 ] && [ ! -e "$FX/session-ran" ] && [ "$(rowcount)" = 0 ]; } && ok "check changed after the lease: refused (5)" || bad "changed check rc=$rc"
-newfx rb "$CHK"; "$S" issue A9 >/dev/null 2>&1; sed -i 's/^ask=A9/ask=A8/' "$LEASE_DIR/A9.lease"
-"$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+newfx rb "$CHK"; I >/dev/null 2>&1; sed -i 's/^ask=A9/ask=A8/' "$LEASE_DIR/A9.lease"
+Lc >/dev/null 2>&1; rc=$?
 [ "$rc" = 5 ] && [ ! -e "$FX/session-ran" ] && ok "lease for another ask id: refused (5)" || bad "other ask lease rc=$rc"
 
 # 4. lease expiry
-newfx rb "$CHK"; "$S" issue A9 >/dev/null 2>&1
-NOW=$((1800000000 + 1801)) "$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+newfx rb "$CHK"; I >/dev/null 2>&1
+NOW=$((1800000000 + 1801)) Lc >/dev/null 2>&1; rc=$?
 { [ "$rc" = 6 ] && [ ! -e "$FX/session-ran" ] && [ "$(rowcount)" = 0 ]; } && ok "lease 1801 s old: refused (6)" || bad "expired rc=$rc"
-NOW=$((1800000000 + 1800)) "$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+NOW=$((1800000000 + 1800)) Lc >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && ok "lease exactly 1800 s old: still valid" || bad "boundary rc=$rc"
-newfx rb "$CHK"; "$S" issue A9 >/dev/null 2>&1; sed 's/^ts=.*/ts=1/' "$LEASE_DIR/A9.lease" > "$T/old.lease"
-"$S" launch A9 --target-check --lease "$T/old.lease" >/dev/null 2>&1; rc=$?
+newfx rb "$CHK"; I >/dev/null 2>&1; sed 's/^ts=.*/ts=1/' "$LEASE_DIR/A9.lease" > "$T/old.lease"
+Lc --lease "$T/old.lease" >/dev/null 2>&1; rc=$?
 [ "$rc" = 6 ] && [ ! -e "$FX/session-ran" ] && ok "explicit stale lease file refused (6)" || bad "stale lease rc=$rc"
 
 # 5. no real done-check
 for c in "-" "" "none"; do
   newfx rb "$c"
-  "$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+  Lc >/dev/null 2>&1; rc=$?
   { [ "$rc" = 4 ] && [ ! -e "$FX/session-ran" ] && [ "$(rowcount)" = 0 ]; } && ok "done-check '$c': refused (4)" || bad "no check '$c' rc=$rc"
 done
 
 # 6. failing check: CORRECT row, no resolvable id printed
 newfx rb "$CHK"; export STUB_WORD=CORRECT
-out="$("$S" launch A9 --target-check 2>/dev/null)"; rc=$?
+I >/dev/null; out="$(Lc 2>/dev/null)"; rc=$?
 { [ "$rc" = 9 ] && ! printf '%s' "$out" | grep -q "VERDICT-ROW\|--verdict-row"; } && ok "CORRECT outcome: exit 9, nothing printed to resolve with" || bad "CORRECT rc=$rc out=$out"
 # 7. forged via label
 newfx rb "$CHK"; export STUB_VIA=verifier
-"$S" launch A9 --target-check >/dev/null 2>&1; rc=$?
+I >/dev/null; Lc >/dev/null 2>&1; rc=$?
 [ "$rc" = 8 ] && ok "forged via=verifier row: refused (8)" || bad "forged via rc=$rc"
 # 8. overrides refused outside test mode
-rc=0; env -u CTL_NONPR_TEST "$S" launch A9 --target-check >/dev/null 2>&1 || rc=$?
+rc=0; env -u CTL_NONPR_TEST "$S" launch A9 --target-check --check-sha "$SHA" --test >/dev/null 2>&1 || rc=$?
 [ "$rc" = 64 ] && ok "env overrides refused without CTL_NONPR_TEST" || bad "override rc=$rc"
 # 9. launch without --target-check
-"$S" launch A9 >/dev/null 2>&1; rc=$?
+"$S" launch A9 --check-sha "$SHA" --test >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && ok "launch without --target-check: usage (2)" || bad "usage rc=$rc"
+
+# 10. B4: no lease from a prior issue -> refuse (6), nothing issued implicitly; --check-sha required
+newfx rb "$CHK"
+Lc >/dev/null 2>&1; rc=$?
+{ [ "$rc" = 6 ] && [ ! -e "$FX/session-ran" ] && [ ! -e "$LEASE_DIR/A9.lease" ] && [ "$(rowcount)" = 0 ]; } && ok "launch with no prior issue: refused (6), no implicit lease" || bad "no lease rc=$rc"
+I >/dev/null; "$S" launch A9 --target-check --test >/dev/null 2>&1; rc=$?
+{ [ "$rc" = 2 ] && [ ! -e "$FX/session-ran" ]; } && ok "launch without --check-sha: refused (2)" || bad "no check-sha rc=$rc"
+# 11. B5: overrides need env AND --test
+newfx rb "$CHK"; I >/dev/null
+rc=0; "$S" launch A9 --target-check --check-sha "$SHA" >/dev/null 2>&1 || rc=$?
+{ [ "$rc" = 64 ] && [ ! -e "$FX/session-ran" ]; } && ok "env CTL_NONPR_TEST=1 without --test: overrides refused (64)" || bad "env only rc=$rc"
+rc=0; env -u CTL_NONPR_TEST "$S" issue A9 --test >/dev/null 2>&1 || rc=$?
+[ "$rc" = 64 ] && ok "--test without CTL_NONPR_TEST=1: refused (64)" || bad "flag only rc=$rc"
+# 12. B1/B2: the unit is launched with the sandbox properties
+newfx rb "$CHK"; I >/dev/null; Lc >/dev/null 2>&1
+miss=""
+for want in ProtectHome=read-only NoNewPrivileges=yes PrivateTmp=yes CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 "ReadWritePaths=$RUN_DIR/" \
+  ".ssh" ".config/wm-sudo" ".config/gh" ".git-credentials" "TemporaryFileSystem=$HOME/.config/fleet-token:ro" "store/josephsyen" "store/jyen.tech" CLAUDE_CONFIG_DIR= ".local/state/swarm-decide"; do
+  grep -qF -- "$want" "$FX/sd-args" || miss="$miss [$want]"
+done
+[ -z "$miss" ] && ok "systemd-run carries the sandbox properties" || bad "sandbox properties missing:$miss"
+grep -q 'store/jyen.pm\|store/mcphost.dev' "$FX/sd-args" && bad "jyen.pm/mcphost.dev store files exposed to the unit" || ok "only the non-Fable pool store files are bound into the unit"
+# 13. a token-shaped string in session output: outputs dropped, refused (10)
+newfx rb "$CHK"; I >/dev/null
+STUB_LEAK=1 Lc >/dev/null 2>&1; rc=$?
+{ [ "$rc" = 10 ] && ! grep -rq 'sk-ant-' "$RUN_DIR"; } && ok "token-shaped output: refused (10), output removed" || bad "leak rc=$rc"
 
 echo "$n checks, $fail failed"; [ "$fail" = 0 ]
