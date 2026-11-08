@@ -51,17 +51,32 @@ def check_evidence(pol, refs, what):
     if not isinstance(refs, list) or len(refs) < ev["min_refs"]:
         raise Deny("%s needs at least %d evidence reference(s)" % (what, ev["min_refs"]))
     pat = re.compile(ev["ref_pattern"])
-    ledger = os.environ.get("SKILL_ROUTE_LEDGER_TSV", os.path.join(HOME, ".cache", "aide", "open-asks.tsv"))
     for r in refs:
         if not isinstance(r, str) or not pat.match(r) or r.split(":", 1)[1].lower() in ev["placeholders"]:
             raise Deny("%s evidence ref %r is not a real reference (kind:value with kind in ledger|file|pr|run|commit|page)" % (what, r))
         kind, val = r.split(":", 1)
         if kind == "file" and not os.path.exists(os.path.expanduser(val)):
             raise Deny("%s evidence file %r does not exist" % (what, val))
-        if kind == "ledger" and os.path.isfile(ledger):
-            with open(ledger, errors="replace") as f:
-                if val not in f.read():
-                    raise Deny("%s evidence ledger id %r not found in the ledger" % (what, val))
+        if kind == "ledger":
+            if not ledger_has(val):
+                raise Deny("%s evidence ledger id %r not found in the ledger" % (what, val))
+
+
+def ledger_has(ask_id):
+    """Read-only lookup. Tests point SKILL_ROUTE_LEDGER_IDS at a file of ids; otherwise `wm-asks asks query` (argv list, no shell)."""
+    ids = os.environ.get("SKILL_ROUTE_LEDGER_IDS")
+    if ids:
+        with open(ids, errors="replace") as f:
+            return ask_id in f.read().split()
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", ask_id):
+        return False
+    import subprocess
+    try:
+        p = subprocess.run(["wm-asks", "asks", "query", "--ids", ask_id, "--status", "all", "--json"],
+                           capture_output=True, text=True, timeout=15)
+        return p.returncode == 0 and len(json.loads(p.stdout)) > 0
+    except Exception:
+        raise Deny("ledger lookup unavailable; cannot verify ledger:%s (fail closed)" % ask_id)
 
 
 def resolve(pol, req):
@@ -114,10 +129,14 @@ def resolve(pol, req):
     if reqd is not None:
         if not isinstance(reqd, dict):
             raise Deny("requested must be an object {model,effort}")
-        check_route(pol, reqd.get("model"), reqd.get("effort"))
-        if (reqd["model"], reqd["effort"]) != (r["model"], r["effort"]):
+        if "model" in reqd and (not isinstance(reqd["model"], str) or reqd["model"] not in pol["models"]):
+            raise Deny("unknown model %r" % (reqd["model"],))
+        if "effort" in reqd and (not isinstance(reqd["effort"], str) or reqd["effort"] in pol.get("forbidden_efforts", [])
+                                 or not any(reqd["effort"] in m["efforts"] for m in pol["models"].values())):
+            raise Deny("unknown or forbidden effort %r" % (reqd["effort"],))
+        if reqd.get("model", r["model"]) != r["model"] or reqd.get("effort", r["effort"]) != r["effort"]:
             raise Deny("requested %s/%s does not match the resolved route %s/%s" %
-                       (reqd["model"], reqd["effort"], r["model"], r["effort"]))
+                       (reqd.get("model", "-"), reqd.get("effort", "-"), r["model"], r["effort"]))
     out = {"ok": True, "governed": True, "model_id": r["model"], "effort": r["effort"],
            "route": route, "task_id": tid, "skill": skill, "reasons": reasons}
     rev = req.get("review")

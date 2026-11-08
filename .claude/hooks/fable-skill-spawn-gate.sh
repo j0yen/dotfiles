@@ -49,6 +49,27 @@ allow() {
     exit 0
 }
 
+# A1300 adaptive routing: skills named in .config/skill-routing/policy.json are governed. Inline calls are denied unless this
+# process IS the managed worker for that skill (fable-launch.sh --route-request exported SKILL_ROUTE_*); the route comes from the
+# resolver, never from the SKILL.md pin. A broken policy fails closed for the skill-shaped call only.
+for _l in "${SKILL_ROUTE_LIB:-}" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.local/lib/skill-route.sh" "$HOME/.local/lib/skill-route.sh"; do
+    [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+if command -v sr_governed >/dev/null 2>&1; then
+    sr_governed "$NAME"; _g=$?
+else
+    _g=2
+fi
+if [ "$_g" = 2 ]; then
+    case "$NAME" in 5whysandrhyme|wwhtbt)
+        echo "fable-skill-spawn-gate: skill-routing policy/helpers unreadable; /${NAME} is refused (fail closed). Restore .config/skill-routing/policy.json and .local/lib/skill-route.sh." >&2; exit 2 ;;
+    esac
+elif [ "$_g" = 0 ]; then
+    if sr_managed_worker "$NAME"; then allow; fi
+    { echo "fable-skill-spawn-gate: /${NAME} is a governed skill; its model and effort come from the routing policy, not this session."
+      sr_recipe "$NAME" "$("$JQ" -r '.tool_input.args // empty' <<<"$INPUT" 2>/dev/null)"; } >&2
+    exit 2
+fi
+
 SKILLS_DIR=${FABLE_SKILLS_DIR:-$HOME/.claude/skills}
 SKILL_MD="$SKILLS_DIR/$NAME/SKILL.md"
 [ -r "$SKILL_MD" ] || allow

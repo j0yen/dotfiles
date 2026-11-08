@@ -21,7 +21,9 @@ mk claude-opus-5-5;   chk "opus dream denied" dream 2
 mk claude-opus-5-5;   chk "opus plugin:dream denied" vibecode:dream 2
 mk claude-opus-5-5;   chk "opus 5whysandrhyme denied" 5whysandrhyme 2
 mk claude-sonnet-5-5; chk "sonnet wwhtbt denied" wwhtbt 2
-mk claude-fable-5-1;  chk "fable 5whysandrhyme allowed" 5whysandrhyme 0
+mk claude-fable-5-1;  chk "fable 5whysandrhyme inline denied (governed: managed launcher only)" 5whysandrhyme 2
+SKILL_ROUTE_TASK_ID=A1 SKILL_ROUTE_SKILL=5whysandrhyme chk "managed worker for 5whysandrhyme allowed" 5whysandrhyme 0
+SKILL_ROUTE_TASK_ID=A1 SKILL_ROUTE_SKILL=wwhtbt chk "managed worker for another skill still denied" 5whysandrhyme 2
 mk claude-opus-5-5;   chk "opus write allowed (body-only key)" write 0
 mk claude-opus-5-5;   chk "opus unknown skill allowed" nosuch 0
 rm -f "$T/t.jsonl";   chk "unknown model allowed" dream 0
@@ -29,10 +31,10 @@ mk claude-opus-5-5
 out=$(printf '{"tool_name":"Skill","tool_input":{"skill":"wwhtbt","args":"plan X"},"transcript_path":"%s","tool_use_id":"tu1"}' "$T/t.jsonl" | "$H" 2>&1 >/dev/null)
 printf '%s' "$out" | grep -q 'skill: wwhtbt, args: plan X' && echo "ok recipe names skill+args" || { echo "FAIL recipe: $out"; fail=1; }
 rec(){ mk claude-sonnet-5-5; printf '{"tool_name":"Skill","tool_input":{"skill":"%s"},"transcript_path":"%s","tool_use_id":"tu1"}' "$1" "$T/t.jsonl" | "$H" 2>&1 >/dev/null; }
-rec 5whysandrhyme | grep -q 'model=fable, effort=xhigh' && echo "ok sonnet-denied 5whys recipe effort=xhigh" || { echo "FAIL 5whys recipe effort"; fail=1; }
-rec wwhtbt | grep -q 'effort=xhigh' && echo "ok wwhtbt recipe xhigh" || { echo "FAIL wwhtbt effort"; fail=1; }
-rec dream | grep -q 'model=fable, effort=max' && echo "ok dream recipe keeps its own max" || { echo "FAIL dream effort not max"; fail=1; }
-rec nopin | grep -q 'effort=xhigh' && echo "ok unpinned skill defaults xhigh" || { echo "FAIL unpinned default"; fail=1; }
+rec 5whysandrhyme | grep -q -- '--route-request' && echo "ok governed 5whys recipe is the managed launcher" || { echo "FAIL 5whys recipe"; fail=1; }
+rec wwhtbt | grep -q -- '--route-request' && echo "ok governed wwhtbt recipe is the managed launcher" || { echo "FAIL wwhtbt recipe"; fail=1; }
+rec dream | grep -q -- '--effort max' && echo "ok dream recipe keeps its own max (ungoverned, unchanged)" || { echo "FAIL dream effort not max"; fail=1; }
+rec nopin | grep -q -- '--effort xhigh' && echo "ok unpinned skill defaults xhigh" || { echo "FAIL unpinned default"; fail=1; }
 mk claude-fable-5-1; chk "fable allowed with effort pin" dream 0
 jq -e '.hooks.PreToolUse[] | select(.matcher=="Skill") | .hooks[0] | select(.command|endswith("fable-skill-spawn-gate.sh"))' "$S" >/dev/null \
   && echo "ok wired first on Skill" || { echo "FAIL not wired first in settings.json"; fail=1; }

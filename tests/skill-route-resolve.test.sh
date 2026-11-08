@@ -6,7 +6,7 @@ R="$(cd "$(dirname "$0")/.." && pwd)"
 RES="$R/.local/lib/skill-route-resolve.py"
 export SKILL_ROUTE_POLICY="$R/.config/skill-routing/policy.json"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export SKILL_ROUTE_LEDGER_TSV="$T/asks.tsv"; printf 'A1300\tx\n' >"$SKILL_ROUTE_LEDGER_TSV"
+export SKILL_ROUTE_LEDGER_IDS="$T/ids.txt"; printf 'A1300\n' >"$SKILL_ROUTE_LEDGER_IDS"
 echo evidence >"$T/ev.md"
 fail=0
 # chk NAME WANT_RC JSON_LITERAL JQ_ASSERT   (assert evaluated against the output JSON; "" skips)

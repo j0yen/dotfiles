@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# skill-agent-effort-guard.sh — PreToolUse (Agent): a spawn that runs the /5whysandrhyme or /wwhtbt workflow (synthesis or
-# independent review) must pass model=fable (claude-fable-5-1) AND effort=xhigh. Missing, inherited, other-model or other-effort
-# spawns are denied (exit 2, recipe on stderr). effort=max passes only with a ledger-backed exception file:
-#   ${MEA_MAX_EXCEPTION:-~/.config/wm-decide/skill-effort-max-exception.json}
-#   {"skill":"5whysandrhyme|wwhtbt|*","ledger":"<row id present in open-asks.tsv>","gap":"<the unresolved gap>","expires":"<ISO time in the future>"}
-# Scope: only the two skills in skill-model-policy.sh. Other Agent spawns (Fable included), dream, plain sessions: untouched (exit 0).
+# skill-agent-effort-guard.sh — PreToolUse (Agent): a native spawn that runs a GOVERNED skill workflow (synthesis or independent
+# review) must pass an explicit model + effort equal to that skill's BASELINE route in .config/skill-routing/policy.json
+# (resolved by skill-route-resolve.py, A1300). Missing/inherited, other-model, other-effort, max and escalated routes are denied
+# (exit 2, managed-launcher recipe on stderr): escalations need structured reason + evidence, which only
+# fable-launch.sh --route-request carries. The Fable account safeguard stays in fable-native-agent-guard.sh.
+# Scope: the skills in skill-model-policy.sh (the audit checks they match policy.json). Other Agent spawns, dream, plain sessions: untouched.
 # Trigger (STRONG patterns only, so a cheap scout that merely names the page is not caught):
 #   "invoke/run/use/call ... <skill>", "skill: <skill>", "skill <skill>", "/<skill>" as a slash command, or "independent ... review"
 #   next to a skill name. A Fable-model spawn that names the skill at all is also covered.
@@ -14,6 +14,8 @@ JQ=$(command -v jq) || exit 0
 INPUT=$(cat) || exit 0
 [ "$(printf '%s' "$INPUT" | "$JQ" -r '.tool_name // empty' 2>/dev/null)" = Agent ] || exit 0
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+for _r in "${SKILL_ROUTE_LIB:-}" "$HERE/../../.local/lib/skill-route.sh" "$HOME/.local/lib/skill-route.sh"; do
+  [ -n "$_r" ] && [ -r "$_r" ] && { . "$_r"; break; }; done
 for _l in "${SKILL_POLICY_LIB:-}" "$HERE/../../.local/lib/skill-model-policy.sh" "$HOME/.local/lib/skill-model-policy.sh"; do
   [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
 if [ -z "${SKILL_POLICY_EFFORT:-}" ]; then echo "skill-agent-effort-guard: skill-model-policy.sh not found; refusing skill spawn (fail closed for the covered skills only)" >&2
@@ -29,27 +31,17 @@ for s in $SKILL_POLICY_SKILLS; do
   elif printf '%s' "$M" | grep -q fable && printf '%s' "$TEXT" | grep -qiE "\b$s\b"; then hit="$hit $s"; fi
 done
 [ -n "$hit" ] || exit 0
-model_ok=0; case "$M" in fable|"$SKILL_POLICY_MODEL") model_ok=1 ;; esac
-exc_ok=0
-if [ "$E" = max ] && [ "$model_ok" = 1 ]; then
-  EXC="${MEA_MAX_EXCEPTION:-$HOME/.config/wm-decide/skill-effort-max-exception.json}"
-  ASKS="${MEA_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
-  if [ -r "$EXC" ]; then
-    led=$("$JQ" -r '.ledger // empty' "$EXC" 2>/dev/null); gap=$("$JQ" -r '.gap // empty' "$EXC" 2>/dev/null)
-    exp=$("$JQ" -r '.expires // empty' "$EXC" 2>/dev/null); sk=$("$JQ" -r '.skill // empty' "$EXC" 2>/dev/null)
-    exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
-    ok=1
-    [[ "$led" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$ ]] || ok=0
-    [ -n "$gap" ] && [ "$exp_s" -gt "$(date +%s)" ] || ok=0
-    [ "$ok" = 1 ] && [ -r "$ASKS" ] && grep -qF -- "$led" "$ASKS" || ok=0
-    if [ "$ok" = 1 ]; then for s in $hit; do [ "$sk" = "*" ] || [ "$sk" = "$s" ] || ok=0; done; fi
-    exc_ok=$ok
-  fi
-fi
-if [ "$model_ok" = 1 ] && { [ "$E" = "$SKILL_POLICY_EFFORT" ] || [ "$exc_ok" = 1 ]; }; then exit 0; fi
+command -v sr_resolve >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit} routing helpers (skill-route.sh) not found; refusing governed skill spawn (fail closed)" >&2; exit 2; }
+M=$(sr_alias_model "$M")
+bad=""
+for s in $hit; do
+  if [ -z "$M" ] || [ -z "$E" ]; then bad="$bad $s(model/effort not explicit)"; continue; fi
+  req=$("$JQ" -nc --arg s "$s" --arg t "${SKILL_ROUTE_TASK_ID:-native-agent}" --arg m "$M" --arg e "$E" '{task_id:$t,skill:$s,requested:{model:$m,effort:$e}}')
+  res=$(sr_resolve "$req") || bad="$bad $s($(printf '%s' "$res" | "$JQ" -r '.error // "denied"' 2>/dev/null))"
+done
+[ -z "$bad" ] && exit 0
 {
-  echo "skill-agent-effort-guard:${hit} runs on model=fable ($SKILL_POLICY_MODEL) effort=$SKILL_POLICY_EFFORT for synthesis AND independent review; got model='${MODEL:-<inherited>}' effort='${EFFORT:-<inherited>}'."
-  [ "$E" = max ] && echo "max is allowed only with a ledger-backed exception file (${MEA_MAX_EXCEPTION:-~/.config/wm-decide/skill-effort-max-exception.json}: skill, ledger row present in open-asks.tsv, gap, future expires)."
-  echo "Re-issue: Agent(subagent_type=general-purpose, model=fable, effort=$SKILL_POLICY_EFFORT, prompt=...)"
+  echo "skill-agent-effort-guard: governed skill spawn denied:${bad}. Native spawns may only use the skill's baseline route (given model='${MODEL:-<inherited>}' effort='${EFFORT:-<inherited>}'); max and escalated routes are not available here."
+  sr_recipe "${hit# }"
 } >&2
 exit 2
