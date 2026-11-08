@@ -31,8 +31,8 @@ a="$(D= run env WM_SEAT=rb SEAT_OWED_BIN="$T/bin/seat-owed.sh" bash "$H/seat-owe
 b="$(D=hermes run env WM_SEAT=rb SEAT_OWED_BIN="$T/bin/seat-owed.sh" bash "$H/seat-owed-stop.sh")"; rc=$?
 pair seat-owed-stop "$a" "$b" "$rc"
 # seat-followups stop
-a="$(D= run env WM_SEAT=rb WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"
-b="$(D=hermes run env WM_SEAT=rb WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"; rc=$?
+a="$(D= run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s0" WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"
+b="$(D=hermes run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s1" WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"; rc=$?
 pair seat-followups "$a" "$b" "$rc"
 # followup-stop-gate  # each run gets its own FOLLOWUP_STATE_DIR: the gate delivers a fingerprint once (A1307), so a shared dir made the second run silent
 a="$(D= run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s2" WM_DECIDE_BIN="$T/bin/wm-decide" SEATS_TABLE="$T/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$T/l2/fires.log" bash "$H/followup-stop-gate.sh")"
