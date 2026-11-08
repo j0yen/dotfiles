@@ -3,14 +3,18 @@
 #   model-effort-audit.sh            print one JSON line {ok, findings:[{id,detail}], info:[...]}; exit 0 clean / 1 drift
 #   model-effort-audit.sh --notify   same, and when the SET of finding ids changed since the last run, send ONE line to ctl via
 #                                    seat-event.sh (changed-alarm only; a persisting drift is not re-sent; a clear is sent once)
-# Policy sources (read, never copied here): ctl = ~/.local/lib/ctl-model-policy.sh (ctl_model_policy), skills = skill-model-policy.sh.
+# Policy sources (read, never copied here): ctl = ~/.local/lib/ctl-model-policy.sh (ctl_model_policy), governed skills = ~/.config/skill-routing/policy.json
+#   resolved by ~/.local/lib/skill-route-resolve.py (A1300); decision rows = ~/.local/state/skill-routing/decisions.jsonl.
 # Checks: ctl helper behaviour (bare -> pins, wrong/dup/equals/fallback refused, bad policy fails closed) · seat-model-hold ctl+aide rows ·
 #   launcher/relaunch/shim wiring · settings pins and env overrides (key names only) · skill frontmatter · spawn-gate recipe ·
 #   Agent-effort guard installed, wired and behaving · running ctl (launch flags from cmdline; live model from the newest assistant
 #   line of the session transcript) · the running Fable analysis unit.
+# Routing audit (A1300, zero inference): for every managed-launcher decision row the selected model/effort is compared with what the session
+#   transcript actually ran. Model per turn is read from the transcript; effort per turn is NOT exposed by the runtime, so it is reported
+#   "unverifiable" (never inferred) unless a transcript line carries an explicit effort field. Output adds routing:{turns,exceptions}.
 # NOT covered: manual /model or /effort changes inside a session (only the transcript model is read, never effort), platform defaults,
 #   a claude started outside the covered launchers, an Agent call whose hook payload omits fields, effort of an already-running session.
-# Seams for tests: MEA_SYSTEMCTL MEA_NOTIFY MEA_STATE MEA_PROCS (file: "pid<TAB>cmdline") MEA_TRANSCRIPT MEA_ANALYSIS_UNIT MEA_ANALYSIS_CHECK.
+# Seams for tests: MEA_DECISIONS MEA_PROJECTS MEA_SYSTEMCTL MEA_NOTIFY MEA_STATE MEA_PROCS (file: "pid<TAB>cmdline") MEA_TRANSCRIPT MEA_ANALYSIS_UNIT MEA_ANALYSIS_CHECK.
 set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
 NOTIFY=0; [ "${1:-}" = --notify ] && NOTIFY=1
@@ -84,30 +88,43 @@ fi
 fe=$(jq -r '.modelSettings["claude-fable-5-1"].effortLevel // empty' "$SET" 2>/dev/null)
 [ "$fe" = xhigh ] || info "settings modelSettings[claude-fable-5-1].effortLevel='${fe:-unset}' (skill spawns pass effort explicitly; the guard rejects an unset one)"
 
-# 5. skills frontmatter + 6. recipe + 7. guard --------------------------------------------------------------
-SP="$LIB/skill-model-policy.sh"
+# 5. governed skills: policy/resolver consistency, legacy pins, gates ----------------------------------------------------
+SP="$LIB/skill-model-policy.sh"; SRL="$LIB/skill-route.sh"; POL="${SKILL_ROUTE_POLICY:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-routing/policy.json}"; RES="$LIB/skill-route-resolve.py"
 if [ -r "$SP" ]; then . "$SP"; else fail skillpolicy-missing "$SP unreadable"; fi
 fmget(){ awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$1" | sed -n "s/^$2:[[:space:]]*\\([A-Za-z0-9._-]*\\)[[:space:]]*$/\\1/p" | head -1; }
-if [ -n "${SKILL_POLICY_SKILLS:-}" ]; then
-  for s in $SKILL_POLICY_SKILLS; do
+if [ ! -r "$POL" ] || ! jq -e '.skills|type=="object"' "$POL" >/dev/null 2>&1; then fail routing-policy "$POL missing or malformed"
+elif [ ! -r "$RES" ] || [ ! -r "$SRL" ]; then fail routing-resolver "$RES or $SRL unreadable"
+else
+  pset=$(jq -r '.skills|keys|sort|join(" ")' "$POL"); gset=$(printf '%s\n' ${SKILL_POLICY_SKILLS:-} | sort | paste -sd' ' -)
+  [ "$pset" = "$gset" ] || fail routing-set-drift "policy governs [$pset] but skill-model-policy.sh lists [$gset]"
+  rr(){ printf '%s' "$1" | SKILL_ROUTE_POLICY="$POL" python3 -I "$RES" 2>/dev/null; }
+  r1=$(rr '{"task_id":"audit","skill":"5whysandrhyme"}'); r2=$(rr '{"task_id":"audit","skill":"wwhtbt"}')
+  jq -e '.model_id=="claude-fable-5-1" and .effort=="high"' <<<"$r1" >/dev/null 2>&1 || fail routing-baseline-5whys "resolver baseline for 5whysandrhyme is not fable/high: $r1"
+  jq -e '.model_id=="claude-sonnet-5-5" and .effort=="medium"' <<<"$r2" >/dev/null 2>&1 || fail routing-baseline-wwhtbt "resolver baseline for wwhtbt is not sonnet/medium: $r2"
+  r3=$(rr '{"task_id":"audit","skill":"5whysandrhyme","requested":{"model":"claude-fable-5-1","effort":"max"}}'); jq -e '.ok==false' <<<"$r3" >/dev/null 2>&1 || fail routing-max-allowed "resolver accepts Fable max"
+  r4=$(rr '{"task_id":"audit","skill":"5whysandrhyme","escalation":{"reason":"complex","evidence":["file:/etc/hostname"]}}'); jq -e '.ok==false' <<<"$r4" >/dev/null 2>&1 || fail routing-escalation-open "resolver accepts an escalation with a free-text reason"
+  for s in $pset; do
     f="$SK/$s/SKILL.md"
     [ -r "$f" ] || { fail "skill-$s-missing" "$f unreadable"; continue; }
-    [ "$(fmget "$f" model)" = fable ] || fail "skill-$s-model" "$s frontmatter model='$(fmget "$f" model)'"
-    [ "$(fmget "$f" effort)" = "$SKILL_POLICY_EFFORT" ] || fail "skill-$s-effort" "$s frontmatter effort='$(fmget "$f" effort)', policy $SKILL_POLICY_EFFORT"
-    [ "$(fmget "$f" fable-spawn)" = true ] || fail "skill-$s-spawn" "$s lacks fable-spawn: true"
-    d=$(printf '{"tool_name":"Skill","tool_input":{"skill":"%s"},"transcript_path":"/nonexistent","tool_use_id":"x"}' "$s")
-    # gate recipe: needs a non-Fable transcript to print the recipe
+    pm=$(fmget "$f" model); pe=$(fmget "$f" effort)
+    [ -z "$pm$pe" ] || info "$s SKILL.md still pins model='$pm' effort='$pe'; governed route ignores it (inline use is blocked by the gate) - remove at install (A1300)"
     tf=$(mktemp); printf '{"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"x"}]}}\n' >"$tf"
     d=$(printf '{"tool_name":"Skill","tool_input":{"skill":"%s"},"transcript_path":"%s","tool_use_id":"x"}' "$s" "$tf")
-    r=$(printf '%s' "$d" | SKILL_MARKER_DIR=$(mktemp -d) "$HK/fable-skill-spawn-gate.sh" 2>&1 >/dev/null); rm -f "$tf"
-    printf '%s' "$r" | grep -q "model=fable, effort=$SKILL_POLICY_EFFORT" || fail "recipe-$s" "spawn-gate recipe for $s does not say model=fable, effort=$SKILL_POLICY_EFFORT"
+    r=$(printf '%s' "$d" | SKILL_MARKER_DIR=$(mktemp -d) "$HK/fable-skill-spawn-gate.sh" 2>&1 >/dev/null); rc=$?; rm -f "$tf"
+    { [ "$rc" = 2 ] && printf '%s' "$r" | grep -q -- '--route-request'; } || fail "gate-$s" "spawn-gate did not deny an inline /$s call with the managed-launcher recipe (rc=$rc)"
+    printf '%s' "$d" | SKILL_ROUTE_TASK_ID=audit SKILL_ROUTE_SKILL=$s SKILL_MARKER_DIR=$(mktemp -d) "$HK/fable-skill-spawn-gate.sh" >/dev/null 2>&1 || fail "gate-worker-$s" "spawn-gate blocks the managed worker for $s"
+    pj=$(jq -cn --arg p "/$s x" '{prompt:$p}')
+    printf '%s' "$pj" | "$HK/skill-route-prompt-guard.sh" 2>/dev/null | jq -e '.decision=="block"' >/dev/null 2>&1 || fail "slash-$s" "prompt guard does not block a typed /$s"
   done
+  [ -x "$HK/skill-route-prompt-guard.sh" ] || fail slash-guard-missing "$HK/skill-route-prompt-guard.sh missing or not executable"
+  jq -e '[.hooks.UserPromptSubmit[]?.hooks[]?.command]|any(endswith("skill-route-prompt-guard.sh"))' "$SET" >/dev/null 2>&1 || fail slash-guard-unwired "settings.json UserPromptSubmit has no skill-route-prompt-guard.sh"
   d="$SK/dream/SKILL.md"; [ -r "$d" ] && info "dream effort=$(fmget "$d" effort) (own pin, not policed)"
   G="$HK/skill-agent-effort-guard.sh"
   if [ ! -x "$G" ]; then fail guard-missing "$G missing or not executable"; else
     gp(){ printf '{"tool_name":"Agent","tool_input":{"model":"%s","effort":"%s","prompt":"%s"}}' "$1" "$2" "$3" | "$G" >/dev/null 2>&1; echo $?; }
-    [ "$(gp fable "$SKILL_POLICY_EFFORT" 'Invoke the wwhtbt skill for plan X')" = 0 ] || fail guard-blocks-good "guard refused fable/$SKILL_POLICY_EFFORT"
-    for bad in "fable||" "fable|high|" "fable|max|" "sonnet|xhigh|" "|xhigh|"; do
+    [ "$(gp fable high 'Invoke the 5whysandrhyme skill for incident Y')" = 0 ] || fail guard-blocks-good "guard refused the 5whys baseline fable/high"
+    [ "$(gp sonnet medium 'Invoke the wwhtbt skill for plan X')" = 0 ] || fail guard-blocks-good-wwhtbt "guard refused the wwhtbt baseline sonnet/medium"
+    for bad in "fable||" "fable|xhigh|" "fable|max|" "sonnet|xhigh|" "|high|" "gpt-5-codex|high|"; do
       IFS='|' read -r bm be _ <<<"$bad"
       [ "$(gp "$bm" "$be" 'Invoke the 5whysandrhyme skill for incident Y')" = 2 ] || fail guard-allows-bad "guard allowed model='$bm' effort='$be'"
     done
@@ -143,22 +160,51 @@ if [ -n "$EM" ]; then
   fi
 fi
 
-# 9. running analysis unit ----------------------------------------------------------------------------------------
+# 9. running analysis unit -----------------------------------------------------------------------------------------------
 U="${MEA_ANALYSIS_UNIT:-hermes-work-stoppage-fivewhys-xhigh-20261106.service}"
-if [ -n "${SKILL_POLICY_EFFORT:-}" ]; then
-  st=$("$SYSCTL" --user is-active "$U" 2>/dev/null)
-  if [ "$st" = active ]; then
-    ex=$("$SYSCTL" --user show -p ExecStart "$U" 2>/dev/null)
-    grep -q -- "--model $SKILL_POLICY_MODEL --effort $SKILL_POLICY_EFFORT" <<<"$ex" || fail analysis-unit "running $U is not $SKILL_POLICY_MODEL/$SKILL_POLICY_EFFORT"
-    CK="${MEA_ANALYSIS_CHECK:-$HOME/wintermute-operations/check-analysis-xhigh.py}"
-    [ -r "$CK" ] && { python3 "$CK" >/dev/null 2>&1 || fail analysis-process "check-analysis-xhigh.py failed (process effort is not xhigh)"; }
-  else info "analysis unit $U is ${st:-unknown} (nothing to check)"; fi
-fi
+st=$("$SYSCTL" --user is-active "$U" 2>/dev/null)
+if [ "$st" = active ]; then
+  ex=$("$SYSCTL" --user show -p ExecStart "$U" 2>/dev/null)
+  grep -qE -- '--model claude-fable-5-1 --effort (high|xhigh)' <<<"$ex" || fail analysis-unit "running $U is not claude-fable-5-1 at high|xhigh (policy forbids max and unpinned routes)"
+  CK="${MEA_ANALYSIS_CHECK:-$HOME/wintermute-operations/check-analysis-xhigh.py}"
+  [ -r "$CK" ] && { python3 "$CK" >/dev/null 2>&1 || fail analysis-process "check-analysis-xhigh.py failed (process effort differs from the unit's route)"; }
+else info "analysis unit $U is ${st:-unknown} (nothing to check)"; fi
+
+# 10. routing decisions vs what actually ran (model-free) -----------------------------------------------------------
+DEC="${MEA_DECISIONS:-$HOME/.local/state/skill-routing/decisions.jsonl}"; PROJ="${MEA_PROJECTS:-$HOME/.claude/projects}"
+TURNS="[]"; EXC="[]"
+addexc(){ EXC=$(jq -c --arg k "$1" --arg d "$2" '. + [{kind:$k,detail:$d}]' <<<"$EXC"); }
+if [ -r "$DEC" ]; then
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    d=$(jq -r '.decision' <<<"$row"); tid=$(jq -r '.task_id' <<<"$row"); sk=$(jq -r '.skill' <<<"$row")
+    sm=$(jq -r '.model' <<<"$row"); se=$(jq -r '.effort' <<<"$row"); sid=$(jq -r '.session' <<<"$row"); why=$(jq -r '.reasons' <<<"$row")
+    if [ "$d" = denied ]; then addexc denied "task $tid/$sk denied: $why"; continue; fi
+    [ "$d" = launch ] || continue
+    if [ -r "$POL" ] && ! jq -e --arg m "$sm" --arg e "$se" '.models[$m].efforts|index($e)' "$POL" >/dev/null 2>&1; then
+      fail "routing-row-invalid" "decision row for $tid selects $sm/$se which the policy does not allow"; fi
+    tr_=$(ls "$PROJ"/*/"$sid".jsonl 2>/dev/null | head -1)
+    actual="[]"; n=0; ein=0; eout=0; eff=unverifiable
+    if [ -n "$tr_" ] && [ -r "$tr_" ]; then
+      actual=$(jq -R -c 'fromjson? | select(.type=="assistant") | .message.model // empty' "$tr_" 2>/dev/null | grep -v '"<synthetic>"' | sort -u | jq -s -c . 2>/dev/null || echo '[]')
+      n=$(jq -R -c 'fromjson? | select(.type=="assistant")' "$tr_" 2>/dev/null | grep -vc '"<synthetic>"'); n=${n:-0}
+      ein=$(jq -R 'fromjson? | select(.type=="assistant") | .message.usage.input_tokens // 0' "$tr_" 2>/dev/null | paste -sd+ - | bc 2>/dev/null); eout=$(jq -R 'fromjson? | select(.type=="assistant") | .message.usage.output_tokens // 0' "$tr_" 2>/dev/null | paste -sd+ - | bc 2>/dev/null)
+      ef=$(jq -R -r 'fromjson? | (.effort // .message.effort // .effortLevel // empty)' "$tr_" 2>/dev/null | sort -u | paste -sd, -); [ -z "$ef" ] || eff="$ef"
+      if [ "$actual" != "[]" ] && [ "$(jq -r --arg m "$sm" 'map(select(. != $m))|length' <<<"$actual")" != 0 ]; then
+        fail "routing-model-drift" "task $tid ($sk) selected $sm but session $sid ran $actual"; fi
+      if [ "$eff" != unverifiable ] && [ "$eff" != "$se" ]; then fail "routing-effort-drift" "task $tid ($sk) selected effort $se but transcript reports $eff"; fi
+    else addexc no-transcript "task $tid session $sid: no transcript, actual model/effort unverifiable"; fi
+    TURNS=$(jq -c --arg t "$tid" --arg k "$sk" --arg sm "$sm" --arg se "$se" --arg sid "$sid" --argjson a "$actual" --arg ef "$eff" --argjson n "${n:-0}" --argjson i "${ein:-0}" --argjson o "${eout:-0}" --arg why "$why" \
+      '. + [{task_id:$t,skill:$k,session:$sid,selected:{model:$sm,effort:$se},actual:{models:$a,effort:$ef},turns:$n,usage:{input_tokens:$i,output_tokens:$o},reasons:$why}]' <<<"$TURNS")
+  done < <(jq -c . "$DEC" 2>/dev/null)
+  dups=$(jq -rs '[.[]|select(.decision=="launch" and .resume!=true)]|group_by(.task_id+"/"+.skill)|map(select(length>1))|map(.[0].task_id+"/"+.[0].skill)|join(",")' "$DEC" 2>/dev/null)
+  [ -z "$dups" ] || addexc duplicate-dispatch "task/skill launched more than once without resume: $dups"
+else info "no routing decision log at $DEC (no managed skill launches yet)"; fi
 
 # report ------------------------------------------------------------------------------------------------------------------
 fj=$(for x in "${F[@]:-}"; do [ -n "$x" ] && jq -n --arg i "${x%%|*}" --arg d "${x#*|}" '{id:$i,detail:$d}'; done | jq -s .)
 ij=$(for x in "${INFO[@]:-}"; do [ -n "$x" ] && jq -n --arg d "$x" '$d'; done | jq -s .)
-jq -n -c --argjson f "${fj:-[]}" --argjson i "${ij:-[]}" '{ok:(($f|length)==0), findings:$f, info:$i}'
+jq -n -c --argjson f "${fj:-[]}" --argjson i "${ij:-[]}" --argjson t "${TURNS:-[]}" --argjson x "${EXC:-[]}" '{ok:(($f|length)==0), findings:$f, info:$i, routing:{turns:$t, exceptions:$x, effort_note:"per-turn effort is not exposed by the runtime; unverifiable unless a transcript line carries it"}}'
 if [ "$NOTIFY" = 1 ]; then
   STATE="${MEA_STATE:-$HOME/.cache/model-effort-audit/last}"; mkdir -p "$(dirname "$STATE")"
   ids=$(printf '%s\n' "${F[@]:-}" | grep -v '^$' | cut -d'|' -f1 | sort | paste -sd, -)

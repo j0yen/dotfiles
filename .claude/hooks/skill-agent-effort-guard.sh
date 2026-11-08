@@ -18,7 +18,7 @@ for _r in "${SKILL_ROUTE_LIB:-}" "$HERE/../../.local/lib/skill-route.sh" "$HOME/
   [ -n "$_r" ] && [ -r "$_r" ] && { . "$_r"; break; }; done
 for _l in "${SKILL_POLICY_LIB:-}" "$HERE/../../.local/lib/skill-model-policy.sh" "$HOME/.local/lib/skill-model-policy.sh"; do
   [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
-if [ -z "${SKILL_POLICY_EFFORT:-}" ]; then echo "skill-agent-effort-guard: skill-model-policy.sh not found; refusing skill spawn (fail closed for the covered skills only)" >&2
+if [ -z "${SKILL_POLICY_SKILLS:-}" ]; then echo "skill-agent-effort-guard: skill-model-policy.sh not found; refusing skill spawn (fail closed for the covered skills only)" >&2
   TEXT=$(printf '%s' "$INPUT" | "$JQ" -r '[.tool_input.prompt, .tool_input.description] | map(. // "") | join("\n")' 2>/dev/null) || exit 0
   printf '%s' "$TEXT" | grep -qiE '5whysandrhyme|wwhtbt' && exit 2; exit 0; fi
 MODEL=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.model // empty' 2>/dev/null) || exit 0
