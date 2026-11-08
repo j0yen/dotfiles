@@ -18,6 +18,8 @@ if [ -n "${AIDE_VERIFIER_GATE_ROOT:-}" ]; then
   root="$AIDE_VERIFIER_GATE_ROOT"
 elif wmd=$(command -v wm-decide); then
   root=$(dirname "$(dirname "$(readlink -f "$wmd")")")
+elif [ -f "$HOME/.local/share/swarm-decide/live/current/wm_decide/mergegate.py" ]; then
+  root="$HOME/.local/share/swarm-decide/live/current"   # the promoted swarm-decide install, the default root rb_merge_fixture.sh uses; hosts without wm-decide on PATH (ryzen7) have it here
 else
   bad "wm-decide is not on PATH and AIDE_VERIFIER_GATE_ROOT is unset; install wm-decide or set AIDE_VERIFIER_GATE_ROOT"
   exit 1
