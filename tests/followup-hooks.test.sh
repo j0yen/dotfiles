@@ -47,68 +47,7 @@ grep -q '^follow-ups: unmeasured (.*absent)' <<<"$o"; chk "d: WM_DECIDE_BIN miss
 o="$(FU_FAIL=3 WM_SEAT=rb bash "$SS" 2>&1 </dev/null)"; grep -q '^follow-ups: unmeasured (exit 3)' <<<"$o"; chk "d: non-zero exit -> unmeasured (exit 3)" $?
 o="$(FU_GARBAGE=1 WM_SEAT=rb bash "$SS" 2>&1 </dev/null)"; grep -q '^follow-ups: unmeasured (non-JSON output)' <<<"$o"; chk "d: non-JSON -> unmeasured" $?
 
-# transcripts: a user prompt, then a turn with assistant text and an optional tool_use command
-mk_tr() {  # mk_tr <file> <final text> [bash command]
-  : >"$1"
-  jq -nc '{type:"user",message:{role:"user",content:"old prompt d-r701"}}' >>"$1"
-  jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:"old turn mentions d-r701"}]}}' >>"$1"
-  jq -nc '{type:"user",message:{role:"user",content:"sweep now"}}' >>"$1"
-  [ -n "${3:-}" ] && { jq -nc --arg c "$3" '{type:"assistant",message:{role:"assistant",content:[{type:"tool_use",name:"Bash",input:{command:$c}}]}}' >>"$1"
-    jq -nc '{type:"user",message:{role:"user",content:[{type:"tool_result",tool_use_id:"x",content:"ok"}]}}' >>"$1"; }
-  jq -nc --arg t "$2" '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:$t}]}}' >>"$1"
-}
-stop() { jq -nc --arg t "$TR" --arg s "${SA:-false}" --arg sid "${SID:-s1}" '{session_id:$sid,transcript_path:$t,hook_event_name:"Stop",stop_hook_active:($s=="true")}' | bash "$GATE"; }
-echo '[{"id":"d-r701","owner":"rb","age_h":30.5,"state":"overdue"}]' >"$FU_FIXTURE"; TR="$tmp/t.jsonl"; mkdir -p "$tmp/state"; : >"$FOLLOWUP_STOP_FIRES_LOG"
-
-# b / c
-mk_tr "$TR" "STATUS: all quiet"
-o="$(WM_SEAT=rb stop)"
-jq -e '.decision=="block" and (.reason|test("d-r701")) and ((.reason|split("\n")|length)==1)' <<<"$o" >/dev/null; chk "b: overdue id not in this turn -> refused, one-line reason names it" $?
-grep -q 'FOLLOWUP-STOP-REFUSED seat=rb' "$tmp/state/fires.log"; chk "b: refusal logged to the fires log" $?
-mk_tr "$TR" "STATUS: all quiet" "/home/jsy/.local/bin/rb-row.sh --decision d-r701 --note done"
-o="$(WM_SEAT=rb stop)"; [ -z "$o" ]; chk "c: id cited in an rb-row.sh command of this turn -> allowed" $?
-mk_tr "$TR" "STATUS: handled d-r701 with a row"
-o="$(WM_SEAT=rb stop)"; [ -z "$o" ]; chk "c: full id in the final turn text -> allowed" $?
-mk_tr "$TR" "STATUS: quiet" "wm-decide list --pending | grep d-r701"
-o="$(WM_SEAT=rb stop)"; jq -e '.decision=="block"' <<<"$o" >/dev/null; chk "c: a read command naming the id does not count as a citation" $?
-mk_tr "$TR" "STATUS: quiet"   # d-r701 only in the PREVIOUS turn (mk_tr puts it there)
-o="$(WM_SEAT=rb stop)"; jq -e '.decision=="block"' <<<"$o" >/dev/null; chk "c: a mention in an earlier turn does not count" $?
-echo '[{"id":"d-esc9","owner":"rb","age_h":80,"state":"escalated"},{"id":"d-own1","owner":"rb","age_h":2,"state":"owed"}]' >"$FU_FIXTURE"
-o="$(WM_SEAT=rb stop)"; jq -e '.decision=="block" and (.reason|test("d-esc9")) and (.reason|test("d-own1")|not)' <<<"$o" >/dev/null; chk "b: an escalated id blocks, an merely owed one does not" $?
-echo '[{"id":"d-own1","owner":"rb","age_h":2,"state":"owed"}]' >"$FU_FIXTURE"
-o="$(WM_SEAT=rb stop)"; [ -z "$o" ]; chk "b: only owed (not overdue) ids -> allowed" $?
-echo '[{"id":"d-r701","owner":"rb","age_h":30.5,"state":"overdue"}]' >"$FU_FIXTURE"
-
-# d. Stop fails open
-o="$(WM_DECIDE_BIN="$tmp/missing" WM_SEAT=rb stop)"; rc=$?
-[ "$rc" = 0 ] && [ -z "$o" ] && grep -q 'FOLLOWUP-STOP-ALLOW unmeasured seat=rb' "$tmp/state/fires.log"; chk "d: WM_DECIDE_BIN missing -> Stop allows and logs unmeasured" $?
-o="$(FU_GARBAGE=1 WM_SEAT=rb stop)"; [ -z "$o" ]; chk "d: non-JSON tracker output -> Stop allows" $?
-
-# e. cap: two refusals, the third Stop passes with an OVERRIDE row
-mk_tr "$TR" "STATUS: quiet"; : >"$tmp/state/fires.log"; SID=cap1
-SA=false; o1="$(WM_SEAT=rb stop)"; SA=true; o2="$(WM_SEAT=rb stop)"; o3="$(WM_SEAT=rb stop)"; SA=false
-jq -e '.decision=="block"' <<<"$o1" >/dev/null && jq -e '.decision=="block"' <<<"$o2" >/dev/null && [ -z "$o3" ]; chk "e: refused twice, third Stop with stop_hook_active allows" $?
-grep -q 'FOLLOWUP-STOP-OVERRIDE seat=rb n=1 ids=d-r701' "$tmp/state/fires.log"; chk "e: FOLLOWUP-STOP-OVERRIDE logged with the id" $?
-o="$(WM_SEAT=rb stop)"; jq -e '.decision=="block"' <<<"$o" >/dev/null; chk "e: the next turn's first Stop is gated again" $?
-unset SID
-
-# f. ctl covers every seat
-echo '[{"id":"d-r7x1","owner":"r7","age_h":40,"state":"overdue"}]' >"$FU_FIXTURE"; mk_tr "$TR" "STATUS: quiet"
-o="$(WM_SEAT=ctl stop)"; jq -e '.decision=="block" and (.reason|test("d-r7x1"))' <<<"$o" >/dev/null; chk "f: ctl with an uncited r7 overdue id -> refused" $?
-o="$(WM_SEAT=rb stop)"; [ -z "$o" ]; chk "f: rb is not gated on r7's id" $?
-mk_tr "$TR" "STATUS: quiet" "rb-row.sh --seat ctl CONFIRM d-r7x1"
-o="$(WM_SEAT=ctl stop)"; [ -z "$o" ]; chk "f: ctl citing the r7 id in a row command -> allowed" $?
-
-# g. no WM_SEAT, subagents, foreign sid
-mk_tr "$TR" "STATUS: quiet"
-o="$(env -u WM_SEAT bash -c 'jq -nc --arg t "$1" "{session_id:\"s1\",transcript_path:\$t,stop_hook_active:false}" | bash "$2"' _ "$TR" "$GATE" 2>&1)"; rc=$?
-[ "$rc" = 0 ] && [ -z "$o" ]; chk "g: no WM_SEAT -> exit 0, silent" $?
-o="$(jq -nc --arg t "$TR" '{session_id:"s1",agent_id:"a1",transcript_path:$t}' | WM_SEAT=rb bash "$GATE" 2>&1)"; [ -z "$o" ]; chk "g: a subagent call is never gated" $?
-echo '[{"id":"d-r701","owner":"rb","age_h":30.5,"state":"overdue"}]' >"$FU_FIXTURE"
-printf 'rb\toperator\tsid-real\t30\n' >"$tmp/seats.tsv"
-o="$(SEATS_TABLE="$tmp/seats.tsv" SID=sid-coder WM_SEAT=rb stop)"; [ -z "$o" ]; chk "g: a child session that inherited WM_SEAT=rb (sid differs from seats.tsv) is not gated" $?
-o="$(SEATS_TABLE="$tmp/seats.tsv" SID=sid-real WM_SEAT=rb stop)"; jq -e '.decision=="block"' <<<"$o" >/dev/null; chk "g: the seat's own sid in seats.tsv is gated" $?
-o="$(env -u WM_SEAT bash "$SS" 2>&1 </dev/null)"; [ -z "$o" ]; chk "g: SessionStart without WM_SEAT/tmux stays silent" $?
+# The Stop gate cite-or-clear cases (b-g) were superseded by the fingerprinted canonical gate (ledger ask A1307); see tests/followup-loop.test.sh.
 
 # registration
 S="$here/.claude/settings.json"

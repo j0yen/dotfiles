@@ -117,6 +117,13 @@ o="$(stop false)"; [ -z "$o" ]; chk "10: a fresh process on persisted state pass
 rm -rf "$FOLLOWUP_STATE_DIR"; row G1 1 2026-11-07T10:00 | asks
 o="$(WM_SEAT= stop false)"; [ -z "$o" ]; chk "11: no WM_SEAT passes" $?
 o="$(printf '{"hook_event_name":"Stop","session_id":"s1","agent_id":"x"}' | bash "$GATE" 2>/dev/null)"; [ -z "$o" ]; chk "11: a subagent passes" $?
+# 11b. a child session that inherited WM_SEAT (sid differs from seats.tsv) passes; the seat's own sid is gated
+printf 'ctl\toperator\tsid-real\t30\n' >"$base/seats.tsv"
+o="$(printf '{"hook_event_name":"Stop","session_id":"sid-child"}' | SEATS_TABLE="$base/seats.tsv" bash "$GATE" 2>/dev/null)"; [ -z "$o" ]; chk "11: a child session with a foreign sid passes" $?
+o="$(printf '{"hook_event_name":"Stop","session_id":"sid-real"}' | SEATS_TABLE="$base/seats.tsv" bash "$GATE" 2>/dev/null)"; blocks "$o"; chk "11: the seat's own sid is gated" $?
+# 11c. WM_DIRECTOR=hermes reports instead of blocking
+rm -rf "$FOLLOWUP_STATE_DIR"
+o="$(printf '{"hook_event_name":"Stop","session_id":"s1"}' | WM_DIRECTOR=hermes bash "$GATE" 2>/dev/null)"; grep -q 'report-not-block' <<<"$o" && grep -q G1 <<<"$o"; chk "11: under WM_DIRECTOR=hermes the new obligation is reported, not blocked" $?
 # 12. no cap flags introduced
 ! grep -nE 'OVERRIDE|--max-(turns|budget)|STOP_MAX' "$GATE" >/dev/null; chk "12: the gate carries no override/turn/budget cap" $?
 echo "followup-loop: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
