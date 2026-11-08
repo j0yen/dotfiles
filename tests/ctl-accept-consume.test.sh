@@ -3,7 +3,7 @@
 #  1. wm-asks printing `accept <id> FAIL rev N` and exiting 1 is a recorded FAIL: log has FAIL, never RECORD-FAIL (before the fix: RECORD-FAIL).
 #  2. a wm-asks failure with no such line stays RECORD-FAIL.
 #  3. a past-due gh-first check yields exactly one obligation over three runs (before the fix: SKIP lines and nothing else).
-#  4. a past-due FAIL yields one acceptance-failed obligation keyed <id>|<rev>|acceptance-failed; absent followup-eval.py is skipped silently.
+#  4. a past-due FAIL yields one acceptance-failed obligation keyed <id>|<rev>|acceptance-failed; absent or unusable followup-eval.py writes errors.jsonl + EMIT-ERR and exits nonzero.
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"; S="$here/.local/bin/ctl-accept-consume.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ctl-accept-consume.XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
@@ -23,12 +23,12 @@ cat >"$tmp/followup-eval.py" <<'F'
 import sys, os, json
 a = sys.argv[1:]; assert a[0] == "emit"
 fp = a[a.index("--fp") + 1]; sd = os.environ["FAKE_STATE"]; seen = os.path.join(sd, "seen")
-if os.path.exists(seen) and fp in open(seen).read().split("\n"): sys.exit(0)
-open(seen, "a").write(fp + "\n"); open(os.path.join(sd, "outbox"), "a").write(fp + "\n")
+if os.path.exists(seen) and fp in open(seen).read().split("\n"): print(json.dumps({"emitted": False, "deduped": True})); sys.exit(0)
+open(seen, "a").write(fp + "\n"); open(os.path.join(sd, "outbox"), "a").write(fp + "\n"); print(json.dumps({"emitted": True, "deduped": False}))
 F
 chmod +x "$tmp/asks-view" "$tmp/wm-asks"
-run() { ASKS_VIEW_BIN="$tmp/asks-view" WM_ASKS_CMD="$tmp/wm-asks" ACCEPT_LOG="$tmp/log" FAKE_STATE="$tmp" FOLLOWUP_EVAL_BIN="${EV:-$tmp/followup-eval.py}" ACCEPT_NOW=2026-11-08T10:00:00 "$S" >/dev/null 2>&1; }
-reset() { rm -f "$tmp/log" "$tmp/log.err" "$tmp/seen" "$tmp/outbox"; }
+run() { ASKS_VIEW_BIN="$tmp/asks-view" WM_ASKS_CMD="$tmp/wm-asks" ACCEPT_LOG="$tmp/log" FAKE_STATE="$tmp" FOLLOWUP_STATE_DIR="$tmp/state" FOLLOWUP_EVAL_BIN="${EV:-$tmp/followup-eval.py}" ACCEPT_NOW=2026-11-08T10:00:00 "$S" >/dev/null 2>&1; RC=$?; }
+reset() { rm -rf "$tmp/state"; rm -f "$tmp/log" "$tmp/log.err" "$tmp/seen" "$tmp/outbox"; }
 
 reset; FAKE_WM=recorded run
 grep -q ' FAIL A1' "$tmp/log" && ! grep -q RECORD-FAIL "$tmp/log"; chk "recorded FAIL (exit 1 + 'accept A1 FAIL rev 7') logs FAIL, not RECORD-FAIL" $?
@@ -42,6 +42,10 @@ for i in 1 2 3; do run; done
 [ "$(grep -c SKIP "$tmp/log")" = 3 ] && [ "$(wc -l <"$tmp/outbox")" = 1 ] && [ "$(cat "$tmp/outbox")" = "A1|0|check-unrunnable" ]; chk "gh-first past-due check: one obligation over three runs" $?
 unset FAKE_CHECK
 
-reset; EV="$tmp/absent.py" run; rc=$?
-[ ! -e "$tmp/outbox" ] && grep -q ' FAIL A1' "$tmp/log"; chk "absent followup-eval.py is skipped silently" $?
+reset; EV="$tmp/absent.py" run
+[ ! -e "$tmp/outbox" ] && grep -q ' FAIL A1' "$tmp/log" && grep -q 'EMIT-ERR A1' "$tmp/log" && [ "$RC" -ne 0 ] \
+  && grep -q '"kind": "emit-interface-missing"' "$tmp/state/errors.jsonl" && grep -q '"ask": "A1"' "$tmp/state/errors.jsonl" && grep -q '"owner": "ctl"' "$tmp/state/errors.jsonl"; chk "absent followup-eval.py: errors.jsonl + EMIT-ERR + nonzero, not silent success" $?
+
+reset; printf 'import sys\nsys.exit(2)\n' >"$tmp/bad.py"; EV="$tmp/bad.py" run
+grep -q 'EMIT-ERR A1' "$tmp/log" && [ "$RC" -ne 0 ] && [ -s "$tmp/state/errors.jsonl" ]; chk "evaluator without a usable emit subcommand: owned error + nonzero" $?
 exit $fail
