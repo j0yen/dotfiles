@@ -17,7 +17,7 @@
 # Every action writes a ledger row (kind=observe, what `HPLD <ACTION> <repo>#<pr> k=<key> ...`). The wm-decide agent enum has no `hand-pr-land-driver`, so the row's agent is
 # `coder:hand-pr-land-driver` (the enum's per-job pattern) and via=hand-pr-land-driver. The `k=<key>` token is the idempotency key: a key already in the ledger is never acted on again;
 # rings write their row BEFORE the ring. A flock keeps two ticks from overlapping. Launch refusals that are transient (ROOM no, ceiling, 429 breaker, not head-of-line) write no row and retry next tick.
-# WATCHER RULE (CLAUDE.md): PREMISE = wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout; EXPIRES = HPLD_EXPIRES (default 2026-11-08 12:00 local).
+# WATCHER RULE (CLAUDE.md): PREMISE = wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout; EXPIRES = HPLD_EXPIRES (default 2026-11-15 12:00 local).
 # Each tick checks expiry, then premise, BEFORE reading anything: expired or premise failed = ONE ring to ctl (marker file in the state dir), exit 0, no action.
 # NEVER: merge without a gate PASS (rb-merge.sh is the only merge path), force, touch a hold, kill by pattern, print a token.
 #   --dry-run   print the planned actions (PLAN lines), change nothing (no lock, no row, no launch, no ring, no ROOM call)
@@ -322,7 +322,7 @@ if MODE == "selftest":
     sys.exit(selftest())
 
 # ---------------------------------------------------------------- WATCHER RULE: expiry, then premise, before any read
-EXPIRES = os.environ.get("HPLD_EXPIRES", "2026-11-08 12:00")
+EXPIRES = os.environ.get("HPLD_EXPIRES", "2026-11-15 12:00")
 STATE_DIR = os.environ.get("HPLD_STATE_DIR", os.path.join(HOME, ".local/state/hand-pr-land-driver"))
 
 
