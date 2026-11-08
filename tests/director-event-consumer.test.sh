@@ -14,13 +14,16 @@ cat > "$T/wm-asks" <<'PY'
 import json, os, sys
 S = os.environ["STUB"]
 open(S + "/calls.log", "a").write(" ".join(sys.argv[1:]) + "\n")
-if os.path.exists(S + "/down"): sys.exit(3)
+if os.path.exists(S + "/down"): sys.stderr.write(open(S + "/down").read()); sys.exit(3)
+if os.path.exists(S + "/down-ready") and "--ready" in sys.argv: sys.stderr.write(open(S + "/down-ready").read()); sys.exit(3)
+if os.path.exists(S + "/garbage"): print("not json {"); sys.exit(0)
 db = json.load(open(S + "/db.json"))
 a = sys.argv[1:]
 def save(): json.dump(db, open(S + "/db.json", "w"))
 if a[:2] == ["asks", "query"]:
     rows = list(db.values())
     if "--ids" in a: rows = [db[a[a.index("--ids")+1]]] if a[a.index("--ids")+1] in db else []
+    if "--status" not in a or a[a.index("--status")+1] != "all": rows = [r for r in rows if r.get("status", "open") == "open"]
     if "--ready" in a: rows = [r for r in rows if r.get("ready") and not r.get("claim") and r["owner"] == "hermes"]
     print(json.dumps(rows)); sys.exit(0)
 if a[:2] == ["asks", "claim"]:
@@ -34,6 +37,7 @@ PY
 cat > "$T/launcher" <<'SH'
 #!/usr/bin/env bash
 echo "$1" >> "$STUB/launch.log"; cp "$2" "$STUB/last-envelope.md"
+[ -e "$STUB/launch-outage" ] && exit 75
 [ -e "$STUB/launch-fail" ] && exit 1; exit 0
 SH
 cat > "$T/hold" <<'SH'
@@ -90,10 +94,12 @@ chk "recover: unit active => left alone" '[ "$(cnt director-run launch.log)" = 1
 rm "$STUB/active"; run recover
 chk "crash before receipt: single relaunch, same claim/event id" '[ "$(cnt director-run-evt-0001 launch.log)" = 2 ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && grep -q "\"claim\": \"director-evt-0001.c0\"" $DIRECTOR_STATE/runs/evt-0001.json'
 run recover
-chk "second crash: stuck, no third launch" '[ "$(cnt director-run launch.log)" = 2 ] && grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json'
-chk "stuck: one owned note with --by hermes --expect-rev, no date change" '[ "$(cnt "asks update A100 --by hermes --expect-rev" calls.log)" = 1 ] && ! grep -q -- "--due" $STUB/calls.log'
-run recover; run recover
-chk "stuck is stable: still one note, two launches" '[ "$(cnt "asks update" calls.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 2 ]'
+chk "second crash: relaunched, not stuck, same claim, no new claim" '[ "$(cnt director-run launch.log)" = 3 ] && ! grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 0 ]'
+for i in 1 2 3 4; do run recover; done
+chk "seven crashes: still relaunching, never stuck, attempt count does not end the work" '[ "$(cnt director-run launch.log)" = 7 ] && ! grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "visibility note: one owned note with --by hermes --expect-rev, no date change, work not ended" '[ "$(cnt "asks update A100 --by hermes --expect-rev" calls.log)" = 1 ] && ! grep -q -- "--due" $STUB/calls.log'
+touch "$STUB/active"; run recover; run recover
+chk "healthy live worker after many attempts: not stolen, no launch, no new note" '[ "$(cnt director-run launch.log)" = 7 ] && [ "$(cnt "asks update" calls.log)" = 1 ]'
 
 # held
 fresh 4; touch "$STUB/hold"; ev "$M x"; run
@@ -106,6 +112,29 @@ chk "gate passes => recover claims and launches once" '[ "$(cnt "asks claim" cal
 # canonical unavailable
 fresh 5; touch "$STUB/down"; ev "$M x"; run
 chk "canonical-unavailable: no claim, no launch, no TSV fallback" '[ ! -e $STUB/launch.log ] && grep -q "\"state\": \"canonical-unavailable\"" $DIRECTOR_STATE/runs/evt-0001.json'
+# F2: the durable incident row is appended+fsynced BEFORE the dedupe mark; a failure between the two never loses it
+F2D="$T/f2state"; rm -rf "$F2D"; mkdir -p "$F2D/runs"
+python3 -I - "$C" "$F2D" <<'PY'
+import importlib.util, json, os, sys
+os.environ["DIRECTOR_STATE"] = sys.argv[2]
+sp = importlib.util.spec_from_file_location("dec", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+r = {"event_id": "evt-f2", "ask": "A9"}
+real = m.save_run
+def boom(_r): raise OSError("injected crash between incident append and dedupe save")
+m.save_run = boom
+try: m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+except OSError: pass
+f = os.path.join(m.STATE, "incidents.jsonl")
+rows = [json.loads(l) for l in open(f)]
+assert len(rows) == 1 and rows[0]["fault"] == "unavailable rc=3", rows
+r = {"event_id": "evt-f2", "ask": "A9"}      # process restart: the dedupe mark was never persisted
+m.save_run = real; m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+assert len(open(f).readlines()) == 2 and r["last_incident"] == "unavailable rc=3"
+m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+assert len(open(f).readlines()) == 2
+PY
+rc=$?
+chk "incident durability (F2): row on disk after injected failure before dedupe save; no loss, no TSV fallback, deduped once recorded" '[ $rc -eq 0 ] && [ ! -e $F2D/incidents.tsv ]'
 rm "$STUB/down"; run recover
 chk "canonical back => recover proceeds once" '[ "$(cnt director-run launch.log)" = 1 ]'
 
@@ -131,10 +160,11 @@ chk "bad ids rejected: decision recorded" '[ "$(grep -c rejected $DIRECTOR_STATE
 # launch failure
 fresh 9; touch "$STUB/launch-fail"; ev "$M x"; run
 chk "launch-failed: claim kept, attempt counted, no note yet" 'grep -q "\"state\": \"launch-failed\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 1 ] && [ "$(cnt "asks update" calls.log)" = 0 ]'
-run recover
-chk "second failure: stuck + exactly one owned note" '[ "$(cnt "asks update" calls.log)" = 1 ] && grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json'
-run recover; run recover
-chk "no self-posting loop" '[ "$(cnt "asks update" calls.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 2 ]'
+run recover; run recover; run recover; run recover
+chk "launch failures keep retrying: 5 launches, still launch-failed, never stuck" '[ "$(cnt director-run launch.log)" = 5 ] && grep -q "\"state\": \"launch-failed\"" $DIRECTOR_STATE/runs/evt-0001.json && ! grep -q "\"state\": \"stuck\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "launch failures: exactly one visibility note, no self-posting loop" '[ "$(cnt "asks update" calls.log)" = 1 ] && ! grep -q -- "--due" $STUB/calls.log'
+rm "$STUB/launch-fail"; run recover
+chk "launcher healthy again: launched on the same claim, one claim total" '[ "$(cnt director-run launch.log)" = 6 ] && grep -q "\"state\": \"launched\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 1 ]'
 
 # ready source
 fresh 10
@@ -146,6 +176,139 @@ run recover
 chk "ready row => event ready-A100-3, one claim, one launch" '[ "$(cnt director-run-ready-A100-3-a1 launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
 touch "$STUB/active"; run recover
 chk "ready row claimed => not re-acted" '[ "$(cnt "asks claim" calls.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 1 ]'
+
+# provider outage stays durable and recoverable (never counted, never stuck)
+fresh 12; touch "$STUB/launch-outage"; ev "$M x"; run
+for i in 1 2 3 4 5; do run recover; done
+chk "outage: claim kept, provider-outage state, attempts not counted, never stuck" 'grep -q "\"state\": \"provider-outage\"" $DIRECTOR_STATE/runs/evt-0001.json && grep -q "\"attempts\": 0" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 1 ] && ! grep -q stuck $DIRECTOR_STATE/runs/evt-0001.json'
+rm "$STUB/launch-outage"; run recover
+chk "outage over: launched, no new claim" 'grep -q "\"state\": \"launched\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+
+# unknown effect: BEGIN without END is never blindly replayed; an owned reconciliation gate holds it
+fresh 13; ev "$M x"; run
+printf 'BEGIN push-config\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"
+: > "$STUB/calls.log"; run recover; run recover; run recover
+chk "unknown effect: reconcile-required, no relaunch across ticks, claim kept" '[ "$(cnt director-run launch.log)" = 1 ] && grep -q "\"state\": \"reconcile-required\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 0 ]'
+chk "unknown effect: one owned note naming the step, ask not closed" '[ "$(cnt "asks update A100 --by hermes --expect-rev" calls.log)" = 1 ] && grep -q "push-config" $STUB/db.json && [ "$(cnt "asks \(resolve\|accept\|close\)" calls.log)" = 0 ]'
+python3 "$C" reconcile evt-0001 --verdict bogus --by t >/dev/null 2>&1; rc=$?
+chk "reconcile refuses an unknown verdict, gate stays" '[ $rc -ne 0 ] && grep -q "\"state\": \"reconcile-required\"" $DIRECTOR_STATE/runs/evt-0001.json'
+python3 "$C" reconcile evt-0001 --verdict absent --by t >/dev/null 2>&1; rc=$?
+chk "reconcile absent: gate released, ledger records the verdict" '[ $rc -eq 0 ] && grep -q "ABSENT push-config" $DIRECTOR_STATE/runs/evt-0001.effect'
+run recover
+chk "after reconcile: exactly one relaunch, envelope tells the worker the step was reconciled" '[ "$(cnt director-run launch.log)" = 2 ] && grep -qi "reconcil" $STUB/last-envelope.md'
+chk "reconcile absent (F1): envelope says an ABSENT step never happened, perform again with BEGIN/END, never skip" 'grep -q "Step push-config did not happen; perform it again, bracketed BEGIN/END" $STUB/last-envelope.md && ! grep -q "already effected" $STUB/last-envelope.md && grep -q "absent push-config" $STUB/last-envelope.md'
+fresh 19; ev "$M x"; run
+printf 'BEGIN pay-step\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+python3 "$C" reconcile evt-0001 --verdict present --by t >/dev/null 2>&1; rc=$?
+chk "reconcile present: END written, gate released, state launch-failed" '[ $rc -eq 0 ] && grep -q "^END pay-step" $DIRECTOR_STATE/runs/evt-0001.effect && grep -q "\"state\": \"launch-failed\"" $DIRECTOR_STATE/runs/evt-0001.json'
+run recover
+chk "reconcile present (F1): one relaunch, envelope says already effected, skip; ledger holds no ABSENT" '[ "$(cnt director-run launch.log)" = 2 ] && grep -q "Step pay-step is already effected; skip it" $STUB/last-envelope.md && ! grep -q "did not happen" $STUB/last-envelope.md && grep -q "present pay-step" $STUB/last-envelope.md && ! grep -q ABSENT $DIRECTOR_STATE/runs/evt-0001.effect'
+fresh 14; ev "$M x"; run
+printf 'BEGIN s1\nEND s1\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+chk "recorded steps (BEGIN/END matched): safe relaunch resumes from the ledger" '[ "$(cnt director-run launch.log)" = 2 ] && ! grep -q reconcile-required $DIRECTOR_STATE/runs/evt-0001.json'
+
+# completed receipt is never repeated
+fresh 15; ev "$M x"; run
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"
+python3 "$C" complete evt-0001 --effect "$DIRECTOR_STATE/runs/evt-0001.effect" >/dev/null 2>&1
+: > "$STUB/calls.log"; run recover; run recover; run recover
+chk "completed receipt: no relaunch, no claim, no note across recovers" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt "asks \(claim\|update\)" calls.log)" = 0 ]'
+fresh 16; ev "$M x"; run
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+chk "crash after DONE before receipt: receipt written from the ledger, no relaunch" '[ "$(cnt director-run launch.log)" = 1 ] && [ -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ]'
+
+# canonical API malformed / unavailable: explicit durable incident, no fallback, recoverable
+fresh 17; touch "$STUB/garbage"; ev "$M x"; run
+chk "malformed canonical output: no claim, no launch, state canonical-unavailable" '[ ! -e $STUB/launch.log ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && grep -q "\"state\": \"canonical-unavailable\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "malformed canonical output: durable incident row says malformed" 'grep -q malformed $DIRECTOR_STATE/incidents.jsonl'
+rm "$STUB/garbage"; touch "$STUB/down"; run recover; run recover
+chk "unavailable canonical: durable incident row says unavailable, not duplicated per tick" 'grep -q unavailable $DIRECTOR_STATE/incidents.jsonl && [ "$(grep -c "\"event_id\": \"evt-0001\"" $DIRECTOR_STATE/incidents.jsonl)" -le 2 ] && [ ! -e $STUB/launch.log ]'
+rm "$STUB/down"; run recover
+chk "canonical back: one claim, one launch, no TSV fallback read" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ]'
+
+# G-B: finish() reads the canonical row with --status all: a row closed during recovery still gets its receipt
+fresh 20; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+python3 "$C" complete evt-0001 --effect "$T/effect.json" >/dev/null 2>&1; rc=$?
+chk "G-B complete on a closed ask: rc 0, receipt written with ask_status closed, state completed" '[ $rc -eq 0 ] && grep -q "\"ask_status\": \"closed\"" $DIRECTOR_STATE/runs/evt-0001.receipt.json && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "G-B the finish read is exactly query --json --ids A100 --status all; no complete-read incident" 'grep -q "^asks query --json --ids A100 --status all$" $STUB/calls.log && ! grep -q complete-read $DIRECTOR_STATE/incidents.jsonl 2>/dev/null'
+fresh 21; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+chk "G-B recover after DONE on a closed ask: receipt from the ledger, no relaunch, no incident" '[ "$(cnt director-run launch.log)" = 1 ] && [ -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ] && [ ! -s $DIRECTOR_STATE/incidents.jsonl ]'
+fresh 23; ev "$M x"; run
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["status"]="closed"; json.dump(d,open(p,"w"))
+PY
+touch "$STUB/down"; python3 "$C" complete evt-0001 --effect "$T/effect.json" >/dev/null 2>&1; rc=$?
+chk "G-B complete with the API down is still refused (rc 4), no receipt, durable complete-read incident" '[ $rc -eq 4 ] && [ ! -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ] && grep -q complete-read $DIRECTOR_STATE/incidents.jsonl'
+
+# G-C: ready-poll outage leaves a durable, deduped incident (never launches from stale data), recovered when the API resumes
+fresh 22
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
+PY
+echo 'wm-asks: db locked token=SECRET123 Authorization: Bearer abcdef0123456789' > "$STUB/down-ready"
+python3 "$C" consume >"$T/out.txt" 2>&1; rc=$?
+chk "G-C consume with the ready query failing: rc 0, nothing claimed or launched from stale data" '[ $rc -eq 0 ] && [ ! -e $STUB/launch.log ] && [ "$(cnt "asks claim" calls.log)" = 0 ]'
+chk "G-C one durable incident row with ts, command, rc and a scrubbed stderr tail" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && python3 -I -c "
+import json,sys
+r=[json.loads(l) for l in open(sys.argv[1])][0]
+assert r[\"kind\"]==\"canonical-ready-poll\" and r[\"state\"]==\"open\" and r[\"ts\"] and r[\"rc\"]==3, r
+assert \"--ready\" in r[\"command\"] and \"db locked\" in r[\"stderr\"], r
+assert \"SECRET123\" not in r[\"stderr\"] and \"abcdef0123456789\" not in r[\"stderr\"], r
+" $DIRECTOR_STATE/incidents.jsonl'
+run recover; run recover; run consume
+chk "G-C repeated outage polls dedupe to one open incident row" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && [ ! -e $STUB/launch.log ]'
+rm "$STUB/down-ready"; run recover
+chk "G-C API back: consume proceeds (one claim, one launch) and the incident is marked recovered" '[ "$(cnt director-run-ready-A100-3-a1 launch.log)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 1 ] && grep -q "\"state\": \"recovered\"" $DIRECTOR_STATE/incidents.jsonl'
+run recover
+chk "G-C recovered once: further healthy polls write no more incident rows" '[ "$(grep -c canonical-ready-poll $DIRECTOR_STATE/incidents.jsonl)" = 2 ]'
+echo 'again' > "$STUB/down-ready"; run recover
+chk "G-C a later outage opens a new incident (fresh incident id)" '[ "$(grep -c "\"state\": \"open\"" $DIRECTOR_STATE/incidents.jsonl)" = 2 ] && [ "$(sed -n "s/.*\"incident_id\": \"\([^\"]*\)\".*/\1/p" $DIRECTOR_STATE/incidents.jsonl | sort -u | wc -l)" = 2 ]'
+# G-C durability: the incident row is appended+fsynced BEFORE the dedupe mark; a failure between the two never loses it
+G2D="$T/g2state"; rm -rf "$G2D"; mkdir -p "$G2D/runs" "$G2D/locks"
+python3 -I - "$C" "$G2D" >/dev/null <<'PY'
+import importlib.util, json, os, sys
+os.environ["DIRECTOR_STATE"] = sys.argv[2]
+sp = importlib.util.spec_from_file_location("dec", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+m._ASKS_FAULT[:] = ["unavailable rc=3"]
+real = m.atomic_write
+def boom(*a, **k): raise OSError("injected crash between incident append and dedupe mark")
+m.atomic_write = boom
+try: m.ready_poll_outage()
+except OSError: pass
+f = os.path.join(m.STATE, "incidents.jsonl")
+assert len(open(f).readlines()) == 1, "row lost"
+m.atomic_write = real; m.ready_poll_outage()       # restart: mark never persisted, row re-logged, never lost
+assert len(open(f).readlines()) == 2
+m.ready_poll_outage()
+assert len(open(f).readlines()) == 2
+PY
+rc=$?
+chk "G-C incident durability: row on disk after injected failure before the dedupe mark; deduped once recorded" '[ $rc -eq 0 ]'
+
+# exact task-revision mismatch still blocks
+fresh 18
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
+PY
+touch "$STUB/hold"; run recover
+python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["rev"]=4; d["A100"]["ready"]=False; json.dump(d,open(p,"w"))
+PY
+rm "$STUB/hold"; run recover
+chk "revision changed and ask no longer ready: superseded, no claim, no launch" 'grep -q "\"state\": \"superseded\"" $DIRECTOR_STATE/runs/ready-A100-3.json && [ "$(cnt "asks claim" calls.log)" = 0 ] && [ ! -e $STUB/launch.log ]'
 
 # unchanged state
 fresh 11; run recover
