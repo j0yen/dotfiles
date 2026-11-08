@@ -133,10 +133,12 @@ def incident(r, kind, **kw):
     kw.update(ts=now(), event_id=r["event_id"], ask=r["ask"], kind=kind, fault=(_ASKS_FAULT[0] if _ASKS_FAULT else kw.get("fault", "")))
     if r.get("last_incident") == kw["fault"]:
         return          # same fault still standing: one row per distinct fault, not one per tick
+    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:     # durable first: a crash before the dedupe mark re-logs, never loses
+        f.write(json.dumps(kw, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     r["last_incident"] = kw["fault"]
     save_run(r)
-    with open(os.path.join(STATE, "incidents.jsonl"), "a") as f:
-        f.write(json.dumps(kw, sort_keys=True) + "\n")
 
 
 def gate_ok(ask):
@@ -250,6 +252,21 @@ def quote_block(text):
     return "\n".join("> " + ln for ln in text.splitlines() or [""])
 
 
+def reconciled_text(r):
+    """Envelope lines for reconciled steps: ABSENT = the effect never happened, do it again; present = already effected, skip."""
+    if not r.get("reconciled"):
+        return ""
+    txt = "\n   RECONCILED: %s" % "; ".join(r["reconciled"])
+    for e in r["reconciled"]:
+        verdict, _, rest = e.partition(" ")
+        steps = rest.rpartition(" (")[0] or rest
+        if verdict == "absent":
+            txt += "\n   Step %s did not happen; perform it again, bracketed BEGIN/END." % steps
+        else:
+            txt += "\n   Step %s is already effected; skip it, do not repeat it." % steps
+    return txt
+
+
 def write_envelope(r):
     path = os.path.join(RUNS, r["event_id"] + ".envelope.md")
     receipt = os.path.join(RUNS, r["event_id"] + ".receipt.json")
@@ -263,7 +280,8 @@ claim: {claim}  (already held by this run; do not claim again)
 1. Read the canonical ask: `wm-asks asks query --json --ids {ask}`.
 2. Perform ONLY the action the ask's `what` and `check` fields describe, using tools.
 3. Record every durable step as one appended line in the effect ledger {effect} (append, then fsync) and, when all steps
-   are done and read back (run the ask's check), append the final line `DONE`. On a relaunch skip steps already recorded.
+   are done and read back (run the ask's check), append the final line `DONE`. On a relaunch skip steps already recorded as `END`
+   (or `DONE`) and for a step reconciled as present; a step recorded `ABSENT` is performed again.
    Bracket every step whose effect leaves this machine: append `BEGIN <step>` before it and `END <step>` after you read it
    back. A `BEGIN` with no `END`/`ABSENT` is an unknown effect: the consumer holds the run for reconciliation.{reconciled}
 4. If the model provider is unavailable, write {outage} and exit; the consumer retries without counting an attempt.
@@ -280,7 +298,7 @@ and write the receipt; do not create a duplicate effect.
 """.format(eid=r["event_id"], ask=r["ask"], claim=r.get("claim", ""), state=STATE, self=SELF,
            receipt=receipt, quoted=quote_block(r.get("text", "")), effect=effect_path(r["event_id"]),
            outage=os.path.join(RUNS, r["event_id"] + ".outage"),
-           reconciled=("\n   RECONCILED: %s" % "; ".join(r["reconciled"])) if r.get("reconciled") else "")
+           reconciled=reconciled_text(r))
     atomic_write(path, body, 0o600)
     return path
 

@@ -110,6 +110,29 @@ chk "gate passes => recover claims and launches once" '[ "$(cnt "asks claim" cal
 # canonical unavailable
 fresh 5; touch "$STUB/down"; ev "$M x"; run
 chk "canonical-unavailable: no claim, no launch, no TSV fallback" '[ ! -e $STUB/launch.log ] && grep -q "\"state\": \"canonical-unavailable\"" $DIRECTOR_STATE/runs/evt-0001.json'
+# F2: the durable incident row is appended+fsynced BEFORE the dedupe mark; a failure between the two never loses it
+F2D="$T/f2state"; rm -rf "$F2D"; mkdir -p "$F2D/runs"
+python3 -I - "$C" "$F2D" <<'PY'
+import importlib.util, json, os, sys
+os.environ["DIRECTOR_STATE"] = sys.argv[2]
+sp = importlib.util.spec_from_file_location("dec", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+r = {"event_id": "evt-f2", "ask": "A9"}
+real = m.save_run
+def boom(_r): raise OSError("injected crash between incident append and dedupe save")
+m.save_run = boom
+try: m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+except OSError: pass
+f = os.path.join(m.STATE, "incidents.jsonl")
+rows = [json.loads(l) for l in open(f)]
+assert len(rows) == 1 and rows[0]["fault"] == "unavailable rc=3", rows
+r = {"event_id": "evt-f2", "ask": "A9"}      # process restart: the dedupe mark was never persisted
+m.save_run = real; m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+assert len(open(f).readlines()) == 2 and r["last_incident"] == "unavailable rc=3"
+m.incident(r, "canonical-unavailable", fault="unavailable rc=3")
+assert len(open(f).readlines()) == 2
+PY
+rc=$?
+chk "incident durability (F2): row on disk after injected failure before dedupe save; no loss, no TSV fallback, deduped once recorded" '[ $rc -eq 0 ] && [ ! -e $F2D/incidents.tsv ]'
 rm "$STUB/down"; run recover
 chk "canonical back => recover proceeds once" '[ "$(cnt director-run launch.log)" = 1 ]'
 
@@ -171,6 +194,13 @@ python3 "$C" reconcile evt-0001 --verdict absent --by t >/dev/null 2>&1; rc=$?
 chk "reconcile absent: gate released, ledger records the verdict" '[ $rc -eq 0 ] && grep -q "ABSENT push-config" $DIRECTOR_STATE/runs/evt-0001.effect'
 run recover
 chk "after reconcile: exactly one relaunch, envelope tells the worker the step was reconciled" '[ "$(cnt director-run launch.log)" = 2 ] && grep -qi "reconcil" $STUB/last-envelope.md'
+chk "reconcile absent (F1): envelope says an ABSENT step never happened, perform again with BEGIN/END, never skip" 'grep -q "Step push-config did not happen; perform it again, bracketed BEGIN/END" $STUB/last-envelope.md && ! grep -q "already effected" $STUB/last-envelope.md && grep -q "absent push-config" $STUB/last-envelope.md'
+fresh 19; ev "$M x"; run
+printf 'BEGIN pay-step\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
+python3 "$C" reconcile evt-0001 --verdict present --by t >/dev/null 2>&1; rc=$?
+chk "reconcile present: END written, gate released, state launch-failed" '[ $rc -eq 0 ] && grep -q "^END pay-step" $DIRECTOR_STATE/runs/evt-0001.effect && grep -q "\"state\": \"launch-failed\"" $DIRECTOR_STATE/runs/evt-0001.json'
+run recover
+chk "reconcile present (F1): one relaunch, envelope says already effected, skip; ledger holds no ABSENT" '[ "$(cnt director-run launch.log)" = 2 ] && grep -q "Step pay-step is already effected; skip it" $STUB/last-envelope.md && ! grep -q "did not happen" $STUB/last-envelope.md && grep -q "present pay-step" $STUB/last-envelope.md && ! grep -q ABSENT $DIRECTOR_STATE/runs/evt-0001.effect'
 fresh 14; ev "$M x"; run
 printf 'BEGIN s1\nEND s1\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
 chk "recorded steps (BEGIN/END matched): safe relaunch resumes from the ledger" '[ "$(cnt director-run launch.log)" = 2 ] && ! grep -q reconcile-required $DIRECTOR_STATE/runs/evt-0001.json'
