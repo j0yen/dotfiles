@@ -193,6 +193,7 @@ selftest() {
   local d pass=0 fail=0 out rc
   d="$(mktemp -d -p "${TMPDIR:-$HOME/.cache}" owed-now.XXXXXX)"; trap 'rm -rf "$d"' RETURN
   export ASKS_VIEW_TEST=1 OPEN_ASKS="$d/open-asks.tsv" SEATS_TABLE="$d/seats.tsv" OWED_NOW_STATE="$d/state"; unset WM_SEAT
+  printf '#!/usr/bin/env bash\ncat "$OPEN_ASKS"\n' >"$d/asks-view"; chmod +x "$d/asks-view"; export ASKS_VIEW_BIN="$d/asks-view"   # hermetic fixture reader (real 7-column schema), no host asks-view needed
   printf 'rb\t1\tsid-rb\n' >"$SEATS_TABLE"
   local now; now="$(date -d '2026-10-31 23:00' +%s)"
   printf '%s\n' '# open asks' \

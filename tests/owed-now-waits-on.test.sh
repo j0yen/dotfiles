@@ -16,7 +16,8 @@ printf '%s\n' '# rows' \
   $'A5\t2026-11-08T00:00\tctl\t2026-11-08T01:00\tk\tc\twaits-on=seat:none' \
   $'A6\t2026-11-01T00:00\tctl\t2026-11-01T01:00\tk\tc\twaits-on=host:ryzen7 stale week-old marker' \
   $'A7\t2026-11-08T00:00\tctl\t2026-11-08T01:00\tk\tc\twaits-on=person:Joe | decision' > "$LEG"
-out="$(env OPEN_ASKS="$LEG" OWED_NOW_SOURCE=tsv OWED_NOW_STATE="$T/st" bash "$H" lint --seat ctl --now 2026-11-08T05:00 2>&1)"
+printf '#!/usr/bin/env bash\ncat "$OPEN_ASKS"\n' >"$T/asks-view"; chmod +x "$T/asks-view"
+out="$(env ASKS_VIEW_BIN="$T/asks-view" ASKS_VIEW_TEST=1 OPEN_ASKS="$LEG" OWED_NOW_SOURCE=view OWED_NOW_STATE="$T/st" bash "$H" lint --seat ctl --now 2026-11-08T05:00 2>&1)"
 has() { grep -q "^OVERDUE	$1	" <<<"$out"; }
 has A1; chk "A1 no waits-on: reported" $?
 ! has A2; chk "A2 waits-on=seat:...: skipped" $?
