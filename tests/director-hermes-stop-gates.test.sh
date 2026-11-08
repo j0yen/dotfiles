@@ -20,6 +20,7 @@ printf '#!/usr/bin/env bash\necho "OWED $1: owed 3, overdue 1, escalated 0, olde
 printf '#!/usr/bin/env bash\ncase "$1" in beat) exit 0;; pending) echo "inbox 2 lines"; exit 0;; esac\n' >"$T/bin/aide-wake.sh"; chmod +x "$T/bin/aide-wake.sh"
 { echo '{"type":"user","message":{"content":"go"}}'; echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'; } >"$T/tr.jsonl"
 printf 'A1\t2026-10-31T22:00\taide\t2026-10-31T22:30\tk\tc\toverdue row\n' >"$T/oa.tsv"
+printf '#!/usr/bin/env bash\ncat "$OPEN_ASKS"\n' >"$T/bin/asks-view"; chmod +x "$T/bin/asks-view"   # fake canonical reader, real 7-column schema
 run() { # <hook-cmd...> with env: D=hermes|"" ; stdin in $T/in
   env -u WM_DIRECTOR ${D:+WM_DIRECTOR=$D} PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TERM=dumb "$@" <"$T/in"
 }
@@ -43,7 +44,7 @@ a="$(D= run env WM_SEAT=aide AIDE_WAKE_BIN="$T/bin/aide-wake.sh" AIDE_WAKE_DIR="
 b="$(D=hermes run env WM_SEAT=aide AIDE_WAKE_BIN="$T/bin/aide-wake.sh" AIDE_WAKE_DIR="$T/wake" bash "$H/aide-wake-stop.sh")"; rc=$?
 pair aide-wake-stop "$a" "$b" "$rc"
 # owed-now Stop
-a="$(D= run env WM_SEAT=aide OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st1" bash "$H/owed-now.sh" hook)"
-b="$(D=hermes run env WM_SEAT=aide OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st2" bash "$H/owed-now.sh" hook)"; rc=$?
+a="$(D= run env WM_SEAT=aide ASKS_VIEW_BIN="$T/bin/asks-view" ASKS_VIEW_TEST=1 OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st1" bash "$H/owed-now.sh" hook)"
+b="$(D=hermes run env WM_SEAT=aide ASKS_VIEW_BIN="$T/bin/asks-view" ASKS_VIEW_TEST=1 OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st2" bash "$H/owed-now.sh" hook)"; rc=$?
 pair owed-now "$a" "$b" "$rc"
 [ "$fail" = 0 ] && echo "PASS director-hermes-stop-gates" || { echo "FAIL director-hermes-stop-gates"; exit 1; }
