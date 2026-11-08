@@ -149,7 +149,7 @@ SD="$here/.config/systemd/user"; RS="$here/.local/bin/followup-outbox-replay.sh"
 [ -x "$DL" ] && bash -n "$DL"; chk "14: followup-deliver.sh exists, executable, parses" $?
 grep -q 'followup-outbox-replay.sh' "$SD/followup-outbox-replay.service" 2>/dev/null && grep -q 'Type=oneshot' "$SD/followup-outbox-replay.service"; chk "14: oneshot service runs the replay script" $?
 grep -qE 'OnUnitActiveSec=[0-9]+(min|s)' "$SD/followup-outbox-replay.timer" 2>/dev/null && grep -q 'timers.target' "$SD/followup-outbox-replay.timer"; chk "14: timer re-runs it on an interval and installs into timers.target" $?
-! grep -qiE 'claude|anthropic' "$RS" "$DL" 2>/dev/null; chk "14: replay and deliver scripts start no model turn" $?
+! grep -qiE '(^|[ (;|])claude +-|anthropic|systemd-run' "$RS" "$DL" 2>/dev/null; chk "14: replay and deliver scripts start no model turn" $?
 rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"
 printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$base/seat-event.log" >"$base/seat-event"; chmod +x "$base/seat-event"
 printf '{"id":"Q1","kind":"overdue","detail":"d","seat":"ctl","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
