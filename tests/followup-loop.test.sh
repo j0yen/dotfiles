@@ -80,13 +80,13 @@ row B3 1 2026-11-07T10:00 "" '[{"owner":"rb","dependency":"A900","next_check":"2
 o="$(stop false)"; blocks "$o"; chk "4: a blocker whose next_check is already past is invalid" $?
 # 5. claims: live accounts, stale (dead worker) escalates, duplicate worker flagged
 rm -rf "$FOLLOWUP_STATE_DIR"; touch "$FU_ALIVE_DIR/w-alive"
-row C1 3 2026-11-07T10:00 "w-alive@2026-11-08T10:00" | asks
+row C1 3 2026-11-07T10:00 "w-alive@2026-11-08T18:00" | asks
 o="$(stop false)"; [ -z "$o" ]; chk "5: live claim (worker alive) accounts; owed-now sees no obligation" $?
 row C1 3 2026-11-07T10:00 "w-dead@2026-11-08T10:00" | asks
 o="$(stop false)"; blocks "$o" && grep -qiE 'stale|dead|failed' <<<"$o"; chk "5: claim by a dead worker is a stale claim and escalates" $?
 # 6. owed-now lint: OVERDUE only for unaccounted rows (A1289 policy)
 rm -rf "$FOLLOWUP_STATE_DIR"
-{ row D1 1 2026-11-07T10:00 "w-alive@2026-11-08T10:00"; row D2 1 2026-11-07T10:00 "" "$b"; row D3 1 2026-11-07T10:00; } | asks
+{ row D1 1 2026-11-07T10:00 "w-alive@2026-11-08T18:00"; row D2 1 2026-11-07T10:00 "" "$b"; row D3 1 2026-11-07T10:00; } | asks
 out="$(OPEN_ASKS="$base/none.tsv" OWED_NOW_SOURCE=asks bash "$OWED" lint --seat ctl --now 2026-11-08T12:00 2>&1)"
 grep -q 'D3' <<<"$out" && ! grep -qE 'D1|D2' <<<"$out"; chk "6: owed-now flags only the unaccounted row, not live-claim or structured-blocker rows" $?
 # 7. malformed ledger fails visibly, once
@@ -126,4 +126,72 @@ rm -rf "$FOLLOWUP_STATE_DIR"
 o="$(printf '{"hook_event_name":"Stop","session_id":"s1"}' | WM_DIRECTOR=hermes bash "$GATE" 2>/dev/null)"; grep -q 'report-not-block' <<<"$o" && grep -q G1 <<<"$o"; chk "11: under WM_DIRECTOR=hermes the new obligation is reported, not blocked" $?
 # 12. no cap flags introduced
 ! grep -nE 'OVERRIDE|--max-(turns|budget)|STOP_MAX' "$GATE" >/dev/null; chk "12: the gate carries no override/turn/budget cap" $?
+# ---- FIX2 (ledger ask A1307, independent verifier findings) ----
+LEASE=2026-11-08T18:00
+# 13. one lock around outbox append and replay; outbox entry written before the fingerprint
+rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; row H1 1 2026-11-07T10:00 | asks
+(FOLLOWUP_OUTBOX=/nonexistent-dir/outbox.jsonl stop false >/dev/null)
+[ ! -s "$FOLLOWUP_STATE_DIR/delivered.fp" ]; chk "13: a failed outbox write leaves no fingerprint recorded (outbox entry is written first)" $?
+o="$(stop false)"; blocks "$o" && grep -q H1 <<<"$o"; chk "13: and the next stop still escalates that obligation" $?
+rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; printf '{"id":"Z","fp":"Z|1|overdue|","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
+( flock -x 9; sleep 3 ) 9>"$FOLLOWUP_STATE_DIR/lock" & sleep 0.4
+( bash -c ". '$LIB'; fu_outbox_replay" >/dev/null 2>&1 & ); sleep 1
+[ ! -s "$FU_DELIVERED" ]; chk "13: replay waits on the same lock append uses" $?
+wait; sleep 1; grep -q Z "$FU_DELIVERED"; chk "13: and delivers once that lock is released" $?
+rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; : >"$FU_DELIVERED"
+for i in $(seq 1 25); do row "K$i" 1 2026-11-07T10:00; done | asks
+( for _ in $(seq 1 30); do bash -c ". '$LIB'; fu_outbox_replay" >/dev/null 2>&1; done ) & rp=$!
+stop false >/dev/null; wait "$rp"
+[ "$(jq -s 'length' "$FOLLOWUP_OUTBOX")" = 25 ]; chk "13: replay running beside append loses no outbox entry" $?
+# 14. timer-driven replay, no model turn, with a delivery command that is set by default
+SD="$here/.config/systemd/user"; RS="$here/.local/bin/followup-outbox-replay.sh"; DL="$here/.local/bin/followup-deliver.sh"
+[ -x "$RS" ] && bash -n "$RS"; chk "14: followup-outbox-replay.sh exists, executable, parses" $?
+[ -x "$DL" ] && bash -n "$DL"; chk "14: followup-deliver.sh exists, executable, parses" $?
+grep -q 'followup-outbox-replay.sh' "$SD/followup-outbox-replay.service" 2>/dev/null && grep -q 'Type=oneshot' "$SD/followup-outbox-replay.service"; chk "14: oneshot service runs the replay script" $?
+grep -qE 'OnUnitActiveSec=[0-9]+(min|s)' "$SD/followup-outbox-replay.timer" 2>/dev/null && grep -q 'timers.target' "$SD/followup-outbox-replay.timer"; chk "14: timer re-runs it on an interval and installs into timers.target" $?
+! grep -qiE 'claude|anthropic' "$RS" "$DL" 2>/dev/null; chk "14: replay and deliver scripts start no model turn" $?
+rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$base/seat-event.log" >"$base/seat-event"; chmod +x "$base/seat-event"
+printf '{"id":"Q1","kind":"overdue","detail":"d","seat":"ctl","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
+( unset FOLLOWUP_DELIVER_CMD; SEAT_EVENT_BIN="$base/seat-event" bash "$RS" >/dev/null 2>&1 )
+grep -q 'ctl' "$base/seat-event.log" 2>/dev/null && grep -q Q1 "$base/seat-event.log" && grep -q '"delivered":true' "$FOLLOWUP_OUTBOX"; chk "14: with FOLLOWUP_DELIVER_CMD unset the timer script delivers via the seat event bell and marks delivered" $?
+# 15. rows with an empty or foreign owner are obligations, not silently skipped
+rm -rf "$FOLLOWUP_STATE_DIR"
+jq -nc '{ask_id:"N1",owner:"",rev:1,due:"2026-11-07T10:00",status:"open",claim:null,waits_on:[]}' | asks
+o="$(stop false)"; blocks "$o" && grep -q N1 <<<"$o"; chk "15: an overdue row with an empty owner escalates" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+jq -nc '{ask_id:"N2",owner:"nobody-seat",rev:1,due:"2026-11-07T10:00",status:"open",claim:null,waits_on:[]}' | asks
+o="$(stop false)"; blocks "$o" && grep -q N2 <<<"$o"; chk "15: an overdue row with a foreign owner escalates" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+jq -nc '{ask_id:"N3",owner:"rb",rev:1,due:"2026-11-07T10:00",status:"open",claim:null,waits_on:[]}' | asks
+o="$(stop false)"; [ -z "$o" ]; chk "15: a known other seat's row is still left to that seat" $?
+# 16. claim validity: lease, session, task revision (not worker liveness alone)
+rm -rf "$FOLLOWUP_STATE_DIR"; touch "$FU_ALIVE_DIR/w-alive"
+row L1 1 2026-11-07T10:00 "w-alive@2026-11-08T11:00" | asks
+o="$(stop false)"; blocks "$o" && grep -qiE 'lease|stale' <<<"$o"; chk "16: a live worker with an expired lease is a stale claim" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row L2 1 2026-11-07T10:00 "w-alive@$LEASE" | asks
+o="$(stop false)"; [ -z "$o" ]; chk "16: a live worker with an unexpired lease still accounts" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row L3 2 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {claim_rev:1}' | asks
+o="$(stop false)"; blocks "$o" && grep -qiE 'revision|rev' <<<"$o"; chk "16: a claim taken at an older task revision is stale" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row L4 1 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {claim_session:"sess-dead"}' | asks
+o="$(stop false)"; blocks "$o" && grep -qiE 'session|stale' <<<"$o"; chk "16: a claim whose owning session is dead is stale though the worker name is live" $?
+touch "$FU_ALIVE_DIR/sess-ok"; rm -rf "$FOLLOWUP_STATE_DIR"
+row L5 1 2026-11-07T10:00 "w-gone@$LEASE" | jq -c '. + {claim_session:"sess-ok"}' | asks
+o="$(stop false)"; [ -z "$o" ]; chk "16: a live owning session accounts for the claim" $?
+# 17. a required verifier still blocks an unsafe ending action
+rm -rf "$FOLLOWUP_STATE_DIR"
+row V1 1 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {verifier_required:true, ending:true}' | asks
+o="$(stop false)"; blocks "$o" && grep -q V1 <<<"$o" && grep -qiE 'verifier' <<<"$o"; chk "17: an ending action on a verifier-required row with no PASS acceptance blocks despite a live claim" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row V2 1 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {verifier_required:true, ending:true, acceptance:{verdict:"FAIL"}}' | asks
+o="$(stop false)"; blocks "$o" && grep -q V2 <<<"$o"; chk "17: a FAIL acceptance does not clear the verifier requirement" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row V3 1 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {verifier_required:true, ending:true, acceptance:{verdict:"PASS"}}' | asks
+o="$(stop false)"; [ -z "$o" ]; chk "17: a PASS acceptance clears it" $?
+rm -rf "$FOLLOWUP_STATE_DIR"
+row V4 1 2026-11-07T10:00 "w-alive@$LEASE" | jq -c '. + {verifier_required:true}' | asks
+o="$(stop false)"; [ -z "$o" ]; chk "17: a verifier-required row not being ended is not blocked" $?
 echo "followup-loop: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
