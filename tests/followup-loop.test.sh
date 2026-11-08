@@ -59,9 +59,9 @@ row A1 2 2026-11-07T10:00 >"$base/r1"; cat "$base/r1" "$base/r2" | asks
 o="$(stop false)"; blocks "$o" && grep -q 'A1' <<<"$o"; chk "2: a changed task revision re-escalates" $?
 o="$(stop false)"; [ -z "$o" ]; chk "2: and then passes again" $?
 # 3. genuine new failure is not suppressed by a standing one
-row A1 2 2026-11-07T10:00 >"$base/r1"; row A2 1 2026-11-07T11:00 >"$base/r2"; row A3 1 2026-11-08T11:00 >"$base/r3"; cat "$base/r1" "$base/r2" "$base/r3" | asks
+row A1 2 2026-11-07T10:00 >"$base/r1"; row A2 1 2026-11-07T11:00 >"$base/r2"; row A3 1 2026-11-08T13:00 >"$base/r3"; cat "$base/r1" "$base/r2" "$base/r3" | asks
 o="$(stop false)"; [ -z "$o" ]; chk "3: an A3 not yet due is not an obligation" $?
-FOLLOWUP_NOW=2026-11-08T11:30 o="$(FOLLOWUP_NOW=2026-11-08T11:30 stop false)"; blocks "$o" && grep -q 'A3' <<<"$o" && ! grep -qE 'A1|A2' <<<"$o"; chk "3: a genuine new failure (A3 now due) blocks alone" $?
+o="$(FOLLOWUP_NOW=2026-11-08T13:30 stop false)"; blocks "$o" && grep -q 'A3' <<<"$o" && ! grep -qE 'A1|A2' <<<"$o"; chk "3: a genuine new failure (A3 now due) blocks alone" $?
 # 4. valid structured blocker accounts; prose waits-on does not; next-check expiry re-escalates
 rm -rf "$FOLLOWUP_STATE_DIR"
 b='[{"owner":"rb","dependency":"A900","next_check":"2026-11-09T09:00"}]'
