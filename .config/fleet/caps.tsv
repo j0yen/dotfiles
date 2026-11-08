@@ -159,7 +159,7 @@ C144	ryzen7-pressure-guard cadence	5 min	ryzen7	ryzen7-pressure-guard.timer:5	ca
 C145	burst-idle-guard cadence	5 min	ryzen7,orch	burst-idle-guard.timer:6	cadence	none found	KEEP	r7	-			
 C146	r7-tmp-inode-guard cadence	5 min	ryzen7	r7-tmp-inode-guard.timer:5	cadence	none found	KEEP	r7	-			
 C147	hand-pr-land-driver cadence / timeout	10 min / 1800 s	ryzen7,orch	hand-pr-land-driver.timer:7 ; .service:16	cadence	#194 merge all now	KEEP	r7	-			
-C148	hand-pr-land-driver EXPIRES	2026-11-08 12:00	ryzen7,orch	hand-pr-land-driver.service:7	expiry	watcher rule	KEEP	r7	-		2026-11-08	
+C148	hand-pr-land-driver EXPIRES	2026-11-15 12:00	ryzen7,orch	hand-pr-land-driver.service:7	expiry	watcher rule	KEEP	r7	-	wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout	2026-11-15	
 C149	operator-overlap-digest TimeoutStartSec	60	ryzen7,orch	operator-overlap-digest.service:6	hang-guard	none found	KEEP	r7	-			
 C150	r7-land-hold-watch	30 s / 120 s / 256M	ryzen7	r7-land-hold-watch.timer:5 ; .service:5-6	memory	none found	KEEP	r7	-			
 C151	r7-wlmf-guard cadence	15 s	ryzen7	r7-wlmf-guard.timer:5	cadence	none found	KEEP	r7	-			
