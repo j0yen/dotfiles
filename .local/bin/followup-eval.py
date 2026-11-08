@@ -276,7 +276,9 @@ def cmd_replay():
     if not dc:
         return
     fh = locked(sd); lines = []
-    for line in open(ob):
+    raw = open(ob, "rb").read(); n0 = len(raw)   # deliver.sh appends sent-part records to this file while we hold the lock: keep whatever lands after n0
+    env = dict(os.environ, FOLLOWUP_LOCK_HELD="1")
+    for line in raw.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -286,12 +288,13 @@ def cmd_replay():
             lines.append(line); continue
         if e.get("delivered") is False:
             try:
-                if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=30).returncode == 0:
+                if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=300, env=env).returncode == 0:
                     e["delivered"] = True
             except (OSError, subprocess.TimeoutExpired):
                 pass
         lines.append(json.dumps(e, separators=(",", ":")))
-    atomic_write(ob, "\n".join(lines) + ("\n" if lines else ""))
+    tail = open(ob, "rb").read()[n0:].decode("utf-8", "replace")
+    atomic_write(ob, "\n".join(lines) + ("\n" if lines else "") + tail)
     fh.close()
 
 
