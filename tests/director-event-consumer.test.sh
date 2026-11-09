@@ -3,7 +3,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 C="$HERE/.local/bin/director-event-consumer.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+mkdir -p "$HOME/.cache/director-scratch"; T="$(mktemp -d "$HOME/.cache/director-scratch/t.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 fails=0
 ok(){ echo "PASS $1"; }
 bad(){ echo "FAIL $1${2:+: $2}"; fails=$((fails+1)); }

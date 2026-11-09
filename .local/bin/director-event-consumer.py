@@ -417,6 +417,34 @@ def check_child_dirs(env, live_home=None):
     return sorted(set(bad))
 
 
+HOST_IPC_DENY = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/dbus", "/run/snapd.socket", "/run/snapd-snap.socket",
+                 "/run/tailscale", "/run/cups", "/run/avahi-daemon", "/run/polkit", "/run/ssh-unix-local")
+
+
+class LaunchRefused(Exception):
+    pass
+
+
+def check_overrides(live_home=None):
+    """Isolation mode only: DIRECTOR_LAUNCH_CMD / DIRECTOR_RESET_CMD replace the boundary, so each must name (first word,
+    after realpath) an existing file strictly inside the scratch root. Returns the refused variable names."""
+    if not isolation_mode():
+        return []
+    root, bad = scratch_root(live_home), []
+    for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"):
+        val = os.environ.get(k)
+        if not val:
+            continue
+        try:
+            w = shlex.split(val)
+        except ValueError:
+            w = []
+        r = _real(w[0]) if w and os.path.isabs(w[0]) else ""
+        if not r or r == root or not _within(r, root) or not os.path.isfile(r):
+            bad.append(k)
+    return bad
+
+
 def isolation_mode():
     """Isolation = the consumer runs on a state dir that is not the live one, or DIRECTOR_ISOLATION=1."""
     return bool(os.environ.get("DIRECTOR_ISOLATION")) or os.path.realpath(STATE) != os.path.realpath(LIVE_STATE)
@@ -448,7 +476,9 @@ def sandbox_props(v, live_home=None, cmds=()):
     """systemd boundary for the transient unit. Live mode keeps the original home access (the live worker needs its
     Hermes home). Isolation mode enforces it: an empty read-only tmpfs over the live home, binds for only the scratch dir,
     the state dir and the ledger dir (plus read-only binds of the launcher/command files that live under the home),
-    inaccessible credential dirs and the user bus, private /tmp, no new privileges."""
+    inaccessible credential dirs, the user bus and host IPC sockets (docker, system bus, snapd, ...), private /tmp, a fresh
+    /dev/shm, a private network namespace (no providers, no loopback services, no abstract X11 sockets), no new privileges.
+    ProtectProc=invisible is left out: the user manager does not apply it (probed: /proc/1 stays visible)."""
     live_home = _real(live_home) if live_home else live_homes()[0]
     if not v.get("DIRECTOR_ISOLATION"):
         home = v.get("HOME", HOME)
@@ -460,11 +490,11 @@ def sandbox_props(v, live_home=None, cmds=()):
         if p and not any(_within(_real(p), q) for q in rw):
             rw.append(_real(p))
     ro = [p for p in dict.fromkeys(_real(c) for c in cmds if c) if _within(p, live_home) and os.path.exists(p) and not any(_within(p, q) for q in rw)]
-    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()]
-    props = ["TemporaryFileSystem=%s:ro" % live_home, "BindPaths=" + " ".join(rw)]
+    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY)
+    props = ["TemporaryFileSystem=%s:ro /dev/shm" % live_home, "BindPaths=" + " ".join(rw)]
     if ro:
         props.append("BindReadOnlyPaths=" + " ".join(ro))
-    return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "NoNewPrivileges=yes"]
+    return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "PrivateNetwork=yes", "NoNewPrivileges=yes"]
 
 
 def launch_argv(unit, env, tail=None, live_home=None, child_exec=True):
@@ -524,6 +554,9 @@ def cmd_child_exec(argv):
 def launch(r):
     """One launch attempt. Returns True when the launcher started the run. Exit 75 = provider outage: the claim is kept,
     the attempt is not counted and recover retries."""
+    bad = check_overrides()
+    if bad:
+        raise LaunchRefused("isolation launch refused: %s outside the scratch dir" % ",".join(bad))
     env = write_envelope(r)
     attempt = r.get("attempts", 0) + 1
     uncounted = r.pop("outage_relaunch", False)      # a relaunch after a provider outage never counts as an attempt
@@ -1116,10 +1149,14 @@ def main(argv):
             print("usage: reconcile <event_id> --verdict present|absent --by <who>", file=sys.stderr)
             return 64
         return cmd_reconcile(argv[2], opt("--verdict"), opt("--by"))
-    if cmd == "consume":
-        read_events()
-    recover_runs(replay=(cmd == "recover"))
-    poll_ready()
+    try:
+        if cmd == "consume":
+            read_events()
+        recover_runs(replay=(cmd == "recover"))
+        poll_ready()
+    except LaunchRefused as ex:
+        print("director-event-consumer: %s" % ex, file=sys.stderr)
+        return EX_CONFIG
     return 0
 
 

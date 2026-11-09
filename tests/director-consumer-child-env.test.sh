@@ -187,10 +187,11 @@ j = " ".join(a)
 assert a[:3] == ["systemd-run", "--user", "--unit"], a
 for need in ("--setenv WM_ASKS_CMD=" + t + "/wm-asks", "--setenv WM_DECIDE_STATE=" + t + "/wmstate", "--setenv DIRECTOR_STATE=" + t + "/st",
              "--setenv DIRECTOR_ISOLATION=1", "-p TemporaryFileSystem=", ":ro", "-p BindPaths=", "-p InaccessiblePaths=", "-p PrivateTmp=yes",
-             "-p NoNewPrivileges=yes", " child-exec -- "):
+             "-p NoNewPrivileges=yes", "-p PrivateNetwork=yes", "/dev/shm", " child-exec -- "):
     assert need in j, need
 assert "ReadWritePaths" not in j and "ProtectHome" not in j, "permissive paths back"
-for need in ("/.hermes", "/.claude", "/.config/fleet-token", "/.config/wm-sudo", "/.ssh", "/.local/state/swarm-decide", "/run/user/%d" % os.getuid()):
+for need in ("/.hermes", "/.claude", "/.config/fleet-token", "/.config/wm-sudo", "/.ssh", "/.local/state/swarm-decide", "/run/user/%d" % os.getuid(),
+             "/var/run/docker.sock", "/run/docker.sock", "/run/dbus"):
     assert need in j, need
 assert "fake-secret" not in j and "API_KEY" not in j, "credential on the unit"
 for cap in ("RuntimeMaxSec", "MemoryMax", "CPUQuota", "TimeoutStopSec", "max-turns", "budget"):
@@ -201,5 +202,110 @@ for x in a:
 PY
   [ $? = 0 ] && ok launch_argv || bad launch_argv
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home; do "t_$t"; done; fi
+
+IPC_PROBE='
+import os, socket, sys
+out = []
+def uc(name, addr):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(5)
+    try:
+        s.connect(addr); out.append("%s OPEN" % name)      # connect only, nothing sent
+    except OSError as e:
+        out.append("%s FAIL %s" % (name, e.errno))
+    s.close()
+uc("docker", "/var/run/docker.sock"); uc("docker-run", "/run/docker.sock"); uc("dbus", "/run/dbus/system_bus_socket")
+uc("snapd", "/run/snapd.socket"); uc("tailscale", "/run/tailscale/tailscaled.sock"); uc("cups", "/run/cups/cups.sock")
+uc("x11-abstract", "\0/tmp/.X11-unix/X0"); uc("x11-abstract1", "\0/tmp/.X11-unix/X1")
+s = socket.socket(); s.settimeout(5)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1]))); out.append("tcp-loopback OPEN")
+except OSError as e:
+    out.append("tcp-loopback FAIL %s" % e.errno)
+s.close()
+try:
+    open("/dev/shm/" + sys.argv[2] + "-child", "w").write("x"); out.append("shm-write OK")
+except OSError as e:
+    out.append("shm-write FAIL %s" % e.errno)
+out.append("shm-host-marker " + ("VISIBLE" if os.path.exists("/dev/shm/" + sys.argv[2] + "-host") else "HIDDEN"))
+open(sys.argv[3], "w").write("\n".join(out) + "\n")
+'
+t_unit_ipc_net_shm(){
+  # Real transient units with the real isolation props: host IPC sockets, loopback TCP to a listener this test starts, abstract
+  # X11 sockets and /dev/shm. The control unit runs the same probe with no boundary and must reach each of them.
+  local m="$P-shm"; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"; echo host > "/dev/shm/$m-host"
+  python3 - "$C" "$P" "$T" "$IPC_PROBE" "$m" <<'PY'
+import importlib.util, os, socket, subprocess, sys
+c, p, t, probe, m = sys.argv[1:6]
+home = os.path.expanduser("~"); unit = p + "-ipcunit"; sc = home + "/.cache/director-scratch/" + unit
+os.makedirs(sc + "/st"); os.makedirs(sc + "/wmstate")
+os.environ.update(DIRECTOR_STATE=sc + "/st", WM_DECIDE_STATE=sc + "/wmstate", WM_ASKS_CMD=sc + "/wm-asks")
+spec = importlib.util.spec_from_file_location("dec", c); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+open(sc + "/probe.py", "w").write(probe)
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8); port = str(srv.getsockname()[1])   # listener of this test, in this process
+argv = mod.launch_argv(unit, "/e.md", tail=["/usr/bin/python3", sc + "/probe.py", port, m, sc + "/result"])
+open(t + "/ipc.argv", "w").write(" ".join(argv))
+r = subprocess.run(argv[:1] + ["--wait", "--pipe"] + argv[1:], capture_output=True, text=True)
+sys.stderr.write(r.stderr[-300:])
+if os.path.exists("/dev/shm/%s-child" % m):      # a write that reached the host
+    open(t + "/iso-shm-child", "w").close(); os.unlink("/dev/shm/%s-child" % m)
+r2 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-ctl", "--", "/usr/bin/python3", sc + "/probe.py", port, m, sc + "/control"],
+                    capture_output=True, text=True)
+sys.stderr.write(r2.stderr[-300:])
+PY
+  local u="$SCR/$P-ipcunit" res ctl w; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"
+  echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
+  local host_leak=no ctl_leak=no; [ -e "$T/iso-shm-child" ] && host_leak=yes; [ -e "/dev/shm/$m-child" ] && ctl_leak=yes
+  echo "host-visible /dev/shm write from isolated child: $host_leak; from control child: $ctl_leak"; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"
+  for w in docker docker-run dbus snapd tailscale cups x11-abstract x11-abstract1 tcp-loopback; do
+    echo "$res" | grep -q "^$w OPEN" && { bad unit_ipc_net_shm "$w reachable inside the boundary"; return; }
+    echo "$res" | grep -q "^$w FAIL " || { bad unit_ipc_net_shm "$w not probed"; return; }
+  done
+  for w in docker dbus tcp-loopback x11-abstract; do
+    echo "$ctl" | grep -q "^$w OPEN" || { bad unit_ipc_net_shm "control cannot reach $w (test not discriminating)"; return; }
+  done
+  echo "$ctl" | grep -q "^shm-host-marker VISIBLE" && [ "$ctl_leak" = yes ] || { bad unit_ipc_net_shm "control does not share /dev/shm (test not discriminating)"; return; }
+  echo "$res" | grep -q "^shm-host-marker HIDDEN" && [ "$host_leak" = no ] || { bad unit_ipc_net_shm "host /dev/shm shared with the isolated child"; return; }
+  ok unit_ipc_net_shm
+}
+t_override_refused(){
+  # DIRECTOR_LAUNCH_CMD / DIRECTOR_RESET_CMD replace the boundary: in isolation mode they must resolve to a file under the scratch root.
+  python3 - "$C" "$T" "$SCR" <<'PY'
+import importlib.util, os, sys
+c, t, scr = sys.argv[1:4]
+os.environ.update(DIRECTOR_STATE=t + "/stov", WM_ASKS_CMD=t + "/wm-asks", WM_DECIDE_STATE=t + "/wmov")
+for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD", "DIRECTOR_ISOLATION"):
+    os.environ.pop(k, None)
+spec = importlib.util.spec_from_file_location("dec", c); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.makedirs(t + "/stov", exist_ok=True)
+ran = t + "/stub.ran"
+outside = t + "/outside-launcher"; open(outside, "w").write("#!/bin/sh\necho x >> %s\n" % ran); os.chmod(outside, 0o755)
+inside = scr + "/ov-" + os.path.basename(t) + "-launcher"; open(inside, "w").write("#!/bin/sh\nexit 0\n"); os.chmod(inside, 0o755)
+os.symlink(outside, scr + "/ov-" + os.path.basename(t) + "-link")
+def refused(**kw):
+    for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"): os.environ.pop(k, None)
+    os.environ.update(kw); return m.check_overrides()
+assert refused(DIRECTOR_LAUNCH_CMD=outside) == ["DIRECTOR_LAUNCH_CMD"]
+assert refused(DIRECTOR_RESET_CMD=outside) == ["DIRECTOR_RESET_CMD"]
+assert refused(DIRECTOR_LAUNCH_CMD="/bin/sh -c true") == ["DIRECTOR_LAUNCH_CMD"], "interpreter outside scratch"
+assert refused(DIRECTOR_LAUNCH_CMD="relative-launcher") == ["DIRECTOR_LAUNCH_CMD"]
+assert refused(DIRECTOR_LAUNCH_CMD=scr + "/ov-" + os.path.basename(t) + "-link") == ["DIRECTOR_LAUNCH_CMD"], "symlink out of scratch"
+assert refused(DIRECTOR_LAUNCH_CMD=scr + "/../.hermes/x") == ["DIRECTOR_LAUNCH_CMD"], "dotdot"
+assert refused(DIRECTOR_LAUNCH_CMD=scr) == ["DIRECTOR_LAUNCH_CMD"], "scratch root itself"
+assert refused(DIRECTOR_LAUNCH_CMD=inside, DIRECTOR_RESET_CMD=inside) == [], "file under scratch is allowed"
+assert refused() == []
+# launch() raises before any launcher runs; main() turns it into exit 78
+os.environ["DIRECTOR_LAUNCH_CMD"] = outside + " arg"
+try:
+    m.launch({"event_id": "evt-ov", "ask": "A1"}); raise SystemExit("launch did not refuse")
+except m.LaunchRefused:
+    pass
+assert not os.path.exists(ran), "stub launcher ran"
+m.recover_runs = lambda replay=False: m.launch({"event_id": "evt-ov", "ask": "A1"})
+assert m.main(["x", "recover"]) == 78 and not os.path.exists(ran)
+os.environ["DIRECTOR_ISOLATION"] = ""
+print("override refusal ok")
+PY
+  local rc=$?; rm -f "$SCR/ov-"*; [ $rc = 0 ] && ok override_refused || bad override_refused "rc=$rc"
+}
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm override_refused; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }
