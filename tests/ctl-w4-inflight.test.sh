@@ -97,13 +97,12 @@ ck "c5b the late orphan is recorded separately (rc -9)" "$(rjrc "$OD/$OBK.late.j
 python3 -I "$B/ctl-obligation-run.py" check --dir "$OD" --key "$OBK"
 ck "c5b ledger done-check still passes" "$?" 0
 
-# ---- stale owner: dead pid, no live child => one takeover, marker recorded; pid-reuse (ticks differ) reads dead
+# ---- stale owner: dead pid, no live child, no receipt => UNKNOWN (rc 75, no takeover, no execution); a pid-reuse (ticks differ) marker reads dead the same way
 setup stale
 mkdir -p "$OD"; printf '{"pid": 999999, "ticks": 1, "boot": "x", "ts": "old"}\n' > "$OD/$OBK.inflight"
-route "$QF"
-ck "stale dead owner is taken over once and the work runs" "$(starts)" 1
-ck "stale marker recorded" "$(ls "$OD"/"$OBK".stale-999999-1.json 2>/dev/null | wc -l | tr -d ' ')" 1
-ck "stale takeover leaves a normal receipt and no marker" "$(rjrc "$OD/$OBK.run.json")/$([ -e "$OD/$OBK.inflight" ] && echo marker || echo clean)" 0/clean
+TMO=20 route "$QF"
+ck "stale dead owner: rerun exits 75 (UNKNOWN), nothing runs" "$RC/$(starts)" 75/0
+ck "stale dead owner: no takeover file, marker kept, no receipt" "$(ls "$OD"/"$OBK".stale-* 2>/dev/null | wc -l | tr -d ' ')/$([ -e "$OD/$OBK.inflight" ] && echo marker || echo clean)/$([ -e "$OD/$OBK.run.json" ] && echo receipt || echo none)" 0/marker/none
 
 # ---- rev: the replay branch re-reads the approvals record
 setup rev; crash_at_rowadd "$C/q-approved.json"
@@ -139,7 +138,7 @@ for n in $(seq 1 ${CONC_N:-10}); do
   ck "conc#$n runner started once" "$(starts)" 1
 done
 
-# ---- D2: an unreadable/empty/torn marker is UNKNOWN (75, retry later), never dead; concurrent takeover of a dead owner has exactly one winner
+# ---- D2: an unreadable/empty/torn marker is UNKNOWN (75, retry later), never dead; two concurrent routes over a dead owner's marker both read UNKNOWN: zero executions
 for kind in empty torn; do
   setup m$kind; touch "$T/hold"
   route_bg "$QF"; waitfor "$T/exec.log" || echo "NEVER STARTED"
@@ -155,8 +154,8 @@ for n in $(seq 1 ${TAKE_N:-40}); do
   rm -f "$T/go"
   for w in a b; do setsid bash -c "while [ ! -e $T/go ]; do :; done; exec timeout 60 $B/ctl-event-route.sh route $C/q-approved.json" >"$C/out.$w" 2>"$C/err.$w" </dev/null & eval "P$w=\$!"; done
   sleep 0.3; touch "$T/go"; wait "$Pa" "$Pb" 2>/dev/null
-  ck "d2 take#$n one winner: exactly one execution" "$(starts)" 1
-  ck "d2 take#$n one stale file, no late receipt" "$(ls "$OD" | grep -c '\.stale-')/$(ls "$OD" | grep -c '\.late\.json')" 1/0
+  ck "d2 take#$n no winner: zero executions" "$(starts)" 0
+  ck "d2 take#$n no stale file, no late receipt, marker kept" "$(ls "$OD" | grep -c '\.stale-')/$(ls "$OD" | grep -c '\.late\.json')/$(ls "$OD" | grep -c '\.inflight$')" 0/0/1
 done
 
 # ---- D3: two concurrent writers of <key>.handled.json both succeed (unique tmp name per writer)
