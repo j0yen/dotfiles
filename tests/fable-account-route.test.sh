@@ -13,9 +13,9 @@ chmod +x "$T/claude"
 export FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
 run(){ : > "$SPYLOG"; "$L" "$@" 2>"$T/err"; echo $? > "$T/rc"; }
-run --model claude-fable-5-1 --effort xhigh; ck "fable -> jyen.pm xhigh" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort xhigh" $SPYLOG'
-run --model fable; ck "fable alias, effort defaults xhigh" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort xhigh" $SPYLOG'
-run --model=claude-fable-5-1 --effort max; ck "fable max refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
+export FABLE_LAUNCH_EFFORT_REASON="ledger:A1300 named reasoning gap"; run --model claude-fable-5-1 --effort xhigh; unset FABLE_LAUNCH_EFFORT_REASON; ck "fable -> jyen.pm xhigh with reason" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort xhigh" $SPYLOG'
+run --model fable; ck "fable alias, effort defaults high" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort high" $SPYLOG'
+run --model=claude-fable-5-1 --effort max; ck "fable max without reason refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
 for m in claude-sonnet-5-5 sonnet claude-haiku-5-5 haiku claude-opus-5-5 opus; do run --model $m --effort medium; ck "$m -> josephsyen" 'grep -q "acct=josephsyen" $SPYLOG'; done
 run --model claude-fable-9-9-9-9; ck "unknown fable-like refused" '[ "$(cat $T/rc)" = 64 ]'
 run; ck "no model refused" '[ "$(cat $T/rc)" = 64 ]'

@@ -7,7 +7,7 @@ description: >
   the weakest link, the prior incidents this rhymes with (root vs branch), and code mechanisms
   with owners; files the page to ~/Notes/wiki/answers/. No second Fable launch by default; a review runs only when justified and the reason is recorded first.
 model: fable
-effort: xhigh
+effort: high
 fable-spawn: true
 last_updated: 2026-10-24
 ---
@@ -24,14 +24,14 @@ Forward analysis of a plan or feature is the sibling skill /wwhtbt.
 
 MITIGATE FIRST, ANALYZE AFTER: the skill never gates the same-sweep mitigation (PROACTIVE).
 
-Pins: `model: fable` + `effort: xhigh` (Joe 10-24 3:5x PM "use fable xHigh or Max for this skill").
+Pins: `model: fable` + `effort: high` (Joe 2026-11-08 fable-quota routing addendum; was xhigh 11-06, max 10-24).
 From a non-Fable session, run it as a separate Fable process on jyen.pm, never a native Agent (A1169, Joe 11-07):
-`~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort xhigh -p "Invoke the <skill> skill (Skill tool) ... <context>"` via Bash
+`~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort high -p "Invoke the <skill> skill (Skill tool) ... <context>"` via Bash
 (⚙ fable-native-agent-guard.sh denies native model=fable Agents on josephsyen and any non-Fable native Agent under a jyen.pm Fable parent;
 non-Fable helpers of a Fable parent run as `fable-launch.sh --helper --model <sonnet|haiku> -p ...`). The caller's prompt cache stays warm. Helpers this skill spawns
 (haiku runners, one sonnet verifier, a justified Fable review if any) never spawn further agents.
 
-Joe approved xhigh as the default on 2026-11-06 to conserve Fable quota. This applies to synthesis and the independent Fable review. Retrieval stays Haiku; factual verification stays Sonnet. Use max only for a specific unresolved reasoning gap, with that reason recorded in the ledger. This supersedes the earlier max default, not the no-worker-caps rule.
+Effort default is high (Joe approved the fable-quota routing addendum 2026-11-08, A1300): Fable high. Synthesis is the one Fable launch; retrieval and timelines stay Haiku/code; factual verification stays Sonnet medium. xhigh or max is a reasoned exception only: a named unresolved reasoning gap or an explicit Joe request, with the evidence and the reason recorded in the ledger BEFORE launch (managed route: `--route-request` escalation{reason,evidence}; plain launch: `FABLE_LAUNCH_EFFORT_REASON="ledger:<id> <reason>"`). No retry count or worker cap is implied; this is model selection only.
 
 ## Steps
 

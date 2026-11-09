@@ -60,5 +60,5 @@ req '{"task_id":"G1","skill":"wwhtbt"}'; run -p x; ck "duplicate dispatch while 
 kill $dp 2>/dev/null; wait 2>/dev/null
 run -p x; ck "restart after worker exit proceeds" '[ "$(cat $T/rc)" = 0 ]'
 # plain (non-route) launches unchanged
-: >"$SPYLOG"; "$L" --model claude-fable-5-1 --effort high 2>"$T/err"; ck "plain Fable high still refused (xhigh only outside a managed route)" '[ $? = 64 ] && [ ! -s $SPYLOG ]'
+: >"$SPYLOG"; "$L" --model claude-fable-5-1 --effort high 2>"$T/err"; ck "plain Fable high accepted outside a managed route" '[ $? = 0 ] && grep -q -- "--effort high" $SPYLOG'
 echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS

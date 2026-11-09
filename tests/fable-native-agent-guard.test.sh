@@ -3,7 +3,7 @@
 set -u
 G="$(cd "$(dirname "$0")/.." && pwd)/.claude/hooks/fable-native-agent-guard.sh"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
-call(){ printf '{"tool_name":"Agent","tool_input":{"model":"%s","effort":"%s","subagent_type":"coder","prompt":"x"}}' "$2" "${3-xhigh}" | FABLE_LAUNCH_ACCOUNT="$1" "$G"; }
+call(){ printf '{"tool_name":"Agent","tool_input":{"model":"%s","effort":"%s","subagent_type":"coder","prompt":"x"}}' "$2" "${3-high}" | FABLE_LAUNCH_ACCOUNT="$1" "$G"; }
 denied(){ grep -q '"permissionDecision":"deny"' <<<"$1"; }
 for m in sonnet haiku opus claude-sonnet-5-5 claude-haiku-5-5; do o=$(call jyen.pm $m); ck "jyen.pm parent: native $m denied" 'denied "$o"'; done
 o=$(call jyen.pm fable); ck "jyen.pm parent: native fable allowed" '[ -z "$o" ]'
@@ -12,7 +12,8 @@ o=$(call jyen.pm ""); ck "jyen.pm parent: omitted model (named coder) denied" 'd
 o=$(printf '{"tool_name":"Agent","tool_input":{"subagent_type":"triage","prompt":"x"}}' | FABLE_LAUNCH_ACCOUNT=jyen.pm "$G"); ck "jyen.pm parent: model key absent (triage) denied" 'denied "$o"'
 o=$(call jyen.pm fable ""); ck "jyen.pm parent: fable without effort denied" 'denied "$o"'
 o=$(call jyen.pm fable low); ck "jyen.pm parent: fable low effort denied" 'denied "$o"'
-o=$(call jyen.pm fable max); ck "jyen.pm parent: fable max denied (launcher is xhigh only)" 'denied "$o"'
+o=$(call jyen.pm fable max); ck "jyen.pm parent: fable max denied (reasoned exceptions go through the launcher)" 'denied "$o"'
+o=$(call jyen.pm fable xhigh); ck "jyen.pm parent: native fable xhigh denied (needs launcher + reason)" 'denied "$o" && grep -q FABLE_LAUNCH_EFFORT_REASON <<<"$o"'
 o=$(printf 'not json' | FABLE_LAUNCH_ACCOUNT=jyen.pm "$G"); ck "jyen.pm parent: malformed input fails closed" 'denied "$o"'
 o=$(printf 'not json' | FABLE_LAUNCH_ACCOUNT=josephsyen "$G"); ck "josephsyen parent: malformed input fails open (declared residual)" '[ -z "$o" ]'
 o=$(call josephsyen sonnet); ck "josephsyen parent: native sonnet allowed" '[ -z "$o" ]'

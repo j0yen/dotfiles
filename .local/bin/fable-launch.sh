@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fable-launch.sh [--helper] <claude args incl. --model M --effort E>   (A1169, Joe 11-07 early switch)
-# Account is chosen by the ACTUAL selected model: Fable -> jyen.pm (effort pinned xhigh); every other model -> josephsyen, explicit.
+# Account is chosen by the ACTUAL selected model: Fable -> jyen.pm (effort default high; xhigh|max only with FABLE_LAUNCH_EFFORT_REASON); every other model -> josephsyen, explicit.
 # Process-local only: exports CLAUDE_CODE_OAUTH_TOKEN for the exec'd claude. No rotation, no shared default edits, no token output.
 # A Fable parent's native child agents inherit this env (jyen.pm); use `fable-launch.sh --helper --model sonnet ...` for separate-process helpers on josephsyen.
 # A1300 managed skill route: `--route-request FILE` (JSON {task_id,skill,decision_class?,evidence_refs?,escalation?,review?}; task text is
@@ -76,8 +76,18 @@ case "$model" in
 esac
 if [ "$IS_FABLE" = 1 ]; then
   [ "$HELPER" = 0 ] || { echo "fable-launch: --helper must not be Fable" >&2; exit 64; }
-  [ "$ROUTED" = 1 ] || [ -z "$effort" ] || [ "$effort" = xhigh ] || { echo "fable-launch: Fable runs xhigh only (got '$effort')" >&2; exit 64; }
-  [ "$ROUTED" = 1 ] || effort=xhigh; ACCT="$FABLE_ACCT"
+  if [ "$ROUTED" = 0 ]; then
+    # Fresh Fable default is high (A1300 fable-quota-routing addendum). xhigh/max are reasoned exceptions: a non-empty
+    # FABLE_LAUNCH_EFFORT_REASON (>= 8 chars, e.g. "ledger:A1300 unresolved gap ...") is required and echoed; anything else is refused.
+    EFFORT_REASON="${FABLE_LAUNCH_EFFORT_REASON:-}"; [ -n "$effort" ] || effort=high
+    case "$effort" in
+      high) ;;
+      xhigh|max) [ "${#EFFORT_REASON}" -ge 8 ] || { echo "fable-launch: Fable $effort needs a recorded reason in FABLE_LAUNCH_EFFORT_REASON (default is high)" >&2; exit 64; }
+                 echo "fable-launch: effort exception $effort: $EFFORT_REASON" >&2 ;;
+      *) echo "fable-launch: unsupported Fable effort '$effort' (high; xhigh|max with a reason)" >&2; exit 64 ;;
+    esac
+  fi
+  ACCT="$FABLE_ACCT"
 else
   ACCT="$BASE_ACCT"
 fi

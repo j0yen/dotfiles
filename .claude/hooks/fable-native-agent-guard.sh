@@ -22,12 +22,12 @@ isf(){ case "$1" in fable|claude-fable-*) return 0;; *) return 1;; esac; }
 if [ "$ACCT" = jyen.pm ]; then
   [ -z "$M" ] && deny "fable-native-agent-guard: under jyen.pm a native Agent needs an explicit Fable model; an omitted model lets a named agent (coder, triage, ...) pin a non-Fable model on the jyen.pm token. Run non-Fable helpers via fable-launch.sh --helper --model <m> -p \"<prompt>\" (A1169)."
   if isf "$M"; then
-    [ "$E" = xhigh ] && exit 0
-    deny "fable-native-agent-guard: a native Fable Agent under jyen.pm needs explicit effort xhigh (got: ${E:-none}); max is not allowed without a ledger-backed path. Governed skill workflows: fable-launch.sh --route-request <file> -p \"<prompt>\". Otherwise prefer fable-launch.sh --model claude-fable-5-1 --effort xhigh -p \"<prompt>\" (A1169)."
+    [ "$E" = high ] && exit 0
+    deny "fable-native-agent-guard: a native Fable Agent under jyen.pm needs explicit effort high (got: ${E:-none}); xhigh/max are reasoned exceptions that run through fable-launch.sh with FABLE_LAUNCH_EFFORT_REASON, not a native Agent. Governed skill workflows: fable-launch.sh --route-request <file> -p \"<prompt>\". Otherwise prefer fable-launch.sh --model claude-fable-5-1 --effort high -p \"<prompt>\" (A1169)."
   fi
   deny "fable-native-agent-guard: this session runs Fable on jyen.pm; a native Agent child (model=$M) inherits that account. Run non-Fable helpers as a separate josephsyen process: ~/.local/bin/fable-launch.sh --helper --model <sonnet|haiku> -p \"<prompt>\" (A1169)."
 fi
 if isf "$M"; then
-  deny "fable-native-agent-guard: a native Agent with model=$M would run Fable on this session's account. For a governed skill workflow use ~/.local/bin/fable-launch.sh --route-request <file> -p \"<prompt>\"; otherwise launch Fable on jyen.pm at xhigh: ~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort xhigh -p \"<prompt>\" (A1169)."
+  deny "fable-native-agent-guard: a native Agent with model=$M would run Fable on this session's account. For a governed skill workflow use ~/.local/bin/fable-launch.sh --route-request <file> -p \"<prompt>\"; otherwise launch Fable on jyen.pm at high: ~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort high -p \"<prompt>\" (A1169)."
 fi
 exit 0
