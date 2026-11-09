@@ -35,8 +35,8 @@
 
 set -u
 
-agorabus=/home/jsy/.local/bin/agorabus
-cache=/home/jsy/.cache/agorabus
+agorabus="${AGORABUS_BIN:-/home/jsy/.local/bin/agorabus}"
+cache="${AGORABUS_CACHE:-/home/jsy/.cache/agorabus}"
 sessions="$cache/sessions"
 sock="$cache/sock"
 daemon_log="$cache/daemon.log"
@@ -164,15 +164,26 @@ hlog="$handshake_dir/${sid}.log"
 phase_start=$(_now_ms)
 
 if ! pgrep -f 'agorabus daemon' >/dev/null 2>&1; then
-    nohup "$agorabus" daemon >"$daemon_log" 2>&1 &
-    disown
+    # A1447: bring the bus up through agorabus.service so systemd owns and
+    # restarts it; the nohup spawn is only the fallback where no user manager
+    # answers (or the unit is absent). Never reached while a daemon is live.
+    unit_started=0
+    if timeout 1 systemctl --user cat agorabus.service >/dev/null 2>&1 \
+       && timeout 1 systemctl --user start --no-block agorabus.service >/dev/null 2>&1; then
+        unit_started=1
+    fi
+    if [ "$unit_started" -eq 0 ]; then
+        nohup "$agorabus" daemon >"$daemon_log" 2>&1 &
+        disown
+    fi
     socket_ok=0
-    for _ in $(seq 1 10); do
+    if [ "$unit_started" -eq 1 ]; then wait_n=15; wait_s=0.25; else wait_n=10; wait_s=0.3; fi
+    for _ in $(seq 1 "$wait_n"); do
         if [ -S "$sock" ]; then
             socket_ok=1
             break
         fi
-        sleep 0.3
+        sleep "$wait_s"
     done
     elapsed=$(( $(_now_ms) - phase_start ))
     if [ "$socket_ok" -eq 1 ]; then
