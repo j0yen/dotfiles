@@ -50,5 +50,5 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 "$JQ" -nc --arg ts "$(date -Is)" --arg sid "$SESSION_ID" --arg skill "$SKILL" --arg phrase "$PHRASE" \
     --arg seat "${WM_SEAT:-}" '{ts:$ts,session:$sid,seat:$seat,skill:$skill,phrase:$phrase}' >>"$LOG" 2>/dev/null
 
-echo "analysis-skill-router: \"$PHRASE\" → run /$SKILL (Skill tool; from a non-Fable session spawn Agent(model=fable, effort=max) that invokes it). Mitigate first; never write the analysis by hand (Joe 10-24)."
+echo "analysis-skill-router: \"$PHRASE\" → run /$SKILL (governed skill: model/effort come from .config/skill-routing/policy.json; run it through ~/.local/bin/fable-launch.sh --route-request <file> -p \"Invoke the $SKILL skill ...\"). Mitigate first; never write the analysis by hand (Joe 10-24)."
 exit 0
