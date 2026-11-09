@@ -191,5 +191,13 @@ echo "$EV_PASS" > "$T/ev"; BR_CYCLES=3 br run
 fresh; echo "$EV_PASS" > "$T/ev"; XRT_BIN="$T/nonexistent" br run
 [ "$(q)" = 1 ] && [ "$(sends)" -ge 1 ]; chk "missing router: nothing acked, event still delivered (fail-safe)" $?
 
+# ---- W20: a Dispatch: ctl task file has one route (ctl-dispatch-claim.sh); the bridge executes nothing and makes no model call
+printf 'Dispatch: ctl\nTASK: write the weekly summary\n' > "$T/dtask.md"
+EV_DTASK="{\"event\":\"taskfile\",\"ts\":\"t\",\"detail\":{\"files\":[\"$T/dtask.md\"]}}"
+fresh; echo "$EV_DTASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 0 ] && [ "$(calls)" = 0 ] && [ "$(sends)" = 0 ] && [ "$(q)" = 0 ]; chk "(w20) Dispatch: ctl task file: no executor, no classifier call, no pane delivery, acked" $?
+fresh; echo "$EV_TASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ]; chk "(w20) a task file without the marker still takes the haiku route" $?
+
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f
