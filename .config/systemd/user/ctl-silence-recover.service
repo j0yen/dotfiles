@@ -1,0 +1,9 @@
+[Unit]
+Description=Deterministic consumer of the ctl executor's silence: poke an idle pane, or hold-gated relaunch a dead one (recovery plan d-20261107-072411-hermes-666e)
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=120
+ExecStart=%h/.local/bin/ctl-silence-recover.sh

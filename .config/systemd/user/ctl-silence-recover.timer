@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 5 min: ctl silence recovery check
+ConditionHost=carbon
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

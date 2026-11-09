@@ -19,6 +19,8 @@ claude-vibeloop-digest.service	mechanical	fleet	no	no
 claude-vibeloop-measure.service	mechanical	fleet	no	no
 claude-vibeloop.service	mechanical	fleet	no	no
 ctl-event-bridge.service	mechanical	fleet	no	yes
+ctl-silence-recover.service	mechanical	fleet	yes	no
+ctl-silence-recover.timer	mechanical	fleet	no	yes
 director-event-consumer-recover.service	mechanical	fleet	yes	no
 director-event-consumer-recover.timer	mechanical	fleet	no	yes
 director-event-consumer.service	mechanical	fleet	yes	no
