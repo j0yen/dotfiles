@@ -477,8 +477,10 @@ def sandbox_props(v, live_home=None, cmds=()):
     Hermes home). Isolation mode enforces it: an empty read-only tmpfs over the live home, binds for only the scratch dir,
     the state dir and the ledger dir (plus read-only binds of the launcher/command files that live under the home),
     inaccessible credential dirs, the user bus and host IPC sockets (docker, system bus, snapd, ...), private /tmp, a fresh
-    /dev/shm, a private network namespace (no providers, no loopback services, no abstract X11 sockets), no new privileges.
-    ProtectProc=invisible is left out: the user manager does not apply it (probed: /proc/1 stays visible)."""
+    /dev/shm, a private network namespace (no providers, no loopback services, no abstract X11 sockets), no new privileges. PrivateDevices=yes drops input/video/snd/dri/fuse nodes (its /dev/shm stays shared, so the TemporaryFileSystem
+    over /dev/shm is kept next to it); PrivatePIDs=yes leaves the child only its own pid in /proc, so host cmdlines are not openable.
+    ProtectProc=invisible and ProcSubset=pid are left out (probed: not applied by the user manager); DevicePolicy=closed + DeviceAllow
+    is left out too (probed: the user manager opens every node anyway)."""
     live_home = _real(live_home) if live_home else live_homes()[0]
     if not v.get("DIRECTOR_ISOLATION"):
         home = v.get("HOME", HOME)
@@ -494,7 +496,7 @@ def sandbox_props(v, live_home=None, cmds=()):
     props = ["TemporaryFileSystem=%s:ro /dev/shm" % live_home, "BindPaths=" + " ".join(rw)]
     if ro:
         props.append("BindReadOnlyPaths=" + " ".join(ro))
-    return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "PrivateNetwork=yes", "NoNewPrivileges=yes"]
+    return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "PrivatePIDs=yes", "NoNewPrivileges=yes"]
 
 
 def launch_argv(unit, env, tail=None, live_home=None, child_exec=True):

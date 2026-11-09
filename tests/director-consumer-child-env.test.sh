@@ -267,6 +267,65 @@ PY
   echo "$res" | grep -q "^shm-host-marker HIDDEN" && [ "$host_leak" = no ] || { bad unit_ipc_net_shm "host /dev/shm shared with the isolated child"; return; }
   ok unit_ipc_net_shm
 }
+DEV_PROBE='
+import glob, os, sys
+out = []
+for d in sorted(glob.glob("/dev/input/event*"))[:4] + ["/dev/input/mice", "/dev/video0", "/dev/snd/controlC0", "/dev/snd/pcmC0D0c", "/dev/dri/card1", "/dev/dri/renderD128", "/dev/fuse"]:
+    try:
+        os.close(os.open(d, os.O_RDONLY | os.O_NONBLOCK)); out.append("dev %s OPEN" % d)      # open+close only, nothing read
+    except OSError as e:
+        out.append("dev %s FAIL %s" % (d, e.errno))
+try:
+    open("/dev/shm/" + sys.argv[1] + "-child", "w").close(); out.append("shm-write OK")
+except OSError as e:
+    out.append("shm-write FAIL %s" % e.errno)
+out.append("shm-host-marker " + ("VISIBLE" if os.path.exists("/dev/shm/" + sys.argv[1] + "-host") else "HIDDEN"))
+pids = [p for p in os.listdir("/proc") if p.isdigit()]; rd = 0
+for p in pids:
+    try:
+        os.close(os.open("/proc/%s/cmdline" % p, os.O_RDONLY)); rd += 1      # openable count only, content never read
+    except OSError:
+        pass
+out.append("proc pids=%d cmdline-openable=%d" % (len(pids), rd))
+open(sys.argv[2], "w").write("\n".join(out) + "\n")
+'
+t_unit_devices_proc(){
+  # Real transient units with the real isolation props: device nodes (open+close only), a private /dev/shm next to the private
+  # /dev, and how many host pids (and their cmdline) the child can see. The control unit has no properties.
+  # Probed in the user manager: DevicePolicy=closed+DeviceAllow and ProtectProc/ProcSubset do not apply; PrivateDevices and PrivatePIDs do.
+  local m="$P-dev"; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"; echo host > "/dev/shm/$m-host"
+  python3 - "$C" "$P" "$T" "$DEV_PROBE" "$m" <<'PY'
+import importlib.util, os, subprocess, sys
+c, p, t, probe, m = sys.argv[1:6]
+home = os.path.expanduser("~"); unit = p + "-devunit"; sc = home + "/.cache/director-scratch/" + unit
+os.makedirs(sc + "/st"); os.makedirs(sc + "/wmstate")
+os.environ.update(DIRECTOR_STATE=sc + "/st", WM_DECIDE_STATE=sc + "/wmstate", WM_ASKS_CMD=sc + "/wm-asks")
+spec = importlib.util.spec_from_file_location("dec", c); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+open(sc + "/probe.py", "w").write(probe)
+argv = mod.launch_argv(unit, "/e.md", tail=["/usr/bin/python3", sc + "/probe.py", m, sc + "/result"])
+open(t + "/dev.argv", "w").write(" ".join(argv))
+r = subprocess.run(argv[:1] + ["--wait", "--pipe"] + argv[1:], capture_output=True, text=True)
+sys.stderr.write(r.stderr[-300:])
+if os.path.exists("/dev/shm/%s-child" % m):
+    open(t + "/iso-shm-child", "w").close(); os.unlink("/dev/shm/%s-child" % m)
+r2 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-ctl", "--", "/usr/bin/python3", sc + "/probe.py", m, sc + "/control"],
+                    capture_output=True, text=True)
+sys.stderr.write(r2.stderr[-300:])
+PY
+  local u="$SCR/$P-devunit" res ctl; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"
+  echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
+  local host_leak=no; [ -e "$T/iso-shm-child" ] && host_leak=yes; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"
+  [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_devices_proc "no probe output"; return; }
+  [ "$(echo "$ctl" | grep -c '^dev .* OPEN')" -ge 3 ] || { bad unit_devices_proc "control opens fewer than 3 device nodes (test not discriminating)"; return; }
+  echo "$res" | grep -q '^dev .* OPEN' && { bad unit_devices_proc "device node openable inside the boundary: $(echo "$res" | grep '^dev .* OPEN' | tr '\n' ' ')"; return; }
+  echo "$res" | grep -q '^dev ' || { bad unit_devices_proc "no device probed"; return; }
+  echo "$ctl" | grep -q '^shm-host-marker VISIBLE' || { bad unit_devices_proc "control does not share /dev/shm (test not discriminating)"; return; }
+  echo "$res" | grep -q '^shm-host-marker HIDDEN' && [ "$host_leak" = no ] || { bad unit_devices_proc "host /dev/shm visible or written from the isolated child"; return; }
+  local rp cp; rp="$(echo "$res" | sed -n 's/.*cmdline-openable=//p')"; cp="$(echo "$ctl" | sed -n 's/.*cmdline-openable=//p')"
+  [ "${cp:-0}" -gt 10 ] || { bad unit_devices_proc "control sees too few pids (test not discriminating)"; return; }
+  [ "${rp:-99}" -le 1 ] || { bad unit_devices_proc "host process cmdline openable inside the boundary: $rp"; return; }
+  ok unit_devices_proc
+}
 t_override_refused(){
   # DIRECTOR_LAUNCH_CMD / DIRECTOR_RESET_CMD replace the boundary: in isolation mode they must resolve to a file under the scratch root.
   python3 - "$C" "$T" "$SCR" <<'PY'
@@ -307,5 +366,5 @@ print("override refusal ok")
 PY
   local rc=$?; rm -f "$SCR/ov-"*; [ $rc = 0 ] && ok override_refused || bad override_refused "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm override_refused; do "t_$t"; done; fi
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }
