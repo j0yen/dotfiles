@@ -9,7 +9,7 @@ Dry-run by default: prints what --apply would write. --apply appends one JSON li
 EXACTLY equals a STALE-SUPERSEDED row, still undelivered, is marked; CURRENT-UNDELIVERED and UNKNOWN rows are never touched, a changed rev or fp is a
 different identity, and with --snapshot an entry is marked only if its exact line (ts included) is in the snapshot, so entries newer than the review are left alone.
 followup-eval.py replay skips sidecar-superseded identities and still delivers everything else.
-Env: FOLLOWUP_STATE_DIR / FOLLOWUP_OUTBOX (as followup-eval.py). Exit 0 ok, 2 bad input.
+Env: FOLLOWUP_STATE_DIR / FOLLOWUP_OUTBOX (as followup-eval.py). A CURRENT/UNKNOWN row with the same (id, rev, fp) vetoes a STALE row. --apply requires --snapshot. Exit 0 ok, 2 bad input.
 """
 import argparse, fcntl, json, os, sys, time
 
@@ -48,8 +48,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--classified", required=True); ap.add_argument("--snapshot"); ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
+    if a.apply and not a.snapshot:
+        print("--apply requires --snapshot (the reviewed outbox copy); dry-run may omit it", file=sys.stderr); sys.exit(2)
     sd, ob, side = paths()
-    stale = {}
+    stale = {}; keep = set()
     try:
         for line in open(a.classified, encoding="utf-8"):
             f = line.rstrip("\n").split("\t")
@@ -57,8 +59,12 @@ def main():
                 continue
             if f[0] == STALE:
                 stale[(f[1], f[2], f[5])] = f[6]
+            else:
+                keep.add((f[1], f[2], f[5]))
     except OSError as ex:
         print("cannot read classified file: %s" % ex, file=sys.stderr); sys.exit(2)
+    for k in keep:  # a CURRENT/UNKNOWN row with the same identity vetoes a STALE row: fail toward delivery
+        stale.pop(k, None)
     snap = None
     if a.snapshot:
         try:
@@ -80,7 +86,13 @@ def main():
     for k, e in todo:
         print("%s %s rev=%s fp=%s" % ("SUPERSEDE" if a.apply else "WOULD-SUPERSEDE", k[0], k[1], k[2]))
     if a.apply and todo:
+        gap = False
+        if os.path.exists(side) and os.path.getsize(side) > 0:  # a crash-truncated sidecar must not glue the next line onto its tail
+            with open(side, "rb") as bh:
+                bh.seek(-1, 2); gap = bh.read(1) != b"\n"
         with open(side, "a", encoding="utf-8") as fh:
+            if gap:
+                fh.write("\n")
             for k, e in todo:
                 fh.write(json.dumps({"id": k[0], "rev": e.get("rev", 0), "fp": k[2], "entry_ts": e.get("ts"), "bucket": STALE, "evidence": stale[k], "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, separators=(",", ":")) + "\n")
             fh.flush(); os.fsync(fh.fileno())

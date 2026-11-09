@@ -39,3 +39,19 @@ grep -c '"delivered":false' "$FOLLOWUP_OUTBOX" | grep -qx 7; chk "2: all 7 outbo
 : >"$DLOG"; python3 -I "$EV" replay >/dev/null 2>&1
 got="$(sort "$DLOG" | tr '\n' ' ')"
 [ "$got" = "C1 S2 S3 S4 U1 " ] && ! grep -qx S1 "$DLOG"; chk "3: replay delivers C1 S2 S3 U1 and the post-snapshot S4 copy, skips superseded S1 and the snapshot S4 line (got: $got)" $?
+
+# 4. conflicting classification: CURRENT/UNKNOWN with the same identity as a STALE row vetoes it (either row order); apply without --snapshot is refused; truncated sidecar gets a newline first
+export FOLLOWUP_STATE_DIR="$base/state4" FOLLOWUP_OUTBOX="$base/state4/outbox.jsonl"; mkdir -p "$FOLLOWUP_STATE_DIR"
+SIDE="${FOLLOWUP_OUTBOX%.jsonl}.superseded.jsonl"
+{ e K1 1 K1fp 2026-11-08T10:00:00; e K2 1 K2fp 2026-11-08T10:00:01; e K3 1 K3fp 2026-11-08T10:00:02; } >"$FOLLOWUP_OUTBOX"; cp "$FOLLOWUP_OUTBOX" "$base/snap4.jsonl"
+printf 'CURRENT-UNDELIVERED\tK1\t1\tcorrection-owed\tctl\tK1fp\topen\nSTALE-SUPERSEDED\tK1\t1\tcorrection-owed\tctl\tK1fp\tclosed\nSTALE-SUPERSEDED\tK2\t1\tcorrection-owed\tctl\tK2fp\tclosed\nUNKNOWN\tK2\t1\tcorrection-owed\tctl\tK2fp\tnone\nSTALE-SUPERSEDED\tK3\t1\tcorrection-owed\tctl\tK3fp\tclosed\n' >"$base/classified4.tsv"
+out="$(python3 -I "$REC" --classified "$base/classified4.tsv" --snapshot "$base/snap4.jsonl" 2>&1)"
+grep -q 'WOULD-SUPERSEDE K3 ' <<<"$out" && ! grep -q -E 'WOULD-SUPERSEDE (K1|K2) ' <<<"$out"; chk "4: CURRENT/STALE and STALE/UNKNOWN conflicts veto the STALE row (dry-run lists K3 only)" $?
+python3 -I "$REC" --classified "$base/classified4.tsv" --apply >/dev/null 2>&1; rc=$?
+[ "$rc" != 0 ] && [ ! -e "$SIDE" ]; chk "4: apply without --snapshot is refused (rc=$rc), no sidecar written" $?
+python3 -I "$REC" --classified "$base/classified4.tsv" --snapshot "$base/snap4.jsonl" --apply >/dev/null 2>&1
+[ "$(jq -r .id "$SIDE" | tr '\n' ' ')" = "K3 " ]; chk "4: apply with conflicts supersedes K3 only" $?
+printf '{"id":"zz","entry_ts":"2' >"$SIDE"   # crash-truncated sidecar, no trailing newline
+printf 'STALE-SUPERSEDED\tK1\t1\tcorrection-owed\tctl\tK1fp\tclosed\n' >"$base/classified5.tsv"
+python3 -I "$REC" --classified "$base/classified5.tsv" --snapshot "$base/snap4.jsonl" --apply >/dev/null 2>&1
+[ "$(wc -l <"$SIDE")" = 2 ] && [ "$(tail -n1 "$SIDE" | jq -r .id)" = K1 ] && head -n1 "$SIDE" | grep -qx '{"id":"zz","entry_ts":"2'; chk "4: truncated sidecar gets a newline before the append (new line is valid JSON on its own line)" $?
