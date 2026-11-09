@@ -84,4 +84,13 @@ printf '%s' "${ra/,\"replay_at\":1762703600/}" | "$D" alert >/dev/null 2>&1
 python3 -I -c 'import json,sys;c=json.load(open(sys.argv[1]))["content"];assert c.startswith("2025-11-09T14:53:20Z carbon-alive[") and "REPLAY" not in c,c' "$CA_CURL_LOG/stdin" \
   && ok "p2 fresh entry -> at time first, no REPLAY" || bad "p2 fresh text"
 
+# (w) C5: stale carbon-alive-discord.* temp configs (left by a SIGKILL) are removed at the next start; fresh ones kept
+creset; setwf 600 "$URL"; td="$T/tmpd"; mkdir -p "$td"
+touch -d '-15 minutes' "$td/carbon-alive-discord.stale1"; touch "$td/carbon-alive-discord.fresh1"; touch -d '-15 minutes' "$td/other.old"
+printf '%s' "$alert" | TMPDIR="$td" "$D" alert >/dev/null 2>&1; r=$?
+left="$(cd "$td" && ls | sort | tr '\n' ' ')"
+[ "$r" = 0 ] && [ ! -e "$td/carbon-alive-discord.stale1" ] && [ -e "$td/carbon-alive-discord.fresh1" ] && [ -e "$td/other.old" ] \
+  && [ "$left" = "carbon-alive-discord.fresh1 other.old " ] \
+  && ok "w stale carbon-alive-discord.* removed at start, fresh one and other files kept, own config removed on exit" || bad "w temp cleanup (left: $left)"
+
 echo "carbon-alive-discord.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

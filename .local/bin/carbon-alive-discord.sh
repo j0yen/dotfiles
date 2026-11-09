@@ -10,7 +10,9 @@
 # curl: the text starts with the alert's `at` time (UTC ISO) and, when carbon-alive.sh replays an entry an earlier run
 # queued (`replay_at` set), the word REPLAY and the replay time, so an alert sent after a delivery outage never reads as
 # current. The URL goes to curl in a 0600 temp config file (-K), never on an argv, and is never printed: curl's own
-# stderr is discarded.
+# stderr is discarded. The temp config is ${TMPDIR:-/tmp}/carbon-alive-discord.XXXXXXXXXX, removed on exit; since a
+# SIGKILL (carbon-alive.sh's timeout -k) skips the EXIT trap, each start first removes files with that prefix owned by
+# the running user in the same dir and older than 10 minutes.
 # Exit 0 only on HTTP 2xx (204 included); 3 = HTTP 4xx other than 429 (rejected permanently: carbon-alive.sh moves the
 # entry to outbox.dead.jsonl); 2 = webhook file rejected or bad input; 1 = post failed (retry).
 set -u
@@ -19,7 +21,9 @@ wf="${CARBON_ALIVE_WEBHOOK_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/carbon-alive/
 alert="$(cat)"
 
 umask 077
-kf="$(mktemp)" || exit 1
+td="${TMPDIR:-/tmp}"
+find "$td" -maxdepth 1 -type f -name 'carbon-alive-discord.*' -user "$(id -u)" -mmin +10 -delete 2>/dev/null
+kf="$(mktemp "$td/carbon-alive-discord.XXXXXXXXXX")" || exit 1
 trap 'rm -f "$kf"' EXIT
 
 # Validate the webhook file and write the curl config; the URL stays inside this python process and $kf.
@@ -53,7 +57,9 @@ head = iso(a.get("at")) + (f" REPLAY {iso(a['replay_at'])}" if a.get("replay_at"
 text = (f"{head} carbon-alive[{a.get('host', '?')}] {kind}: state={a.get('state', '?')} "
         f"executor={a.get('executor', 'unknown')} "
         f"outage_since={a.get('outage_since')} states={','.join(a.get('states') or [])} | "
-        + " ".join(f"{k}={v}" for k, v in rd.items()))
+        + " ".join(f"{k}={v}" for k, v in rd.items())
+        + ("" if not isinstance(a.get("previous"), dict)
+           else " | previous: " + " ".join(f"{k}={v}" for k, v in a["previous"].items())))
 text = " ".join(text.split())
 if len(text) > 2000: text = text[:1999] + "…"
 print(json.dumps({"content": text}))

@@ -12,7 +12,8 @@ calls="$T/calls"; good="$T/deliver-ok.sh"; badd="$T/deliver-bad.sh"
 printf '#!/bin/sh\necho "$1 $(cat)" >> %s\n' "$calls" > "$good"
 printf '#!/bin/sh\ncat >/dev/null; exit 1\n' > "$badd"; chmod +x "$good" "$badd"
 setdel() { echo "$1" > "$XDG_CONFIG_HOME/carbon-alive/deliver"; }
-reset() { rm -rf "$XDG_STATE_HOME" "$calls"; : > "$calls"; unset CA_FAKE_RC CA_FAKE_UM CA_FAKE_GW CA_FAKE_BUS CA_FAKE_DASH CA_FAKE_EXEC CARBON_ALIVE_SEND_BUDGET_S
+reset() { rm -rf "$XDG_STATE_HOME" "$calls"; : > "$calls"; unset CA_FAKE_RC CA_FAKE_UM CA_FAKE_GW CA_FAKE_BUS CA_FAKE_DASH CA_FAKE_EXEC CARBON_ALIVE_SEND_BUDGET_S \
+    CA_FAKE_UM_INV CA_FAKE_UM_NR CA_FAKE_UM_MONO CA_FAKE_BOOT
   rm -f "$XDG_CONFIG_HOME/carbon-alive/expect-executor"; setdel "$good"; clock=1000000; }
 run() { CARBON_ALIVE_NOW="$clock" "$here/.local/bin/carbon-alive.sh"; local r=$?; clock=$((clock+${1:-120})); return $r; }
 n() { grep -c "^$1 " "$calls"; }
@@ -145,5 +146,54 @@ c1="$(grep -c '"id": "e1"' "$calls")"; c2="$(grep -c '"id": "e2"' "$calls")"; c3
 reset; queue 2; export CARBON_ALIVE_SEND_BUDGET_S=0; run 2> "$T/err"; c0="$(wc -l < "$calls")"; unset CARBON_ALIVE_SEND_BUDGET_S; run
 [ "$c0" = 0 ] && grep -q 'send budget 0s spent, 2 outbox entries left' "$T/err" && [ "$(n alert)" = 2 ] && [ ! -s "$sdir/outbox.jsonl" ] \
   && ok "r send budget spent -> no new send starts, entries wait for the next run" || { bad "r budget c0=$c0"; cat "$T/err"; }
+
+# C1: user@1000 restart / host reboot between two probes are events (alert on first sight, no hold)
+bl() { python3 -I -c "import json;print(json.load(open('$XDG_STATE_HOME/carbon-alive/state.json')).get('baseline',{}).get('$1'))"; }
+reset; run; export CA_FAKE_UM_INV=fedcba9876543210fedcba9876543210; run; s2="$(st)"; a2="$(n alert)"; run
+[ "$s2" = user-manager-restarted ] && [ "$a2" = 1 ] && [ "$(n alert)" = 1 ] && [ "$(n recovery)" = 1 ] && [ "$(st)" = ok ] \
+  && grep -q '"state": "user-manager-restarted"' "$calls" && grep -q '"um_inv": "0123456789abcdef0123456789abcdef"' "$calls" \
+  && grep -q 'previous: boot_id=' "$calls" \
+  && ok "s baseline, new InvocationID -> one alert user-manager-restarted on run 2 (with previous), run 3 ok + one recovery" \
+  || { bad "s inv change s2=$s2 a2=$a2"; cat "$calls"; }
+
+reset; run; export CA_FAKE_UM_NR=1; run
+[ "$(st)" = user-manager-restarted ] && [ "$(n alert)" = 1 ] && ok "s2 NRestarts 0 -> 1, same InvocationID -> user-manager-restarted" \
+  || { bad "s2 nrestarts"; cat "$calls"; }
+
+reset; run; export CA_FAKE_BOOT=99999999-8888-7777-6666-555555555555 CA_FAKE_UM_INV=fedcba9876543210fedcba9876543210; run
+[ "$(st)" = host-rebooted ] && [ "$(n alert)" = 1 ] && ! grep -q user-manager-restarted "$calls" \
+  && grep -q '"state": "host-rebooted"' "$calls" && ok "s3 boot_id change -> host-rebooted, not user-manager-restarted" \
+  || { bad "s3 reboot"; cat "$calls"; }
+
+reset; export CA_FAKE_UM_INV=fedcba9876543210fedcba9876543210 CA_FAKE_UM_NR=7; run
+[ "$(wc -l < "$calls")" = 0 ] && [ "$(st)" = ok ] && [ "$(bl um_inv)" = fedcba9876543210fedcba9876543210 ] && [ "$(bl um_nrestarts)" = 7 ] \
+  && grep -q '"um_nrestarts": "7"' "$sdir/probes.jsonl" && grep -q '"boot_id"' "$sdir/state.json" \
+  && ok "s4 first run, no previous values -> baseline recorded, no alert" || { bad "s4 baseline"; cat "$calls"; }
+
+# the 11-09 shape: one probe sees the manager down, the next sees it back under a new InvocationID
+reset; run; export CA_FAKE_UM=activating CA_FAKE_UM_INV=; run; s1="$(st)"; export CA_FAKE_UM_INV=fedcba9876543210fedcba9876543210; unset CA_FAKE_UM; run; s2="$(st)"; run
+[ "$s1/$s2/$(st)" = user-manager-down/user-manager-restarted/ok ] && [ "$(n alert)" = 1 ] && [ "$(n recovery)" = 1 ] \
+  && ok "s5 down once, back with a new InvocationID -> alert user-manager-restarted, then recovery ($s1/$s2)" \
+  || { bad "s5 down then restarted $s1/$s2/$(st)"; cat "$calls"; }
+
+# C2: expect-executor + no heartbeat reading -> executor-stale with executor=unknown
+reset; touch "$XDG_CONFIG_HOME/carbon-alive/expect-executor"; run; run
+[ "$(n alert)" = 1 ] && [ "$(st)" = executor-stale ] && [ "$(ex)" = unknown ] && grep -q 'executor=unknown' "$calls" \
+  && ok "t expect-executor + heartbeat absent x2 -> one alert, executor-stale, executor=unknown" || { bad "t executor unknown"; cat "$calls"; }
+
+# C3: trimming outbox.dead.jsonl logs the count dropped
+reset; mkdir -p "$sdir"; seq 1100 | sed 's/^/{"dead": /; s/$/}/' > "$sdir/outbox.dead.jsonl"; run 2> "$T/err"
+[ "$(wc -l < "$sdir/outbox.dead.jsonl")" = 1000 ] && [ "$(grep -c 'dropped the oldest 100$' "$T/err")" = 1 ] && [ "$(wc -l < "$T/err")" = 1 ] \
+  && head -n1 "$sdir/outbox.dead.jsonl" | grep -qx '{"dead": 101}' && ok "u 1100-line dead file -> 1000 lines, one log line naming 100" \
+  || { bad "u dead trim"; cat "$T/err"; }
+
+# C4: a deliverer that ignores TERM is killed (timeout -k 5) and the run ends inside TimeoutStartSec=60
+# (the sleep's pid goes to a file: a timeout that KILLs only its direct child, e.g. uutils, leaves the sleep running;
+# the test removes it by that pid; under systemd the oneshot's cgroup is cleaned up when the run ends)
+pt="$T/deliver-noterm.sh"; printf '#!/bin/sh\ntrap "" TERM\ncat >/dev/null\nsleep 120 &\necho $! > %s\nwait\nwait\n' "$T/sleep.pid" > "$pt"; chmod +x "$pt"
+reset; setdel "$pt"; queue 1; rm -f "$T/sleep.pid"; t0="$(date +%s)"; run 2>/dev/null; el=$(( $(date +%s) - t0 ))
+sp="$(cat "$T/sleep.pid" 2>/dev/null)"; [ -n "$sp" ] && ps -o args= -p "$sp" 2>/dev/null | grep -qx 'sleep 120' && kill -KILL "$sp" 2>/dev/null
+[ "$el" -lt 60 ] && [ "$(wc -l < "$sdir/outbox.jsonl")" = 1 ] && grep -q '"id": "e1"' "$sdir/outbox.jsonl" \
+  && ok "v deliverer ignoring TERM, sleep 120 -> run ends in ${el}s (< 60), entry stays in the outbox" || bad "v TERM-ignoring deliverer el=${el}s"
 
 echo "carbon-alive.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
