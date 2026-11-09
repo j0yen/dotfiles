@@ -56,15 +56,16 @@ commit_line() { # one JSON line: append, fsync, read back; 0 only when the line 
 if [ ! -e "$ob" ]; then mkdir -p "$(dirname "$ob")" && : >"$ob" && sync -- "$(dirname "$ob")" 2>/dev/null || nocommit "outbox creation"; fi
 jq -e -s . "$ob" >/dev/null 2>&1 || nocommit "unparseable outbox (a malformed or truncated line); no dedupe query can be trusted"
 
-sent() { jq -e -s --arg k "$key" --arg p "$1" 'any(.[]; (.sent_part==true or (.reconciled==true and .action=="sent")) and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }
+sent() { jq -e -s --arg k "$key" --arg p "$1" 'any(.[]; .sent_part==true and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1 && return 0
+  [ "$(pstate "$1")" = ok ] && jq -e -s --arg k "$key" --arg p "$1" 'any(.[]; .reconciled==true and .action=="sent" and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }   # a reconcile record counts only while no later reconcile_uncommitted supersedes it
 record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" \
   '{sent_part:true,delivered:true,key:$k,part:$p,message_id:$m,dest:$d,ts:$ts}')"; }
 mark() { # kind part [marker_ts]: kind = sending_part | send_cleared | needs_reconcile; 0 only when durably committed
   commit_line "$(jq -nc --arg kind "$1" --arg k "$key" --arg p "$2" --arg d "$dest" --arg i "$id" --arg ts "$(date -Ins)" --arg mts "${3:-}" \
     '{($kind):true,key:$k,part:$p,dest:$d,id:$i,ts:$ts} + (if $mts == "" then {} else {marker_ts:$mts} end)')"; }
 pstate() { # part -> "sending <ts>" when the last marker for it is an open sending_part, else "ok"
-  jq -r -s --arg k "$key" --arg p "$1" '[.[] | select(.key==$k and .part==$p and (.sent_part==true or .sending_part==true or .send_cleared==true or .reconciled==true))] | last
-    | if . != null and .sending_part == true then "sending " + .ts else "ok" end' "$ob" 2>/dev/null; }
+  jq -r -s --arg k "$key" --arg p "$1" '[.[] | select(.key==$k and .part==$p and (.sent_part==true or .sending_part==true or .send_cleared==true or .reconciled==true or .reconcile_uncommitted==true))] | last
+    | if . != null and (.sending_part == true or .reconcile_uncommitted == true) then "sending " + .ts else "ok" end' "$ob" 2>/dev/null; }
 reconcile() { # part marker_ts: surface the unknown part once per marker (record + bell), never resend
   jq -e -s --arg k "$key" --arg p "$1" --arg t "$2" 'any(.[]; .needs_reconcile==true and .key==$k and .part==$p and .marker_ts==$t)' "$ob" >/dev/null 2>&1 && return 0
   mark needs_reconcile "$1" "$2" || nocommit "needs_reconcile record"   # the bell is rung only once the record is durable
@@ -74,7 +75,11 @@ unknown() { local st; st="$(pstate "$1")"; [ "${st%% *}" = sending ] && reconcil
 if [ -n "$mode" ]; then   # flock-guarded human settlement of an unknown part (the lock above is held)
   st="$(pstate "$rpart")"
   [ "${st%% *}" = sending ] || { echo "followup-deliver: no open unknown marker for part $rpart of $key" >&2; exit 1; }
-  commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg a "$ract" --arg ts "$(date -Ins)" '{reconciled:true,key:$k,part:$p,action:$a,by:"reconcile-mode",ts:$ts}')" || nocommit "reconcile record"
+  if ! commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg a "$ract" --arg ts "$(date -Ins)" '{reconciled:true,key:$k,part:$p,action:$a,by:"reconcile-mode",ts:$ts}')"; then
+    # the record may sit in the outbox without being durable: history is kept, a later compensating line reopens the part as UNKNOWN (never an authorization)
+    commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg a "$ract" --arg ts "$(date -Ins)" '{reconcile_uncommitted:true,key:$k,part:$p,action:$a,ts:$ts}')" || true
+    nocommit "reconcile record"
+  fi
   exit 0
 fi
 rmax="${FOLLOWUP_RETRY_AFTER_MAX:-300}"; [[ "$rmax" =~ ^[0-9]{1,6}$ ]] || rmax=300

@@ -258,6 +258,12 @@ reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1;
 SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary sent --key 'discord:#ops|T1|1|R1|result' </dev/null >/dev/null 2>&1; rc=$?; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
 [ "$rc" = 2 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "i3b: fsync failure on a reconcile 'sent' record: exit 2 and no summary resend on replay (rc $rc, summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
 
+# i3c: a resend reconcile record whose fsync failed is not an authorization: replay sends 0 times, one notification, the part stays UNKNOWN
+reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rm -f "$FH_ACCEPT"
+SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary resend --key 'discord:#ops|T1|1|R1|result' </dev/null >/dev/null 2>&1; : >"$base/bell"
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 1 ] && jq -e -s 'any(.[]; .reconciled==true and .action=="resend")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "i3c: uncommitted resend record is not honoured: replays send 0 more times (summary sends $(grep -c 'analysis done' "$FH_LOG")), one notification (bells $(nbell needs-reconcile)), history kept" "$st"
+
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"
 echo "followup-delivery: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
