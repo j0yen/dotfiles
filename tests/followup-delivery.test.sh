@@ -25,6 +25,10 @@ if [ -f "$FH_DIE" ]; then k=chunk; case "$body" in MEDIA:*) k=media;; "analysis 
     t=""; while [ "$p" -gt 1 ]; do tr '\0' '\n' </proc/$p/cmdline | sed -n 2p | grep -q 'followup-deliver\.sh$' && t=$p; p="$(awk '/^PPid/{print $2}' /proc/$p/status)"; done
     [ -n "$t" ] && kill -9 "$t"   # the outermost match is the script itself, not its command-substitution subshell
     exit 1; fi; fi
+# FH_ACCEPT holds kind:mode (kind summary|media|chunk): every send of that kind is ACCEPTED remotely (logged above), then the spy itself exits nonzero (mode nonzero = 1, timeout = 124, noid = exit 0 with no message id)
+if [ -f "$FH_ACCEPT" ]; then k=chunk; case "$body" in MEDIA:*) k=media;; "analysis done") k=summary;; esac
+  a="$(cat "$FH_ACCEPT")"
+  if [ "${a%%:*}" = "$k" ]; then case "${a##*:}" in nonzero) exit 1;; timeout) exit 124;; noid) echo '{"success":true}'; exit 0;; esac; fi; fi
 case "$body" in
   MEDIA:*) c="$(cat "$FH_ATTACH_429" 2>/dev/null || echo 0)"
            if [ "$c" = always ]; then fail429; elif [ "$c" -gt 0 ] 2>/dev/null; then echo $((c - 1)) >"$FH_ATTACH_429"; fail429; fi;;
@@ -36,14 +40,14 @@ n=$((n + 1)); echo "$n" >"$FH_CTR"; echo "{\"success\":true,\"message_id\":\"m$n
 FAKE
 printf '#!/usr/bin/env bash\necho "$1" >>"$FS_LOG"\n' >"$base/bin/sleep"
 chmod +x "$base/bin/hermes" "$base/bin/sleep"
-export PATH="$base/bin:$PATH" HOME="$base/home" FH_LOG="$base/h.log" FH_CTR="$base/h.ctr" FH_ATTACH_429="$base/a429" FH_DIE="$base/die" FH_TEXT_429="$base/t429" FS_LOG="$base/s.log"
+export PATH="$base/bin:$PATH" HOME="$base/home" FH_LOG="$base/h.log" FH_CTR="$base/h.ctr" FH_ATTACH_429="$base/a429" FH_DIE="$base/die" FH_ACCEPT="$base/accept" FH_TEXT_429="$base/t429" FS_LOG="$base/s.log"
 export FOLLOWUP_STATE_DIR="$base/state" FOLLOWUP_OUTBOX="$base/state/outbox.jsonl" FOLLOWUP_DELIVER_RETRIES=3
 mkdir -p "$HOME"; : >"$FOLLOWUP_OUTBOX"
 head -c 4000 /dev/zero | tr '\0' 'x' >"$base/report.txt"
 ev() { # ev result [task] -> one outbox event (the shape of a result event with a destination)
   jq -nc --arg r "$1" --arg t "${2:-T1}" --arg a "$base/report.txt" \
     '{id:("ev-"+$t+"-"+$r),seat:"ctl",kind:"result",dest:"discord:#ops",task:$t,rev:1,result:$r,summary:"analysis done",attachment:$a,delivered:false}'; }
-reset() { : >"$FH_LOG"; : >"$FS_LOG"; rm -f "$FH_CTR" "$FH_ATTACH_429" "$FH_TEXT_429" "$FH_DIE"; : >"$base/bell"; : >"$FOLLOWUP_OUTBOX"; }
+reset() { : >"$FH_LOG"; : >"$FS_LOG"; rm -f "$FH_CTR" "$FH_ATTACH_429" "$FH_TEXT_429" "$FH_DIE" "$FH_ACCEPT"; chmod u+w "$FOLLOWUP_OUTBOX" 2>/dev/null; : >"$base/bell"; : >"$FOLLOWUP_OUTBOX"; }
 sends() { grep -c . "$FH_LOG"; }
 attach_sends() { grep -c $'\tMEDIA:' "$FH_LOG"; }
 
@@ -124,9 +128,60 @@ for kind in summary media chunk; do
 done
 # settled by a human: action=resend lets the part go out again; later parts then follow
 reset; ev R1 >"$FOLLOWUP_OUTBOX"; echo summary >"$FH_DIE"; python3 -I "$EV" replay >/dev/null 2>&1; : >"$FH_LOG"
-jq -nc '{reconciled:true,key:"discord:#ops|T1|1|R1|result",part:"summary",action:"resend"}' >>"$FOLLOWUP_OUTBOX"
+"$DEL" --reconcile summary resend <<<"$(ev R1)"; rrc=$?
+[ "$rrc" = 0 ]; st=$?; chk "e: --reconcile summary resend exits 0 (rc $rrc)" "$st"
 python3 -I "$EV" replay >/dev/null 2>&1
 ! grep -q '"delivered":false' "$FOLLOWUP_OUTBOX" && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(attach_sends)" = 1 ]; st=$?; chk "e: a reconciled resend record releases the part and the item then delivers" "$st"
+
+# (e2) ambiguous failures: the provider may have accepted, so nothing is retried, resent or fallen back; one owned notification, later parts held
+for kind in summary media chunk; do for mode in nonzero timeout noid; do
+  reset; ev R1 >"$FOLLOWUP_OUTBOX"; echo "$kind:$mode" >"$FH_ACCEPT"; [ "$kind" = chunk ] && echo always >"$FH_ATTACH_429"
+  cnt() { case "$kind" in summary) grep -c 'analysis done' "$FH_LOG";; media) attach_sends;; chunk) grep -v $'\tMEDIA:' "$FH_LOG" | grep -vc 'analysis done';; esac; }
+  python3 -I "$EV" replay >/dev/null 2>&1; c1="$(cnt)"; t1="$(sends)"
+  python3 -I "$EV" replay >/dev/null 2>&1; python3 -I "$EV" replay >/dev/null 2>&1
+  [ "$c1" = 1 ] && [ "$(cnt)" = 1 ]; st=$?; chk "e2/$kind/$mode: ONE remote effect for the part across the in-invocation attempts (got $c1) and two replays (got $(cnt))" "$st"
+  case "$kind" in summary) want=1;; media) want=2;; chunk) want=5;; esac   # summary only / summary+file / summary + 3 rate-limited file tries + chunk 1
+  [ "$(sends)" = "$want" ]; st=$?; chk "e2/$kind/$mode: later parts held, total sends $(sends) = $want" "$st"
+  [ ! -s "$FS_LOG" ] || [ "$kind" = chunk ]; st=$?; chk "e2/$kind/$mode: no backoff sleep for an ambiguous failure ($(paste -sd, "$FS_LOG"))" "$st"
+  grep -q '"delivered":false' "$FOLLOWUP_OUTBOX"; st=$?; chk "e2/$kind/$mode: item stays delivered:false" "$st"
+  [ "$(jq -s '[.[]|select(.needs_reconcile==true)]|length' "$FOLLOWUP_OUTBOX")" = 1 ] && [ "$(bells)" = 1 ]; st=$?; chk "e2/$kind/$mode: exactly one needs_reconcile record and one bell" "$st"
+  [ "$(jq -s '[.[]|select(.send_cleared==true and (.part|startswith("attachment-chunk")|not) and .part!="attachment")]|length' "$FOLLOWUP_OUTBOX")" = 0 ]; st=$?; chk "e2/$kind/$mode: the marker was not cleared" "$st"
+done; done
+# a positively identified 429 on the summary is still retried and does clear the marker
+reset; echo always >"$FH_TEXT_429"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$(sends)" = 4 ] && jq -e -s 'any(.[]; .send_cleared==true and .part=="summary") and (any(.[]; .needs_reconcile==true)|not)' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "e2: a 429 on the summary is retried 3 times (attachment then goes), clears the marker and raises no reconcile (sends $(sends))" "$st"
+
+# (e3) marker durability: no commit, no send
+reset; ev R1 >"$FOLLOWUP_OUTBOX"; chmod a-w "$FOLLOWUP_OUTBOX"
+if [ "$(id -u)" = 0 ]; then echo "SKIP e3 (root ignores file modes)"; else
+  "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+  [ "$(sends)" = 0 ]; st=$?; chk "e3: marker write fails (read-only outbox) => zero sends" "$st"
+  [ "$rc" != 0 ]; st=$?; chk "e3: the script exits nonzero (rc $rc)" "$st"
+  [ "$(bells)" = 1 ] && grep -q deliver-blocked "$base/bell"; st=$?; chk "e3: the bell rang once with deliver-blocked" "$st"
+  python3 -I "$EV" replay >/dev/null 2>&1; [ "$(sends)" = 0 ]; st=$?; chk "e3: replay through the adapter also sends nothing" "$st"
+fi
+chmod u+w "$FOLLOWUP_OUTBOX"
+reset; ev R1 >"$FOLLOWUP_OUTBOX"; python3 -I "$EV" replay >/dev/null 2>&1
+[ "$(jq -s '[.[]|select(.sending_part==true)]|length' "$FOLLOWUP_OUTBOX")" = 2 ] && [ -z "$(tail -c1 "$FOLLOWUP_OUTBOX")" ]; st=$?; chk "e3: normal run commits a newline-terminated marker per part, read back" "$st"
+sed -n '/^commit_line()/,/^$/p;/^commit_line/,/\]; }/p' "$DEL" | grep -q 'sync --'; st=$?; chk "e3: commit_line fsyncs (sync -- file) and reads the line back" "$st"
+
+# (e4) --reconcile: flock-guarded settlement inside the script
+open_unknown() { reset; ev R1 >"$FOLLOWUP_OUTBOX"; echo summary >"$FH_DIE"; python3 -I "$EV" replay >/dev/null 2>&1; : >"$FH_LOG"; }
+open_unknown; "$DEL" --reconcile summary sent <<<"$(ev R1)"; rc=$?
+python3 -I "$EV" replay >/dev/null 2>&1
+[ "$rc" = 0 ] && ! grep -q 'analysis done' "$FH_LOG" && [ "$(attach_sends)" = 1 ] && ! grep -q '"delivered":false' "$FOLLOWUP_OUTBOX"; st=$?; chk "e4: reconcile sent => summary never resent, attachment follows, item delivered" "$st"
+open_unknown; "$DEL" --reconcile summary sent --key 'discord:#ops|T1|1|R1|result' </dev/null; rc=$?
+[ "$rc" = 0 ] && jq -e -s 'any(.[]; .reconciled==true and .action=="sent" and .part=="summary")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "e4: --key form settles without the event on stdin" "$st"
+reset; ev R1 >"$FOLLOWUP_OUTBOX"; "$DEL" --reconcile summary sent <<<"$(ev R1)" 2>/dev/null; rc=$?
+[ "$rc" = 1 ] && [ "$(jq -s '[.[]|select(.reconciled==true)]|length' "$FOLLOWUP_OUTBOX")" = 0 ]; st=$?; chk "e4: reconcile of a part with no open unknown marker is refused (rc $rc), nothing written" "$st"
+"$DEL" --reconcile summary bogus <<<"$(ev R1)" 2>/dev/null; [ "$?" = 64 ]; st=$?; chk "e4: a bad action is a usage error (64)" "$st"
+open_unknown
+flock "$base/state/lock" python3 -I -c 'import time;time.sleep(3)' & holder=$!; python3 -I -c 'import time;time.sleep(0.5)'
+timeout 1 "$DEL" --reconcile summary sent <<<"$(ev R1)"; rc=$?
+[ "$rc" = 124 ] && [ "$(jq -s '[.[]|select(.reconciled==true)]|length' "$FOLLOWUP_OUTBOX")" = 0 ]; st=$?; chk "e4: reconcile waits on the state flock while another sender holds it (rc $rc), writes nothing" "$st"
+wait "$holder"; "$DEL" --reconcile summary sent <<<"$(ev R1)"; rc=$?
+[ "$rc" = 0 ] && [ "$(jq -s '[.[]|select(.reconciled==true)]|length' "$FOLLOWUP_OUTBOX")" = 1 ]; st=$?; chk "e4: once the lock is free the reconcile record is written" "$st"
+! grep -nE 'jq[^|]*>>[^|]*(OUTBOX|outbox|\$ob)' "$0" "$DEL" | grep -v 'commit_line' ; st=$?; chk "e4: no hand-append recovery with jq into a live outbox remains in the script or the test" "$st"
 
 # (f) empty attachment file: terminates, delivered, with an explicit note
 : >"$base/empty.txt"
