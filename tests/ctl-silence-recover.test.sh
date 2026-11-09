@@ -46,6 +46,9 @@ out="$("$S")"; [ "$out" = launch-failed ] && grep -q 'launch-failed' "$t/notify.
 # escalation repeats only after SR_ESC_MIN
 : > "$t/notify.log"; out="$("$S")"; [ ! -s "$t/notify.log" ] && ok "no early re-escalation" || bad "early escalation"
 SR_NOW=1001000 "$S" >/dev/null; grep -q 'launch-failed unconsumed' "$t/notify.log" && ok "escalates again after SR_ESC_MIN" || bad "re-escalation"
+# 11-09: pane killed seconds after a transcript write (quiet < SR_STALE_MIN) is still recovered
+export SR_LAUNCH_CMD="echo relaunch >> $t/launch.log" SR_PGREP_BIN="$t/pg-none"; rm -f "$t/sr/incident.json" "$t/launch.log"; rm -f "$t/ev/aide-events.cursor"; touch -d @999990 "$t/tr.jsonl"
+out="$("$S")"; [ "$out" = relaunched ] && grep -q relaunch "$t/launch.log" && ok "missing pane + recent transcript write -> recovered despite quiet < threshold" || bad "missing pane recent write ($out)"
 # known-bad control: existing timer-only check on a dead pane acts on nothing
 rm -f "$t/sr/incident.json"; echo 990000 > "$t/aw/heartbeat"; echo 999000 > "$t/aw/wake-armed"; echo "$pane" > "$t/aw/pane"
 EVENTS_DIR="$t/ev" AIDE_TMUX_BIN="$t/tmuxw" OWED_NOW_BIN="$t/none" "$W" check; jq -e '.idle==true and .poked=="no"' "$t/aw/aide-idle.json" >/dev/null && ok "control: aide-wake alone leaves a dead executor unrecovered (poked=no, no launch)" || bad "control"

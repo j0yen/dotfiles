@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ctl-silence-recover.sh: deterministic consumer of the executor's silence (recovery plan d-20261107-072411-hermes-666e step 2).
-# Reads host facts only (unread inbox bytes, transcript write age, pane command), never the wake lease and never a model.
-#   unread work + transcript quiet >= SR_STALE_MIN:
+# Reads host facts only (unread inbox bytes, READY owed rows, transcript write age, pane command), never the wake lease and never a model.
+#   unread work or READY row + transcript quiet >= SR_STALE_MIN:
 #     pane alive & claude running  -> poke the pane; incident stays OPEN until the cursor advances or the transcript is written after the poke
 #     pane gone / shell only       -> hold-gate; allowed -> SR_LAUNCH_CMD (default ctl-launch.sh --resume <sid>); refused or launch rc!=0 -> incident
 #                                     blocked (owned, persistent, notify); the queue and cursor are never touched
@@ -23,6 +23,8 @@ tr_f="${SR_TRANSCRIPT:-$HOME/.claude/projects/-home-jsy/$sid.jsonl}"
 log_f="$EV/aide-events.log"; cur_f="$EV/aide-events.cursor"
 size=$(num "$(stat -c %s "$log_f" 2>/dev/null)"); off=$(num "$(head -c 20 "$cur_f" 2>/dev/null)"); [ "$off" -gt "$size" ] && off=0
 unread=$(( size - off )); tw=$(num "$(stat -c %Y "$tr_f" 2>/dev/null)"); quiet=$(( T - tw ))
+# A1222: a READY owed row (successor whose predecessor closed, owed-now lint) is pending work as well as unread inbox bytes
+ready=$(num "$(OPEN_ASKS="${SR_OPEN_ASKS:-${OPEN_ASKS:-}}" "${SR_OWED_BIN:-$HOME/.claude/hooks/owed-now.sh}" lint --seat ctl 2>/dev/null | grep -c '^READY')")
 wr() { printf '%s\n' "$1" > "$INC.tmp" && mv -f "$INC.tmp" "$INC"; }
 field() { python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$INC" "$1" 2>/dev/null; }
 if [ -s "$INC" ]; then   # open incident: consumed?
@@ -39,7 +41,10 @@ if [ -s "$INC" ]; then   # open incident: consumed?
   fi
   echo "open:$(field state)"; exit 0
 fi
-{ [ "$unread" -gt 0 ] && [ "$quiet" -ge "$STALE" ]; } || { echo idle-ok; exit 0; }
+# 11-09: an absent tmux server or dead/missing ctl pane is recoverable at once, whatever the quiet age (the pane can die seconds after a transcript write)
+pane_missing=no
+if ! [[ "$pane" =~ ^[A-Za-z0-9_.:@%-]+$ ]] || ! pm="$("$TM" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" || [ "$pm" != 0 ]; then pane_missing=yes; fi
+{ { [ "$unread" -gt 0 ] || [ "$ready" -gt 0 ]; } && { [ "$quiet" -ge "$STALE" ] || [ "$pane_missing" = yes ]; }; } || { echo idle-ok; exit 0; }
 alive=no
 if [[ "$pane" =~ ^[A-Za-z0-9_.:@%-]+$ ]] && cmd="$("$TM" display-message -p -t "$pane" '#{pane_dead} #{pane_current_command}' 2>/dev/null)"; then
   [[ "$cmd" =~ ^0\ .*(${SR_ALIVE_RE:-claude|node}) ]] && alive=yes
