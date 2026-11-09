@@ -5,6 +5,7 @@ here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 H="$here/.claude/hooks/owed-now.sh"; W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 p=0; f=0; ck(){ if [ "$2" = "$3" ]; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1 (got [$2] want [$3])"; fi; }
 printf '#!/bin/bash\ncat "$FX_ASKS"\n' >"$W/asks.sh"; printf '#!/bin/bash\necho "{\\"owed\\":0,\\"overdue\\":0,\\"escalated\\":0,\\"ids\\":[]}"\n' >"$W/dec.sh"; chmod +x "$W"/*.sh
+export OWED_NOW_STATE="$W/owed"
 export FX_ASKS="$W/rows.json" WM_ASKS_BIN="$W/asks.sh" WM_DECIDE_BIN="$W/dec.sh" FOLLOWUP_STATE_DIR="$W/st" FOLLOWUP_OUTBOX="$W/st/outbox.jsonl" FOLLOWUP_DELIVER_CMD=true WM_SEAT=ctl OWED_NOW_SOURCE=asks FOLLOWUP_NOW=2026-11-08T15:00
 unset WM_DIRECTOR
 J='{"hook_event_name":"Stop","session_id":"s1"}'
