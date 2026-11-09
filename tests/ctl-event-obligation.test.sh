@@ -54,7 +54,7 @@ keyof() { grep -a "OBLIGATION-KEY id=$1 rev=${2:-1} " "$T/ev/aide-events.log" | 
 # the REAL seat-event.sh writer (stamps `<src> H:MM AM/PM:` onto the third field) and a canonical approvals.log row (approve.sh format) unless NOGRANT=1
 appr() { local a n; n="$(sed -nE 's/.* approval=#([0-9]+)$/\1/p' <<<"$1")"; a="$(sed -nE 's/.* id=([A-Za-z0-9._-]+) .*/\1/p' <<<"$1")"
   [ -n "${NOGRANT:-}" ] || [ -z "$n" ] || printf '#%s | 2026-11-08 10:00 PM PST | ctl | Joe: "ok" | re: approve obligation %s\n' "$n" "${GRANT_RE:-$a}" >> "$T/approvals.log"
-  EVENT_SOURCE="${APPR_SRC:-hermes}" SEAT_EVENT_NOWAKE=1 SEAT_EVENT_ACT=0 EVENTS_DIR="$T/ev" SEATS_TABLE="$T/seats.tsv" bash "$SRC/.local/bin/seat-event.sh" aide "$1"; }
+  EVENT_SOURCE="${APPR_SRC:-hermes}" SEAT_EVENT_NOWAKE=1 SEAT_EVENT_DRY=1 SEAT_EVENT_ACT=0 EVENTS_DIR="$T/ev" SEATS_TABLE="$T/seats.tsv" bash "$SRC/.local/bin/seat-event.sh" aide "$1"; }
 cont() { grep -c 'authorized continuation' "$T/asks.jsonl"; }
 surf() { grep -c 'awaiting a typed approval' "$T/asks.jsonl"; }
 calls() { grep -c . "$T/claude.calls"; }
