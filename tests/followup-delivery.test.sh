@@ -18,7 +18,7 @@ to=""; body=""
 while [ $# -gt 0 ]; do case "$1" in --to|-t) to="$2"; shift 2;; --json|-q) shift;; *) body="$1"; shift;; esac; done
 printf '%s\t%s\n' "$to" "$body" >>"$FH_LOG"
 n=0; [ -f "$FH_CTR" ] && n="$(cat "$FH_CTR")"
-fail429() { echo "{\"success\":false,\"error\":\"Discord 429 rate limited\",\"retry_after\":${FH_RA_RAW:-${FH_RETRY_AFTER:-2}}}"; exit 1; }
+fail429() { echo "{\"success\":false,\"status\":429,\"error\":\"Discord 429 rate limited\",\"retry_after\":${FH_RA_RAW:-${FH_RETRY_AFTER:-2}}}"; exit 1; }
 # FH_DIE holds summary|media|chunk: the next send of that kind is logged, then the calling followup-deliver.sh is SIGKILLed (the hit happened, the local record did not), one shot
 if [ -f "$FH_DIE" ]; then k=chunk; case "$body" in MEDIA:*) k=media;; "analysis done") k=summary;; esac
   if [ "$(cat "$FH_DIE")" = "$k" ]; then rm -f "$FH_DIE"; p=$PPID
@@ -28,7 +28,7 @@ if [ -f "$FH_DIE" ]; then k=chunk; case "$body" in MEDIA:*) k=media;; "analysis 
 # FH_ACCEPT holds kind:mode (kind summary|media|chunk): every send of that kind is ACCEPTED remotely (logged above), then the spy itself exits nonzero (mode nonzero = 1, timeout = 124, noid = exit 0 with no message id)
 if [ -f "$FH_ACCEPT" ]; then k=chunk; case "$body" in MEDIA:*) k=media;; "analysis done") k=summary;; esac
   a="$(cat "$FH_ACCEPT")"
-  if [ "${a%%:*}" = "$k" ]; then case "${a##*:}" in nonzero) exit 1;; timeout) exit 124;; noid) echo '{"success":true}'; exit 0;; esac; fi; fi
+  if [ "${a%%:*}" = "$k" ]; then case "${a##*:}" in ratetext) echo '{"error":"upstream said: message posted; note the rate limit docs; connection reset"}'; exit 1;; idtext) echo '{"status":"error","error":"posted as message 14290 then gateway reset"}'; exit 1;; rofail) chmod a-w "$FOLLOWUP_OUTBOX"; exit 1;; nonzero) exit 1;; timeout) exit 124;; noid) echo '{"success":true}'; exit 0;; esac; fi; fi
 case "$body" in
   MEDIA:*) c="$(cat "$FH_ATTACH_429" 2>/dev/null || echo 0)"
            if [ "$c" = always ]; then fail429; elif [ "$c" -gt 0 ] 2>/dev/null; then echo $((c - 1)) >"$FH_ATTACH_429"; fail429; fi;;
@@ -198,6 +198,37 @@ for c in '"abc":2' '-5:2' '-5.5:2' '"":2' '"1e9":2' 'null:2' '{"a":1}:2' '999999
   v="${c%:*}"; want="${c##*:}"; got="$(ra_sleep "$v")"
   [ "$got" = "$want" ]; st=$?; chk "g: retry_after $v sleeps $want s (got '$got')" "$st"
 done
+
+# (h) review fixes: reconcile bell only after a durable record; terminal chunk record checked; is_rl structured only; bad outbox line = zero sends
+if [ "$(id -u)" = 0 ]; then echo "SKIP h (root ignores file modes)"; else
+  # h1: only the needs_reconcile append fails (the send is accepted, then hermes exits 1 and the outbox goes read-only)
+  reset; echo summary:rofail >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+  [ "$rc" != 0 ] && [ "$(sends)" = 1 ] && grep -q deliver-blocked "$base/bell" && ! grep -q 'needs-reconcile' "$base/bell"; st=$?; chk "h1: a failed needs_reconcile append exits nonzero, sends nothing more and does not ring the needs-reconcile bell (rc $rc)" "$st"
+  chmod u+w "$FOLLOWUP_OUTBOX"; rm -f "$FH_ACCEPT"; : >"$base/bell"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+  [ "$(sends)" = 1 ] && [ "$(jq -s '[.[]|select(.needs_reconcile==true)]|length' "$FOLLOWUP_OUTBOX")" = 1 ] && [ "$(grep -c needs-reconcile "$base/bell")" = 1 ]; st=$?; chk "h1: once writable, the record is committed and the bell rings once, still no resend" "$st"
+  # h2: the terminal attachment record cannot be committed => not delivered
+  reset; K='discord:#ops|T1|1|R1|result'
+  for p in summary attachment-chunk-1 attachment-chunk-2 attachment-chunk-3; do jq -nc --arg k "$K" --arg p "$p" '{sent_part:true,delivered:true,key:$k,part:$p,message_id:"m",dest:"d",ts:"t"}'; done >"$FOLLOWUP_OUTBOX"
+  chmod a-w "$FOLLOWUP_OUTBOX"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?; chmod u+w "$FOLLOWUP_OUTBOX"
+  [ "$rc" != 0 ] && [ "$(sends)" = 0 ]; st=$?; chk "h2: a failed terminal attachment record exits nonzero with no send (rc $rc)" "$st"
+fi
+# h2b: the terminal record carries the last chunk id of this run
+reset; echo always >"$FH_ATTACH_429"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+jq -e -s '([.[]|select(.sent_part==true and .part=="attachment-chunk-3")][0].message_id) as $c | any(.[]; .part=="attachment" and .sent_part==true and .message_id==$c and $c != "")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "h2: the terminal attachment record carries the last chunk message id" "$st"
+# h3: free text never counts as a rate limit; both stay UNKNOWN with one send and no clear
+for m in ratetext idtext; do
+  reset; echo "summary:$m" >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 1 ] && [ "$(sends)" = 1 ] && [ ! -s "$FS_LOG" ] && [ "$(jq -s '[.[]|select(.send_cleared==true)]|length' "$FOLLOWUP_OUTBOX")" = 0 ] && [ "$(jq -s '[.[]|select(.needs_reconcile==true)]|length' "$FOLLOWUP_OUTBOX")" = 1 ]; st=$?; chk "h3/$m: a nonzero reply with free-text rate-limit/429-like words is UNKNOWN: one send, no retry, marker kept, one reconcile (rc $rc, sends $(sends))" "$st"
+done
+# h4: a malformed or truncated outbox line => zero sends, exit 2, then the same after a fix is clean
+reset; echo '{"id":"half","dest":"x","summ' >"$FOLLOWUP_OUTBOX"
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && [ "$(sends)" = 0 ] && grep -q deliver-blocked "$base/bell"; st=$?; chk "h4: a bad outbox line gives zero sends, exit 2 and a deliver-blocked bell (rc $rc)" "$st"
+reset; printf '%s' '{"id":"trunc","dest":"x","sum' >"$FOLLOWUP_OUTBOX"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$(sends)" = 0 ]; st=$?; chk "h4: a truncated last line (no newline) also gives zero sends across repeats" "$st"
+# h5: a valid last line without a newline never gets a record glued onto it
+reset; ev R1 | tr -d '\n' >"$FOLLOWUP_OUTBOX"; "$DEL" <<<"$(ev R2)" >/dev/null 2>&1
+jq -e -s 'length > 1' "$FOLLOWUP_OUTBOX" >/dev/null && [ "$(sends)" = 2 ]; st=$?; chk "h5: commit_line adds a leading newline when the outbox does not end in one (every line still parses)" "$st"
 
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"

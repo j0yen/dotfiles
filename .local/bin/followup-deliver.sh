@@ -49,10 +49,12 @@ nocommit() { # the outbox cannot take a durable line: nothing may be sent
   echo "followup-deliver: cannot commit to $ob ($1); nothing sent" >&2
   bell "FOLLOW-UP deliver-blocked $id: could not commit $1 to $ob; nothing was sent, fix the outbox (disk, permissions) and replay"; exit 2; }
 commit_line() { # one JSON line: append, fsync, read back; 0 only when the line is durably the last line of the outbox
+  if [ -s "$ob" ] && [ -n "$(tail -c1 "$ob")" ]; then printf '\n' >>"$ob" || return 1; fi   # a file that does not end in a newline never glues onto its last line
   printf '%s\n' "$1" >>"$ob" || return 1
   sync -- "$ob" 2>/dev/null || return 1
   [ "$(tail -n1 "$ob")" = "$1" ]; }
 if [ ! -e "$ob" ]; then mkdir -p "$(dirname "$ob")" && : >"$ob" && sync -- "$(dirname "$ob")" 2>/dev/null || nocommit "outbox creation"; fi
+jq -e -s . "$ob" >/dev/null 2>&1 || nocommit "unparseable outbox (a malformed or truncated line); no dedupe query can be trusted"
 
 sent() { jq -e -s --arg k "$key" --arg p "$1" 'any(.[]; (.sent_part==true or (.reconciled==true and .action=="sent")) and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }
 record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" \
@@ -65,7 +67,7 @@ pstate() { # part -> "sending <ts>" when the last marker for it is an open sendi
     | if . != null and .sending_part == true then "sending " + .ts else "ok" end' "$ob" 2>/dev/null; }
 reconcile() { # part marker_ts: surface the unknown part once per marker (record + bell), never resend
   jq -e -s --arg k "$key" --arg p "$1" --arg t "$2" 'any(.[]; .needs_reconcile==true and .key==$k and .part==$p and .marker_ts==$t)' "$ob" >/dev/null 2>&1 && return 0
-  mark needs_reconcile "$1" "$2"
+  mark needs_reconcile "$1" "$2" || nocommit "needs_reconcile record"   # the bell is rung only once the record is durable
   bell "FOLLOW-UP needs-reconcile $id: part $1 of $key may already be sent (outcome unknown); not resent, settle with: followup-deliver.sh --reconcile $1 sent|resend --key '$key'"
   return 0; }
 unknown() { local st; st="$(pstate "$1")"; [ "${st%% *}" = sending ] && reconcile "$1" "${st#* }"; return 0; }
@@ -76,9 +78,8 @@ if [ -n "$mode" ]; then   # flock-guarded human settlement of an unknown part (t
   exit 0
 fi
 rmax="${FOLLOWUP_RETRY_AFTER_MAX:-300}"; [[ "$rmax" =~ ^[0-9]{1,6}$ ]] || rmax=300
-is_rl() { # hermes reply that positively identifies a provider rate-limit rejection (HTTP 429)
-  jq -e '(try ((.http_status // .status // .status_code // .code // empty) | tostring) catch "") == "429" or ((.error // .message // "" | tostring) | test("429|rate[ _-]?limit|too many requests";"i"))' <<<"$1" >/dev/null 2>&1 \
-    || grep -Eiq '(http|status)[ :=]*429|too many requests|rate[ _-]?limit' <<<"$1"; }
+is_rl() { # hermes reply that positively identifies a provider rate-limit rejection: a structured status field equal to 429, never free text
+  jq -e 'type == "object" and ((.http_status // .status // .status_code // .code // "") | tostring) == "429"' <<<"$1" >/dev/null 2>&1; }
 send_retry() { # body -> sets mid; 0 accepted with a message id, 1 positively rate-limited (nothing sent, retries used up), 2 outcome unknown
   local body="$1" n=1 out rc wait ra backoff
   while :; do
@@ -109,7 +110,7 @@ deliver_part() { # part body -> 0 sent, 1 rejected by the provider (retryable), 
     *) unknown "$part"; return 2;;
   esac
 }
-mid=""; fail=0; held=0
+mid=""; lastid=""; fail=0; held=0
 if [ -n "$summary" ] && ! sent summary; then
   deliver_part summary "$summary"; case $? in 0) ;; 1) fail=1;; *) fail=1; held=1;; esac
 fi
@@ -131,10 +132,11 @@ if [ -n "$att" ] && [ "$held" = 0 ] && ! sent attachment; then
         i=$((i + 1))
         sent "attachment-chunk-$i" && continue
         deliver_part "attachment-chunk-$i" "$part" || { allok=0; break; }
+        lastid="$mid"
       done < <(python3 -I -c 'import sys
 n=int(sys.argv[2]); t=open(sys.argv[1],errors="replace").read()
 for i in range(0,len(t),n): sys.stdout.write(t[i:i+n]+"\0")' "$att" "$chunk")
-      if [ "$allok" = 1 ] && [ "$i" -gt 0 ]; then record attachment "$mid"; else fail=1; fi
+      if [ "$allok" = 1 ] && [ "$i" -gt 0 ]; then record attachment "${lastid:-chunks}" || fail=1; else fail=1; fi
     fi
   fi
 fi
