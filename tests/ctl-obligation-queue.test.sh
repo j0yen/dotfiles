@@ -121,6 +121,6 @@ t_row_dependency_closed_not_blocking(){
 }
 
 names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking"
-if [ $# = 0 ]; then echo $names; exit 0; fi
+[ $# = 0 ] && set -- $names
 for n in "$@"; do "t_$n" || fail=1; done
 exit $fail

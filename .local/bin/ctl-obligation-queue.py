@@ -256,6 +256,10 @@ def cmd_decide(args):
     if any(x["ask_id"] == tid for x in c["active"]):
         print("REFUSE-ACTIVE: %s already holds an active claim; not duplicated" % tid)
         return EXIT_ACTIVE
+    known = [x["class"] for x in c["queue"] + c["blocked"] if x.get("ask_id") == tid]
+    if known and cls < min(known):
+        print("REFUSE-CLASS: %s declared class %s outranks its ledger class %s" % (tid, args.cls, min(known)))
+        return EXIT_REFUSE
     is_unblocker = tid in c["_unblockers"] or any(
         x.get("row_id") == tid for x in c["queue"] + c["blocked"] if x["row_id"] in c["_unblockers"])
     cands = []
