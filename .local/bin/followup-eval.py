@@ -50,9 +50,15 @@ def alive(w):
     cmd = os.environ.get("FOLLOWUP_WORKER_ALIVE_CMD")
     if cmd:
         return subprocess.run([cmd, w], capture_output=True).returncode == 0
-    if subprocess.run(["tmux", "has-session", "-t", w], capture_output=True).returncode == 0:
-        return True
-    return subprocess.run(["pgrep", "-f", "--", w], capture_output=True).returncode == 0
+    # canonical handle form seat:<session-prefix> (wm-asks asks claim --worker ctl:42a49890): live when the bare token names a tmux session or a running process
+    for tok in dict.fromkeys([w, w.split(":", 1)[-1]]):
+        if len(tok) < 4:
+            continue
+        if subprocess.run(["tmux", "has-session", "-t", tok], capture_output=True).returncode == 0:
+            return True
+        if subprocess.run(["pgrep", "-f", "--", tok], capture_output=True).returncode == 0:
+            return True
+    return False
 
 
 def read_ledger():
@@ -84,7 +90,8 @@ def evaluate(seat, rows, now):
         rid, rev = r["ask_id"], r.get("rev", 0)
         due = ts(r.get("due"))
         note = " (owner empty: assign an owner)" if not owner else ("" if owner in KNOWN else " (owner %s is not a known seat: reassign)" % owner)
-        cw, _, lease = str(r.get("claim") or "").partition("@")
+        cw, _, stamp = str(r.get("claim") or "").partition("@")
+        lease = str(r.get("claim_lease") or "")  # the @stamp in claim is the claim time, never a lease expiry
         ck = str(r.get("claim_session") or "") or cw
         acc = r.get("acceptance") if isinstance(r.get("acceptance"), dict) else {}
         verdict = str(acc.get("verdict") or "")
@@ -164,8 +171,8 @@ def read_followups(seat):
 
 NEXT = {
     "correction-owed": "record the applying row for the verdict (wm-decide record/verdict) or a MOOT row naming why",
-    "dead-worker": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
-    "lease-expired": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
+    "dead-worker": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
+    "lease-expired": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
     "stale-revision": "re-claim at the current revision (wm-asks claim <id> --worker <live worker>)",
     "verifier-pending": "run the required verifier and record a PASS acceptance before the ending action",
     "ledger-unreadable": "repair the canonical ledger query (wm-asks query --status open --json)",
