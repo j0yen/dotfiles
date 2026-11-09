@@ -1,0 +1,13 @@
+[Unit]
+Description=carbon-sigkill-trace: log sender and target of every SIGKILL (attributes a user-manager kill; five-whys 2026-11-09)
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/bpftrace -q /usr/local/lib/carbon-sigkill-trace.bt
+SyslogIdentifier=carbon-sigkill-trace
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
