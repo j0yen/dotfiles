@@ -7,6 +7,8 @@
                            (exit 2 missing/invalid args, JSON error on stderr; exit 3 state unwritable, visible error)
   followup-eval.py suggestion --seat S --id I --rev R [--owner O --due D]   stdin = a final message; a suggestion with no owner + due is a defect: persisted as kind suggestion-only
                            through emit's store (exit 1 flagged, 0 clean; repeat of the same text is deduped)
+  followup-eval.py resolve --id I --rev R --fp H --approval N [--check]   typed approval of ONE suggestion-only outbox entry: H = sha1(fp)[:12] from its bell line;
+                           ok only when id + rev + fp match an entry that is the newest rev for that id and is unresolved; ok marks it resolved (exit 0 ok|already, 1 mismatch|stale)
   followup-eval.py reason            stdin obligations (jsonl) -> the one-line block text
   followup-eval.py replay            deliver queued outbox entries; mark delivered on rc 0 only
 
@@ -329,11 +331,81 @@ def cmd_suggestion(a):
     if not SUGGEST.search(text) or owned:
         print(json.dumps({"flagged": False})); return
     fp = "%s|%s|suggestion-only|%s" % (a.id, a.rev, hashlib.sha1(text.lower().encode()).hexdigest()[:12])
+    act = None
+    if getattr(a, "action", None):   # typed action spec (verbs are allow-listed by the runner); its canonical digest is part of the fp, so an approval of the key covers exactly this spec
+        try:
+            act = json.loads(a.action)
+        except ValueError:
+            die(2, "suggestion --action is not JSON")
+        if not isinstance(act, dict) or not isinstance(act.get("verb"), str):
+            die(2, "suggestion --action must be an object with a string verb")
+        fp += "|" + hashlib.sha1(json.dumps(act, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     o = {"id": a.id, "rev": a.rev, "disposition": "ready", "kind": "suggestion-only", "owner": a.seat, "next_check": "", "due": "",
          "detail": "final message suggests work with no owned next action (owner + due): " + text[:120], "actionable": True, "fp": fp}
+    if act is not None:
+        o["action"] = act
     emitted, deduped = persist(o, a.seat)
     print(json.dumps({"flagged": True, "emitted": emitted, "deduped": deduped}))
     sys.exit(1)
+
+
+def fph(fp):
+    return hashlib.sha1(str(fp).encode()).hexdigest()[:12]
+
+
+def cmd_resolve(a):
+    """The one authorization check for an approved continuation. Exact key (id + rev + fp digest) or nothing; a newer rev of the id makes the key stale."""
+    missing = [n for n in ("id", "rev", "fp", "approval") if getattr(a, n) in (None, "")]
+    if missing:
+        die(2, "resolve missing required args: " + ",".join("--" + m for m in missing))
+    sd = state_dir(); ob = outbox_path(sd); fh = locked(sd)
+    lines = open(ob).read().splitlines() if os.path.exists(ob) else []
+    ents = []
+    for i, line in enumerate(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and e.get("kind") == "suggestion-only" and e.get("id") == a.id:
+            ents.append((i, e))
+    hit = [(i, e) for i, e in ents if str(e.get("rev")) == str(a.rev) and fph(e.get("fp")) == a.fp]
+    def verdict(status, code):
+        fh.close(); print(json.dumps({"status": status})); sys.exit(code)
+    if not hit:
+        verdict("mismatch", 1)
+    revs = []
+    for _, e in ents:
+        try:
+            revs.append(int(e.get("rev")))
+        except (TypeError, ValueError):
+            pass
+    try:
+        if revs and int(a.rev) < max(revs):
+            verdict("stale", 1)
+    except ValueError:
+        verdict("mismatch", 1)
+    i, e = hit[-1]
+    if e.get("resolved"):
+        verdict("already", 0)
+    if not a.check:
+        e["resolved"] = {"approval": a.approval, "ts": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+        lines[i] = json.dumps(e, separators=(",", ":"))
+        atomic_write(ob, "\n".join(lines) + "\n")
+    verdict("ok", 0)
+
+
+def cmd_action(a):
+    """Print the typed action spec of the newest-rev suggestion-only entry matching id + rev + fp digest ({} when none or untyped). Read-only."""
+    sd = state_dir(); ob = outbox_path(sd)
+    out = {}
+    for line in (open(ob).read().splitlines() if os.path.exists(ob) else []):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and e.get("kind") == "suggestion-only" and e.get("id") == a.id and str(e.get("rev")) == str(a.rev) and fph(e.get("fp")) == a.fp:
+            out = e.get("action") if isinstance(e.get("action"), dict) else {}
+    print(json.dumps(out))
 
 
 def cmd_replay():
@@ -359,7 +431,7 @@ def cmd_replay():
             e = json.loads(line)
         except ValueError:
             lines.append(line); continue
-        if e.get("delivered") is False and (str(e.get("id")), str(e.get("rev", 0)), str(e.get("fp")), str(e.get("ts"))) not in sup:
+        if e.get("delivered") is False and not e.get("resolved") and (str(e.get("id")), str(e.get("rev", 0)), str(e.get("fp")), str(e.get("ts"))) not in sup:
             try:
                 if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=300, env=env).returncode == 0:
                     e["delivered"] = True
@@ -372,11 +444,12 @@ def cmd_replay():
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason", "suggestion")); ap.add_argument("--seat")
-    for n in ("id", "rev", "kind", "fp", "detail", "owner", "due"):
+    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason", "suggestion", "resolve", "action")); ap.add_argument("--seat")
+    for n in ("id", "rev", "kind", "fp", "detail", "owner", "due", "approval", "action"):
         ap.add_argument("--" + n)
+    ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
-    if a.cmd not in ("emit", "suggestion"):
+    if a.cmd not in ("emit", "suggestion", "resolve", "action"):
         a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
     if a.cmd == "eval":
         rows, why = read_ledger()
@@ -387,6 +460,10 @@ def main():
         cmd_emit(a)
     elif a.cmd == "suggestion":
         cmd_suggestion(a)
+    elif a.cmd == "resolve":
+        cmd_resolve(a)
+    elif a.cmd == "action":
+        cmd_action(a)
     elif a.cmd == "reason":   # stdin: one obligation JSON per line -> the one-line machine-actionable block text
         print(reason([json.loads(l) for l in sys.stdin if l.strip()]))
     else:
