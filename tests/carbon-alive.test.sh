@@ -53,4 +53,21 @@ reset; export CA_FAKE_BUS=down; run; run
 reset; export CA_FAKE_GW=failed; run; run
 [ "$(st)" = gateway-down ] && ok "i gateway-down" || bad "i gateway-down"
 
+# F1: an outage flapping between non-ok states still alerts (count = non-ok runs, not same-state runs)
+reset; export CA_FAKE_GW=failed; run; unset CA_FAKE_GW; export CA_FAKE_BUS=down; run; c1="$(n alert)"
+unset CA_FAKE_BUS; export CA_FAKE_GW=failed; run
+[ "$c1" = 1 ] && [ "$(n alert)" = 1 ] && grep -q '"states": \["gateway-down", "bus-down"\]' "$calls" \
+  && grep -q '"outage_since": 1000000' "$calls" && ok "i flapping gateway/bus/gateway -> one alert after run 2, both states" \
+  || { bad "i flapping"; cat "$calls"; }
+
+reset; export CA_FAKE_GW=failed; run; run; unset CA_FAKE_GW; export CA_FAKE_BUS=down; run
+early="$(n alert)"
+reset; export CA_FAKE_GW=failed; run; run 600; unset CA_FAKE_GW; export CA_FAKE_BUS=down; run
+late="$(n alert)"
+[ "$early" = 1 ] && [ "$late" = 2 ] && grep -q '"state": "bus-down"' "$calls" \
+  && ok "j state change in alerted outage: <10 min none, >=10 min re-alert ($early/$late)" || { bad "j re-alert on change $early/$late"; cat "$calls"; }
+
+reset; run; export CA_FAKE_UM=failed; run; unset CA_FAKE_UM; run; run
+[ "$(wc -l < "$calls")" = 0 ] && [ "$(st)" = ok ] && ok "k ok, non-ok once, ok -> no alert, no recovery" || { bad "k blip"; cat "$calls"; }
+
 echo "carbon-alive.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
