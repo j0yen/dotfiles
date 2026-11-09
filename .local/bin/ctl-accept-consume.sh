@@ -19,7 +19,7 @@ emit() { # id rev kind detail: contract `emit --seat S --id I --rev R --kind K -
   printf '%s' "$o" | python3 -c 'import json,sys;d=json.loads(sys.stdin.read());assert "emitted" in d and "deduped" in d' 2>/dev/null || { emit_err "$1" "emit output is not {emitted,deduped} JSON"; return 1; }
 }
 now="${ACCEPT_NOW:-$(date +%FT%T)}"
-printf '%s\n' "$rows" | awk -F'\t' '/^# CLOSED/{exit} /^#/{next} NF>=7 && ($3=="ctl"||$3=="aide"){print $1"\t"$2"\t"$6}' | { nerr=0; while IFS=$'\t' read -r id due chk; do
+printf '%s\n' "$rows" | awk -F'\t' '/^# CLOSED/{exit} /^#/{next} NF>=7 && ($3=="ctl"||$3=="aide"){print $1"\t"$4"\t"$6}' | { nerr=0; while IFS=$'\t' read -r id due chk; do
   case "$chk" in
     test\ *|systemctl\ *|grep\ *|ls\ *|\[\ *) if timeout 20 bash -c "$chk" >/dev/null 2>&1; then r=PASS; else r=FAIL; fi;;
     *) r=SKIP;;

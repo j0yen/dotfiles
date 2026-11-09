@@ -91,7 +91,9 @@ unitdir() {   # unitdir <name> <pr> <head> <gated> [result-verdict]
   [ -n "${5:-}" ] && printf '{"result":"verdict row %s\\nLOG: /x.log"}' "$5" >"$T/vdir/$1/result.json"
 }
 tick() {   # tick [--dry-run]  (stdout kept in $T/out; HOSTSTUB=carbon|redbaron picks the stubbed hostname, default redbaron)
-  PATH="$T/hb-${HOSTSTUB:-redbaron}:$PATH" T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
+  # Fixture clock: every case runs against an explicit future expiry so calendar passage never flips unrelated cases; EXPIRY_DEFAULT=real leaves the driver default in force.
+  local _exp=(-u HPLD_EXPIRES); [ "${EXPIRY_DEFAULT:-}" = real ] || _exp=(HPLD_EXPIRES="${HPLD_EXPIRES:-2099-01-01 00:00}")
+  env "${_exp[@]}" PATH="$T/hb-${HOSTSTUB:-redbaron}:$PATH" T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
   HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_LINT_CMD="$T/bin/lint" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD="${PREMISE_CMD:-true}" bash "$DRV" "$@" >"$T/out" 2>&1; }
 n() { grep -c "$1" "$T/calls.log"; }   # count of calls matching
@@ -184,6 +186,16 @@ cleanup
 # ---- WATCHER RULE: expiry and premise
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; HPLD_EXPIRES="2000-01-01 00:00" tick; HPLD_EXPIRES="2000-01-01 00:00" tick
 [ "$(n '^verifier')" = 0 ] && [ "$(n '^wm-decide list')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "expired: no action, one ring to ctl across two ticks" || bad "expired ($(cat "$T/calls.log"))"
+cleanup
+# negative controls on the fixture clock: malformed expiry fails closed (ring, zero launch); the real default expiry is honoured both sides of its boundary via HPLD_NOW
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; HPLD_EXPIRES="not-a-date" tick; HPLD_EXPIRES="not-a-date" tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^wm-decide list')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "malformed expiry fails closed: no action, one ring" || bad "malformed expiry ($(cat "$T/calls.log"))"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 12:00:01" +%s) tick; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 12:00:01" +%s) tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "default expiry 2026-11-08 12:00 holds after the boundary: no action, one ring" || bad "default expiry after ($(cat "$T/calls.log"))"
+cleanup
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 11:59:00" +%s) tick
+[ "$(n '^verifier launch')" = 1 ] && [ "$(n '^seat-ask ctl')" = 0 ] && pass "default expiry before the boundary: tick acts" || bad "default expiry before ($(cat "$T/calls.log"))"
 cleanup
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; PREMISE_CMD=false tick; PREMISE_CMD=false tick
 [ "$(n '^verifier')" = 0 ] && [ "$(n '^rb-merge')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && [ "$(n '^wm-decide list')" = 0 ] && pass "premise (wm-decide import) fails: no action, one ring to ctl" || bad "premise import"

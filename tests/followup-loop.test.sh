@@ -17,7 +17,7 @@ for f in "$GATE" "$OWED" "$LIB"; do bash -n "$f"; chk "bash -n $(basename "$f")"
 # fake wm-asks: `query --owners X --status open --json` prints $FU_ASKS (a JSON array of rows); FU_ASKS_FAIL=n exits n; FU_ASKS_GARBAGE prints junk
 cat >"$base/wm-asks" <<'FAKE'
 #!/usr/bin/env bash
-[ "${1:-}" = query ] || exit 2
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2
 [ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
 [ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
 cat "$FU_ASKS"
