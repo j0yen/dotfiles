@@ -374,4 +374,68 @@ rm "$STUB/sysfail"; echo inactive > "$STUB/sysstate"; run recover
 chk "systemctl ActiveState inactive: dead, relaunched once" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 2 ]'
 PATH="${PATH#$T/fakebin:}"
 
+
+# A1303 item 1: _process reads the ask with --status all, so an ask closed while the event was held ends `superseded`
+# (a decision row naming status + rev) instead of looking absent. Controls: reopen, revision, unavailable, missing.
+setask(){ python3 - "$@" <<'PY'
+import json,os,sys
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); a=sys.argv[1]
+for kv in sys.argv[2:]:
+    k,v=kv.split("=",1); d[a][k]=json.loads(v)
+json.dump(d,open(p,"w"))
+PY
+}
+export DIRECTOR_ACTIVE_CMD="$T/active"
+fresh 30; ev "$M held"; touch "$STUB/hold"; run
+setask A100 'status="closed"'; rm "$STUB/hold"; run; run
+chk "S3 closed while held: state superseded (not canonical-unavailable)" 'grep -q "\"state\": \"superseded\"" $DIRECTOR_STATE/runs/evt-0001.json'
+chk "S3 closed while held: no claim, no launch, no incident row" '[ "$(cnt "asks claim" calls.log)" = 0 ] && [ ! -e "$STUB/launch.log" ] && [ ! -s $DIRECTOR_STATE/incidents.jsonl ]'
+chk "S3 closed while held: one ask-closed decision naming the status and rev; read was --status all" '[ "$(grep -c ask-closed $DIRECTOR_STATE/decisions.jsonl)" = 1 ] && grep ask-closed $DIRECTOR_STATE/decisions.jsonl | grep -q "\"status\": \"closed\"" && grep -q "^asks query --json --ids A100 --status all$" $STUB/calls.log'
+fresh 31; ev "$M closed first"; setask A100 'status="closed"' 'rev=4'; run
+chk "S3 closed before the first look: superseded, no claim, no launch" 'grep -q "\"state\": \"superseded\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim" calls.log)" = 0 ] && [ ! -e "$STUB/launch.log" ]'
+fresh 32; ev "$M reopen"; touch "$STUB/hold"; run
+setask A100 'status="closed"'; setask A100 'status="open"' 'rev=4'; rm "$STUB/hold"; run
+chk "S3 control reopened ask (closed then open, rev 4): not superseded, claimed at the new rev, launched once" '! grep -q superseded $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "asks claim A100 --worker director-evt-0001.c0 --by hermes --expect-rev 4" calls.log)" = 1 ] && [ "$(cnt director-run-evt-0001-a1 launch.log)" = 1 ]'
+fresh 33; ev "$M revised"; touch "$STUB/hold"; run
+setask A100 'rev=7' 'what="revised"'; rm "$STUB/hold"; run
+chk "S3 control revised open ask (new rev): not silently superseded; claimed at the new rev" '! grep -q superseded $DIRECTOR_STATE/runs/evt-0001.json && [ "$(cnt "expect-rev 7" calls.log)" = 1 ] && [ "$(cnt director-run-evt-0001-a1 launch.log)" = 1 ]'
+fresh 34; ev "$M revised and closed"; touch "$STUB/hold"; run
+setask A100 'rev=9' 'status="closed"'; rm "$STUB/hold"; run
+chk "S3 revised AND closed: superseded loudly (decision row carries rev 9), no launch" 'grep -q "\"state\": \"superseded\"" $DIRECTOR_STATE/runs/evt-0001.json && grep ask-closed $DIRECTOR_STATE/decisions.jsonl | grep -q "\"rev\": 9" && [ ! -e "$STUB/launch.log" ]'
+fresh 35; ev "$M ledger down"; echo "bus down" > "$STUB/down"; run; run
+chk "S3 control genuinely unavailable: canonical-unavailable + one incident row, no claim, no launch, never superseded" 'grep -q "\"state\": \"canonical-unavailable\"" $DIRECTOR_STATE/runs/evt-0001.json && [ "$(grep -c "\"kind\": \"canonical-read\"" $DIRECTOR_STATE/incidents.jsonl)" = 1 ] && [ "$(cnt "asks claim" calls.log)" = 0 ] && [ ! -e "$STUB/launch.log" ]'
+fresh 36; ev 'DIRECTOR-ACTION ask=A777 event=evt-0777 missing'; run
+chk "S3 control ask not in the ledger at all: canonical-unavailable + incident, not superseded" 'grep -q "\"state\": \"canonical-unavailable\"" $DIRECTOR_STATE/runs/evt-0777.json && grep -q "ask not found" $DIRECTOR_STATE/incidents.jsonl && [ ! -e "$STUB/launch.log" ]'
+
+# A1303 item 2: UNKNOWN liveness is a durable, owned, actionable state in the existing incident ledger (incidents.jsonl).
+# One open row per spell (run, unit, first_seen, probe error, recovery action), a changed probe error updates the same incident,
+# a recovered row closes it. Nothing relaunches on unknown and no timer or cap is involved.
+incq(){ python3 - "$1" <<'PY'
+import json,os,sys
+f=os.environ["DIRECTOR_STATE"]+"/incidents.jsonl"
+rows=[json.loads(l) for l in open(f)] if os.path.exists(f) else []
+r=[x for x in rows if x.get("kind")=="liveness-unknown"]
+sys.exit(0 if eval(sys.argv[1]) else 1)
+PY
+}
+fresh 40; export DIRECTOR_LAUNCH_CMD="$T/launcher-live" DIRECTOR_ACTIVE_CMD="$T/active-set"; ready_a100
+run recover; echo 4 > "$STUB/blind"; run recover; run recover; run recover
+chk "U unknown: exactly one open incident row for the spell (not one per tick)" 'incq "len(r)==1 and r[0][\"state\"]==\"open\""'
+chk "U row names the run, unit, first-seen time, probe error, owner and recovery action" 'incq "r and r[0][\"event_id\"]==\"ready-A100-3\" and r[0][\"unit\"]==\"director-run-ready-A100-3-a1\" and r[0][\"first_seen\"] and r[0][\"rc\"]==4 and r[0][\"fault\"] and r[0][\"owner\"] and r[0][\"action\"] and r[0][\"incident_id\"]"'
+chk "U unknown still never relaunches (one launch)" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 1 ]'
+echo 127 > "$STUB/blind"; run recover; run recover
+chk "U probe error changes: the same incident is updated (same incident_id, new rc), not a second incident" 'incq "len(set(x[\"incident_id\"] for x in r))==1 and r[-1][\"rc\"]==127 and len(r)==2"'
+rm "$STUB/blind"; run recover
+chk "U probe answers: incident closed by a recovered row (same incident_id), run mark cleared" 'incq "r[-1][\"state\"]==\"recovered\" and r[-1][\"incident_id\"]==r[0][\"incident_id\"]" && ! grep -q liveness_unknown $DIRECTOR_STATE/runs/ready-A100-3.json'
+run recover
+chk "U recovered stays recovered: no new row on later healthy ticks" 'incq "len(r)==3"'
+echo 4 > "$STUB/blind"; run recover
+chk "U a second spell opens a NEW incident id" 'incq "len(set(x[\"incident_id\"] for x in r))==2 and r[-1][\"state\"]==\"open\""'
+rm "$STUB/blind"; : > "$STUB/actives"; run recover
+chk "U probe answers DEAD: spell closed by a recovered row, then relaunched once" 'incq "r[-1][\"state\"]==\"recovered\"" && [ "$(cnt "^director-run-ready-A100-3" launch.log)" = 2 ]'
+fresh 41; export DIRECTOR_LAUNCH_CMD="$T/launcher-live"; unset DIRECTOR_ACTIVE_CMD; ready_a100
+export PATH="$T/fakebin:$PATH"; echo active > "$STUB/sysstate"; run recover; touch "$STUB/sysfail"; run recover; run recover
+chk "U systemctl bus error: incident row carries the scrubbed probe stderr" 'incq "len(r)==1 and \"Failed to connect to bus\" in r[0][\"stderr\"] and \"systemctl\" in r[0][\"command\"]"'
+PATH="${PATH#$T/fakebin:}"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "FAILURES: $fails"; exit 1; }

@@ -114,6 +114,7 @@ def sh(argv, timeout=60):
 
 
 _ASKS_FAULT = []
+_PROBE_ERR = {}
 _ASKS_LAST = {}
 SECRET_RE = re.compile(r"(?i)\b(token|secret|password|passwd|api[_-]?key|authorization|bearer)\b([\s:=]+)(?:bearer\s+)?\S+")
 TOKEN_RE = re.compile(r"\b(?:sk|ghp|gho|xox[a-z])[-_][A-Za-z0-9_-]{8,}")
@@ -183,13 +184,18 @@ def unit_state(unit):
     (command missing, timeout, bus failure, unexpected ActiveState) is unknown, never dead."""
     cmd = os.environ.get("DIRECTOR_ACTIVE_CMD")
     if cmd:
-        rc = sh(shlex.split(cmd) + [unit])[0]
-        return "live" if rc == 0 else "dead" if rc == 1 else "unknown"
-    rc, out, _ = sh(["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit])
-    out = out.strip()
-    if rc == 0 and out in LIVE_UNIT:
-        return "live"
-    return "dead" if rc == 0 and out in DEAD_UNIT else "unknown"
+        argv = shlex.split(cmd) + [unit]
+        rc, _, err = sh(argv)
+        state = "live" if rc == 0 else "dead" if rc == 1 else "unknown"
+    else:
+        argv = ["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit]
+        rc, out, err = sh(argv)
+        out = out.strip()
+        state = "live" if rc == 0 and out in LIVE_UNIT else "dead" if rc == 0 and out in DEAD_UNIT else "unknown"
+        if state == "unknown" and rc == 0:
+            err = "unexpected ActiveState %r" % out[:40]
+    _PROBE_ERR[unit] = {"state": state, "command": scrub(" ".join(shlex.quote(a) for a in argv), 400), "rc": rc, "stderr": scrub(err)}
+    return state
 
 
 def run_units(r):
@@ -518,13 +524,20 @@ def _process(eid, ask):
         if not gate_ok(ask):
             set_wait(r, "held", prev)
             return
-        rows = asks_query("--ids", ask)
+        rows = asks_query("--ids", ask, "--status", "all")      # as finish() does: a closed ask is present and closed, never absent
         if not rows:
             incident(r, "canonical-read", fault="ask not found" if rows == [] and not _ASKS_FAULT else "")
             set_wait(r, "canonical-unavailable", prev)
             return
         row = rows[0]
         rev = row.get("rev")
+        status = row.get("status") or "open"
+        if status != "open":
+            # closed (or otherwise not open) while the event waited: nothing is claimed or launched; the end is explicit, never silent
+            r["state"] = "superseded"
+            save_run(r)
+            decide(event_id=eid, ask=ask, decision="ask-closed", status=status, rev=rev, event_rev=r.get("event_rev"))
+            return
         if r.get("source") == "ready" and r.get("event_rev") != rev:
             ready = asks_query("--ready", "--owners", "hermes")
             if ready is None:
@@ -756,24 +769,62 @@ def recover_runs(replay=True):
             lk.close()
 
 
+LIVENESS_ACTION = ("restore the liveness probe (user systemd bus / DIRECTOR_ACTIVE_CMD); the run is untouched meanwhile and resumes by itself "
+                   "when the probe answers: live = left alone, dead = relaunched once. Nothing here relaunches on an unknown answer.")
+
+
+def liveness_unknown_open(r):
+    """UNKNOWN liveness = one open incident per spell in incidents.jsonl (run, unit, first_seen, probe error, owner, action).
+    A changed probe error appends an update under the same incident_id; the same error on a later tick writes nothing.
+    Row first, then the run mark (a crash between re-logs the same id, never loses it). No timer, cap or relaunch."""
+    eid = r["event_id"]
+    unk = [u for u in run_units(r) if (_PROBE_ERR.get(u) or {}).get("state") == "unknown"] or run_units(r)[-1:]
+    unit = unk[-1] if unk else ""
+    err = _PROBE_ERR.get(unit) or {}
+    fault = "probe rc=%s %s" % (err.get("rc"), err.get("stderr", ""))
+    mark = r.get("liveness_unknown")
+    if isinstance(mark, dict) and mark.get("fault") == fault:
+        return
+    first = mark["first_seen"] if isinstance(mark, dict) else now()
+    iid = mark["incident_id"] if isinstance(mark, dict) else "lu-%s-%d" % (eid, r.get("liveness_spells", 0) + 1)
+    row = {"ts": now(), "kind": "liveness-unknown", "state": "open", "incident_id": iid, "event_id": eid, "ask": r["ask"],
+           "run": eid, "unit": unit, "units": run_units(r), "claim": r.get("claim"), "first_seen": first, "fault": fault,
+           "command": err.get("command", ""), "rc": err.get("rc"), "stderr": err.get("stderr", ""),
+           "owner": "hermes", "action": LIVENESS_ACTION}
+    append_incident(row)
+    r["liveness_unknown"] = {"incident_id": iid, "first_seen": first, "fault": fault}
+    if not isinstance(mark, dict):
+        r["liveness_spells"] = r.get("liveness_spells", 0) + 1
+    save_run(r)
+    decide(event_id=eid, ask=r["ask"], decision="liveness-unknown", units=run_units(r), claim=r.get("claim"), incident_id=iid)
+
+
+def liveness_unknown_close(r):
+    """The probe answered (live or dead): the open incident, if any, is closed by a recovered row (row first, then the mark)."""
+    mark = r.get("liveness_unknown")
+    if not mark:
+        return
+    if isinstance(mark, dict):
+        append_incident({"ts": now(), "kind": "liveness-unknown", "state": "recovered", "incident_id": mark["incident_id"],
+                         "event_id": r["event_id"], "ask": r["ask"], "first_seen": mark.get("first_seen"), "fault": mark.get("fault", "")})
+        decide(event_id=r["event_id"], ask=r["ask"], decision="liveness-recovered", incident_id=mark["incident_id"])
+    r.pop("liveness_unknown", None)
+    save_run(r)
+
+
 def recover_open(r):
     eid = r["event_id"]
     if os.path.exists(os.path.join(RUNS, eid + ".receipt.json")):
         return
     live = liveness(r)
     if live == "live":
-        if r.pop("liveness_unknown", None):
-            save_run(r)
+        liveness_unknown_close(r)
         return          # healthy worker: never touched, whatever its age
     if live == "unknown" and not effect_done(eid):
-        # a probe error is not a dead worker: no relaunch, no unknown-effect gate, nothing stolen; one visibility decision
-        if not r.get("liveness_unknown"):
-            r["liveness_unknown"] = now()
-            save_run(r)
-            decide(event_id=eid, ask=r["ask"], decision="liveness-unknown", units=run_units(r), claim=r.get("claim"))
+        # a probe error is not a dead worker: no relaunch, no unknown-effect gate, nothing stolen; a durable owned incident instead
+        liveness_unknown_open(r)
         return
-    if r.pop("liveness_unknown", None):
-        save_run(r)
+    liveness_unknown_close(r)
     outage = os.path.join(RUNS, eid + ".outage")
     if os.path.exists(outage):
         os.unlink(outage)
