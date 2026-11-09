@@ -336,6 +336,15 @@
         ]
       },
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/skill-route-prompt-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "",
         "hooks": [
           {
@@ -675,6 +684,11 @@
             "type": "command",
             "command": "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/skill-agent-effort-guard.sh",
+            "timeout": 5
           }
         ]
       },
