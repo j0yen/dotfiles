@@ -14,8 +14,9 @@ bad() { echo "FAIL - $1"; fail=1; }
 
 [ -x "$HOOK_SRC" ] && ok "hook script exists and is executable" || bad "hook script missing/not executable: $HOOK_SRC"
 n=$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command | select(test("adhd-always-on[.]sh"))] | length' "$SETTINGS_SRC" 2>/dev/null)
-[ "$n" = 1 ] && ok "adhd-always-on.sh registered once in SessionStart ($SETTINGS_SRC)" \
-             || bad "adhd-always-on.sh NOT registered exactly once in SessionStart of $SETTINGS_SRC (found: ${n:-parse error})"
+# A1309: ADHD style is Hermes-only; the executor-seat SessionStart registration is intentionally dropped.
+[ "$n" = 0 ] && ok "adhd-always-on.sh not registered in SessionStart, as intended for Hermes-only style ($SETTINGS_SRC)" \
+             || bad "adhd-always-on.sh still registered in SessionStart of $SETTINGS_SRC (found: ${n:-parse error}, want 0)"
 # Installed-tree checks: only meaningful when THIS tree is the one $HOME links to (a clean clone under a verify
 # gate is not installed, and must not fail for that).
 if [ "$(readlink -f "$HOOK_LIVE" 2>/dev/null)" = "$(readlink -f "$HOOK_SRC")" ]; then

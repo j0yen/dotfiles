@@ -40,7 +40,7 @@ echo 90000 > "$t/state/heartbeat"; echo 200000 > "$t/state/wake-armed"; "$W" che
 jq -e '[.hooks.Stop[].hooks[] | select(.command=="/home/jsy/.claude/hooks/aide-wake-stop.sh")] | length == 1' "$here/.claude/settings.json" >/dev/null && ok "Stop hook registered once" || bad "Stop hook registered once"
 grep -q '^ExecStart=.*aide-wake.sh check' "$here/.config/systemd/user/aide-wake.service" && [ -f "$here/.config/systemd/user/aide-wake.timer" ] && ok "unit + timer present" || bad "unit + timer present"
 # launcher: records the pane inside tmux
-mkdir -p "$t/home/.config/environment.d"; echo 'CLAUDE_CODE_OAUTH_TOKEN=fake' > "$t/home/.config/environment.d/90-claude-oauth.conf"; echo '{}' > "$t/home/.claude.json"; printf '#!/bin/sh\nexit 0\n' > "$t/claude"; chmod +x "$t/claude"
+mkdir -p "$t/home/.config/environment.d" "$t/home/.config/wm-decide"; printf '%s\n' '{"ctl":{"model":"claude-sonnet-5-5","effort":"medium"}}' > "$t/home/.config/wm-decide/seat-model-hold.json";echo 'CLAUDE_CODE_OAUTH_TOKEN=fake' > "$t/home/.config/environment.d/90-claude-oauth.conf"; echo '{}' > "$t/home/.claude.json"; printf '#!/bin/sh\nexit 0\n' > "$t/claude"; chmod +x "$t/claude"
 TMUX=x TMUX_PANE=%9 HOME="$t/home" AIDE_CLAUDE_BIN="$t/claude" AIDE_WAKE_DIR="$t/lp" AIDE_CLAUDE_JSON="$t/home/.claude.json" bash "$here/.local/bin/ctl-launch.sh" >/dev/null 2>&1
 [ "$(cat "$t/lp/pane" 2>/dev/null)" = %9 ] && ok "ctl-launch records TMUX_PANE" || bad "ctl-launch records TMUX_PANE"
 rm -f "$t/lp/pane"; TMUX=x TMUX_PANE=%8 HOME="$t/home" AIDE_CLAUDE_BIN="$t/claude" AIDE_WAKE_DIR="$t/lp" AIDE_CLAUDE_JSON="$t/home/.claude.json" bash "$here/.local/bin/aide-launch.sh" >/dev/null 2>&1

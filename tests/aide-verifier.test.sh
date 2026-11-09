@@ -117,21 +117,21 @@ printf 'rb-verifier-s.service activating\n' >"$vc/units"
 [ -z "$(FAKE_DIR=$vc bash "$vc/bin/fake-systemctl" --user list-units '*-verifier-*' --state=active,deactivating,reloading)" ] \
   && [ -n "$(FAKE_DIR=$vc bash "$vc/bin/fake-systemctl" --user list-units '*-verifier-*' --state=activating)" ] \
   && pass "vcap4 stub: --state matches exact tokens (activating != deactivating)" || bad "vcap4 stub does not tell activating from deactivating"
-# (1) an ACTIVATING unit counts: 1 active + 1 activating at ceiling 2 -> cap reached, exit 2, nothing started
-printf 'rb-verifier-a.service active\nr7-verifier-b.service activating\n' >"$vc/units"; rm -f "$vc/sdrun.log"
+# (1) an ACTIVATING unit counts toward the active accounting (no slot ceiling since W11 nocap): 1 active + 1 activating -> launches, room priced for 2 active (1024 x 3 = 3072 MB)
+printf 'rb-verifier-a.service active\nr7-verifier-b.service activating\n' >"$vc/units"; rm -f "$vc/sdrun.log" "$vc/room.log"
 out=$(vl act1); rc=$?
-[ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached: 2 of 2"* ]] && [ ! -e "$vc/sdrun.log" ] \
-  && pass "vcap4 (1) 1 active + 1 activating at ceiling 2 -> exit 2, nothing started" || bad "vcap4 (1) activating unit did not count (rc=$rc: $out)"
+[ "$rc" = 0 ] && [ "$(wc -l <"$vc/sdrun.log")" = 1 ] && [ "$(cat "$vc/room.log")" = 3072 ] \
+  && pass "vcap4 (1) 1 active + 1 activating -> launches (no ceiling), room asked 3072 MB" || bad "vcap4 (1) activating unit did not count (rc=$rc room=$(cat "$vc/room.log" 2>/dev/null): $out)"
 # (1b) a DEACTIVATING unit counts too (control: the stub must not conflate it with activating)
-printf 'rb-verifier-a.service active\nr7-verifier-b.service deactivating\n' >"$vc/units"; rm -f "$vc/sdrun.log"
+printf 'rb-verifier-a.service active\nr7-verifier-b.service deactivating\n' >"$vc/units"; rm -f "$vc/sdrun.log" "$vc/room.log"
 out=$(vl deact1); rc=$?
-[ "$rc" = 2 ] && [[ "$out" == *"2 of 2"* ]] && [ ! -e "$vc/sdrun.log" ] \
-  && pass "vcap4 (1b) 1 active + 1 deactivating at ceiling 2 -> exit 2" || bad "vcap4 (1b) deactivating unit did not count (rc=$rc: $out)"
-# (2) FAILED units never count: 1 active + 2 failed at ceiling 2 -> launches, room priced for 1 active (1024 x 2 = 2048 MB)
+[ "$rc" = 0 ] && [ "$(wc -l <"$vc/sdrun.log")" = 1 ] && [ "$(cat "$vc/room.log")" = 3072 ] \
+  && pass "vcap4 (1b) 1 active + 1 deactivating -> launches (no ceiling), room asked 3072 MB" || bad "vcap4 (1b) deactivating unit did not count (rc=$rc room=$(cat "$vc/room.log" 2>/dev/null): $out)"
+# (2) FAILED units never count: 1 active + 2 failed -> launches, room priced for 1 active (1024 x 2 = 2048 MB)
 printf 'rb-verifier-a.service active\nr7-verifier-f1.service failed\naide-verifier-f2.service failed\n' >"$vc/units"; rm -f "$vc/sdrun.log" "$vc/room.log"
 out=$(vl fail1); rc=$?
 [ "$rc" = 0 ] && [ "$(wc -l <"$vc/sdrun.log")" = 1 ] && [ "$(cat "$vc/room.log")" = 2048 ] \
-  && pass "vcap4 (2) 1 active + 2 failed at ceiling 2 -> launches, room asked 2048 MB" || bad "vcap4 (2) failed units counted (rc=$rc room=$(cat "$vc/room.log" 2>/dev/null): $out)"
+  && pass "vcap4 (2) 1 active + 2 failed -> launches, room asked 2048 MB" || bad "vcap4 (2) failed units counted (rc=$rc room=$(cat "$vc/room.log" 2>/dev/null): $out)"
 
 # ---- vguard: a verdict whose log shows tests SKIPPED by the load guard is retracted before merge-gate (finish rc 12); launch refuses a loaded host (rc 13) ----
 fx="$here/fixtures/vguard-443-tail.log"
