@@ -480,7 +480,7 @@ cmd_launch() {
   [[ "$GATED" =~ ^d-[0-9]{8}-[0-9]{6}-[a-z0-9]+-[0-9a-f]{4}$ ]] || die 2 "lint: --gated must look like d-YYYYMMDD-HHMMSS-<agent>-<4hex>"
   [ -n "${TOKEN//[[:space:]]/}" ] || die 2 "lint: --token (the G3 token line) is empty"
   case "$TOKEN" in *'"'*|*'`'*|*'$'*|*$'\n'*) die 2 "lint: --token must not contain \" \` \$ or a newline" ;; esac
-  case "$MODEL" in sonnet) MODEL_ID=claude-sonnet-5-5 ;; opus) MODEL_ID=claude-opus-5-5 ;; *) die 2 "lint: --model must be sonnet or opus (got '$MODEL')" ;; esac
+  case "$MODEL" in sonnet) MODEL_ID=claude-sonnet-5-5; EFFORT=medium ;; opus) MODEL_ID=claude-opus-5-5; EFFORT=high ;; *) die 2 "lint: --model must be sonnet or opus (got '$MODEL')" ;; esac
   if [ -n "$LOG" ] && [ -n "$SUITE" ]; then die 2 "lint: --log and --suite are mutually exclusive"; fi
   if [ -z "$LOG" ] && [ -z "$SUITE" ]; then die 2 "lint: give exactly one of --suite '<cmd>' or --log <path>"; fi
   LOGHOST=""; LOGFETCH=""; CMDCHECK=""; LOGNOTE=""
@@ -631,11 +631,11 @@ cmd_launch() {
     printf 'D=%q\n' "$DIR"
     echo 'cd "$D" || exit 70'
     # --disallowedTools is variadic: it is the last option and `--` ends it before the prompt operand
-    printf 'exec %q -p --dangerously-skip-permissions --model %s --output-format json --settings "$D/settings.json" --disallowedTools %q %q -- "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$claude" "$MODEL_ID" 'Bash(pkill:*)' 'Bash(killall:*)'
+    printf 'exec %q -p --dangerously-skip-permissions --model %s --effort %s --output-format json --settings "$D/settings.json" --disallowedTools %q %q -- "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$claude" "$MODEL_ID" "$EFFORT" 'Bash(pkill:*)' 'Bash(killall:*)'
   } >"$DIR/launch.sh"
   chmod 755 "$DIR/launch.sh"
   printf '%s' "$SUITE" >"$DIR/suite.txt" || die 2 "cannot write $DIR/suite.txt"   # the EXACT rendered suite, no newline added: rb-merge.sh admits only the log whose CMD equals it (fef9)
-  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\nlog=%s\nsuite_sha256=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$LOG" "$(sha256sum "$DIR/suite.txt" | cut -d' ' -f1)" >"$DIR/meta"
+  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\neffort=%s\nlog=%s\nsuite_sha256=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$EFFORT" "$LOG" "$(sha256sum "$DIR/suite.txt" | cut -d' ' -f1)" >"$DIR/meta"
   write_hook "$DIR" || die 2 "cannot write the verifier hook in $DIR"
   # main's verifier-kill-guard.sh stays as a second PreToolUse entry after the vtg1 hook (entry 0)
   jq --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '.hooks.PreToolUse += [{matcher:"Bash",hooks:[{type:"command",command:$h}]}]' "$DIR/settings.json" >"$DIR/settings.json.new" && mv "$DIR/settings.json.new" "$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
@@ -1262,6 +1262,9 @@ F
     && ! grep -q 'checks\.sh' "$D/prompt.md" && [ "$(grep -c 'wm-verify-run' "$D/prompt.md")" -ge 2 ] && [ "$(grep -c '^   cd \$d/repo && ~/.local/bin/wm-verify-run ' "$D/prompt.md")" = 1 ]; chk "vtg1 (v9): the rendered prompt states the no-replay sentence verbatim, keeps ONE wm-verify-run {{SUITE_Q}} call, and has no hand-written checks.sh advice" $?
   # ---- unit timeout + kill guard (TKG) ----
   ! grep -q 'timeout' "$D/launch.sh" && grep -q '^exec /' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh has no timeout wrapper, meta timeout_s=2400 (informational)" $?
+  grep -qF -- '--model claude-sonnet-5-5 --effort medium --output-format json' "$D/launch.sh" && grep -q '^effort=medium$' "$D/meta"; chk "TKG effort: sonnet launch.sh carries --effort medium and meta effort=medium" $?
+  out="$(L tkgo "${A[@]}" --head "$H" --model opus)"; rc=$?
+  grep -qF -- '--model claude-opus-5-5 --effort high --output-format json' "$T/av/tkgo/launch.sh" && grep -q '^effort=high$' "$T/av/tkgo/meta" && [ "$rc" = 0 ]; chk "TKG effort: opus launch.sh carries --effort high and meta effort=high" $?
   out="$(L tkg5 "${A[@]}" --head "$H" --timeout 5400)"; rc=$?
   ! grep -q 'timeout' "$T/av/tkg5/launch.sh" && grep -q '^timeout_s=5400$' "$T/av/tkg5/meta" && [ "$rc" = 0 ]; chk "TKG timeout: --timeout 5400 reaches meta only, launch.sh has no timeout wrapper" $?
   rm -f "$T/sdrun.log"; out="$(L tkg6 "${A[@]}" --head "$H" --timeout 99999)"; rc=$?
