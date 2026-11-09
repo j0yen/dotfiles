@@ -3,7 +3,7 @@
 # no real pane, no real model. NOTE: never put $(...) in a chk message ($? would be reset and the check would always pass).
 set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
-BR="$root/.local/bin/ctl-event-bridge.sh"; RTS="$root/.local/bin/ctl-event-route.sh"
+BR="$root/.local/bin/ctl-event-bridge.sh"; RTS="${RTS_OVERRIDE:-$root/.local/bin/ctl-event-route.sh}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 n=0; f=0
 chk() { n=$((n+1)); if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; f=1; fi; }
@@ -212,6 +212,41 @@ c1="$(calls)"; BR_CYCLES=2 br run
 [ "$(calls)" = "$c1" ] && [ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ]; chk "(w20) mixed event: further bridge cycles add no executor or classifier call (one effect)" $?
 fresh; echo "$EV_MIX" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
 [ "$(rolecalls exe)" = 1 ]; chk "(w20) mixed event: several bridge cycles still run exactly one executor call" $?
+
+# W20 receipt fixes: unknown file state (3f/3g), every kind with detail.files (3l), "\n" line definition (3e)
+mech_has() { grep -q "$1" "$T/rt/mechanical.log" 2>/dev/null; }
+evf() { printf '{"event":"%s","ts":"t","detail":{"files":%s%s}}' "$1" "$2" "${3:+,$3}"; }
+# 3g: a marked file with mode 000 is UNKNOWN: held (pending, no cache, no ack), nothing reaches a prompt; once readable it routes as dispatch-owned
+fresh; cp "$T/dtask.md" "$T/unr.md"; chmod 000 "$T/unr.md"; evf taskfile "[\"$T/unr.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && [ ! -e "$T/rt/routed/$(basename "$(only "$T/br/queue")")" ] && mech_has UNKNOWN && grep UNKNOWN "$T/rt/mechanical.log" | grep -qF "$T/unr.md"; chk "(w20 3g) unreadable (chmod 000) file: held pending, UNKNOWN telemetry names it, 0 model calls, not acked, no cache" $?
+chmod 644 "$T/unr.md"; BR_CYCLES=2 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && mech_has dispatch-owned; chk "(w20 3g) the file becoming readable later routes as dispatch-owned (acked, still 0 calls)" $?
+# 3f: missing marked file held; reappears marked -> dispatch-owned, never executed
+fresh; evf taskfile "[\"$T/late.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/late.md"; BR_CYCLES=3 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && grep UNKNOWN "$T/rt/mechanical.log" | grep -qF "$T/late.md"; chk "(w20 3f) missing file: held pending, UNKNOWN telemetry, 0 model calls" $?
+cp "$T/dtask.md" "$T/late.md"; BR_CYCLES=2 br run
+[ "$(calls)" = 0 ] && [ "$(d)" = 1 ] && mech_has dispatch-owned; chk "(w20 3f) the missing file reappearing with the marker routes as dispatch-owned, never executed" $?
+# 3f: missing plain file held, then appears plain -> executed exactly once
+fresh; evf taskfile "[\"$T/late2.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/late2.md"; BR_CYCLES=2 br run
+c1="$(calls)"; printf 'TASK: late plain job\n' > "$T/late2.md"; BR_CYCLES=3 br run
+[ "$c1" = 0 ] && [ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ] && grep -q 'late plain job' "$T/last-prompt.exe"; chk "(w20 3f) a missing plain file that appears later is executed exactly once" $?
+# unknown file mixed with a readable marked file: the whole event is held and no marked text leaks
+fresh; evf taskfile "[\"$T/dtask.md\",\"$T/nope.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ]; chk "(w20 3f) marked + missing file in one event: held whole, 0 model calls" $?
+# 3l: due / inbox kinds carrying detail.files with a marked file
+for k in due inbox; do
+  fresh; evf $k "[\"$T/dtask.md\",\"$T/plain.md\"]" '"ids":[],"lines":["t | rb | see '"$T"'/dtask.md now"]' > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+  ! cat "$T"/last-prompt.* 2>/dev/null | grep -qF "$T/dtask.md" && ! cat "$T"/last-prompt.* 2>/dev/null | grep -q 'write the weekly summary' && grep -q 'plain mixed-event job' "$T/last-prompt.exe"; chk "(w20 3l) kind=$k mixed event: marked path/text (files and lines) absent from every prompt, plain file reaches the executor" $?
+  fresh; evf $k "[\"$T/dtask.md\"]" '"ids":[]' > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+  [ "$(calls)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 3l) kind=$k all-marked: dispatch-owned, 0 calls" $?
+done
+# 3e: a form feed does not start a line (router split("\n") = dispatcher grep line)
+printf 'foo\x0cDispatch: ctl\nTASK: ff body job\n' > "$T/ff.md"
+fresh; evf taskfile "[\"$T/ff.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ] && grep -q 'ff body job' "$T/last-prompt.exe"; chk "(w20 3e) marker after a form feed is not a marked line (haiku route, as the dispatcher sees it)" $?
+printf 'Dispatch: ctl\x0c\nTASK: ff trailing\n' > "$T/ff2.md"
+fresh; evf taskfile "[\"$T/ff2.md\"]" > "$T/ev"; br run
+[ "$(calls)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 3e) marker line with trailing form feed is still marked (dispatcher [[:space:]])" $?
 
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f
