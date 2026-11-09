@@ -1,0 +1,4 @@
+// carbon-sigkill-trace: every SIGKILL generated on the host, with the sender (current task) and the target (A: user-manager kill 11-09)
+tracepoint:signal:signal_generate /args->sig == 9/ {
+  printf("SIGKILL sender=%d(%s) uid=%d target=%d(%s) result=%d\n", pid, comm, uid, args->pid, args->comm, args->result);
+}
