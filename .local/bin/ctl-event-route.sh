@@ -218,7 +218,10 @@ if kind == "hold":
     finish("fable", "fable", "hold-event-is-judgment", "deliver", 0)
 # ---- W4 typed obligation route: a suggestion-only obligation is surfaced once; only an approval naming its exact key runs the typed continuation
 OBLK = re.compile(r"OBLIGATION-KEY id=([A-Za-z0-9._-]+) rev=(\d+) fp=([0-9a-f]{12})(?: |$)")
-OBLA = re.compile(r"^[^|]*\| *(hermes[^ |]*|joe[^ |]*) *\| *APPROVED-OBLIGATION id=([A-Za-z0-9._-]+) rev=(\d+) fp=([0-9a-f]{12}) approval=(#?[A-Za-z0-9._-]+) *$")
+# seat-event.sh stamps the third field `<src> H:MM AM/PM[ re ...]: <body>`; the stamp (same token as column 2) is accepted, an unstamped body too
+OBLA = re.compile(r"^[^|]*\| *(hermes[^ |]*|joe[^ |]*) *\| *(?:\1 \d{1,2}:\d{2} [AaPp][Mm](?: re [^:]*)?: )?APPROVED-OBLIGATION id=([A-Za-z0-9._-]+) rev=(\d+) fp=([0-9a-f]{12}) approval=(#[0-9]+) *$")
+APPR_BIN = os.environ.get("RT_APPROVAL_BIN") or os.path.join(os.environ.get("RT_HERE") or "", "approval-check.sh")
+RUN_BIN = os.environ.get("OBL_RUN_BIN") or os.path.join(os.environ.get("RT_HERE") or "", "ctl-obligation-run.py")
 EVAL = os.environ.get("RT_EVAL_BIN") or os.path.join(os.environ.get("RT_HERE") or "", "followup-eval.py")
 OD = os.path.join(RT, "obligations")
 
@@ -229,6 +232,26 @@ def resolve(i, r, h, appr, check):
         return str(json.loads(p.stdout or "{}").get("status") or "error")
     except Exception:
         return "error"
+def approval_ok(appr, subject):
+    """The canonical record, not the caller label: approval=#N must exist in approvals.log (approval-check.sh --id N: mode 600, owner-checked, read-only) and its record must name the obligation id."""
+    try:
+        p = subprocess.run([APPR_BIN, "--id", appr.lstrip("#")], capture_output=True, text=True, timeout=30)
+    except Exception:
+        return "unreadable"
+    if p.returncode != 0: return "unknown"
+    return "ok" if re.search(r"(?<![A-Za-z0-9._-])" + re.escape(subject) + r"(?![A-Za-z0-9._-])", p.stdout) else "not-about-this-obligation"
+def typed_action(i, r, h):
+    try:
+        p = subprocess.run(["python3", "-I", EVAL, "action", "--id", i, "--rev", r, "--fp", h], capture_output=True, text=True, timeout=30)
+        a = json.loads(p.stdout or "{}")
+        return a if isinstance(a, dict) and a.get("verb") else None
+    except Exception:
+        return None
+def run_action(k, appr, act):
+    """Launch the typed action under the approval (its own receipt: obligations/<key>.run.json); idempotent on replay. False = the runner itself failed."""
+    if act is None: return True
+    p = subprocess.run(["python3", "-I", RUN_BIN, "run", "--dir", OD, "--key", k, "--approval", appr, "--action", json.dumps(act)], capture_output=True, text=True, timeout=700)
+    return p.returncode == 0
 def surface(text, waits, key):
     """One owned row per obligation key (dedupe by the key marker); the event marker is kept so the bridge's evidence check passes."""
     marker = "okey:" + key
@@ -240,9 +263,12 @@ def surface(text, waits, key):
 
 if kind == "obligation":
     keys = []
-    for l in lines:
+    for kk in (detail.get("keys") or []):   # structured by the waiter before any truncation
+        if isinstance(kk, dict) and re.fullmatch(r"[A-Za-z0-9._-]+", str(kk.get("id", ""))) and re.fullmatch(r"\d+", str(kk.get("rev", ""))) and re.fullmatch(r"[0-9a-f]{12}", str(kk.get("fp", ""))):
+            keys.append(okey(kk["id"], kk["rev"], kk["fp"]))
+    for l in lines:   # older/plain events: the key in the line text
         m = OBLK.search(l)
-        if m: keys.append(okey(*m.groups()))
+        if m and okey(*m.groups()) not in keys: keys.append(okey(*m.groups()))
     if not keys:
         rid = open_row("obligation bell without a usable typed key; handle by hand: " + " / ".join(lines)[:200], "ctl-reads-bell")
         if rid is None: sys.exit("row-write-failed")
@@ -273,20 +299,33 @@ if kind == "inbox" and any("-OBLIGATION" in l for l in lines):
             if resolve(i, r, h, appr, False) not in ("ok", "already"): sys.exit("resolve-failed")
             os.makedirs(OD, exist_ok=True)
             wjson(os.path.join(OD, k + ".handled.json"), {"key": k, "approval": appr, "row": done[0]["ask_id"], "event": eid, "ts": now()})
+            if not run_action(k, appr, typed_action(i, r, h)): sys.exit("action-run-failed")
             outcomes.append({"key": k, "result": "continued", "row": done[0]["ask_id"]}); continue
         st = resolve(i, r, h, appr, True)
+        if st == "ok":   # the outbox key is exact; now the approval itself must exist in the canonical record and name this obligation
+            ao = approval_ok(appr, i)
+            if ao != "ok":
+                got = surface("approval %s for obligation %s refused: %s (the sender label is not authority; not executed)" % (appr, k, ao), "ctl-reads-approval", "line." + k + "." + appr.lstrip("#"))
+                if got is None: sys.exit("row-write-failed")
+                outcomes.append({"key": k, "result": "refused-approval-" + ao}); continue
         if st == "already":
             outcomes.append({"key": k, "result": "already-resolved"}); continue
         if st != "ok":
             got = surface("approval names key %s but the obligation check says %s (not executed)" % (k, st), "ctl-reads-approval", "line." + k)
             if got is None: sys.exit("row-write-failed")
             outcomes.append({"key": k, "result": "refused-" + st}); continue
-        rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): do the suggested work, then touch %s/%s.done" % (k, appr, OD, k),
-                       "ctl-works-continuation", chk="test -e %s/%s.done" % (OD, k), extra=" okey:" + k)
+        act = typed_action(i, r, h)
+        if act:   # typed spec: the runner does the work under the approval and the done-check reads its receipt
+            rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): typed action %s runs under the approval; done when its receipt %s/%s.run.json has rc 0" % (k, appr, act.get("verb"), OD, k),
+                           "ctl-works-continuation", chk="python3 -I %s check --dir %s --key %s" % (RUN_BIN, OD, k), extra=" okey:" + k)
+        else:
+            rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): do the suggested work, then touch %s/%s.done" % (k, appr, OD, k),
+                           "ctl-works-continuation", chk="test -e %s/%s.done" % (OD, k), extra=" okey:" + k)
         if rid is None: sys.exit("row-write-failed")
         if resolve(i, r, h, appr, False) not in ("ok", "already"): sys.exit("resolve-failed")
         os.makedirs(OD, exist_ok=True)
         wjson(os.path.join(OD, k + ".handled.json"), {"key": k, "approval": appr, "row": rid, "event": eid, "ts": now()})
+        if not run_action(k, appr, act): sys.exit("action-run-failed")
         outcomes.append({"key": k, "result": "continued", "row": rid})
     mech({"result": "obligation-lines", "outcomes": outcomes})
     if not rest:

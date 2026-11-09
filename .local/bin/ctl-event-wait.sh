@@ -132,7 +132,15 @@ while :; do
   lines="$(inbox_new)"; info_total=$((info_total + $(num "$(cat "$EW/info.tmp" 2>/dev/null)")))
   if [ -n "$lines" ]; then emit inbox "$(printf '%s\n' "$lines" | cut -c1-400 | python3 -I -c 'import json,sys; print(json.dumps({"lines":sys.stdin.read().rstrip("\n").split("\n")}))')"; exit 0; fi
   if [ -s "$EW/obl.pending" ]; then
-    o="$(emit obligation "$(cut -c1-400 "$EW/obl.pending" | python3 -I -c 'import json,sys; print(json.dumps({"lines":sys.stdin.read().rstrip("\n").split("\n")}))')")"
+    # the typed key is extracted from the WHOLE bell line before any truncation, so a long bell keeps id + rev + fp whole (detail.keys); lines are cut for display only
+    o="$(emit obligation "$(python3 -I -c 'import json,re,sys
+rx = re.compile(r"OBLIGATION-KEY id=([A-Za-z0-9._-]+) rev=([0-9]+) fp=([0-9a-f]{12})(?: |$)")
+ls = sys.stdin.read().rstrip("\n").split("\n"); keys = []
+for l in ls:
+    for m in rx.finditer(l):
+        k = {"id": m.group(1), "rev": m.group(2), "fp": m.group(3)}
+        if k not in keys: keys.append(k)
+print(json.dumps({"lines": [l[:400] for l in ls], "keys": keys}))' < "$EW/obl.pending")")"
     : > "$EW/obl.pending"; printf '%s\n' "$o"; exit 0
   fi
   due="$(due_new)"
