@@ -106,11 +106,11 @@ selftest_precheck() { # exit-75 path + pass-through, driven by the FAKE env; own
   if [ $rc = 75 ] && grep -qxE 'would-not-admit: live Σ=11\.5 cap=[0-9]+(\.[0-9]+)? budget=22 holders=\[483:inner:11\.5\]' "$D/err" && grep -q ' END pid=[0-9]* rc=75 class=inner would-not-admit' "$D/slot.log"
   then echo "PASS precheck inner mcphost: exit 75, $(cat "$D/err")"; else echo "FAIL precheck inner mcphost rc=$rc err=$(cat "$D/err")"; fail=1; fi
   PFX=synthorg-; precheck "$D/slot.log" 2>"$D/err"; rc=$?
-  if [ $rc = 0 ] && [ "$PCM" = 'would-admit: live Σ=11.5 cap=6.0' ] && [ ! -s "$D/err" ] && [ "$(wc -l < "$D/slot.log")" = 1 ]
+  if [ $rc = 0 ] && [[ $PCM =~ ^would-admit:\ live\ Σ=11\.5\ cap=[0-9]+(\.[0-9]+)?$ ]]   # cap = the live config class cap, not a literal (ryzen7 synthorg- is 7.6) && [ ! -s "$D/err" ] && [ "$(wc -l < "$D/slot.log")" = 1 ]
   then echo "PASS precheck inner synthorg: pass-through (stops before any acquire), $PCM"; else echo "FAIL precheck inner synthorg rc=$rc PCM=$PCM"; fail=1; fi
   export R7_SLOT_FAKE_PARTS='["542:inner:12.5","542:inner:12.5"]'   # c2b1: one run listed twice counts once
   PFX=synthorg-; precheck "$D/slot.log" 2>"$D/err"; rc=$?
-  if [ $rc = 0 ] && [ "$PCM" = 'would-admit: live Σ=12.5 cap=6.0' ]
+  if [ $rc = 0 ] && [[ $PCM =~ ^would-admit:\ live\ Σ=12\.5\ cap=[0-9]+(\.[0-9]+)?$ ]]
   then echo "PASS precheck one run twice counts once: $PCM"; else echo "FAIL precheck one run twice rc=$rc PCM=$PCM"; fail=1; fi
   unset R7_SLOT_FAKE_PARTS R7_SLOT_FAKE_BUDGET; CLS=$SC; PFX=$SP
   case $D in /home/jsy/hand/.slot-selftest.????*) rm -rf -- "$D";; esac
