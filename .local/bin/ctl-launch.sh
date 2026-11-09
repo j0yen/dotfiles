@@ -19,7 +19,8 @@ while :; do   # --account and --lane, either order, before the claude args
   esac
 done
 # Reject wrong models/efforts before credentials, tmux or a provider are touched.
-. "$HOME/.local/lib/ctl-model-policy.sh" || exit 64
+for _pl in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ctl-model-policy.sh" "$HOME/.local/lib/ctl-model-policy.sh"; do [ -r "$_pl" ] && break; done
+. "$_pl" || exit 64
 ctl_model_policy "$@" || exit $?
 set -- "${CTL_POLICY_ARGS[@]}"
 _self="$(readlink -f "${BASH_SOURCE[0]}")"

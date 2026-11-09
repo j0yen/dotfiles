@@ -682,9 +682,24 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/fable-native-agent-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh",
             "timeout": 10
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/skill-agent-effort-guard.sh",

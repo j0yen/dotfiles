@@ -8,7 +8,8 @@ set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
 ACCT="${1:?account}"; shift; WHY="${*:-relaunch}"
 # Validate approved model/effort BEFORE stopping any existing seat.
-. "$HOME/.local/lib/ctl-model-policy.sh" || exit 64
+for _pl in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ctl-model-policy.sh" "$HOME/.local/lib/ctl-model-policy.sh"; do [ -r "$_pl" ] && break; done
+. "$_pl" || exit 64
 ctl_model_policy || exit $?
 EFFORT=medium
 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" ctl-relaunch || exit 1   # hold gate (hermes-handover 2.4): before anything is stopped or launched; aide-relaunch.sh (shim) inherits
