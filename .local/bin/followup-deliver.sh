@@ -53,11 +53,16 @@ commit_line() { # one JSON line: append, fsync, read back; 0 only when the line 
   printf '%s\n' "$1" >>"$ob" || return 1
   sync -- "$ob" 2>/dev/null || return 1
   [ "$(tail -n1 "$ob")" = "$1" ]; }
+commit_atomic() { # one JSON line appended to a COPY of the outbox, fsynced, then renamed over it: a failure at any step leaves the outbox byte-for-byte unchanged, so an unsynced line is never visible to a replay
+  local tmp; tmp="$(mktemp "$ob.XXXXXX")" || return 1
+  { cp -p -- "$ob" "$tmp" && { [ ! -s "$tmp" ] || [ -z "$(tail -c1 "$tmp")" ] || printf '\n' >>"$tmp"; } && printf '%s\n' "$1" >>"$tmp" \
+    && sync -- "$tmp" 2>/dev/null && [ "$(tail -n1 "$tmp")" = "$1" ] && mv -f -- "$tmp" "$ob"; } || { rm -f -- "$tmp"; return 1; }
+  sync -- "$(dirname "$ob")" 2>/dev/null; return 0; }
 if [ ! -e "$ob" ]; then mkdir -p "$(dirname "$ob")" && : >"$ob" && sync -- "$(dirname "$ob")" 2>/dev/null || nocommit "outbox creation"; fi
 jq -e -s . "$ob" >/dev/null 2>&1 || nocommit "unparseable outbox (a malformed or truncated line); no dedupe query can be trusted"
 
 # A reconciled record authorizes nothing until a LATER durable {"reconcile_confirmed":true,"key","part","ref":<its ts>} line exists (two-phase settlement). Readers ignore an
-# unconfirmed one, or one whose confirm was voided by a later reconcile_confirm_failed line (history is never filtered or dropped); the part then reads as the open UNKNOWN it was before, which keeps the single original needs_reconcile notification.
+# unconfirmed one, or one whose confirm was voided by a later reconcile_confirm_failed line (legacy, no longer written; the confirm is written only by commit_atomic = temp copy + fsync + rename, so a non-durable confirm never reaches the outbox; history is never filtered or dropped); the part then reads as the open UNKNOWN it was before, which keeps the single original needs_reconcile notification.
 JQCONF='def conf($a; $i): $a[$i] as $r | any($a[$i+1:][]; .reconcile_confirmed==true and .ref==$r.ts and .key==$r.key and .part==$r.part) and (any($a[$i+1:][]; .reconcile_confirm_failed==true and .ref==$r.ts) | not);'
 sent() { jq -e -s --arg k "$key" --arg p "$1" "$JQCONF"'. as $a | any(range(0; length); . as $i | $a[$i] | (.sent_part==true or (.reconciled==true and .action=="sent" and conf($a; $i))) and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }
 record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" \
@@ -79,9 +84,7 @@ if [ -n "$mode" ]; then   # flock-guarded human settlement of an unknown part (t
   [ "${st%% *}" = sending ] || { echo "followup-deliver: no open unknown marker for part $rpart of $key" >&2; exit 1; }
   rts="$(date -Ins)"
   commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg a "$ract" --arg ts "$rts" '{reconciled:true,key:$k,part:$p,action:$a,by:"reconcile-mode",ts:$ts}')" || nocommit "reconcile record"
-  commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg r "$rts" '{reconcile_confirmed:true,key:$k,part:$p,ref:$r}')" || {   # until the confirm is durable the record above authorizes nothing; the confirm line may sit in the file unsynced, so a void line (never a deletion) withdraws it
-    commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg r "$rts" '{reconcile_confirm_failed:true,key:$k,part:$p,ref:$r}')" || true
-    nocommit "reconcile confirm"; }
+  commit_atomic "$(jq -nc --arg k "$key" --arg p "$rpart" --arg r "$rts" '{reconcile_confirmed:true,key:$k,part:$p,ref:$r}')" || nocommit "reconcile confirm"   # the confirm never exists in the outbox unless it was fsynced first: no void line is needed
   exit 0
 fi
 rmax="${FOLLOWUP_RETRY_AFTER_MAX:-300}"; [[ "$rmax" =~ ^[0-9]{1,6}$ ]] || rmax=300

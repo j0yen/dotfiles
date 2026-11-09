@@ -298,6 +298,23 @@ printf '%s\n%s\n' "$l1" "$l2" >>"$FOLLOWUP_OUTBOX"
 jreplays
 [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j7: legacy reconcile_uncommitted line is still an open UNKNOWN: replays send 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
 
+# k: confirm via temp copy + fsync + atomic rename: a confirm that is not durable never appears, so a FRESH process replay cannot be authorized by it
+# k1: double fault at the confirm step: confirm fsync fails AND the file turns read-only (no void can be appended)
+jsetup; SYNC_RO_RE='"reconcile_confirmed"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; rc=$?; chmod u+w "$FOLLOWUP_OUTBOX"; jreplays
+[ "$rc" = 2 ] && ! grep -q 'reconcile_confirm' "$FOLLOWUP_OUTBOX" && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 0 ]; st=$?; chk "k1: confirm fsync fails and void cannot be appended: fresh-process replays send 0 more, no new bell, confirm absent (rc $rc, summary sends $(grep -c 'analysis done' "$FH_LOG"), bells $(nbell needs-reconcile))" "$st"
+jsetup; SYNC_RO_RE='"reconcile_confirmed"' "$DEL" --reconcile summary sent --key "$K" </dev/null >/dev/null 2>&1; chmod u+w "$FOLLOWUP_OUTBOX"; : >"$base/bell"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 1 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "k1: same double fault for action sent: replay delivered false (rc $rc), no resend" "$st"
+# k2: a torn confirm line (cut mid-line) blocks the outbox: zero sends, exit 2
+jsetup; printf '%s' '{"reconcile_confirmed":true,"key":"x","pa' >>"$FOLLOWUP_OUTBOX"; : >"$base/bell"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "k2: torn confirm line: zero extra sends, exit 2 (rc $rc)" "$st"
+# k3: a complete confirm for a different ref authorizes nothing
+jsetup; "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; cp "$FOLLOWUP_OUTBOX" "$base/ob.good"
+jq -c 'if .reconcile_confirmed==true then .ref="1999-01-01T00:00:00,000000000+00:00" else . end' "$base/ob.good" >"$FOLLOWUP_OUTBOX"; jreplays
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "k3: confirm for a different ref is not honoured: replays send 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
+# k4: no temp file is left behind by a failed confirm
+jsetup; SYNC_FAIL_RE='"reconcile_confirmed"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1
+[ "$(ls "$FOLLOWUP_OUTBOX".* 2>/dev/null | wc -l)" = 0 ]; st=$?; chk "k4: failed confirm leaves no temp file" "$st"
+
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"
 echo "followup-delivery: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
