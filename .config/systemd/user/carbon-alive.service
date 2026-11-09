@@ -1,0 +1,10 @@
+[Unit]
+Description=carbon-alive: off-host witness of carbon, direct off-carbon alert (A1446)
+# PREMISE: carbon's own recoverers die with user@1000; a reader on another host reports it.
+# EXPIRES: replaced by an accepted A1355 cloud watchdog carbon check, or by Hermes' word.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/.local/bin/carbon-alive
+TimeoutStartSec=90
+Nice=10
