@@ -25,7 +25,7 @@ emit() {  # $1 = reason; WM_DIRECTOR=hermes reports one line and exits 0, otherw
   if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$(tr '\n' ' ' <<<"$1")"; else jq -nc --arg r "$1" '{decision:"block",reason:$r}'; fi
 }
 shared_new() {  # A1346: the shared evaluator (one fingerprint file with owed-now.sh); blocks only on a NEW obligation, never an unchanged delivered one
-  local ev new reason
+  local ev new reason   # R4 (A1346): a missing evaluator returns silently here by design; owed-now.sh reports it once per session on the same Stop chain (tests/followup-evaluator-missing.test.sh)
   ev="$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh" 2>/dev/null; fu_eval_bin)" && [ -n "$ev" ] || return 0
   . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
   new="$(fu_new_obligations "$seat")"; fu_outbox_replay

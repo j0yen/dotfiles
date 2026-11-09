@@ -5,6 +5,8 @@
   followup-eval.py new    --seat S   the actionable ones whose fingerprint was never delivered: persisted atomically, queued in the outbox
   followup-eval.py emit   --seat S --id I --rev R --kind K --fp F --detail D   persist ONE obligation through the same fingerprint file, flock and outbox as new
                            (exit 2 missing/invalid args, JSON error on stderr; exit 3 state unwritable, visible error)
+  followup-eval.py suggestion --seat S --id I --rev R [--owner O --due D]   stdin = a final message; a suggestion with no owner + due is a defect: persisted as kind suggestion-only
+                           through emit's store (exit 1 flagged, 0 clean; repeat of the same text is deduped)
   followup-eval.py reason            stdin obligations (jsonl) -> the one-line block text
   followup-eval.py replay            deliver queued outbox entries; mark delivered on rc 0 only
 
@@ -21,7 +23,7 @@ a new id, a changed revision, a changed disposition or a lapsed next_check is a 
 (one flock serialises check, outbox append, fingerprint write and replay; files are replaced by rename).
 Env: WM_ASKS_BIN FOLLOWUP_STATE_DIR FOLLOWUP_OUTBOX FOLLOWUP_DELIVER_CMD FOLLOWUP_WORKER_ALIVE_CMD FOLLOWUP_NOW.
 """
-import argparse, datetime, fcntl, json, os, re, subprocess, sys
+import argparse, datetime, fcntl, hashlib, json, os, re, subprocess, sys
 
 KNOWN = ("rb", "r7", "ctl", "aide")
 PROSE = re.compile(r"waits-on=|\bPID\b|\bACK\b", re.I)
@@ -50,15 +52,41 @@ def alive(w):
     cmd = os.environ.get("FOLLOWUP_WORKER_ALIVE_CMD")
     if cmd:
         return subprocess.run([cmd, w], capture_output=True).returncode == 0
-    if subprocess.run(["tmux", "has-session", "-t", w], capture_output=True).returncode == 0:
-        return True
-    return subprocess.run(["pgrep", "-f", "--", w], capture_output=True).returncode == 0
+    # canonical handle form seat:<session-prefix> (wm-asks asks claim --worker ctl:42a49890): live when the bare token names a tmux session or a running process
+    for tok in dict.fromkeys([w, w.split(":", 1)[-1]]):
+        if len(tok) < 4:
+            continue
+        for probe in (["tmux", "has-session", "-t", tok], ["pgrep", "-f", "--", tok]):
+            try:
+                r = subprocess.run(probe, capture_output=True, text=True)
+            except OSError:   # probe binary absent on this host (e.g. no tmux on ryzen7): treat as not live by that probe
+                continue
+            if r.returncode != 0:
+                continue
+            if probe[0] == "pgrep":
+                # pgrep -f matches any argv containing the token, including this evaluator's own ancestors (a shell whose command line names the token): those never count
+                pids = {int(x) for x in r.stdout.split() if x.isdigit()} - _ancestors()
+                if not pids:
+                    continue
+            return True
+    return False
+
+
+def _ancestors():
+    out, pid = {os.getpid()}, os.getppid()
+    while pid > 1 and pid not in out:
+        out.add(pid)
+        try:
+            pid = int(open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return out
 
 
 def read_ledger():
     bin_ = os.environ.get("WM_ASKS_BIN", "wm-asks")
     try:
-        p = subprocess.run([bin_, "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
+        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "ledger command failed: %s" % type(e).__name__
     if p.returncode != 0:
@@ -84,10 +112,13 @@ def evaluate(seat, rows, now):
         rid, rev = r["ask_id"], r.get("rev", 0)
         due = ts(r.get("due"))
         note = " (owner empty: assign an owner)" if not owner else ("" if owner in KNOWN else " (owner %s is not a known seat: reassign)" % owner)
-        cw, _, lease = str(r.get("claim") or "").partition("@")
+        cw, _, stamp = str(r.get("claim") or "").partition("@")
+        lease = str(r.get("claim_lease") or "")  # the @stamp in claim is the claim time, never a lease expiry
         ck = str(r.get("claim_session") or "") or cw
         acc = r.get("acceptance") if isinstance(r.get("acceptance"), dict) else {}
         verdict = str(acc.get("verdict") or "")
+        if not verdict and str(r.get("accept_result") or "") == "PASS" and r.get("accept_current") is True and r.get("verdict_row"):
+            verdict = "PASS"  # flat canonical shape: current PASS backed by a verifier verdict row; file-only PASS (no verdict_row) or a stale accept_current=false never counts
         waits = r.get("waits_on") if isinstance(r.get("waits_on"), list) else []
         live_nc, lapsed = [], ""
         for w in waits:
@@ -133,8 +164,8 @@ def evaluate(seat, rows, now):
         if due > now:
             continue
         if PROSE.search(str(r.get("what") or "")):
-            out.append(mk("overdue-ack", "prose-waits-on", "overdue since %s with only a prose waits-on / PID / ACK; record a claim or a structured blocker (owner, dependency, next check)%s" % (due, note), True)); continue
-        out.append(mk("ready", "overdue", "overdue since %s, no live claim and no structured blocker (owner, dependency, next check)%s" % (due, note), True))
+            out.append(mk("overdue-ack", "prose-waits-on", "overdue since %s with only a prose waits-on / PID / ACK; record a live claim (wm-asks asks claim) or append waits-on=row:<open-ask-id> naming an open dependency ask (wm-asks asks update %s --by ctl --expect-rev %s --append waits-on=row:<id>)%s" % (due, rid, rev, note), True)); continue
+        out.append(mk("ready", "overdue", "overdue since %s, no live claim and no open dependency; claim it, or append waits-on=row:<open-ask-id> (wm-asks asks update %s --by ctl --expect-rev %s --append waits-on=row:<id>)%s" % (due, rid, rev, note), True))
     return out
 
 
@@ -162,18 +193,18 @@ def read_followups(seat):
 
 NEXT = {
     "correction-owed": "record the applying row for the verdict (wm-decide record/verdict) or a MOOT row naming why",
-    "dead-worker": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
-    "lease-expired": "re-dispatch or release the claim (wm-asks claim <id> --worker <live worker>)",
-    "stale-revision": "re-claim at the current revision (wm-asks claim <id> --worker <live worker>)",
+    "dead-worker": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
+    "lease-expired": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
+    "stale-revision": "re-claim at the current revision (wm-asks asks claim <id> --worker <live worker>)",
     "verifier-pending": "run the required verifier and record a PASS acceptance before the ending action",
-    "ledger-unreadable": "repair the canonical ledger query (wm-asks query --status open --json)",
-    "dependency-cleared": "dispatch it to a worker now (wm-asks claim <id> --worker <live worker>)",
+    "ledger-unreadable": "repair the canonical ledger query (wm-asks asks query --status open --json)",
+    "dependency-cleared": "dispatch it to a worker now (wm-asks asks claim <id> --worker <live worker>)",
 }
 
 
 def reason(new):
     parts = ["%s [%s/%s] %s -> next: %s" % (n["id"], n["disposition"], n["kind"], n["detail"],
-             NEXT.get(n["kind"], "claim it with a live worker, record a structured blocker (owner, dependency, next check), or resolve it with a PASS acceptance")) for n in new[:5]]
+             NEXT.get(n["kind"], "claim it with a live worker, append waits-on=row:<open-ask-id> for an open dependency ask, or resolve it with a PASS acceptance")) for n in new[:5]]
     return "FOLLOW-UP ACTION REQUIRED (escalated once, queued in the outbox; an unchanged id is not recited): " + "; ".join(parts) + (" and %d more" % (len(new) - 5) if len(new) > 5 else "")
 
 
@@ -239,6 +270,12 @@ def cmd_emit(a):
         die(2, "emit --rev must be an integer")
     o = {"id": a.id, "rev": rev, "disposition": "ready", "kind": a.kind, "owner": a.seat, "next_check": "", "due": "",
          "detail": a.detail, "actionable": True, "fp": a.fp}
+    emitted, deduped = persist(o, a.seat)
+    print(json.dumps({"emitted": emitted, "deduped": deduped}))
+
+
+def persist(o, seat):
+    """Write one obligation through the shared fingerprint file, flock and outbox. Returns (emitted, deduped); exit 3 when the state is unwritable."""
     try:
         sd = state_dir(); fh = locked(sd)
         fp_path = os.path.join(sd, "fingerprints.json")
@@ -248,19 +285,39 @@ def cmd_emit(a):
                 seen = {}
         except (OSError, ValueError):
             seen = {}
-        if a.fp in seen:
+        if o["fp"] in seen:
             fh.close()
-            print(json.dumps({"emitted": False, "deduped": True}))
-            return
+            return False, True
         stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
         with open(outbox_path(sd), "a") as ob:   # outbox first, as in new
-            ob.write(json.dumps(dict(o, seat=a.seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
-        seen[a.fp] = stamp
+            ob.write(json.dumps(dict(o, seat=seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
+        seen[o["fp"]] = stamp
         atomic_write(fp_path, json.dumps(seen, sort_keys=True))
         fh.close()
     except OSError as e:
         die(3, "emit state unwritable: %s" % (e.strerror or type(e).__name__))
-    print(json.dumps({"emitted": True, "deduped": False}))
+    return True, False
+
+
+SUGGEST = re.compile(r"\b(i\s+(would\s+)?(recommend|suggest|propose)|we\s+should|you\s+should|should\s+(probably\s+)?be|next\s+step\s+(would|is|should)|consider\s+(adding|moving|making|using)|worth\s+(adding|doing|fixing))", re.I)
+
+
+def cmd_suggestion(a):
+    """Adapter over emit: a final message (stdin) that suggests work with no owned next action (--owner and a readable --due) is a defect.
+    The defect is persisted as kind suggestion-only through persist(), fingerprint = id|rev|kind|sha1(normalised text). Exit 1 = flagged, 0 = clean."""
+    missing = [n for n in ("seat", "id", "rev") if getattr(a, n) in (None, "")]
+    if missing:
+        die(2, "suggestion missing required args: " + ",".join("--" + m for m in missing))
+    text = " ".join(sys.stdin.read().split())
+    owned = bool(a.owner) and bool(ts(a.due))
+    if not SUGGEST.search(text) or owned:
+        print(json.dumps({"flagged": False})); return
+    fp = "%s|%s|suggestion-only|%s" % (a.id, a.rev, hashlib.sha1(text.lower().encode()).hexdigest()[:12])
+    o = {"id": a.id, "rev": a.rev, "disposition": "ready", "kind": "suggestion-only", "owner": a.seat, "next_check": "", "due": "",
+         "detail": "final message suggests work with no owned next action (owner + due): " + text[:120], "actionable": True, "fp": fp}
+    emitted, deduped = persist(o, a.seat)
+    print(json.dumps({"flagged": True, "emitted": emitted, "deduped": deduped}))
+    sys.exit(1)
 
 
 def cmd_replay():
@@ -299,11 +356,11 @@ def cmd_replay():
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason")); ap.add_argument("--seat")
-    for n in ("id", "rev", "kind", "fp", "detail"):
+    ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason", "suggestion")); ap.add_argument("--seat")
+    for n in ("id", "rev", "kind", "fp", "detail", "owner", "due"):
         ap.add_argument("--" + n)
     a = ap.parse_args()
-    if a.cmd != "emit":
+    if a.cmd not in ("emit", "suggestion"):
         a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
     if a.cmd == "eval":
         rows, why = read_ledger()
@@ -312,6 +369,8 @@ def main():
         cmd_new(a.seat)
     elif a.cmd == "emit":
         cmd_emit(a)
+    elif a.cmd == "suggestion":
+        cmd_suggestion(a)
     elif a.cmd == "reason":   # stdin: one obligation JSON per line -> the one-line machine-actionable block text
         print(reason([json.loads(l) for l in sys.stdin if l.strip()]))
     else:

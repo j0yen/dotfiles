@@ -29,7 +29,7 @@ followups_line() {
 }
 
 # ---- canonical obligation evaluator (ledger asks A1307, A1346) ---------------------------------------------------------------------------
-# ONE evaluator: .local/bin/followup-eval.py reads the canonical store (`wm-asks query --status open --json`) and the seat's overdue or escalated
+# ONE evaluator: .local/bin/followup-eval.py reads the canonical store (`wm-asks asks query --status open --json`) and the seat's overdue or escalated
 # `wm-decide followups` ids, gives each a disposition, and persists ONE fingerprint file (fingerprints.json) plus an outbox under one flock. An unchanged
 # obligation escalates exactly once; a new id, a changed rev, a changed disposition or an expired next_check is a new fingerprint. The functions below
 # only call it: it ships from the same tree as the hooks, so a missing evaluator allows (no second copy to drift).

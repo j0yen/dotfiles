@@ -216,6 +216,16 @@ if kind == "inbox" and lines and all(seat(l) in ("ctl", "aide", "fleet-dash") fo
 if kind == "inbox" and any(seat(l).startswith("joe") for l in lines):
     finish("fable", "fable", "joe-direction-never-classified-away", "deliver", 0)
 
+if kind == "taskfile" and files:   # W20: a task file carrying the approved `Dispatch: ctl` marker has ONE execution route, ctl-dispatch-claim.sh; the bridge never executes it a second time
+    def _marked(f):
+        try:
+            return any(l.rstrip() == "Dispatch: ctl" for l in open(f, errors="replace").read().splitlines())
+        except OSError:
+            return False
+    if all(_marked(f) for f in files):
+        mech({"result": "dispatch-owned", "files": files})
+        finish("deterministic", "none", "dispatch-marker-owns-route", "dispatch-owned", 0)
+
 if kind == "verifier":
     outs, probs = parse_artifacts()
     toks = sorted({t for o in outs for t in o["tokens"]})

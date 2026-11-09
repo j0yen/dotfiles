@@ -11,7 +11,7 @@ EV="$here/.local/bin/followup-eval.py"; OWED="$here/.claude/hooks/owed-now.sh"; 
 [ -f "$EV" ]; chk "0: followup-eval.py exists" $?
 cat >"$base/wm-asks" <<'FAKE'
 #!/usr/bin/env bash
-[ "${1:-}" = query ] || exit 2
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2   # real CLI shape: wm-asks asks query
 [ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
 [ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
 cat "$FU_ASKS"
@@ -124,4 +124,28 @@ sed 's/"new", "emit", "replay"/"new", "replay"/' "$EV" >"$base/ev-noemit.py"
 EVX="$base/ev-noemit.py" contract bad; bad=$?
 contract good; good=$?
 [ "$good" = 0 ] && [ "$bad" != 0 ]; chk "13: known-bad evaluator without emit fails the contract check (good $good, bad $bad)" $?
+# 14: live-schema contract against the REAL wm-asks when present (skipped on hosts without it): the call the evaluator makes returns a list of dicts with ask_id
+if command -v wm-asks >/dev/null 2>&1; then
+  wm-asks asks query --status open --json 2>/dev/null | python3 -c 'import json,sys;r=json.load(sys.stdin);assert isinstance(r,list) and all(isinstance(x.get("ask_id"),str) for x in r)'; chk "14: real wm-asks asks query --status open --json matches the evaluator contract" $?
+  FOLLOWUP_STATE_DIR="$base/real-state" python3 "$EV" new --seat ctl 2>/dev/null | grep -q ledger-unreadable; [ $? != 0 ]; chk "14: real evaluator run reports no ledger-unreadable" $?
+fi
+# 15: flat canonical acceptance shape (accept_result/accept_current/verdict_row), scoped disposition
+{ row F1 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":"d-1"}'
+  row F2 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1"}'
+  row F3 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null}'
+  row F4 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1","verifier_required":true,"ending":true}'
+  row F5 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null,"verifier_required":true,"ending":true}'; } | asks
+[ "$(disp F1)" = verified ]; chk "15: current flat PASS with a verdict row is verified" $?
+[ "$(disp F2)" != verified ]; chk "15: stale accept_current=false is never verified" $?
+[ "$(disp F3)" != verified ]; chk "15: file-only flat PASS (no verdict_row) is not verified" $?
+[ "$(disp F4)" = blocked ] && [ "$(disp F5)" = blocked ]; chk "15: verifier-required ending rows stay blocked on stale or file-only PASS" $?
+# 16: real claim shape. The @stamp is the claim time, so a live worker with a past stamp is claimed, never lease-expired; seat:token handles resolve through the bare token
+row L1 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" | asks; [ "$(disp L1)" = claimed ]; chk "16: a live claim stamped in the past is claimed (stamp is claim time, not a lease)" $?
+row L2 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" "[]" '{"claim_lease":"2026-11-08T11:30"}' | asks; [ "$(disp L2)" = stale-worker ]; chk "16: an explicit claim_lease in the past is still lease-expired" $?
+tag="fu-live-$$-$RANDOM"; bash -c 'sleep 60; :' "$tag" & lp=$!
+al() { (export HANDLE="$1"; unset FOLLOWUP_WORKER_ALIVE_CMD; python3 -I -c 'import importlib.util,sys;s=importlib.util.spec_from_file_location("fe",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);sys.exit(0 if m.alive(__import__("os").environ["HANDLE"]) else 1)' "$EV"); }
+al "ctl:$tag"; chk "16: seat:token handle is live while a process carries the token" $?
+al "ctl:nobody-$RANDOM-zz"; [ $? != 0 ]; chk "16: seat:token handle with no tmux session or process is dead" $?
+kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+grep -q 'wm-asks asks claim' "$EV"; chk "16: the dead-worker recipe names the real verb wm-asks asks claim" $?
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

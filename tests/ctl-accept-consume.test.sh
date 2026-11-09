@@ -11,7 +11,7 @@ fail=0
 chk() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
 cat >"$tmp/asks-view" <<'F'
 #!/usr/bin/env bash
-printf 'A1\t2020-01-01T00:00\tctl\tx\ty\t%s\tz\n' "${FAKE_CHECK:-test -e /nonexistent-ctl-accept}"
+printf 'A1\t2026-11-01T00:00\tctl\t%s\ty\t%s\tz\n' "${FAKE_DUE:-2020-01-01T00:00}" "${FAKE_CHECK:-test -e /nonexistent-ctl-accept}"
 F
 cat >"$tmp/wm-asks" <<'F'
 #!/usr/bin/env bash
@@ -41,6 +41,9 @@ reset; FAKE_CHECK='gh pr view 1' FAKE_WM= ; export FAKE_CHECK='gh pr view 1'
 for i in 1 2 3; do run; done
 [ "$(grep -c SKIP "$tmp/log")" = 3 ] && [ "$(wc -l <"$tmp/outbox")" = 1 ] && [ "$(cat "$tmp/outbox")" = "A1|0|check-unrunnable" ]; chk "gh-first past-due check: one obligation over three runs" $?
 unset FAKE_CHECK
+
+reset; FAKE_WM=recorded FAKE_DUE=2026-12-01T00:00 run
+grep -q " FAIL A1" "$tmp/log" && [ ! -s "$tmp/outbox" ]; chk "not-yet-due FAIL (asked 11-01, due 12-01) emits nothing: due is column 4, not asked column 2" $?
 
 reset; EV="$tmp/absent.py" run
 [ ! -e "$tmp/outbox" ] && grep -q ' FAIL A1' "$tmp/log" && grep -q 'EMIT-ERR A1' "$tmp/log" && [ "$RC" -ne 0 ] \

@@ -17,7 +17,7 @@ for f in "$GATE" "$OWED" "$LIB"; do bash -n "$f"; chk "bash -n $(basename "$f")"
 # fake wm-asks: `query --owners X --status open --json` prints $FU_ASKS (a JSON array of rows); FU_ASKS_FAIL=n exits n; FU_ASKS_GARBAGE prints junk
 cat >"$base/wm-asks" <<'FAKE'
 #!/usr/bin/env bash
-[ "${1:-}" = query ] || exit 2
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2
 [ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
 [ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
 cat "$FU_ASKS"
@@ -168,8 +168,8 @@ jq -nc '{ask_id:"N3",owner:"rb",rev:1,due:"2026-11-07T10:00",status:"open",claim
 o="$(stop false)"; [ -z "$o" ]; chk "15: a known other seat's row is still left to that seat" $?
 # 16. claim validity: lease, session, task revision (not worker liveness alone)
 rm -rf "$FOLLOWUP_STATE_DIR"; touch "$FU_ALIVE_DIR/w-alive"
-row L1 1 2026-11-07T10:00 "w-alive@2026-11-08T11:00" | asks
-o="$(stop false)"; blocks "$o" && grep -qiE 'lease|stale' <<<"$o"; chk "16: a live worker with an expired lease is a stale claim" $?
+row L1 1 2026-11-07T10:00 "w-alive@2026-11-08T11:00" | jq -c '.claim_lease="2026-11-08T11:00"' | asks   # the @stamp is claim time; only an explicit claim_lease expires a claim
+o="$(stop false)"; blocks "$o" && grep -qiE 'lease|stale' <<<"$o"; chk "16: a live worker with an explicit expired claim_lease is a stale claim" $?
 rm -rf "$FOLLOWUP_STATE_DIR"
 row L2 1 2026-11-07T10:00 "w-alive@$LEASE" | asks
 o="$(stop false)"; [ -z "$o" ]; chk "16: a live worker with an unexpired lease still accounts" $?

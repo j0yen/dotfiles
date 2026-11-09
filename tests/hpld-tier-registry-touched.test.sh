@@ -56,7 +56,7 @@ E
 tick() {   # tick [extra env assignments via MG=<contract path>]
   T="$T" HPLD_STATE_DIR="$T/state" HPLD_VDIR="$T/vdir" HPLD_EVENTS="$T/events.jsonl" HPLD_WMD="$T/bin/wm-decide" HPLD_GH="$T/bin/gh" \
   HPLD_VERIFIER="$T/bin/aide-verifier.sh" HPLD_RBMERGE="$T/bin/rb-merge.sh" HPLD_SEATASK="$T/bin/seat-ask.sh" HPLD_ROOM="$T/bin/carbon-room.sh" \
-  HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD=true HPLD_MERGE_GATE="${MG:-$T/none.json}" HPLD_NOW="${NOW:-}" bash "$DRV" >"$T/out" 2>&1; }
+  HPLD_SYSTEMCTL="$T/bin/systemctl" HPLD_REPOS="$REPO" HPLD_PREMISE_IMPORT_CMD=true HPLD_MERGE_GATE="${MG:-$T/none.json}" HPLD_EXPIRES="${HPLD_EXPIRES:-2099-01-01 00:00}" HPLD_NOW="${NOW:-}" bash "$DRV" >"$T/out" 2>&1; }
 files() { printf "$1" >"$T/files.txt"; }
 export T
 L() { grep '^verifier launch' "$T/calls.log"; }
