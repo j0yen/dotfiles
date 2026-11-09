@@ -54,10 +54,12 @@ def alive(w):
     for tok in dict.fromkeys([w, w.split(":", 1)[-1]]):
         if len(tok) < 4:
             continue
-        if subprocess.run(["tmux", "has-session", "-t", tok], capture_output=True).returncode == 0:
-            return True
-        if subprocess.run(["pgrep", "-f", "--", tok], capture_output=True).returncode == 0:
-            return True
+        for probe in (["tmux", "has-session", "-t", tok], ["pgrep", "-f", "--", tok]):
+            try:
+                if subprocess.run(probe, capture_output=True).returncode == 0:
+                    return True
+            except OSError:   # probe binary absent on this host (e.g. no tmux on ryzen7): treat as not live by that probe
+                continue
     return False
 
 
