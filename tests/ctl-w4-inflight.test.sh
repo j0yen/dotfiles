@@ -139,4 +139,33 @@ for n in $(seq 1 ${CONC_N:-10}); do
   ck "conc#$n runner started once" "$(starts)" 1
 done
 
+# ---- D2: an unreadable/empty/torn marker is UNKNOWN (75, retry later), never dead; concurrent takeover of a dead owner has exactly one winner
+for kind in empty torn; do
+  setup m$kind; touch "$T/hold"
+  route_bg "$QF"; waitfor "$T/exec.log" || echo "NEVER STARTED"
+  kill -9 "$RP" 2>/dev/null; wait "$RP" 2>/dev/null
+  if [ $kind = empty ]; then : > "$OD/$OBK.inflight"; else printf '{' > "$OD/$OBK.inflight"; fi
+  TMO=8 route "$QF"
+  ck "d2 $kind marker with a live runner: rerun exits 75" "$RC" 75
+  ck "d2 $kind marker with a live runner: one execution" "$(starts)" 1
+  rm -f "$T/hold"; sleep 1
+done
+for n in $(seq 1 ${TAKE_N:-40}); do
+  setup take$n; mkdir -p "$OD"; printf '{"pid": 999999, "ticks": 1, "boot": "x", "ts": "old"}\n' > "$OD/$OBK.inflight"
+  rm -f "$T/go"
+  for w in a b; do setsid bash -c "while [ ! -e $T/go ]; do :; done; exec timeout 60 $B/ctl-event-route.sh route $C/q-approved.json" >"$C/out.$w" 2>"$C/err.$w" </dev/null & eval "P$w=\$!"; done
+  sleep 0.3; touch "$T/go"; wait "$Pa" "$Pb" 2>/dev/null
+  ck "d2 take#$n one winner: exactly one execution" "$(starts)" 1
+  ck "d2 take#$n one stale file, no late receipt" "$(ls "$OD" | grep -c '\.stale-')/$(ls "$OD" | grep -c '\.late\.json')" 1/0
+done
+
+# ---- D3: two concurrent writers of <key>.handled.json both succeed (unique tmp name per writer)
+for n in $(seq 1 ${CONC_N:-10}); do
+  setup hw$n; mkq a "#901" evA; mkq b "#901" evB; rm -f "$T/go"
+  python3 -I "$B/ctl-obligation-run.py" run --dir "$OD" --key "$OBK" --approval "#901" --action '{"verb":"named-test","name":"zz-synth-w4"}' >/dev/null
+  for w in a b; do setsid bash -c "while [ ! -e $T/go ]; do :; done; timeout 60 $B/ctl-event-route.sh route $C/q-$w.json; echo \$? > $C/rc.$w" >"$C/out.$w" 2>"$C/err.$w" </dev/null & eval "P$w=\$!"; done
+  sleep 0.3; touch "$T/go"; wait "$Pa" "$Pb" 2>/dev/null
+  ck "d3 writers#$n both rc 0" "$(cat "$C/rc.a" 2>/dev/null)/$(cat "$C/rc.b" 2>/dev/null)" 0/0
+done
+
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

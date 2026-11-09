@@ -8,6 +8,7 @@ Verbs (argv lists only, no shell, no interpolation of the spec into a command st
   named-test    {"name": "<[a-z0-9][a-z0-9-]*>"}   bash $OBL_TESTS_DIR/<name>.test.sh (default ~/dotfiles/tests); no kill timer unless the owner sets OBL_RUN_TIMEOUT_SEC (default none)
   service-state {"unit": "<name>.service|.timer"}  systemctl --user is-active -- <unit> (read-only; unit starts alphanumeric)
 Anything else, a bad argument, or a missing target is recorded as a receipt with status "refused" and rc 126; nothing is launched."""
+import fcntl
 import json, os, re, subprocess, sys, datetime
 
 EX_INFLIGHT = 75   # EX_TEMPFAIL: another live runner owns this key (retry later); never a failure, never a second execution
@@ -71,36 +72,69 @@ def child_alive(owner_pid):
     return False
 
 
+def read_marker(ip):
+    """(raw bytes, parsed dict, stat) of a visible marker; parsed is None when empty/torn/not an object with an int pid (UNKNOWN, never dead). FileNotFoundError propagates."""
+    with open(ip, "rb") as f:
+        st = os.fstat(f.fileno())
+        raw = f.read()
+    try:
+        o = json.loads(raw.decode())
+    except ValueError:
+        return raw, None, st
+    return raw, (o if isinstance(o, dict) and isinstance(o.get("pid"), int) else None), st
+
+
 def claim(d, k):
-    """O_EXCL <key>.inflight. Returns (marker, None) when we own the run, (None, 'inflight') when a live owner or its child exists.
-    A dead owner with no live child is taken over once: its marker is renamed (rename has one winner) to <key>.stale-<pid>-<ticks>.json, then we create ours."""
+    """Returns (marker, None) when we own the run, (None, 'inflight') when the owner is live OR UNKNOWN (empty/torn/unreadable marker): exit 75, retry later.
+    The marker is published atomically (unique tmp file, then link() into place: EEXIST = someone owns it; no empty file is ever visible).
+    A dead owner with no live child is taken over once: under <key>.claimlock the exact file judged dead (inode + bytes) is re-checked immediately
+    before the rename; any change returns 'inflight'."""
     os.makedirs(d, exist_ok=True)
     ip = ipath(d, k)
     mine = {"pid": os.getpid(), "ticks": proc_ticks(os.getpid()), "boot": boot_id(), "ts": now()}
-    for _ in range(5):
-        try:
-            fd = os.open(ip, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            try:
-                o = json.load(open(ip))
-            except FileNotFoundError:
-                continue
-            except ValueError:
-                o = {}   # unreadable marker (torn create): dead owner
-            if owner_alive(o) or (isinstance(o.get("pid"), int) and child_alive(o["pid"])):
-                return None, "inflight"
-            stale = os.path.join(d, "%s.stale-%s-%s.json" % (k, o.get("pid"), o.get("ticks")))
-            try:
-                os.rename(ip, stale)   # one winner; a loser sees ENOENT and retries the O_EXCL create
-                o["taken_over_by"] = mine
-                open(stale, "w").write(json.dumps(o, indent=1) + "\n")
-            except FileNotFoundError:
-                pass
-            continue
-        with os.fdopen(fd, "w") as f:
+    lk = os.open(os.path.join(d, k + ".claimlock"), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        tmp = os.path.join(d, "%s.inflight.tmp.%d.%s" % (k, os.getpid(), os.urandom(4).hex()))
+        with open(tmp, "w") as f:
             f.write(json.dumps(mine, indent=1) + "\n")
-        return mine, None
-    return None, "inflight"
+        try:
+            for _ in range(3):
+                try:
+                    os.link(tmp, ip)
+                    return mine, None
+                except FileExistsError:
+                    pass
+                try:
+                    raw, o, st = read_marker(ip)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return None, "inflight"
+                if o is None or owner_alive(o) or child_alive(o["pid"]):
+                    return None, "inflight"
+                try:   # identity re-check right before the rename: same inode, same bytes, or it is not the file we judged
+                    raw2, _, st2 = read_marker(ip)
+                except OSError:
+                    return None, "inflight"
+                if (st2.st_ino, st2.st_dev) != (st.st_ino, st.st_dev) or raw2 != raw:
+                    return None, "inflight"
+                stale = os.path.join(d, "%s.stale-%s-%s.json" % (k, o.get("pid"), o.get("ticks")))
+                try:
+                    os.rename(ip, stale)
+                    o["taken_over_by"] = mine
+                    with open(stale, "w") as f:
+                        f.write(json.dumps(o, indent=1) + "\n")
+                except FileNotFoundError:
+                    pass
+            return None, "inflight"
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    finally:
+        os.close(lk)
 
 
 def release(d, k, mine):

@@ -45,8 +45,9 @@ def now(): return datetime.datetime.now().astimezone().isoformat(timespec="secon
 def append(name, obj):
     with open(os.path.join(RT, name), "a") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
 def wjson(path, obj):
-    with open(path + ".tmp", "w") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
-    os.replace(path + ".tmp", path)
+    tmp = "%s.tmp.%d.%s" % (path, os.getpid(), os.urandom(4).hex())
+    with open(tmp, "w") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
+    os.replace(tmp, path)
 def rjson(path):
     try: return json.load(open(path))
     except Exception: return None
