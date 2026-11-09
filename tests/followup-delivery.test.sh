@@ -230,6 +230,34 @@ reset; printf '%s' '{"id":"trunc","dest":"x","sum' >"$FOLLOWUP_OUTBOX"; "$DEL" <
 reset; ev R1 | tr -d '\n' >"$FOLLOWUP_OUTBOX"; "$DEL" <<<"$(ev R2)" >/dev/null 2>&1
 jq -e -s 'length > 1' "$FOLLOWUP_OUTBOX" >/dev/null && [ "$(sends)" = 2 ]; st=$?; chk "h5: commit_line adds a leading newline when the outbox does not end in one (every line still parses)" "$st"
 
+# (i) fsync-only failure: `sync` fails (PATH stub, only for a last outbox line matching $SYNC_FAIL_RE) while append and read-back succeed
+cat >"$base/bin/sync" <<'STUB'
+#!/usr/bin/env bash
+[ -n "${SYNC_FAIL_RE:-}" ] && [ -f "${2:-}" ] && tail -n1 "$2" | grep -Eq "$SYNC_FAIL_RE" && exit 1
+exec /usr/bin/sync "$@"
+STUB
+chmod +x "$base/bin/sync"
+nbell() { grep -c "$1" "$base/bell"; }
+# i1: the sending_part marker cannot be fsynced => nothing sent, exit 2, one alarm; replay with a working sync stays safe
+reset; SYNC_FAIL_RE='"sending_part"' "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && [ "$(sends)" = 0 ] && [ "$(nbell deliver-blocked)" = 1 ]; st=$?; chk "i1: fsync failure on the sending_part marker: zero sends, exit 2, one alarm (rc $rc, sends $(sends), alarms $(nbell deliver-blocked))" "$st"
+: >"$base/bell"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$(sends)" = 0 ] && [ "$(nbell needs-reconcile)" = 1 ]; st=$?; chk "i1: replay after the failed marker sends nothing (the unsynced marker is open => reconcile, one notification)" "$st"
+# i2: the sent_part record cannot be fsynced after a successful send => UNKNOWN: one reconcile record, one notification, no resend on replay
+reset; SYNC_FAIL_RE='"sent_part".*"part":"summary"' "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 1 ] && [ "$(sends)" = 1 ] && [ "$(attach_sends)" = 0 ] && [ "$(jq -s '[.[]|select(.needs_reconcile==true)]|length' "$FOLLOWUP_OUTBOX")" = 1 ] && [ "$(nbell needs-reconcile)" = 1 ]; st=$?; chk "i2: fsync failure on the sent_part record: one send, held (rc $rc), one needs_reconcile record, one notification (sends $(sends), records $(jq -s '[.[]|select(.needs_reconcile==true)]|length' "$FOLLOWUP_OUTBOX"), bells $(nbell needs-reconcile))" "$st"
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 1 ]; st=$?; chk "i2: replays never resend the summary and ring no second notification (summary sends $(grep -c 'analysis done' "$FH_LOG"), bells $(nbell needs-reconcile))" "$st"
+# i3: the reconcile record cannot be fsynced => exit 2, one alarm, nothing sent
+reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rm -f "$FH_ACCEPT"; : >"$base/bell"
+SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary resend --key 'discord:#ops|T1|1|R1|result' </dev/null >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && [ "$(sends)" = 1 ] && [ "$(nbell deliver-blocked)" = 1 ]; st=$?; chk "i3: fsync failure on the reconcile record: exit 2, one alarm, no send (rc $rc, sends $(sends), alarms $(nbell deliver-blocked))" "$st"
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+# i3b: the same failure for action sent (the safe direction): the unsynced record never causes a resend
+reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rm -f "$FH_ACCEPT"
+SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary sent --key 'discord:#ops|T1|1|R1|result' </dev/null >/dev/null 2>&1; rc=$?; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$rc" = 2 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "i3b: fsync failure on a reconcile 'sent' record: exit 2 and no summary resend on replay (rc $rc, summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
+
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"
 echo "followup-delivery: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

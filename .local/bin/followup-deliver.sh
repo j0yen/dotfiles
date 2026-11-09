@@ -98,14 +98,15 @@ send_retry() { # body -> sets mid; 0 accepted with a message id, 1 positively ra
   done
 }
 deliver_part() { # part body -> 0 sent, 1 rejected by the provider (retryable), 2 outcome unknown (held for reconcile); a marker that cannot be committed exits 2 before any send
-  local part="$1" body="$2" st rc
+  local part="$1" body="$2" st rc mts
   st="$(pstate "$part")"
   if [ "${st%% *}" = sending ]; then reconcile "$part" "${st#* }"; return 2; fi
   command -v hermes >/dev/null 2>&1 || return 1
   mark sending_part "$part" || nocommit "send marker for part $part"
+  mts="$(pstate "$part")"; mts="${mts#* }"   # the open marker's ts: a sent_part line whose fsync failed is not durable, so it is surfaced against this marker
   send_retry "$body"; rc=$?
   case $rc in
-    0) record "$part" "$mid" && return 0; unknown "$part"; return 2;;   # sent but the record failed: the open marker keeps it UNKNOWN
+    0) record "$part" "$mid" && return 0; reconcile "$part" "$mts"; return 2;;   # sent but the record is not durable (append, fsync or read-back failed): UNKNOWN, surfaced once, never resent
     1) mark send_cleared "$part" && return 1; unknown "$part"; return 2;;
     *) unknown "$part"; return 2;;
   esac
