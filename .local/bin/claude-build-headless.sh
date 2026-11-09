@@ -84,7 +84,7 @@ while IFS='=' read -r k v; do
   knob_setenv+=("--setenv=$k=$v")
 done < <(env | grep -E '^(BUILD_|BURST_|EXTEND_GATE_|CARGO_BUDGET_|CHAIN_)[A-Z0-9_]*=' | sort)
 run_out="$(systemd-run --user --unit=claude-build-work --collect --quiet \
-  -p RuntimeMaxSec=3600 -p WorkingDirectory="$HOME" \
+  -p RuntimeMaxSec=3600 -p TasksMax=infinity -p WorkingDirectory="$HOME" \
   -p StandardOutput="append:$LOG" -p StandardError="append:$LOG" \
   --setenv=HOME="$HOME" --setenv=CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
   ${CHAIN_MAX_STEPS:+--setenv=CHAIN_MAX_STEPS="$CHAIN_MAX_STEPS"} --setenv=BUILD_MAX_BRANCHES="${BUILD_MAX_BRANCHES:-2}" \
