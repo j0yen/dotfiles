@@ -33,5 +33,17 @@ ck "nothing delivered for owned/factual" "$(dl)" 0
 out="$(WM_DIRECTOR=hermes stop "$BAD" s2)"
 ck "WM_DIRECTOR=hermes records the obligation" "$(rows)" 1
 ck "WM_DIRECTOR=hermes never blocks" "$(jq -e '.decision=="block"' <<<"${out:-null}" >/dev/null 2>&1 && echo block || echo pass)" pass
+# item 3 producer: a `check:` line that is exactly an allow-listed form passes the typed --action; anything else keeps the row-only path
+act(){ jq -s -r 'map(select(.kind=="suggestion-only"))|last|(.action // "none")|tostring' "$FOLLOWUP_OUTBOX" 2>/dev/null; }
+rm -rf "$W/st" "$W/deliver.log"; stop "$BAD check: systemctl --user is-active ctl-event-bridge.service" c1 >/dev/null
+ck "check: systemctl --user is-active <unit> -> service-state action" "$(act)" '{"verb":"service-state","unit":"ctl-event-bridge.service"}'
+rm -rf "$W/st"; stop "$BAD check: bash tests/ctl-obligation-run.test.sh" c2 >/dev/null
+ck "check: bash tests/<name>.test.sh -> named-test action" "$(act)" '{"verb":"named-test","name":"ctl-obligation-run"}'
+rm -rf "$W/st"; stop "$BAD check: bash tests/x.test.sh; touch /tmp/pwn" c3 >/dev/null
+ck "check with trailing shell is row-only" "$(act)" none
+rm -rf "$W/st"; stop "$BAD check: systemctl --user is-active -Hx.service" c4 >/dev/null
+ck "check with leading '-' unit is row-only" "$(act)" none
+rm -rf "$W/st"; stop "$BAD check: rm -rf /" c5 >/dev/null
+ck "other check is row-only" "$(act)" none
 ck "static caller check: owed-now.sh calls followup-eval.py suggestion" "$(grep -c 'python3 -I "\$sev" suggestion' "$H")" 1
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

@@ -123,7 +123,13 @@ hook() {
       ssid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$ssid" =~ ^[A-Za-z0-9._-]+$ ]] || ssid=nosid
       sown="$(grep -oiE 'owner[:=] ?[a-z0-9_-]+' <<<"$smsg" | head -1 | sed -E 's/^[^:=]*[:=] ?//')"
       sdue="$(grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' <<<"$smsg" | head -1)"
-      printf '%s' "$smsg" | python3 -I "$sev" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} >/dev/null 2>&1 || true
+      # typed producer: a `check: <cmd>` line that is EXACTLY an allow-listed form maps 1:1 to a runner verb; anything else keeps the row-only path
+      local schk sact=""; schk="$(grep -oiE '(^|[[:space:]])check[:=] ?(systemctl --user is-active [A-Za-z0-9][A-Za-z0-9@._-]{0,79}\.(service|timer)|bash tests/[a-z0-9][a-z0-9-]{0,63}\.test\.sh)[[:space:]]*$' <<<"$smsg" | head -1 | sed -E 's/^[[:space:]]*check[:=] ?//I; s/[[:space:]]+$//')"
+      case "$schk" in
+        "systemctl --user is-active "*) sact="$(jq -cn --arg u "${schk##* }" '{verb:"service-state",unit:$u}')" ;;
+        "bash tests/"*.test.sh) sact="$(jq -cn --arg n "$(basename "${schk##* }" .test.sh)" '{verb:"named-test",name:$n}')" ;;
+      esac
+      printf '%s' "$smsg" | python3 -I "$sev" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"} >/dev/null 2>&1 || true
     fi
     local new; new="$(fu_new_obligations "$seat")"; fu_outbox_replay >/dev/null 2>&1 || true
     [ -n "$new" ] || return 0

@@ -160,4 +160,7 @@ fresh
 ACTION='{"verb":"named-test","name":"../../etc/x"}' suggest stop-t11 "$BAD"; read -r ID REV FP <<<"$(keyof stop-t11)"; cycle
 appr "APPROVED-OBLIGATION id=$ID rev=$REV fp=$FP approval=#933"; cycle
 chk "path-traversal arg for an allowed verb: refused" "$(grep -c refused "$T/rt/obligations/$ID.$REV.$FP.run.json" 2>/dev/null)" 1
+# 11. the surfaced row tells the approver the obligation id, the exact key and the two-step (approvals.log record naming the id, then the hermes line)
+fresh; suggest stop-t12 "$BAD"; read -r ID REV FP <<<"$(keyof stop-t12)"; cycle
+chk "surfaced row names id, exact key, approve.sh re: <id> and the approval= field" "$(grep -c "obligation id $ID .*key $ID.$REV.$FP.*approve.sh.*re: .*$ID.*APPROVED-OBLIGATION id=$ID rev=$REV fp=$FP approval=<id>" "$T/asks.jsonl")" 1
 echo "ctl-event-obligation test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"; exit $f

@@ -250,7 +250,7 @@ def typed_action(i, r, h):
 def run_action(k, appr, act):
     """Launch the typed action under the approval (its own receipt: obligations/<key>.run.json); idempotent on replay. False = the runner itself failed."""
     if act is None: return True
-    p = subprocess.run(["python3", "-I", RUN_BIN, "run", "--dir", OD, "--key", k, "--approval", appr, "--action", json.dumps(act)], capture_output=True, text=True, timeout=700)
+    p = subprocess.run(["python3", "-I", RUN_BIN, "run", "--dir", OD, "--key", k, "--approval", appr, "--action", json.dumps(act)], capture_output=True, text=True)   # no kill timer: the hang guard is the owner-set OBL_RUN_TIMEOUT_SEC inside the runner
     return p.returncode == 0
 def surface(text, waits, key):
     """One owned row per obligation key (dedupe by the key marker); the event marker is kept so the bridge's evidence check passes."""
@@ -276,7 +276,7 @@ if kind == "obligation":
     rid = None
     for k in keys:
         i, r, h = k.rsplit(".", 2)
-        got = surface("suggestion-only obligation %s awaiting a typed approval; approve with a hermes line: APPROVED-OBLIGATION id=%s rev=%s fp=%s approval=<id>" % (k, i, r, h), "approval-of-obligation", k)
+        got = surface("suggestion-only obligation id %s (key %s) awaiting a typed approval: step 1 record it with approve.sh (the record's re: must name %s); step 2 send the hermes line: APPROVED-OBLIGATION id=%s rev=%s fp=%s approval=<id>" % (i, k, i, i, r, h), "approval-of-obligation", k)
         if got is None: sys.exit("row-write-failed")
         rid = rid or got
     mech({"result": "obligation-surfaced", "keys": keys})

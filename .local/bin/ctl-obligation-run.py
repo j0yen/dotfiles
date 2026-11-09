@@ -3,14 +3,14 @@
   run   --dir D --key K --approval N --action '<json>'   run ONE allow-listed verb under the approval; write D/K.run.json (verb, args, rc, approval, tail, ts); idempotent
   check --dir D --key K                                  exit 0 only when D/K.run.json exists for K with rc 0 (the ledger done-check: work evidence, never a manual touch)
 Verbs (argv lists only, no shell, no interpolation of the spec into a command string):
-  named-test    {"name": "<[a-z0-9][a-z0-9-]*>"}   bash $OBL_TESTS_DIR/<name>.test.sh (default ~/dotfiles/tests), timeout 600 s
-  service-state {"unit": "<name>.service|.timer"}  systemctl --user is-active <unit> (read-only)
+  named-test    {"name": "<[a-z0-9][a-z0-9-]*>"}   bash $OBL_TESTS_DIR/<name>.test.sh (default ~/dotfiles/tests); no kill timer unless the owner sets OBL_RUN_TIMEOUT_SEC (default none)
+  service-state {"unit": "<name>.service|.timer"}  systemctl --user is-active -- <unit> (read-only; unit starts alphanumeric)
 Anything else, a bad argument, or a missing target is recorded as a receipt with status "refused" and rc 126; nothing is launched."""
 import json, os, re, subprocess, sys, datetime
 
 VERBS = {
     "named-test": ("name", re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")),
-    "service-state": ("unit", re.compile(r"^[A-Za-z0-9@._-]{1,80}\.(service|timer)$")),
+    "service-state": ("unit", re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._-]{0,79}\.(service|timer)$")),
 }
 
 
@@ -45,7 +45,7 @@ def build(spec):
         if not os.path.isfile(path):
             return None, "no such test"
         return ["bash", path], None
-    return ["systemctl", "--user", "is-active", val], None
+    return ["systemctl", "--user", "is-active", "--", val], None
 
 
 def cmd_run(a):
@@ -63,10 +63,12 @@ def cmd_run(a):
         write(d, k, rec)
         return 0
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
+        tmo = os.environ.get("OBL_RUN_TIMEOUT_SEC", "")   # owner-set hang guard; unset/empty/0 = none (no caps that only save time, Joe 11-01 #195)
+        tmo = int(tmo) if tmo.isdigit() and int(tmo) > 0 else None
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=tmo, stdin=subprocess.DEVNULL)
         rec.update(status="ran", rc=p.returncode, tail=(p.stdout + p.stderr)[-500:])
     except subprocess.TimeoutExpired:
-        rec.update(status="ran", rc=124, tail="timeout 600 s")
+        rec.update(status="ran", rc=124, tail="owner-set timeout %s s" % tmo)
     except OSError as e:
         rec.update(status="ran", rc=127, tail=str(e)[:200])
     write(d, k, rec)
