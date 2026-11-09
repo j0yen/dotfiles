@@ -59,7 +59,7 @@ elif "${SR_PGREP_BIN:-pgrep}" -f -- "claude.*--resume $sid|claude.*$sid" >/dev/n
   state=live-elsewhere
 else
   if "$HG" ctl-recover >"$D/gate.out" 2>&1; then
-    export SID="$sid"; lc="${SR_LAUNCH_CMD:-$HOME/.local/bin/ctl-launch.sh --resume \"\$SID\"}"
+    export SID="$sid"; lc="${SR_LAUNCH_CMD:-$HOME/.local/bin/ctl-launch.sh --model claude-sonnet-5-5 --effort medium --resume \"\$SID\" \"silence-recover relaunch: the ctl pane was missing with unread inbox or READY owed work. Read the canonical A1296/A1346 revisions and the retained results, then continue the owed list; do not end at an acknowledgement.\"}"
     if (set -o pipefail; bash -c "$lc" >"$D/launch.out" 2>&1); then state=relaunched; poked="$T"; else state=launch-failed; fi
   else state=blocked-by-hold; fi
 fi
