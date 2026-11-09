@@ -12,17 +12,19 @@ DEL="$here/.local/bin/followup-deliver.sh"; EV="$here/.local/bin/followup-eval.p
 mkdir -p "$base/bin" "$base/state"
 cat >"$base/bin/hermes" <<'FAKE'
 #!/usr/bin/env bash
-# fake `hermes send --to T [--json] BODY`; logs "T<TAB>BODY"; FH_ATTACH_429=N fails the next N MEDIA: sends (always = every one), FH_TEXT_429=always fails every text send, =chunks fails every text send except the summary
+# fake `hermes send --to T [--json] BODY`; logs "T<TAB>BODY"; FH_ATTACH_429=N fails the next N MEDIA: sends (always = every one), FH_TEXT_429=always fails every text send, =afterN fails chunk sends once N chunks went out, FH_RETRY_AFTER sets the 429 retry_after, =chunks fails every text send except the summary
 [ "${1:-}" = send ] || exit 2; shift
 to=""; body=""
 while [ $# -gt 0 ]; do case "$1" in --to|-t) to="$2"; shift 2;; --json|-q) shift;; *) body="$1"; shift;; esac; done
 printf '%s\t%s\n' "$to" "$body" >>"$FH_LOG"
 n=0; [ -f "$FH_CTR" ] && n="$(cat "$FH_CTR")"
-fail429() { echo '{"success":false,"error":"Discord 429 rate limited","retry_after":2}'; exit 1; }
+fail429() { echo "{\"success\":false,\"error\":\"Discord 429 rate limited\",\"retry_after\":${FH_RETRY_AFTER:-2}}"; exit 1; }
 case "$body" in
   MEDIA:*) c="$(cat "$FH_ATTACH_429" 2>/dev/null || echo 0)"
            if [ "$c" = always ]; then fail429; elif [ "$c" -gt 0 ] 2>/dev/null; then echo $((c - 1)) >"$FH_ATTACH_429"; fail429; fi;;
-  *) m="$(cat "$FH_TEXT_429" 2>/dev/null)"; { [ "$m" = always ] || { [ "$m" = chunks ] && [ "$body" != "analysis done" ]; }; } && fail429;;
+  *) m="$(cat "$FH_TEXT_429" 2>/dev/null)"
+     case "$m" in after*) [ "$body" != "analysis done" ] && [ $((n - 1)) -ge "${m#after}" ] && fail429;; esac
+     { [ "$m" = always ] || { [ "$m" = chunks ] && [ "$body" != "analysis done" ]; }; } && fail429;;
 esac
 n=$((n + 1)); echo "$n" >"$FH_CTR"; echo "{\"success\":true,\"message_id\":\"m$n\"}"
 FAKE
@@ -59,7 +61,7 @@ python3 -I "$EV" replay >/dev/null 2>&1
 reset; echo always >"$FH_ATTACH_429"; e="$(ev R1)"
 "$DEL" <<<"$e"; rc=$?
 [ "$(attach_sends)" = 3 ]; chk "b: attachment is attempted FOLLOWUP_DELIVER_RETRIES (3) times (got $(attach_sends))" $?
-[ "$(grep -c . "$FS_LOG")" = 2 ] && [ "$(sed -n 1p "$FS_LOG")" -ge 2 ] && [ "$(sed -n 2p "$FS_LOG")" -gt "$(sed -n 1p "$FS_LOG")" ]; chk "b: backoff sleeps between attempts, at least Retry-After and growing ($(paste -sd, "$FS_LOG"))" $?
+[ "$(grep -c . "$FS_LOG")" = 2 ] && [ "$(sed -n 1p "$FS_LOG")" -ge 2 ] && [ "$(sed -n 2p "$FS_LOG")" -gt "$(sed -n 1p "$FS_LOG")" ]; src=$?; chk "b: backoff sleeps between attempts, at least Retry-After and growing ($(paste -sd, "$FS_LOG"))" $src
 chunks="$(grep -v $'\tMEDIA:' "$FH_LOG" | grep -vc 'analysis done')"
 [ "$chunks" -ge 2 ] && [ "$rc" = 0 ]; chk "b: then falls back to chunked text sends and exits 0 (chunks $chunks, rc $rc)" $?
 [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; chk "b: the summary was sent once, not per attempt" $?
@@ -85,4 +87,21 @@ jq -e -s '[.[]|select(.sent_part==true)] | length==2 and (map(.message_id)|sort=
 reset; printf '#!/usr/bin/env bash\necho bell >>"$FH_LOG"\n' >"$base/bin/seat-event.sh"; chmod +x "$base/bin/seat-event.sh"
 SEAT_EVENT_BIN="$base/bin/seat-event.sh" "$DEL" <<<'{"id":"x1","seat":"ctl","kind":"obligation","detail":"d"}'; rc=$?
 [ "$rc" = 0 ] && [ "$(cat "$FH_LOG")" = bell ]; chk "c: an event with no destination still rings the seat bell" $?
+# (d) real-adapter paths through followup-eval.py replay -> followup-deliver.sh -> spy hermes
+# one transient attachment 429: the retry sends the file itself, no chunk text, summary once
+reset; echo 1 >"$FH_ATTACH_429"; ev R1 >"$FOLLOWUP_OUTBOX"
+python3 -I "$EV" replay >/dev/null 2>&1
+[ "$(attach_sends)" = 2 ] && [ "$(grep -v $'\tMEDIA:' "$FH_LOG" | grep -vc 'analysis done')" = 0 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && ! grep -q '"delivered":false' "$FOLLOWUP_OUTBOX"
+chk "d: replay with one attachment 429 retries the file (2 MEDIA sends), no chunks, summary once, item delivered (media $(attach_sends))" $?
+# Retry-After longer than the backoff is honored
+reset; echo 1 >"$FH_ATTACH_429"; FH_RETRY_AFTER=30 "$DEL" <<<"$(ev R1)"
+[ "$(sed -n 1p "$FS_LOG")" = 30 ]; src=$?; chk "d: a Retry-After of 30 s sleeps 30 s, not the shorter backoff ($(paste -sd, "$FS_LOG"))" $src
+# chunk fallback interrupted midway: the retry resumes after the last sent chunk, never re-sends the file or earlier chunks
+reset; echo always >"$FH_ATTACH_429"; echo after1 >"$FH_TEXT_429"; ev R1 >"$FOLLOWUP_OUTBOX"
+python3 -I "$EV" replay >/dev/null 2>&1
+grep -q '"delivered":false' "$FOLLOWUP_OUTBOX" && [ "$(jq -s '[.[]|select(.sent_part==true and (.part|startswith("attachment-chunk-")))]|length' "$FOLLOWUP_OUTBOX")" = 1 ]; chk "d: a failure after chunk 1 leaves delivered:false with exactly one chunk on record" $?
+rm -f "$FH_TEXT_429"; : >"$FH_LOG"
+python3 -I "$EV" replay >/dev/null 2>&1
+! grep -q '"delivered":false' "$FOLLOWUP_OUTBOX" && [ "$(attach_sends)" = 0 ] && ! grep -q 'analysis done' "$FH_LOG" && [ "$(grep -c . "$FH_LOG")" = 2 ]; chk "d: resume sends no MEDIA, no summary, only chunks 2 and 3 (sends $(sends))" $?
+[ "$(jq -s '[.[]|select(.sent_part==true and (.part|startswith("attachment-chunk-")))]|length' "$FOLLOWUP_OUTBOX")" = 3 ]; chk "d: all three chunks are on record exactly once" $?
 echo "followup-delivery: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
