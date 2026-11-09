@@ -17,11 +17,13 @@ State dir ${DIRECTOR_STATE:-~/.local/state/director-consumer}: offset, events.js
 Parallel consumers: any number of consumer identities (DIRECTOR_CONSUMER, default c0) share one state dir and the canonical
 ledger. No global lock: a per-event flock (runs/<id>.lock) serializes one event, a per-ask flock (locks/ask-<ask>.lock) one ask,
 offset.lock only the log offset. The ledger claim (worker director-<event>.<owner>, --expect-rev) is the single owner of a task.
+Liveness is tri-state (live | dead | unknown) over every unit the run has recorded; the unit is saved before the launcher is
+called, and a probe error is unknown: no relaunch, no steal, one liveness-unknown decision.
 A claim is a coordination token, never a runtime cap: recovery looks at worker liveness (unit ActiveState) and the effect ledger
 runs/<id>.effect (one line per durable step, final line DONE), never at an age. ask rows may carry scope=a,b as a scope field or a `scope=a,b` token in the what text (real ledger rows have no
 scope field; claims read back as <worker>@<timestamp>) (live-settings, migration, promote:<target>): scopes are taken all-or-nothing in sorted order and released when the run completes or is stuck.
 Env seams (tests): DIRECTOR_STATE DIRECTOR_EVENTS_LOG HOLD_GATE WM_ASKS_CMD DIRECTOR_HERMES_CMD
-                   DIRECTOR_LAUNCH_CMD (<unit> <envelope>; exit 75 = provider outage) DIRECTOR_ACTIVE_CMD (<unit>, exit 0 = active)
+                   DIRECTOR_LAUNCH_CMD (<unit> <envelope>; exit 75 = provider outage) DIRECTOR_ACTIVE_CMD (<unit>, exit 0 = live, 1 = dead, other = probe error = UNKNOWN)
                    DIRECTOR_RESET_CMD (<unit>) DIRECTOR_CONSUMER DIRECTOR_CRASH_AT (after-seen | after-offset)
 No ledger fallback: a missing, failing or malformed canonical ledger records canonical-unavailable plus a durable row in
 incidents.jsonl and launches nothing; the event stays retryable. No attempt count or age ends a run: launch failures and
@@ -56,6 +58,8 @@ SCOPE_RE = re.compile(r"^[A-Za-z0-9:._-]{1,80}$")
 RETRY_STATES = ("seen", "held", "canonical-unavailable", "scope-wait", "ask-busy")
 OPEN_STATES = ("claimed", "launched", "launch-failed", "provider-outage", "reconcile-required")
 TERMINAL_STATES = ("completed", "stuck", "claim-conflict", "superseded")
+DEAD_UNIT = ("inactive", "failed")
+UNITS_PROBED = 16
 LIVE_UNIT = ("active", "activating", "deactivating", "reloading")
 NOTE_AT = 2         # visibility only: at this many attempts one owned note says the run is still retrying. Never ends work.
 
@@ -174,16 +178,32 @@ def unit_of(eid, attempt=1):
     return "director-run-%s-a%d" % (eid, attempt)
 
 
-def unit_active(r):
-    """Worker liveness of the latest attempt's unit. No unit recorded = not live."""
-    unit = r.get("unit")
-    if not unit:
-        return False
+def unit_state(unit):
+    """Tri-state liveness of one unit: live | dead | unknown. Only a definite answer is live or dead; a probe error
+    (command missing, timeout, bus failure, unexpected ActiveState) is unknown, never dead."""
     cmd = os.environ.get("DIRECTOR_ACTIVE_CMD")
     if cmd:
-        return sh(shlex.split(cmd) + [unit])[0] == 0
+        rc = sh(shlex.split(cmd) + [unit])[0]
+        return "live" if rc == 0 else "dead" if rc == 1 else "unknown"
     rc, out, _ = sh(["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit])
-    return rc == 0 and out.strip() in LIVE_UNIT
+    out = out.strip()
+    if rc == 0 and out in LIVE_UNIT:
+        return "live"
+    return "dead" if rc == 0 and out in DEAD_UNIT else "unknown"
+
+
+def run_units(r):
+    """Every unit this run has recorded (intent is saved before the launcher is called), newest last."""
+    us = [u for u in (r.get("units") or []) if u]
+    if r.get("unit") and r["unit"] not in us:
+        us.append(r["unit"])
+    return us[-UNITS_PROBED:]
+
+
+def liveness(r):
+    """live when any recorded unit is live; unknown when none is live and any probe errored; else dead (also: no unit)."""
+    states = [unit_state(u) for u in run_units(r)]
+    return "live" if "live" in states else "unknown" if "unknown" in states else "dead"
 
 
 def try_lock(path):
@@ -330,6 +350,9 @@ def launch(r):
     attempt = r.get("attempts", 0) + 1
     uncounted = r.pop("outage_relaunch", False)      # a relaunch after a provider outage never counts as an attempt
     unit = unit_of(r["event_id"], attempt + r.get("outages", 0))
+    r["unit"], r["launch_intent"] = unit, now()      # durable intent BEFORE the launcher: a crash after the worker starts still leaves the unit on record
+    r["units"] = run_units(r)
+    save_run(r)
     rc0 = os.environ.get("DIRECTOR_RESET_CMD")
     sh((shlex.split(rc0) if rc0 else ["systemctl", "--user", "reset-failed"]) + [unit])
     lc = os.environ.get("DIRECTOR_LAUNCH_CMD")
@@ -737,8 +760,20 @@ def recover_open(r):
     eid = r["event_id"]
     if os.path.exists(os.path.join(RUNS, eid + ".receipt.json")):
         return
-    if unit_active(r):
+    live = liveness(r)
+    if live == "live":
+        if r.pop("liveness_unknown", None):
+            save_run(r)
         return          # healthy worker: never touched, whatever its age
+    if live == "unknown" and not effect_done(eid):
+        # a probe error is not a dead worker: no relaunch, no unknown-effect gate, nothing stolen; one visibility decision
+        if not r.get("liveness_unknown"):
+            r["liveness_unknown"] = now()
+            save_run(r)
+            decide(event_id=eid, ask=r["ask"], decision="liveness-unknown", units=run_units(r), claim=r.get("claim"))
+        return
+    if r.pop("liveness_unknown", None):
+        save_run(r)
     outage = os.path.join(RUNS, eid + ".outage")
     if os.path.exists(outage):
         os.unlink(outage)

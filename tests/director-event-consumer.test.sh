@@ -318,4 +318,60 @@ before="$(cd $DIRECTOR_STATE && find . -type f ! -name '*.lock' ! -name '*.flock
 after="$(cd $DIRECTOR_STATE && find . -type f ! -name '*.lock' ! -name '*.flock' -exec md5sum {} + | sort | md5sum)"
 chk "unchanged recover: no writes, no launches, no ledger writes" '[ "$before" = "$after" ] && [ ! -e $STUB/launch.log ] && [ "$(cnt "asks \(claim\|update\)" calls.log)" = 0 ]'
 
+# R3/R3b (A1299 durable launch intent): unit/attempt is saved in the run state BEFORE the launcher is called, and any recorded
+# unit is probed for liveness. A consumer killed after the worker started and before the post-launch save leaves no second worker,
+# whether or not the launcher refuses a same-named unit (this launcher does not).
+cat > "$T/launcher-live" <<'SH'
+#!/usr/bin/env bash
+# spy launcher with a real worker set: logs the unit, notes whether the run state already named it, starts a worker; no unit-name uniqueness
+grep -q "$1" "$DIRECTOR_STATE"/runs/*.json 2>/dev/null && echo "INTENT-SAVED $1" >> "$STUB/launch.log"
+echo "$1" >> "$STUB/launch.log"; echo "$1" >> "$STUB/actives"
+[ -e "$STUB/killparent" ] && kill -9 "$PPID"
+exit 0
+SH
+cat > "$T/active-set" <<'SH'
+#!/usr/bin/env bash
+# tri-state probe: 0 = live, 1 = dead, anything else = probe error (UNKNOWN)
+[ -e "$STUB/blind" ] && exit "$(cat "$STUB/blind")"
+grep -qx "$1" "$STUB/actives" 2>/dev/null
+SH
+chmod +x "$T/launcher-live" "$T/active-set"
+ready_a100(){ python3 - <<PY
+import json,os
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))
+PY
+}
+fresh 24; export DIRECTOR_LAUNCH_CMD="$T/launcher-live" DIRECTOR_ACTIVE_CMD="$T/active-set"; ready_a100
+run recover
+chk "R3 intent: the run state names the unit before the launcher is called" '[ "$(cnt "INTENT-SAVED director-run-ready-A100-3-a1" launch.log)" = 1 ]'
+fresh 25; export DIRECTOR_LAUNCH_CMD="$T/launcher-live" DIRECTOR_ACTIVE_CMD="$T/active-set"; ready_a100
+touch "$STUB/killparent"; run recover; rm "$STUB/killparent"; run recover; run recover
+chk "R3/R3b crash after worker start, before the post-launch save: recovery finds the recorded unit live, one launch, one live worker" '[ "$(cnt "^director-run-ready-A100-3-a1$" launch.log)" = 1 ] && [ "$(wc -l < $STUB/actives)" = 1 ]'
+
+# R3f: a probe error is UNKNOWN, never dead: no relaunch, no steal, and the run resumes normally once the probe answers
+fresh 26; export DIRECTOR_LAUNCH_CMD="$T/launcher-live" DIRECTOR_ACTIVE_CMD="$T/active-set"; ready_a100
+run recover; echo 4 > "$STUB/blind"; run recover; run recover
+chk "R3f probe error (exit 4) with a healthy worker: no relaunch, one visibility decision, run state still launched" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 1 ] && [ "$(grep -c liveness-unknown $DIRECTOR_STATE/decisions.jsonl)" = 1 ] && grep -q "\"state\": \"launched\"" $DIRECTOR_STATE/runs/ready-A100-3.json'
+echo 127 > "$STUB/blind"; run recover
+chk "R3f probe command missing (exit 127): still UNKNOWN, no relaunch" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 1 ]'
+rm "$STUB/blind"; run recover
+chk "R3f probe answers live again: no relaunch, unknown mark cleared" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 1 ] && ! grep -q liveness_unknown $DIRECTOR_STATE/runs/ready-A100-3.json'
+: > "$STUB/actives"; run recover
+chk "R3f definite dead (exit 1) after the unknown spell: relaunched once" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 2 ]'
+
+# real systemctl path of the same tri-state: ActiveState inactive = dead; a failing systemctl = UNKNOWN
+mkdir -p "$T/fakebin"; cat > "$T/fakebin/systemctl" <<'SH'
+#!/usr/bin/env bash
+[ "$2" = show ] || exit 0
+[ -e "$STUB/sysfail" ] && { echo "Failed to connect to bus" >&2; exit 1; }
+cat "$STUB/sysstate"
+SH
+chmod +x "$T/fakebin/systemctl"
+fresh 27; export DIRECTOR_LAUNCH_CMD="$T/launcher-live"; unset DIRECTOR_ACTIVE_CMD; ready_a100
+export PATH="$T/fakebin:$PATH"; echo active > "$STUB/sysstate"; run recover; touch "$STUB/sysfail"; run recover
+chk "systemctl show failing (bus error): UNKNOWN, no relaunch" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 1 ]'
+rm "$STUB/sysfail"; echo inactive > "$STUB/sysstate"; run recover
+chk "systemctl ActiveState inactive: dead, relaunched once" '[ "$(cnt "^director-run-ready-A100-3" launch.log)" = 2 ]'
+PATH="${PATH#$T/fakebin:}"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "FAILURES: $fails"; exit 1; }
