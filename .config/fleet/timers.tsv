@@ -54,6 +54,8 @@ mech-registry.service	mechanical	fleet	no	no
 mech-registry.timer	mechanical	fleet	no	yes
 memory-tone-lint.service	mechanical	fleet	no	no
 memory-tone-lint.timer	mechanical	fleet	no	yes
+model-effort-audit.service	mechanical	fleet	no	no
+model-effort-audit.timer	mechanical	fleet	no	yes
 operator-overlap-digest.service	mechanical	fleet	no	no
 operator-overlap-digest.timer	mechanical	fleet	no	yes
 pr-conflict-watch.service	mechanical	fleet	no	no
