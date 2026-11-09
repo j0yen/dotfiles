@@ -8,6 +8,7 @@
 #   dup  a second event id for the same key opens no second continuation row
 # BIN_DIR=<dir> runs the scripts from another tree (e.g. ~/.local/bin, the installed copy, for the RED run).
 set -u
+if [ -z "$(command -v wm-asks)" ]; then echo "SKIP tests/ctl-w4-inflight.test.sh: real wm-asks not installed on this host (carbon-only evidence; see receipt)"; exit 0; fi
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 SRC="${BIN_DIR:-$here/.local/bin}"
 T="$(mktemp -d)"; trap 'pkill -9 -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT
