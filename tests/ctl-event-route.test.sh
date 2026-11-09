@@ -3,7 +3,7 @@
 # no real pane, no real model. NOTE: never put $(...) in a chk message ($? would be reset and the check would always pass).
 set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
-BR="$root/.local/bin/ctl-event-bridge.sh"; RTS="$root/.local/bin/ctl-event-route.sh"
+BR="$root/.local/bin/ctl-event-bridge.sh"; RTS="${RTS_OVERRIDE:-$root/.local/bin/ctl-event-route.sh}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 n=0; f=0
 chk() { n=$((n+1)); if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; f=1; fi; }
@@ -190,6 +190,106 @@ echo "$EV_PASS" > "$T/ev"; BR_CYCLES=3 br run
 # fail-safe: a missing router leaves everything queued and delivered, nothing acked unseen
 fresh; echo "$EV_PASS" > "$T/ev"; XRT_BIN="$T/nonexistent" br run
 [ "$(q)" = 1 ] && [ "$(sends)" -ge 1 ]; chk "missing router: nothing acked, event still delivered (fail-safe)" $?
+
+# ---- W20: a Dispatch: ctl task file has one route (ctl-dispatch-claim.sh); the bridge executes nothing and makes no model call
+printf 'Dispatch: ctl\nTASK: write the weekly summary\n' > "$T/dtask.md"
+EV_DTASK="{\"event\":\"taskfile\",\"ts\":\"t\",\"detail\":{\"files\":[\"$T/dtask.md\"]}}"
+fresh; echo "$EV_DTASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 0 ] && [ "$(calls)" = 0 ] && [ "$(sends)" = 0 ] && [ "$(q)" = 0 ]; chk "(w20) Dispatch: ctl task file: no executor, no classifier call, no pane delivery, acked" $?
+fresh; echo "$EV_TASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ]; chk "(w20) a task file without the marker still takes the haiku route" $?
+
+# W20 partition: a mixed event (one Dispatch: ctl file, one plain file) hands ONLY the plain file to the executor
+printf 'TASK: plain mixed-event job\n' > "$T/plain.md"
+EV_MIX="{\"event\":\"taskfile\",\"ts\":\"t\",\"detail\":{\"files\":[\"$T/dtask.md\",\"$T/plain.md\"]}}"
+fresh; echo "$EV_MIX" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ]; chk "(w20) mixed event: unmarked file still takes the haiku route and is acked" $?
+grep -q 'plain mixed-event job' "$T/last-prompt.exe"; chk "(w20) mixed event: executor prompt carries the unmarked file text" $?
+! grep -qF "$T/dtask.md" "$T/last-prompt.exe" && ! grep -q 'write the weekly summary' "$T/last-prompt.exe"; chk "(w20) mixed event: exact marked path and text absent from the EXECUTOR prompt (EVENT-DETAIL included)" $?
+! grep -qF "$T/dtask.md" "$T/last-prompt.cls" && ! grep -q 'write the weekly summary' "$T/last-prompt.cls"; chk "(w20) mixed event: exact marked path and text absent from the CLASSIFIER prompt" $?
+# repeated bridge cycles over the same mixed event: one effect, never a second executor call
+c1="$(calls)"; BR_CYCLES=2 br run
+[ "$(calls)" = "$c1" ] && [ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ]; chk "(w20) mixed event: further bridge cycles add no executor or classifier call (one effect)" $?
+fresh; echo "$EV_MIX" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
+[ "$(rolecalls exe)" = 1 ]; chk "(w20) mixed event: several bridge cycles still run exactly one executor call" $?
+
+# W20 receipt fixes: unknown file state (3f/3g), every kind with detail.files (3l), "\n" line definition (3e)
+mech_has() { grep -q "$1" "$T/rt/mechanical.log" 2>/dev/null; }
+evf() { printf '{"event":"%s","ts":"t","detail":{"files":%s%s}}' "$1" "$2" "${3:+,$3}"; }
+# 3g: a marked file with mode 000 is UNKNOWN: held (pending, no cache, no ack), nothing reaches a prompt; once readable it routes as dispatch-owned
+fresh; cp "$T/dtask.md" "$T/unr.md"; chmod 000 "$T/unr.md"; evf taskfile "[\"$T/unr.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && [ ! -e "$T/rt/routed/$(basename "$(only "$T/br/queue")")" ] && mech_has UNKNOWN && grep UNKNOWN "$T/rt/mechanical.log" | grep -qF "$T/unr.md"; chk "(w20 3g) unreadable (chmod 000) file: held pending, UNKNOWN telemetry names it, 0 model calls, not acked, no cache" $?
+chmod 644 "$T/unr.md"; BR_CYCLES=2 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && mech_has dispatch-owned; chk "(w20 3g) the file becoming readable later routes as dispatch-owned (acked, still 0 calls)" $?
+# 3f: missing marked file held; reappears marked -> dispatch-owned, never executed
+fresh; evf taskfile "[\"$T/late.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/late.md"; BR_CYCLES=3 br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && grep UNKNOWN "$T/rt/mechanical.log" | grep -qF "$T/late.md"; chk "(w20 3f) missing file: held pending, UNKNOWN telemetry, 0 model calls" $?
+cp "$T/dtask.md" "$T/late.md"; BR_CYCLES=2 br run
+[ "$(calls)" = 0 ] && [ "$(d)" = 1 ] && mech_has dispatch-owned; chk "(w20 3f) the missing file reappearing with the marker routes as dispatch-owned, never executed" $?
+# 3f: missing plain file held, then appears plain -> executed exactly once
+fresh; evf taskfile "[\"$T/late2.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/late2.md"; BR_CYCLES=2 br run
+c1="$(calls)"; printf 'TASK: late plain job\n' > "$T/late2.md"; BR_CYCLES=3 br run
+[ "$c1" = 0 ] && [ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ] && grep -q 'late plain job' "$T/last-prompt.exe"; chk "(w20 3f) a missing plain file that appears later is executed exactly once" $?
+# unknown file mixed with a readable marked file: the whole event is held and no marked text leaks
+fresh; evf taskfile "[\"$T/dtask.md\",\"$T/nope.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(calls)" = 0 ] && [ "$(q)" = 1 ]; chk "(w20 3f) marked + missing file in one event: held whole, 0 model calls" $?
+# 3l: due / inbox kinds carrying detail.files with a marked file
+for k in due inbox; do
+  fresh; evf $k "[\"$T/dtask.md\",\"$T/plain.md\"]" '"ids":[],"lines":["t | rb | see '"$T"'/dtask.md now"]' > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+  ! cat "$T"/last-prompt.* 2>/dev/null | grep -qF "$T/dtask.md" && ! cat "$T"/last-prompt.* 2>/dev/null | grep -q 'write the weekly summary' && grep -q 'plain mixed-event job' "$T/last-prompt.exe"; chk "(w20 3l) kind=$k mixed event: marked path/text (files and lines) absent from every prompt, plain file reaches the executor" $?
+  fresh; evf $k "[\"$T/dtask.md\"]" '"ids":[]' > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+  [ "$(calls)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 3l) kind=$k all-marked: dispatch-owned, 0 calls" $?
+done
+# 3e: a form feed does not start a line (router split("\n") = dispatcher grep line)
+printf 'foo\x0cDispatch: ctl\nTASK: ff body job\n' > "$T/ff.md"
+fresh; evf taskfile "[\"$T/ff.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ] && grep -q 'ff body job' "$T/last-prompt.exe"; chk "(w20 3e) marker after a form feed is not a marked line (haiku route, as the dispatcher sees it)" $?
+printf 'Dispatch: ctl\x0c\nTASK: ff trailing\n' > "$T/ff2.md"
+fresh; evf taskfile "[\"$T/ff2.md\"]" > "$T/ev"; br run
+[ "$(calls)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 3e) marker line with trailing form feed is still marked (dispatcher [[:space:]])" $?
+
+# 5b: a held id stays queued but never reaches the pane or the pending list; recovery routes normally; non-held unrouted still delivers fail-safe
+fresh; evf taskfile "[\"$T/held-late.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/held-late.md"; RETRY_SEC=0 BR_CYCLES=4 br run
+[ "$(sends)" = 0 ] && [ "$(q)" = 1 ] && [ "$(calls)" = 0 ]; chk "(w20 5b) held id: 0 pane sends over 4 cycles (RETRY_SEC=0), still queued, 0 model calls" $?
+[ -z "$(env_ bash "$BR" pending)" ]; chk "(w20 5b) held id is not listed by pending" $?
+env_ bash "$BR" ack --all >/dev/null; [ "$(q)" = 1 ]; chk "(w20 5b) ack --all leaves the held id queued" $?
+printf 'TASK: held recovery job\n' > "$T/held-late.md"; RETRY_SEC=0 BR_CYCLES=3 br run
+[ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ] && [ "$(q)" = 0 ]; chk "(w20 5b) recovery: readable file routes and executes once, id acked" $?
+fresh; evf taskfile "[\"$T/held-late2.md\"]" > "$T/ev"; rm -f "$T/held-late2.md"; BR_CYCLES=1 br run
+printf 'Dispatch: ctl\nTASK: x\n' > "$T/held-late2.md"; RETRY_SEC=0 BR_CYCLES=3 br run
+[ ! -e "$T/rt/held/$(basename "$(only "$T/br/done")" .json)" ] && [ "$(sends)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 5b) recovery with a marked file: held marker cleared, never sent to the pane" $?
+fresh; printf '%s\n' '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN=/nonexistent RETRY_SEC=0 BR_CYCLES=2 br run
+[ "$(sends)" -ge 1 ]; chk "(w20 5b) non-held id with no cached route (router absent) still delivers fail-safe" $?
+# 5a: held log/mech repeats bounded per id
+fresh; evf taskfile "[\"$T/held-late3.md\"]" > "$T/ev"; rm -f "$T/held-late3.md"; BR_CYCLES=6 br run
+[ "$(grep -c UNKNOWN "$T/rt/mechanical.log")" = 1 ] && [ "$(grep -c held: "$T/br/route.err")" = 1 ]; chk "(w20 5a) 6 held cycles: 1 UNKNOWN mech line and 1 route.err line" $?
+env_ HELD_LOG_SEC=0 BR_CYCLES=3 bash "$BR" run
+[ "$(grep -c UNKNOWN "$T/rt/mechanical.log")" -ge 3 ]; chk "(w20 5a) HELD_LOG_SEC=0 logs every cycle (cap is the window)" $?
+
+# 8: a previously held id whose router later exits non-75 stays held and queued (no fail-open), with a bounded route.err line naming the exit code; a never-held id still delivers fail-safe
+printf '#!/bin/sh\nexit 3\n' > "$T/rc3-router"; chmod +x "$T/rc3-router"
+fresh; evf taskfile "[\"$T/held-rc.md\"]" > "$T/ev"; rm -f "$T/held-rc.md"; BR_CYCLES=1 br run
+XRT_BIN="$T/rc3-router" RETRY_SEC=0 BR_CYCLES=5 br run
+[ "$(sends)" = 0 ] && [ "$(q)" = 1 ] && [ -e "$T/rt/held/$(basename "$(only "$T/br/queue")" .json)" ]; chk "(w20 item8) held id then router exit 3: stays held and queued, 0 pane sends" $?
+[ "$(grep -c 'router exit 3' "$T/br/route.err")" = 1 ]; chk "(w20 item8) 5 cycles of router exit 3 on a held id: 1 bounded route.err line naming the exit code" $?
+env_ XRT_BIN="$T/rc3-router" RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 RETRY_SEC=0 BR_CYCLES=3 bash "$BR" run
+[ "$(grep -c 'router exit 3' "$T/br/route.err")" -ge 4 ]; chk "(w20 item8) HELD_LOG_SEC=0 logs the router failure every cycle" $?
+fresh; echo '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN="$T/rc3-router" RETRY_SEC=0 BR_CYCLES=2 br run
+[ "$(sends)" -ge 1 ] && ! grep -q 'router exit' "$T/br/route.err" 2>/dev/null; chk "(w20 item8) never-held id with router exit 3 still delivers fail-safe, no held line" $?
+# 10: ack / ackone remove the markers; markers whose queue file is gone are swept
+fresh; evf taskfile "[\"$T/held-ack.md\"]" > "$T/ev"; rm -f "$T/held-ack.md"; BR_CYCLES=6 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"
+[ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ]; chk "(w20 item10) precondition: held and held-log markers exist" $?
+env_ bash "$BR" ack "$hid" >/dev/null
+[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 1 ]; chk "(w20 item10) ack <id> removes held and held-log markers" $?
+fresh; evf taskfile "[\"$T/held-del.md\"]" > "$T/ev"; rm -f "$T/held-del.md"; BR_CYCLES=6 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"; env_ RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 BR_CYCLES=1 bash "$BR" run
+[ -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) precondition: rc stamp exists" $?
+rm -f "$T/br/queue/$hid.json"; BR_CYCLES=1 br run
+[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ ! -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) markers of a queue file deleted by hand are swept on the next cycle" $?
+fresh; evf taskfile "[\"$T/held-all.md\"]" > "$T/ev"; rm -f "$T/held-all.md"; BR_CYCLES=1 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"; rm -f "$T/br/queue/$hid.json"; env_ bash "$BR" ack --all >/dev/null
+[ ! -e "$T/rt/held/$hid" ]; chk "(w20 item10) ack --all sweeps markers with no queue file" $?
 
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f

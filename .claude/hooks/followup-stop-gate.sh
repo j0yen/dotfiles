@@ -22,6 +22,7 @@ gate() {
   [[ "$sid" =~ ^[A-Za-z0-9._-]*$ ]] || return 0
   tsid="$(awk -F'\t' -v s="$seat" '$1==s && $3!="" {print $3; exit}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" 2>/dev/null)"
   [ -z "$tsid" ] || [ -z "$sid" ] || [ "$tsid" = "$sid" ] || return 0
+  # R4 decision (A1346): evaluator-missing visibility is CHAIN-level. owed-now.sh (same Stop chain, canonical mode default) reports it once per session; this entrypoint stays silent so one defect is not recited three times. tests/followup-evaluator-missing.test.sh pins the chain.
   new="$(fu_new_obligations "$seat")"
   fu_outbox_replay >/dev/null 2>&1 || true
   [ -n "$new" ] || return 0

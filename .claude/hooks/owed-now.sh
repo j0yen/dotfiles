@@ -4,7 +4,7 @@
 #   "make it impossible to procrastinate on anything" (approvals #181, #182). Earlier the same night: #179 "your scheduling is too conservative".
 # Rule: a row this session owns is either done, or it carries `waits-on=<host|seat|person|event>` naming what it waits for. A future due
 #   without that marker is a delay (DELAY). A row past its due is OVERDUE. Both are defects the session works before its turn ends.
-# Rows: $OPEN_ASKS (default ~/.cache/aide/open-asks.tsv), the lines above the one equal to "# CLOSED"; columns id asked owner due key check what;
+# Rows: the canonical ledger via asks-view (A1255; $OPEN_ASKS is a test fixture honoured only with ASKS_VIEW_TEST=1), the lines above the one equal to "# CLOSED"; columns id asked owner due key check what;
 #   a row whose column 2 starts with MET/DONE/CANCELLED/MOOT is closed.
 # Modes:
 #   owed-now.sh lint [--seat S] [--now ISO]   print the DELAY/OVERDUE rows for owner S (default $WM_SEAT); exit 1 if any, 0 if none
@@ -48,7 +48,7 @@ waits_plausible() {   # waits_plausible <detail> <due-epoch> <now-epoch>
 }
 
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
-  local seat="$1" now="$2" f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
+  local seat="$1" now="$2" f
   if [ "$(src)" = asks ] && [ "$seat" != - ]; then
     FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tcanonical ledger unreadable: %s\n' "$FU_REASON"; return 1; }
     [ "$FU_EVAL" != "[]" ] || return 0
@@ -61,9 +61,18 @@ lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
     [ -n "$rows" ] || return 0
     printf '%s' "$rows"; return 1
   fi
-  [ -s "$f" ] && [ -n "$seat" ] || return 0
+  [ -n "$seat" ] || return 0
+  f="$(mktemp -p "${TMPDIR:-$HOME/.cache}" owed-view.XXXXXX)" || return 0   # A1255: rows come from the canonical ledger via asks-view, never from open-asks.tsv
+  "${ASKS_VIEW_BIN:-asks-view}" >"$f" 2>/dev/null || { rm -f "$f"; echo "owed-now: canonical ask ledger unreadable (asks-view incident opened); no rows linted" >&2; return 0; }
+  _lint_rows "$seat" "$now" "$f"; local rc=$?; rm -f "$f"; return $rc
+}
+
+_lint_rows() {
+  local seat="$1" now="$2" f="$3"
+  [ -s "$f" ] || return 0
   local alt=""; case "$seat" in aide) alt=ctl ;; ctl) alt=aide ;; esac   # carbon executor seat: rows owned by aide or ctl (hermes-handover 2.2)
-  awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" -v maxh="${OWED_WAITS_MAX_H:-72}" '
+  local closed; closed=",$(awk -F'\t' '/^# CLOSED/{c=1;next} c&&NF>=7{printf "%s,", $1}' "$f")"   # A1222: ids in the CLOSED section
+  awk -F'\t' -v seat="$seat" -v alt="$alt" -v now="$now" -v grace="$((GRACE * 60))" -v closed="$closed" -v maxh="${OWED_WAITS_MAX_H:-72}" '
     $0 == "# CLOSED" { exit }
     /^#/ || NF < 7 { next }
     seat != "-" && $3 != seat && (alt == "" || $3 != alt) { next }
@@ -73,6 +82,8 @@ lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
       if (due !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}/) { print "DELAY\t" $1 "\tdue=" $4 "\tunreadable due\t" substr($7, 1, 90); n++; next }
       cmd = "date -d \"" due "\" +%s 2>/dev/null"; cmd | getline e; close(cmd)
       if (e == "") { print "DELAY\t" $1 "\tdue=" $4 "\tunreadable due\t" substr($7, 1, 90); n++; next }
+      if (match($7, /waits-on=row:[A-Za-z0-9_,-]+/)) { w = substr($7, RSTART + 13, RLENGTH - 13); m = split(w, a, ","); ok = 1; for (i = 1; i <= m; i++) if (index(closed, "," a[i] ",") == 0) ok = 0
+        if (ok) { print "READY\t" $1 "\tdue=" $4 "\tpredecessor " w " closed: start now\t" substr($7, 1, 90); n++; next } }
       if (e + 0 <= now + 0) {
         if ($7 ~ /waits-on=(host|seat|person|event):[^ \t|]/ && $7 !~ /waits-on=(host|seat|person|event):[ ]*(none|n\/a|unknown|done|met|dead|gone|stale)([^A-Za-z0-9]|$)/ && (now + 0 - e) <= maxh * 3600) next
         print "OVERDUE\t" $1 "\tdue=" $4 "\t" substr($7, 1, 90); n++; next }
@@ -97,6 +108,29 @@ hook() {
   case "$ev" in UserPromptSubmit|Stop) ;; *) return 0 ;; esac
   seat="$(seat_of "$in")"; [ -n "$seat" ] || return 0
   if [ "$(src)" = asks ] && [ "$ev" = Stop ]; then   # canonical mode: a Stop blocks only on a NEW fingerprint, never on a recital of unchanged ids
+    if ! fu_eval_bin >/dev/null 2>&1; then   # missing evaluator = visible owned state, once per session (no recital loop)
+      local msid mst mf; msid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$msid" =~ ^[A-Za-z0-9._-]+$ ]] || msid=nosid
+      mst="$(state_dir)"; mkdir -p "$mst" 2>/dev/null; mf="$mst/$msid.noeval"
+      [ ! -e "$mf" ] || return 0
+      : >"$mf"; body="FOLLOW-UP EVALUATOR MISSING (seat $seat): followup-eval.py is absent, so owed obligations cannot be evaluated; install or restore it (owner ctl)."
+      if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$body"; else jq -cn --arg r "$body" '{decision:"block", reason:$r}'; fi
+      return 0
+    fi
+    # W4 (A1346): an unowned suggestion in the final message becomes a typed suggestion-only obligation through the one evaluator (emit/persist: fp dedupe, outbox,
+    # durable deliverer replay below). Recording never blocks the turn and never changes the output; owner= and due=<ISO> written in the message count as owned.
+    local smsg sev sown sdue ssid; smsg="$(jq -r '.last_assistant_message // empty' <<<"$in" 2>/dev/null)"
+    if [ -n "$smsg" ] && sev="$(fu_eval_bin)"; then
+      ssid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$ssid" =~ ^[A-Za-z0-9._-]+$ ]] || ssid=nosid
+      sown="$(grep -oiE 'owner[:=] ?[a-z0-9_-]+' <<<"$smsg" | head -1 | sed -E 's/^[^:=]*[:=] ?//')"
+      sdue="$(grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' <<<"$smsg" | head -1)"
+      # typed producer: a `check: <cmd>` line that is EXACTLY an allow-listed form maps 1:1 to a runner verb; anything else keeps the row-only path
+      local schk sact=""; schk="$(grep -oiE '(^|[[:space:]])check[:=] ?(systemctl --user is-active [A-Za-z0-9][A-Za-z0-9@._-]{0,79}\.(service|timer)|bash tests/[a-z0-9][a-z0-9-]{0,63}\.test\.sh)[[:space:]]*$' <<<"$smsg" | head -1 | sed -E 's/^[[:space:]]*check[:=] ?//I; s/[[:space:]]+$//')"
+      case "$schk" in
+        "systemctl --user is-active "*) sact="$(jq -cn --arg u "${schk##* }" '{verb:"service-state",unit:$u}')" ;;
+        "bash tests/"*.test.sh) sact="$(jq -cn --arg n "$(basename "${schk##* }" .test.sh)" '{verb:"named-test",name:$n}')" ;;
+      esac
+      printf '%s' "$smsg" | python3 -I "$sev" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"} >/dev/null 2>&1 || true
+    fi
     local new; new="$(fu_new_obligations "$seat")"; fu_outbox_replay >/dev/null 2>&1 || true
     [ -n "$new" ] || return 0
     body="$(fu_block_reason "$new")"
@@ -119,6 +153,11 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
     jq -cn --arg r "$body (Stop block $((n + 1))/$STOPMAX this turn)" '{decision:"block", reason:$r}'; fi
   else
     echo 0 >"$cf"
+    if [ "$(src)" = asks ]; then   # canonical mode: a prompt recites the owed rows only when their fingerprint changed since this session's last prompt
+      local ufp uf; ufp="$(printf '%s\n' "$rows" | sha256sum | cut -c1-16)"; uf="$st/$sid.upfp"
+      [ "$(cat "$uf" 2>/dev/null)" != "$ufp" ] || return 0
+      echo "$ufp" >"$uf"
+    fi
     jq -cn --arg r "$body" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
   fi
 }
@@ -128,11 +167,11 @@ deny() { jq -cn --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse", p
 guard() {   # PreToolUse: stdin hook json. Exit 0 silently unless the call would write a delay.
   local in tool fp f post pre_ids added cmd ts e now
   in="$(cat)"; command -v jq >/dev/null 2>&1 || return 0
-  tool="$(jq -r '.tool_name // empty' <<<"$in" 2>/dev/null)"; f="${OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"; now="$(date +%s)"
+  tool="$(jq -r '.tool_name // empty' <<<"$in" 2>/dev/null)"; f="${OPEN_ASKS:-}"; now="$(date +%s)"
   case "$tool" in
     Edit|Write|MultiEdit)
       fp="$(jq -r '.tool_input.file_path // empty' <<<"$in" 2>/dev/null)"
-      [ "$(basename -- "$fp" 2>/dev/null)" = "$(basename -- "$f")" ] || return 0
+      [ -n "$f" ] && [ "$(basename -- "$fp" 2>/dev/null)" = "$(basename -- "$f")" ] || return 0
       post="$(mktemp -p "${TMPDIR:-$HOME/.cache}" owed-post.XXXXXX)" || return 0
       OWED_IN="$in" OWED_CUR="$f" python3 -I - >"$post" 2>/dev/null <<'PYX' || { rm -f "$post"; return 0; }
 import json, os
@@ -146,8 +185,8 @@ else:
         if o: out = out.replace(o, n) if e.get("replace_all") else out.replace(o, n, 1)
 print(out, end="")
 PYX
-      pre_ids="$(OPEN_ASKS="$f" lint - "$now" | awk -F'\t' '$1=="DELAY"{print $2}')"
-      added="$(OPEN_ASKS="$post" lint - "$now" | awk -F'\t' -v pre="$pre_ids" 'BEGIN{n=split(pre,a,"\n"); for(i=1;i<=n;i++) seen[a[i]]=1} $1=="DELAY" && !seen[$2]')"
+      pre_ids="$(ASKS_VIEW_TEST=1 OPEN_ASKS="$f" lint - "$now" | awk -F'\t' '$1=="DELAY"{print $2}')"
+      added="$(ASKS_VIEW_TEST=1 OPEN_ASKS="$post" lint - "$now" | awk -F'\t' -v pre="$pre_ids" 'BEGIN{n=split(pre,a,"\n"); for(i=1;i<=n;i++) seen[a[i]]=1} $1=="DELAY" && !seen[$2]')"
       rm -f "$post"
       [ -z "$added" ] && return 0
       deny "owed-now: this write adds a row with a future due and no waits-on= (a delay). Do the work now, or put waits-on=<host|seat|person|event> in the what column naming what it waits for (Joe 10-31 11:1x PM, approvals #181/#182):
@@ -173,7 +212,8 @@ $added" ;;
 selftest() {
   local d pass=0 fail=0 out rc
   d="$(mktemp -d -p "${TMPDIR:-$HOME/.cache}" owed-now.XXXXXX)"; trap 'rm -rf "$d"' RETURN
-  export OPEN_ASKS="$d/open-asks.tsv" SEATS_TABLE="$d/seats.tsv" OWED_NOW_STATE="$d/state"; unset WM_SEAT
+  export ASKS_VIEW_TEST=1 OPEN_ASKS="$d/open-asks.tsv" SEATS_TABLE="$d/seats.tsv" OWED_NOW_STATE="$d/state"; unset WM_SEAT
+  printf '#!/usr/bin/env bash\ncat "$OPEN_ASKS"\n' >"$d/asks-view"; chmod +x "$d/asks-view"; export ASKS_VIEW_BIN="$d/asks-view"   # hermetic fixture reader (real 7-column schema), no host asks-view needed
   printf 'rb\t1\tsid-rb\n' >"$SEATS_TABLE"
   local now; now="$(date -d '2026-10-31 23:00' +%s)"
   printf '%s\n' '# open asks' \
@@ -190,6 +230,8 @@ selftest() {
   t "$([ "$rc" = 1 ] && echo 0 || echo 1)" "lint exits 1 with owed rows"
   t "$(grep -q '^OVERDUE	A1' <<<"$out" && echo 0 || echo 1)" "A1 overdue"
   t "$(grep -q '^DELAY	A2' <<<"$out" && echo 0 || echo 1)" "A2 future due without waits-on = DELAY"
+  rf="$(mktemp)"; printf 'R1\t2026-11-07T10:00\trb\t2099-01-01T00:00\tk\tc\tw waits-on=row:P1\nR2\t2026-11-07T10:00\trb\t2099-01-01T00:00\tk\tc\tw waits-on=row:P2\n# CLOSED\nP1\tDONE x\trb\t2026-01-01T00:00\tk\tc\twhat\n' >"$rf"
+  rout="$(ASKS_VIEW_TEST=1 OPEN_ASKS="$rf" lint rb "$now")"; t "$(grep -q '^READY	R1' <<<"$rout" && ! grep -q 'R2' <<<"$rout" && echo 0 || echo 1)" "A1222 READY: successor with closed predecessor listed, open predecessor quiet"; rm -f "$rf"
   t "$(grep -q 'A3' <<<"$out" && echo 1 || echo 0)" "A3 waits-on= future due passes"
   t "$(grep -q 'A4' <<<"$out" && echo 1 || echo 0)" "A4 within grace passes"
   t "$(grep -q 'A5' <<<"$out" && echo 1 || echo 0)" "A5 MET row ignored"

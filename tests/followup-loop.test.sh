@@ -2,6 +2,7 @@
 # followup loop repair (ledger ask A1307): the Stop gate blocks once per NEW actionable obligation (fingerprint persisted atomically), never recites an
 # unchanged historical id, re-escalates on a new id / changed rev / expired next-check, treats a valid structured blocker or live claim as accounted
 # (prose waits-on is not), fails visibly on a malformed ledger, and keeps an escalation outbox that survives delivery failure and replays.
+# Both sides run the one evaluator .local/bin/followup-eval.py (ledger ask A1346); the bash copy is gone.
 # The canonical ledger (wm-asks query --json) is a fixture; state lives in a tmp dir. No real ledger, no product build.
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -16,7 +17,7 @@ for f in "$GATE" "$OWED" "$LIB"; do bash -n "$f"; chk "bash -n $(basename "$f")"
 # fake wm-asks: `query --owners X --status open --json` prints $FU_ASKS (a JSON array of rows); FU_ASKS_FAIL=n exits n; FU_ASKS_GARBAGE prints junk
 cat >"$base/wm-asks" <<'FAKE'
 #!/usr/bin/env bash
-[ "${1:-}" = query ] || exit 2
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2
 [ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
 [ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
 cat "$FU_ASKS"
@@ -131,7 +132,7 @@ LEASE=2026-11-08T18:00
 # 13. one lock around outbox append and replay; outbox entry written before the fingerprint
 rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; row H1 1 2026-11-07T10:00 | asks
 (FOLLOWUP_OUTBOX=/nonexistent-dir/outbox.jsonl stop false >/dev/null)
-[ ! -s "$FOLLOWUP_STATE_DIR/delivered.fp" ]; chk "13: a failed outbox write leaves no fingerprint recorded (outbox entry is written first)" $?
+[ ! -s "$FOLLOWUP_STATE_DIR/fingerprints.json" ]; chk "13: a failed outbox write leaves no fingerprint recorded (outbox entry is written first)" $?
 o="$(stop false)"; blocks "$o" && grep -q H1 <<<"$o"; chk "13: and the next stop still escalates that obligation" $?
 rm -rf "$FOLLOWUP_STATE_DIR" "$FU_DELIVERED"; mkdir -p "$FOLLOWUP_STATE_DIR"; printf '{"id":"Z","fp":"Z|1|overdue|","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
 ( flock -x 9; sleep 3 ) 9>"$FOLLOWUP_STATE_DIR/lock" & sleep 0.4
@@ -167,8 +168,8 @@ jq -nc '{ask_id:"N3",owner:"rb",rev:1,due:"2026-11-07T10:00",status:"open",claim
 o="$(stop false)"; [ -z "$o" ]; chk "15: a known other seat's row is still left to that seat" $?
 # 16. claim validity: lease, session, task revision (not worker liveness alone)
 rm -rf "$FOLLOWUP_STATE_DIR"; touch "$FU_ALIVE_DIR/w-alive"
-row L1 1 2026-11-07T10:00 "w-alive@2026-11-08T11:00" | asks
-o="$(stop false)"; blocks "$o" && grep -qiE 'lease|stale' <<<"$o"; chk "16: a live worker with an expired lease is a stale claim" $?
+row L1 1 2026-11-07T10:00 "w-alive@2026-11-08T11:00" | jq -c '.claim_lease="2026-11-08T11:00"' | asks   # the @stamp is claim time; only an explicit claim_lease expires a claim
+o="$(stop false)"; blocks "$o" && grep -qiE 'lease|stale' <<<"$o"; chk "16: a live worker with an explicit expired claim_lease is a stale claim" $?
 rm -rf "$FOLLOWUP_STATE_DIR"
 row L2 1 2026-11-07T10:00 "w-alive@$LEASE" | asks
 o="$(stop false)"; [ -z "$o" ]; chk "16: a live worker with an unexpired lease still accounts" $?

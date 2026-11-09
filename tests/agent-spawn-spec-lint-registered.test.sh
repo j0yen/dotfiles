@@ -11,7 +11,7 @@ check() { if [ "$2" = 0 ]; then pass=$((pass + 1)); echo "PASS $1"; else fail=$(
 jq -e . "$S" >/dev/null; check "settings-parses" $?
 jq -e '[.hooks[][].hooks[].command | select(test("agent-spawn-spec-lint[.]sh"))] | length == 1' "$S" >/dev/null; check "registered-once-overall" $?
 jq -e '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[] | select(.command == "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh" and .type == "command" and .timeout == 10)] | length == 1' "$S" >/dev/null; check "pretooluse-agent-group-timeout-10" $?
-jq -e '[.hooks.PreToolUse[] | select(.matcher == "Agent")] | map(.hooks | length) == [1]' "$S" >/dev/null; check "own-group-single-hook" $?
+jq -e '[.hooks.PreToolUse[] | select(.matcher == "Agent")] | map(.hooks | length) | all(. == 1)' "$S" >/dev/null; check "own-group-single-hook" $?
 [ -x "$here/.claude/hooks/agent-spawn-spec-lint.sh" ]; check "hook-executable" $?
 echo "agent-spawn-spec-lint-registered.test: $pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -7,6 +7,11 @@
 set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
 ACCT="${1:?account}"; shift; WHY="${*:-relaunch}"
+# Validate approved model/effort BEFORE stopping any existing seat.
+for _pl in "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ctl-model-policy.sh" "$HOME/.local/lib/ctl-model-policy.sh"; do [ -r "$_pl" ] && break; done
+. "$_pl" || exit 64
+ctl_model_policy || exit $?
+EFFORT=medium
 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" ctl-relaunch || exit 1   # hold gate (hermes-handover 2.4): before anything is stopped or launched; aide-relaunch.sh (shim) inherits
 SID="$(cat "$HOME/.config/aide/session-id")"
 LOG="$HOME/.local/state/aide/relaunch.log"; mkdir -p "$(dirname "$LOG")"
@@ -29,11 +34,11 @@ for _ in $(seq 1 20); do [ -z "$(aide_pids)" ] && break; sleep 1; done
 left="$(aide_pids | tr '\n' ' ')"; [ -n "$left" ] && { log "SIGKILL leftover $left"; kill -9 $left 2>/dev/null; sleep 1; }
 tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -qx aide && tmux kill-session -t aide
 # 2. relaunch, resuming the same session, under <account>
-EFFORT="$(jq -r '.ctl.effort // .aide.effort // "high"' "$HOME/.config/wm-decide/seat-model-hold.json" 2>/dev/null || echo high)"   # Joe 11-01 "go": effort from the seat-model-hold ctl/aide row (medium trial)
+# Effort was validated as medium before any existing seat was stopped.
 P="$HOME/.local/state/aide/resume-prompt-$(date +%Y%m%d-%H%M%S).txt"
 sed -e "s|@ACCT@|$ACCT|g" -e "s|@TIME@|$(date +'%I:%M %p %Z')|g" -e "s|@WHY@|$WHY|g" "$HOME/.config/aide/resume-prompt.tmpl" > "$P"
 tmux new-session -d -s aide -x 200 -y 50 -c "$HOME" \
-  "exec $CTL_DIR/ctl-launch.sh --account $ACCT --model claude-fable-5-1 --effort $EFFORT --resume $SID \"\$(cat $P)\"" \
+  "exec $CTL_DIR/ctl-launch.sh --account $ACCT --effort $EFFORT --resume $SID \"\$(cat $P)\"" \
   || { note "FAIL tmux new-session for aide under $ACCT (old aide stopped; $ACCT not running)"; exit 70; }
 sleep 8
 : > "$HOME/.config/aide/channel-pid"
