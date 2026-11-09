@@ -194,7 +194,7 @@ def read_followups(seat):
 
 
 def read_nodest_unowned():
-    """nodest_unowned outbox markers (followup-deliver.sh: wm-asks query/add failed) with no later nodest_owned / nodest_settled for the same key, older than NODEST_UNOWNED_MIN minutes."""
+    """nodest_unowned outbox markers (followup-deliver.sh: wm-asks asks query / asks add failed) with no later nodest_owned / nodest_settled for the same key, older than NODEST_UNOWNED_MIN minutes."""
     recs, done = [], set()
     try:
         for line in open(outbox_path(state_dir()), encoding="utf-8", errors="replace"):
