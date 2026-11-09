@@ -5,7 +5,8 @@
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
 # spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; shares exit 78 with the model gate, told apart by the REFUSED text),
-# memcap 71 (rb-coder-memcap.sh caps this coder's own unit; runs last, just before `claude -p`).
+# memcap 71 (rb-coder-memcap.sh caps this coder's own unit; runs last, just before the repo-routing step and `claude -p`).
+# routing: .config/fleet/coder-hosts.tsv (repo<TAB>host) or env RB_CODER_HOST sends the coder to another host after the gates; remote failure = exit 79 (see the repo routing block).
 # nocargo-hooks 70 (--no-cargo only: core.hooksPath = .local/share/rb-git-hooks, wmb-nocargo-checks.sh at pre-commit + pre-push; ctl 8220).
 # env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read), RB_MEMCAP_BIN (default ~/.local/bin/rb-coder-memcap.sh).
 # fable-verdict 80 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
@@ -144,6 +145,28 @@ echo "$mc_l1" > "$D/$n.memcap"
 # wmb-nocargo-checks.sh on a wm-build tree and refuse a red commit or push. Fails CLOSED (exit 70) when the hooks dir is missing.
 if [ "$nocargo" = 1 ]; then rb_hooks="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/rb-git-hooks" 2>/dev/null && pwd)"; [ -x "$rb_hooks/pre-commit" ] && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$rb_hooks" || {
   echo "REFUSED nocargo-hooks: rb-git-hooks missing" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED nocargo-hooks: rb-git-hooks missing" || true; exit 70; }; fi
+# repo routing (ask A57, Joe 10-27 12:34 PM approvals #49 "Build synthorg and wm-build on ryzen7"): the prompt's first line names `j0yen/<repo>`; .config/fleet/coder-hosts.tsv
+# (repo<TAB>host, `default` row) picks the target host, env RB_CODER_HOST overrides. Target = this host: the local `claude -p` below, unchanged. Otherwise every gate above has
+# already run HERE; the prompt is scp'd to <host>:.cache/rb-seat/coders/<n>.prompt and started as `systemd-run --user --unit rb-coder-<n>` with RB_CODER_HOST pinned (no re-route there).
+# Failure = REFUSED remote-launch, exit 79, never a local fallback. A missing map file = local (today's path). Admission on the target host stays r7's (this adds none).
+repo="$(head -n 1 "$pf" | grep -oE 'j0yen/[A-Za-z0-9_.-]+' | head -n 1 | cut -d/ -f2 | sed 's/[.]*$//')"
+if [ -n "${RB_CODER_HOST:-}" ]; then th="$RB_CODER_HOST"
+else
+  hmap="${RB_CODER_HOSTS_MAP:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/fleet/coder-hosts.tsv}"; [ -f "$hmap" ] || hmap="$HOME/.config/fleet/coder-hosts.tsv"
+  th="$h"; if [ -f "$hmap" ]; then
+    th="$(awk -F'\t' -v r="$repo" '$1 !~ /^#/ && NF>=2 { if ($1==r && r!="") { print $2; f=1; exit } else if ($1=="default") d=$2 } END { if (!f) print d }' "$hmap")"; th="${th:-$h}"
+  fi
+fi
+case "$th" in redbaron|ryzen7) ;; *) echo "REFUSED coder-host=$th (redbaron|ryzen7 only)" >&2; exit 79 ;; esac
+if [ "$th" != "$h" ]; then
+  rd=".cache/rb-seat/coders"; unit="rb-coder-$n"; sopt=(-o ConnectTimeout=10 -o BatchMode=yes); nc_arg=""; [ "$nocargo" = 1 ] && nc_arg=" --no-cargo"
+  refuse_launch() { echo "REFUSED remote-launch host=$th: $1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED remote-launch host=$th" || true; echo "REFUSED remote-launch host=$th: $1" >&2; exit 79; }
+  ssh "${sopt[@]}" "$th" "mkdir -p ~/$rd" >/dev/null 2>&1 || refuse_launch "ssh mkdir failed"
+  scp -q "${sopt[@]}" "$pf" "$th:$rd/$n.prompt" >/dev/null 2>&1 || refuse_launch "scp prompt failed"
+  ssh "${sopt[@]}" "$th" "systemd-run --user --unit $unit --collect --setenv=RB_CODER_HOST=$th --setenv=RB_CODER_MODEL=$model ~/.local/bin/rb-run-coder.sh $n ~/$rd/$n.prompt$nc_arg" >/dev/null 2>&1 || refuse_launch "systemd-run failed"
+  EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n LAUNCHED remote host=$th unit=$unit report=$th:~/$rd/$n.report.md" || true
+  echo "report=$th:~/$rd/$n.report.md"; exit 0
+fi
 claude -p --dangerously-skip-permissions --model "$model" --effort "$effort" "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err"; rc=$?
 EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ended rc=$rc report=$D/$n.report.md" || true
 exit $rc
