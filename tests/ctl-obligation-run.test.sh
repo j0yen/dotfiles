@@ -21,4 +21,12 @@ ck "named-test with no owner-set guard runs to completion" "$(rec k3)" "ran 0"
 run k4 '{"verb":"named-test","name":"slow"}' OBL_RUN_TIMEOUT_SEC=1
 ck "owner-set OBL_RUN_TIMEOUT_SEC=1 is honoured (rc 124)" "$(rec k4)" "ran 124"
 ck "no hard-coded 600 s kill in the runner" "$(grep -c 'timeout=600' "$R")" 0
+rm -f "$T/argv"
+run k5 '{"verb":"service-state","unit":"x.service\n"}'
+ck "unit with trailing newline refused rc 126" "$(rec k5)" "refused 126"
+ck "trailing-newline unit never reached systemctl" "$([ -e "$T/argv" ] && echo ran || echo clean)" clean
+printf '#!/bin/sh\necho ran > %s/nl-ran\nexit 0\n' "$T" > "$T/tests/nl.test.sh"; cp "$T/tests/nl.test.sh" "$T/tests/"$'nl\n'".test.sh"
+run k6 '{"verb":"named-test","name":"nl\n"}'
+ck "name with trailing newline refused rc 126" "$(rec k6)" "refused 126"
+ck "trailing-newline name never ran" "$([ -e "$T/nl-ran" ] && echo ran || echo clean)" clean
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

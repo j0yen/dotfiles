@@ -9,8 +9,8 @@ Anything else, a bad argument, or a missing target is recorded as a receipt with
 import json, os, re, subprocess, sys, datetime
 
 VERBS = {
-    "named-test": ("name", re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")),
-    "service-state": ("unit", re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._-]{0,79}\.(service|timer)$")),
+    "named-test": ("name", re.compile(r"[a-z0-9][a-z0-9-]{0,63}")),
+    "service-state": ("unit", re.compile(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,79}\.(service|timer)")),
 }
 
 
@@ -38,7 +38,7 @@ def build(spec):
     if set(spec) - {"verb", key}:
         return None, "unexpected fields: %s" % ",".join(sorted(set(spec) - {"verb", key}))
     val = spec.get(key)
-    if not isinstance(val, str) or not rx.match(val):
+    if not isinstance(val, str) or not rx.fullmatch(val):
         return None, "bad %s" % key
     if verb == "named-test":
         path = os.path.join(os.environ.get("OBL_TESTS_DIR") or os.path.expanduser("~/dotfiles/tests"), val + ".test.sh")
