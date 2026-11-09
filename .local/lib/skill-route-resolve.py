@@ -37,10 +37,10 @@ def load_json(text, what):
         raise Deny("malformed %s JSON: %s" % (what, type(e).__name__))
 
 
-def check_route(pol, model, effort):
+def check_route(pol, model, effort, exception=False):
     if not isinstance(model, str) or model not in pol["models"]:
         raise Deny("unknown model %r" % (model,))
-    if not isinstance(effort, str) or effort in pol.get("forbidden_efforts", []):
+    if not isinstance(effort, str) or (effort in pol.get("forbidden_efforts", []) and not exception):
         raise Deny("effort %r is forbidden" % (effort,))
     if effort not in pol["models"][model]["efforts"]:
         raise Deny("unknown or unsupported effort %r for %s" % (effort, model))
@@ -94,6 +94,8 @@ def resolve(pol, req):
         raise Deny("task_id is required (^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$)")
     reasons = []
     cls = req.get("decision_class")
+    if cls in (None, "") and spol.get("require_class"):
+        raise Deny("%s has no baseline: decision_class (the phase) is required (known: %s)" % (skill, ", ".join(sorted(spol["classes"]))))
     esc = req.get("escalation")
     route = spol["baseline"]
     if cls in (None, ""):
@@ -124,7 +126,23 @@ def resolve(pol, req):
     if req.get("evidence_refs") not in (None, []):
         check_evidence(pol, req["evidence_refs"], "evidence_refs")
     r = spol["routes"][route]
-    check_route(pol, r["model"], r["effort"])
+    exc = None
+    if r.get("exception"):
+        exc = req.get("exception")
+        if not isinstance(exc, dict) or not isinstance(exc.get("reason"), str) or not exc["reason"]:
+            raise Deny("route %s is a recorded exception: exception {reason,evidence} is required" % route)
+        check_evidence(pol, exc.get("evidence"), "exception")
+        if not any(isinstance(e, str) and e.startswith("ledger:") for e in exc["evidence"]):
+            raise Deny("route %s needs a ledger reference recorded first (exception evidence has no ledger: ref)" % route)
+        reasons.append("recorded exception %s -> %s" % (exc["reason"], route))
+    elif req.get("exception") is not None:
+        raise Deny("exception is only valid for an exception route")
+    if r.get("deterministic"):
+        if req.get("requested") is not None:
+            raise Deny("phase %s is deterministic code: no model or effort can be requested" % route)
+        return {"ok": True, "governed": True, "deterministic": True, "model_id": None, "effort": None,
+                "route": route, "task_id": tid, "skill": skill, "reasons": reasons + ["deterministic code, no model launch"]}
+    check_route(pol, r["model"], r["effort"], exception=bool(exc))
     reqd = req.get("requested")
     if reqd is not None:
         if not isinstance(reqd, dict):
@@ -139,6 +157,8 @@ def resolve(pol, req):
                        (reqd.get("model", "-"), reqd.get("effort", "-"), r["model"], r["effort"]))
     out = {"ok": True, "governed": True, "model_id": r["model"], "effort": r["effort"],
            "route": route, "task_id": tid, "skill": skill, "reasons": reasons}
+    if exc:
+        out["exception"] = True
     rev = req.get("review")
     if rev is not None:
         rp = pol["review"]

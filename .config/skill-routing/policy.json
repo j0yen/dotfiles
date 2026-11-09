@@ -2,27 +2,74 @@
   "version": 1,
   "approved": "Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300",
   "models": {
-    "claude-fable-5-1": {"efforts": ["high", "xhigh"], "family": "fable"},
-    "claude-sonnet-5-5": {"efforts": ["medium"], "family": "sonnet"}
+    "claude-fable-5-1": {
+      "efforts": [
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "family": "fable"
+    },
+    "claude-sonnet-5-5": {
+      "efforts": [
+        "medium"
+      ],
+      "family": "sonnet"
+    },
+    "claude-haiku-5-5": {
+      "efforts": [
+        "default"
+      ],
+      "family": "haiku"
+    }
   },
-  "forbidden_efforts": ["max"],
+  "forbidden_efforts": [
+    "max"
+  ],
   "evidence": {
     "ref_pattern": "^(ledger|file|pr|run|commit|page):[^\\s]{2,200}$",
-    "placeholders": ["none", "n/a", "na", "tbd", "todo", "unknown", "x", "xx"],
+    "placeholders": [
+      "none",
+      "n/a",
+      "na",
+      "tbd",
+      "todo",
+      "unknown",
+      "x",
+      "xx"
+    ],
     "min_refs": 1
   },
   "skills": {
     "5whysandrhyme": {
       "baseline": "fable-high",
       "routes": {
-        "fable-high": {"model": "claude-fable-5-1", "effort": "high"},
-        "fable-xhigh": {"model": "claude-fable-5-1", "effort": "xhigh"}
+        "fable-high": {
+          "model": "claude-fable-5-1",
+          "effort": "high"
+        },
+        "fable-xhigh": {
+          "model": "claude-fable-5-1",
+          "effort": "xhigh"
+        }
       },
       "classes": {
-        "baseline": {"route": "fable-high", "evidence": false},
-        "recurring_failure": {"route": "fable-xhigh", "evidence": true},
-        "contradictory_evidence": {"route": "fable-xhigh", "evidence": true},
-        "consequential_prevention": {"route": "fable-xhigh", "evidence": true}
+        "baseline": {
+          "route": "fable-high",
+          "evidence": false
+        },
+        "recurring_failure": {
+          "route": "fable-xhigh",
+          "evidence": true
+        },
+        "contradictory_evidence": {
+          "route": "fable-xhigh",
+          "evidence": true
+        },
+        "consequential_prevention": {
+          "route": "fable-xhigh",
+          "evidence": true
+        }
       },
       "escalation_reasons": {
         "recurring_failure": "fable-xhigh",
@@ -33,27 +80,155 @@
     "wwhtbt": {
       "baseline": "sonnet-medium",
       "routes": {
-        "sonnet-medium": {"model": "claude-sonnet-5-5", "effort": "medium"},
-        "fable-high": {"model": "claude-fable-5-1", "effort": "high"},
-        "fable-xhigh": {"model": "claude-fable-5-1", "effort": "xhigh"}
+        "sonnet-medium": {
+          "model": "claude-sonnet-5-5",
+          "effort": "medium"
+        },
+        "fable-high": {
+          "model": "claude-fable-5-1",
+          "effort": "high"
+        },
+        "fable-xhigh": {
+          "model": "claude-fable-5-1",
+          "effort": "xhigh"
+        }
       },
       "classes": {
-        "straightforward_reversible": {"route": "sonnet-medium", "evidence": false},
-        "strategy_cross_system": {"route": "fable-high", "evidence": true},
-        "contested_assumptions": {"route": "fable-xhigh", "evidence": true},
-        "unresolved_consequential": {"route": "fable-xhigh", "evidence": true}
+        "straightforward_reversible": {
+          "route": "sonnet-medium",
+          "evidence": false
+        },
+        "strategy_cross_system": {
+          "route": "fable-high",
+          "evidence": true
+        },
+        "contested_assumptions": {
+          "route": "fable-xhigh",
+          "evidence": true
+        },
+        "unresolved_consequential": {
+          "route": "fable-xhigh",
+          "evidence": true
+        }
       },
       "escalation_reasons": {
         "strategy_cross_system": "fable-high",
         "contested_assumptions": "fable-xhigh",
         "unresolved_consequential": "fable-xhigh"
       }
+    },
+    "dream": {
+      "require_class": true,
+      "baseline": "deterministic",
+      "routes": {
+        "deterministic": {
+          "deterministic": true
+        },
+        "haiku": {
+          "model": "claude-haiku-5-5",
+          "effort": "default"
+        },
+        "sonnet-medium": {
+          "model": "claude-sonnet-5-5",
+          "effort": "medium"
+        },
+        "fable-high": {
+          "model": "claude-fable-5-1",
+          "effort": "high"
+        },
+        "fable-xhigh": {
+          "model": "claude-fable-5-1",
+          "effort": "xhigh"
+        },
+        "fable-max-exception": {
+          "model": "claude-fable-5-1",
+          "effort": "max",
+          "exception": true
+        }
+      },
+      "classes": {
+        "discovery": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "contract": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "duplicates": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "lint": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "manifest": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "persistence": {
+          "route": "deterministic",
+          "evidence": false
+        },
+        "extraction": {
+          "route": "haiku",
+          "evidence": false
+        },
+        "inventory": {
+          "route": "haiku",
+          "evidence": false
+        },
+        "classification": {
+          "route": "haiku",
+          "evidence": false
+        },
+        "amendment": {
+          "route": "sonnet-medium",
+          "evidence": false
+        },
+        "draft_approved_vision": {
+          "route": "sonnet-medium",
+          "evidence": false
+        },
+        "new_vision": {
+          "route": "fable-high",
+          "evidence": true
+        },
+        "prioritization": {
+          "route": "fable-high",
+          "evidence": true
+        },
+        "difficult_decomposition": {
+          "route": "fable-high",
+          "evidence": true
+        },
+        "consequential_uncertainty": {
+          "route": "fable-xhigh",
+          "evidence": true
+        },
+        "max_exception": {
+          "route": "fable-max-exception",
+          "evidence": false
+        }
+      },
+      "escalation_reasons": {}
     }
   },
   "review": {
     "automatic": false,
-    "reasons": ["unresolved_assumption", "contradiction", "independent_verifier_required", "prod_money_real_user_data", "low_confidence_weakest_link", "explicit_user_request"],
-    "route": {"model": "claude-fable-5-1", "effort": "high"},
+    "reasons": [
+      "unresolved_assumption",
+      "contradiction",
+      "independent_verifier_required",
+      "prod_money_real_user_data",
+      "low_confidence_weakest_link",
+      "explicit_user_request"
+    ],
+    "route": {
+      "model": "claude-fable-5-1",
+      "effort": "high"
+    },
     "evidence": true
   }
 }

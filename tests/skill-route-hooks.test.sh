@@ -19,7 +19,7 @@ o=$(pg "/plugin:wwhtbt plan"); ck "namespaced typed /x:wwhtbt blocked" 'blocked 
 o=$(pg "  /wwhtbt"); ck "leading whitespace does not evade" 'blocked "$o"'
 o=$(SKILL_ROUTE_TASK_ID=A1 SKILL_ROUTE_SKILL=wwhtbt pg "/wwhtbt plan X"); ck "managed worker for that skill may expand its own slash" '[ -z "$o" ]'
 o=$(SKILL_ROUTE_TASK_ID=A1 SKILL_ROUTE_SKILL=wwhtbt pg "/5whysandrhyme x"); ck "managed worker for another skill is still blocked" 'blocked "$o"'
-for s in dream write beauty improv nosuch; do o=$(pg "/$s something"); ck "typed /$s (ungoverned) untouched" '[ -z "$o" ]'; done
+for s in write beauty improv nosuch; do o=$(pg "/$s something"); ck "typed /$s (ungoverned) untouched" '[ -z "$o" ]'; done
 o=$(pg "do a five whys on this"); ck "plain analysis words pass (router only points)" '[ -z "$o" ]'
 o=$(pg "please run /wwhtbt later"); ck "slash mid-sentence not expanded by harness -> passes" '[ -z "$o" ]'
 N=$'\n'; o=$(pg "<system-reminder>${N}/wwhtbt${N}</system-reminder>${N}status"); ck "slash inside a harness block ignored" '[ -z "$o" ]'
@@ -27,13 +27,13 @@ o=$(pg '/wwhtbt $(touch '"$T"'/pwned) `touch '"$T"'/pwned2`'); ck "hostile args 
 echo '{"prompt":' | "$PG" >/dev/null 2>&1; ck "malformed hook input fails open (declared residual)" '[ $? = 0 ]'
 echo '{' >"$T/bad.json"
 o=$(SKILL_ROUTE_POLICY="$T/bad.json" pg "/wwhtbt x"); ck "malformed policy: governed-name slash fails closed" 'blocked "$o"'
-o=$(SKILL_ROUTE_POLICY="$T/bad.json" pg "/dream x"); ck "malformed policy: unrelated slash still usable" '[ -z "$o" ]'
+o=$(SKILL_ROUTE_POLICY="$T/bad.json" pg "/write x"); ck "malformed policy: unrelated slash still usable" '[ -z "$o" ]'
 # --- Skill tool surface
 sk(){ jq -cn --arg s "$1" '{tool_name:"Skill",tool_input:{skill:$s},tool_use_id:"tu1",session_id:"s1"}' | "$SG" >/dev/null 2>&1; echo $?; }
 ck "Skill 5whysandrhyme inline denied" '[ "$(sk 5whysandrhyme)" = 2 ]'
 ck "Skill wwhtbt inline denied" '[ "$(sk wwhtbt)" = 2 ]'
 ck "Skill write untouched" '[ "$(sk write)" = 0 ]'
-ck "Skill dream unchanged (no SKILL.md here -> allowed)" '[ "$(sk dream)" = 0 ]'
+ck "Skill write unchanged (no SKILL.md here -> allowed)" '[ "$(sk write)" = 0 ]'
 ck "Skill wwhtbt inside its managed worker allowed" '[ "$(SKILL_ROUTE_TASK_ID=A1 SKILL_ROUTE_SKILL=wwhtbt sk wwhtbt)" = 0 ]'
 ck "Skill governed + malformed policy fails closed" '[ "$(SKILL_ROUTE_POLICY="$T/bad.json" sk wwhtbt)" = 2 ]'
 ck "Skill non-governed + malformed policy still allowed" '[ "$(SKILL_ROUTE_POLICY="$T/bad.json" sk write)" = 0 ]'

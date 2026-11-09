@@ -37,9 +37,9 @@ chk "fable spawn naming the skill rejected when xhigh" 2 fable xhigh "summarise 
 exc(){ jq -cn --arg s "$1" --arg l "$2" --arg g "$3" --arg x "$4" '{skill:$s,ledger:$l,gap:$g,expires:$x}' >"$MEA_MAX_EXCEPTION"; }
 fut=$(date -d '+1 hour' +%Y-%m-%dT%H:%M:%S%z)
 exc "*" A9001 "gap" "$fut"; chk "max exception file grants nothing" 2 fable max "$S5"; rm -f "$MEA_MAX_EXCEPTION"
-# unaffected surfaces
-chk "dream keeps its own max" 0 fable max "Invoke the dream skill on seed Z"
-chk "dream with no effort untouched" 0 "" "" "Run /dream amend slug-1"
+# dream is governed since A1301 (phase routing, no baseline); other surfaces unaffected
+chk "dream is governed: native max spawn denied (A1301, no baseline)" 2 fable max "Invoke the dream skill on seed Z"
+chk "dream is governed: inherited model/effort denied (A1301)" 2 "" "" "Run /dream amend slug-1"
 chk "ordinary coder spawn unchanged" 0 sonnet medium "Implement the parser from the spec"
 chk "ordinary fable review (no skill) unchanged" 0 fable high "Review this PRD draft and return a verdict line"
 chk "haiku scout naming the page unchanged" 0 haiku "" "find the wwhtbt page path under ~/Notes"
