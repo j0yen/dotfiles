@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wm-build-limits-guard: single source of truth for cost-bearing wm-build limits.
-# Subcommands: check | enforce | set <key>=<value> --by <who> "<quote>"
+# Subcommands: check | enforce | set <key>=<value> --by <who> "<quote>" | unset <key> --by joe-<date> "<quote>"
 set -euo pipefail
 CONFIG="$HOME/.config/wm-build/config.toml"
 LOCK="$HOME/.config/wm-build/limits.lock"
@@ -35,6 +35,7 @@ live_value() {
     | grep -E "^[[:blank:]]*${ek}[[:blank:]]*=" | head -1 \
     | sed -E "s/^[[:blank:]]*${ek}[[:blank:]]*=[[:blank:]]*//; s/[[:blank:]]*#.*\$//; s/^\"//; s/\"\$//; s/[[:blank:]]*\$//"
 }
+has_lock() { grep -q "^$(esc "$1")=" "$LOCK"; }
 lock_value() { grep "^${1}=" "$LOCK" | head -1 | cut -d'=' -f2-; }
 rewrite_key() {
   local sec="$1" key="$2" newval="$3" quoted="$4" start end ek val
@@ -48,6 +49,7 @@ cmd_check() {
   local i dk sec tk live lock drift=0
   for i in "${!DOTKEYS[@]}"; do
     dk="${DOTKEYS[$i]}"; sec="${SECTIONS[$i]}"; tk="${TOMLKEYS[$i]}"
+    if ! has_lock "$dk"; then echo "key=$dk status=unset"; continue; fi
     live=$(live_value "$sec" "$tk"); lock=$(lock_value "$dk")
     if [ "$live" = "$lock" ]; then
       echo "key=$dk live=$live lock=$lock status=ok"
@@ -62,6 +64,7 @@ cmd_enforce() {
   mkdir -p "$STATE_DIR"
   for i in "${!DOTKEYS[@]}"; do
     dk="${DOTKEYS[$i]}"; sec="${SECTIONS[$i]}"; tk="${TOMLKEYS[$i]}"; q="${QUOTED[$i]}"
+    has_lock "$dk" || continue
     live=$(live_value "$sec" "$tk"); lock=$(lock_value "$dk")
     [ "$live" = "$lock" ] && continue
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -109,6 +112,41 @@ cmd_set() {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) limits-set key=${key} value=${value} by=${by}${arm:+ arm=${arm}} quote=\"${quote}\"" >>"$LOGFILE"
   echo "lock updated: ${key}=${value} (by ${by})"
 }
+cmd_unset() {
+  local key="${1:-}" by="" quote="" i idx=-1
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) by="${2:-}"; shift 2 ;;
+      *) quote="$1"; shift ;;
+    esac
+  done
+  case "$by" in
+    joe-*) : ;;
+    *) echo "refused: unset needs --by joe-* (got '${by}')" >&2; exit 1 ;;
+  esac
+  for i in "${!DOTKEYS[@]}"; do [ "${DOTKEYS[$i]}" = "$key" ] && idx=$i; done
+  if [ "$idx" -lt 0 ]; then echo "refused: unknown protected key '${key}'" >&2; exit 1; fi
+  local sec="${SECTIONS[$idx]}" tk="${TOMLKEYS[$idx]}" changed=0 start end tmp
+  if has_lock "$key"; then
+    tmp="${LOCK}.tmp.$$"
+    awk -v k="$key" 'BEGIN{FS="="} $1!=k{print}' "$LOCK" >"$tmp"
+    mv "$tmp" "$LOCK"; changed=1
+  fi
+  read -r start end <<<"$(section_range "$sec")"
+  if [ "$start" != "0" ] && [ -n "$(live_value "$sec" "$tk")" ]; then
+    tmp="${CONFIG}.tmp.$$"
+    DEAD_KEY="$tk" DEAD_S="$start" DEAD_E="$end" awk '
+      BEGIN{k=ENVIRON["DEAD_KEY"]; s=ENVIRON["DEAD_S"]+0; e=ENVIRON["DEAD_E"]+0; done=0}
+      !done && NR>=s && NR<=e && $0 ~ "^[ \t]*" k "[ \t]*=" {print "# dead: permanent boxes only (10-11), #195: " $0; done=1; next}
+      {print}' "$CONFIG" >"$tmp"
+    cat "$tmp" >"$CONFIG"; rm -f "$tmp"; changed=1
+  fi
+  if [ "$changed" = 0 ]; then echo "already-unset key=${key}"; return 0; fi
+  mkdir -p "$STATE_DIR"
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) limits-unset key=${key} by=${by} quote=\"${quote}\"" >>"$LOGFILE"
+  echo "unset: ${key} (by ${by})"
+}
 # --by watcher:<name> (ctl k1050): a premise-gated watcher may move max_runs only, only while its
 # watcher-premise arm is live, and only to 1 or back to exactly the value its pause lowered from,
 # never above the lock value recorded when the guard accepted the lowering. Sets: arm.
@@ -149,5 +187,6 @@ case "${1:-}" in
   check) cmd_check ;;
   enforce) cmd_enforce ;;
   set) shift; cmd_set "$@" ;;
-  *) echo "usage: wm-build-limits-guard check|enforce|set <key>=<value> --by <who> \"<quote>\"" >&2; exit 2 ;;
+  unset) shift; cmd_unset "$@" ;;
+  *) echo "usage: wm-build-limits-guard check|enforce|set <key>=<value> --by <who> \"<quote>\"|unset <key> --by joe-<date> \"<quote>\"" >&2; exit 2 ;;
 esac
