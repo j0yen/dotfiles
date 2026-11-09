@@ -78,13 +78,14 @@ else:
     if lo.returncode==0:
         live={f[1] for f in (ln.split("\t") for ln in lo.stdout.splitlines()[1:]) if len(f)>4 and f[4]=="yes"}
         parts=[x for x in parts if x.startswith("waiting:") or x.split(":")[0] in live]
-tot=0.0; hs=[]
+best={}   # one entry per run at its largest cap, the daemon's own Σ fold (sigma_parts); a grant row's parts already hold the granted run when it re-acquires (r7 c2b1 11-09: 542 counted twice)
 for x in parts:
     if x.startswith("waiting:"): continue
     f=x.split(":")
-    try: tot+=float(f[2])
+    try: g=float(f[2])
     except (IndexError,ValueError): continue
-    hs.append(":".join(f[:3]))
+    if f[0] not in best or g>best[f[0]][0]: best[f[0]]=(g,":".join(f[:3]))
+tot=sum(g for g,_ in best.values()); hs=[h for _,h in best.values()]
 if tot+own>budget+1e-9:
     print("refuse"); print("would-not-admit: live Σ=%.1f cap=%.1f budget=%g holders=[%s]"%(tot,own,budget,",".join(hs)))
 else:
@@ -107,6 +108,10 @@ selftest_precheck() { # exit-75 path + pass-through, driven by the FAKE env; own
   PFX=synthorg-; precheck "$D/slot.log" 2>"$D/err"; rc=$?
   if [ $rc = 0 ] && [ "$PCM" = 'would-admit: live Σ=11.5 cap=6.0' ] && [ ! -s "$D/err" ] && [ "$(wc -l < "$D/slot.log")" = 1 ]
   then echo "PASS precheck inner synthorg: pass-through (stops before any acquire), $PCM"; else echo "FAIL precheck inner synthorg rc=$rc PCM=$PCM"; fail=1; fi
+  export R7_SLOT_FAKE_PARTS='["542:inner:12.5","542:inner:12.5"]'   # c2b1: one run listed twice counts once
+  PFX=synthorg-; precheck "$D/slot.log" 2>"$D/err"; rc=$?
+  if [ $rc = 0 ] && [ "$PCM" = 'would-admit: live Σ=12.5 cap=6.0' ]
+  then echo "PASS precheck one run twice counts once: $PCM"; else echo "FAIL precheck one run twice rc=$rc PCM=$PCM"; fail=1; fi
   unset R7_SLOT_FAKE_PARTS R7_SLOT_FAKE_BUDGET; CLS=$SC; PFX=$SP
   case $D in /home/jsy/hand/.slot-selftest.????*) rm -rf -- "$D";; esac
   return $fail
