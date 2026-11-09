@@ -11,7 +11,9 @@ set -u
 if [ -z "$(command -v wm-asks)" ]; then echo "SKIP tests/ctl-w4-inflight.test.sh: real wm-asks not installed on this host (carbon-only evidence; see receipt)"; exit 0; fi
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 SRC="${BIN_DIR:-$here/.local/bin}"
-T="$(mktemp -d)"; trap 'pkill -9 -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT
+T="$(mktemp -d)" && [ -n "$T" ] && [ -d "$T" ] && [ "$T" != / ] || { echo "FAIL scratch dir (mktemp/TMPDIR); refusing to run: no pkill/kill without an owned scratch dir" >&2; exit 2; }
+trap 'case "$T" in /?*/?*) pkill -9 -f "$T/" 2>/dev/null; rm -rf "$T";; esac' EXIT
+kill_pids() { local p; for p in "$@"; do case "$p" in ''|*[!0-9]*|0|1) continue;; esac; kill -9 "$p" 2>/dev/null; done; }
 p=0; f=0
 ck() { if [ "$2" = "$3" ]; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1 (got [$2] want [$3])"; fi; }
 B="$T/bin"; mkdir -p "$B" "$T/otests"
@@ -62,13 +64,13 @@ rjrc() { python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["rc"]
 controws() { "$B/wma" asks query --json --status all --text "okey:$OBK" | python3 -I -c 'import json,sys;print(sum(1 for r in json.load(sys.stdin) if "authorized continuation of" in r["what"]))'; }
 crash_at_rowadd() {   # <qf>: route pauses right after the real wm-asks add; kill route + wrapper (scratch pids)
   touch "$T/pause-rowadd"; route_bg "$1"; waitfor "$T/at-rowadd" || echo "NEVER REACHED rowadd"
-  kill -9 "$RP" "$(cat "$T/pause.pid")" 2>/dev/null; wait "$RP" 2>/dev/null; rm -f "$T/pause-rowadd"
+  kill_pids "$RP" "$(cat "$T/pause.pid")"; wait "$RP" 2>/dev/null; rm -f "$T/pause-rowadd"
 }
 
 # ---- c5: route pid only killed mid-run; the runner and the test live on
 setup c5; touch "$T/hold"
 route_bg "$QF"; waitfor "$T/exec.log" || echo "NEVER STARTED"
-kill -9 "$RP" 2>/dev/null; wait "$RP" 2>/dev/null
+kill_pids "$RP"; wait "$RP" 2>/dev/null
 ck "c5 test started once before the kill" "$(starts)" 1
 TMO=6 route "$QF"
 ck "c5 rerun with a live owner exits 75 (retry later), not a failure" "$RC" 75
@@ -84,7 +86,7 @@ ck "c5 one continuation row" "$(controws)" 1
 # ---- c5b: test shell killed, its sleep child keeps the runner blocked; then a lost marker lets a second run finish first
 setup c5b; touch "$T/slow"
 route_bg "$QF"; waitfor "$T/exec.log" || echo "NEVER STARTED"
-kill -9 "$RP" "$(cat "$T/test.pid")" 2>/dev/null; wait "$RP" 2>/dev/null; rm -f "$T/slow"
+kill_pids "$RP" "$(cat "$T/test.pid")"; wait "$RP" 2>/dev/null; rm -f "$T/slow"
 TMO=10 route "$QF"
 ck "c5b rerun with a live runner exits 75" "$RC" 75
 ck "c5b rerun did NOT start a second test" "$(starts)" 1
@@ -142,7 +144,7 @@ done
 for kind in empty torn; do
   setup m$kind; touch "$T/hold"
   route_bg "$QF"; waitfor "$T/exec.log" || echo "NEVER STARTED"
-  kill -9 "$RP" 2>/dev/null; wait "$RP" 2>/dev/null
+  kill_pids "$RP"; wait "$RP" 2>/dev/null
   if [ $kind = empty ]; then : > "$OD/$OBK.inflight"; else printf '{' > "$OD/$OBK.inflight"; fi
   TMO=8 route "$QF"
   ck "d2 $kind marker with a live runner: rerun exits 75" "$RC" 75
