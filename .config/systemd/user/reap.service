@@ -3,6 +3,7 @@ Description=L6 retention contract: run gen/retention.json entries for this host 
 
 [Service]
 Type=oneshot
-Nice=19
+Nice=10
 IOSchedulingClass=idle
+TimeoutStartSec=1800
 ExecStart=%h/.local/bin/reap.sh
