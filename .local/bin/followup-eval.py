@@ -58,11 +58,29 @@ def alive(w):
             continue
         for probe in (["tmux", "has-session", "-t", tok], ["pgrep", "-f", "--", tok]):
             try:
-                if subprocess.run(probe, capture_output=True).returncode == 0:
-                    return True
+                r = subprocess.run(probe, capture_output=True, text=True)
             except OSError:   # probe binary absent on this host (e.g. no tmux on ryzen7): treat as not live by that probe
                 continue
+            if r.returncode != 0:
+                continue
+            if probe[0] == "pgrep":
+                # pgrep -f matches any argv containing the token, including this evaluator's own ancestors (a shell whose command line names the token): those never count
+                pids = {int(x) for x in r.stdout.split() if x.isdigit()} - _ancestors()
+                if not pids:
+                    continue
+            return True
     return False
+
+
+def _ancestors():
+    out, pid = {os.getpid()}, os.getppid()
+    while pid > 1 and pid not in out:
+        out.add(pid)
+        try:
+            pid = int(open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return out
 
 
 def read_ledger():
@@ -177,10 +195,10 @@ NEXT = {
     "correction-owed": "record the applying row for the verdict (wm-decide record/verdict) or a MOOT row naming why",
     "dead-worker": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
     "lease-expired": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
-    "stale-revision": "re-claim at the current revision (wm-asks claim <id> --worker <live worker>)",
+    "stale-revision": "re-claim at the current revision (wm-asks asks claim <id> --worker <live worker>)",
     "verifier-pending": "run the required verifier and record a PASS acceptance before the ending action",
-    "ledger-unreadable": "repair the canonical ledger query (wm-asks query --status open --json)",
-    "dependency-cleared": "dispatch it to a worker now (wm-asks claim <id> --worker <live worker>)",
+    "ledger-unreadable": "repair the canonical ledger query (wm-asks asks query --status open --json)",
+    "dependency-cleared": "dispatch it to a worker now (wm-asks asks claim <id> --worker <live worker>)",
 }
 
 
