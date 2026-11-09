@@ -58,7 +58,7 @@ def alive(w):
 def read_ledger():
     bin_ = os.environ.get("WM_ASKS_BIN", "wm-asks")
     try:
-        p = subprocess.run([bin_, "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
+        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "ledger command failed: %s" % type(e).__name__
     if p.returncode != 0:
@@ -88,6 +88,8 @@ def evaluate(seat, rows, now):
         ck = str(r.get("claim_session") or "") or cw
         acc = r.get("acceptance") if isinstance(r.get("acceptance"), dict) else {}
         verdict = str(acc.get("verdict") or "")
+        if not verdict and str(r.get("accept_result") or "") == "PASS" and r.get("accept_current") is True and r.get("verdict_row"):
+            verdict = "PASS"  # flat canonical shape: current PASS backed by a verifier verdict row; file-only PASS (no verdict_row) or a stale accept_current=false never counts
         waits = r.get("waits_on") if isinstance(r.get("waits_on"), list) else []
         live_nc, lapsed = [], ""
         for w in waits:
