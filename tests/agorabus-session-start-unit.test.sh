@@ -17,8 +17,10 @@ cat >"$T/bin/systemctl" <<'F'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$FAKE_CALLS"
 case "$*" in
-  *" cat "*)   exit "${FAKE_CAT_RC:-0}" ;;
+  *" cat "*)   [ "${FAKE_CAT_HANG:-0}" = 1 ] && exec sleep 5
+               exit "${FAKE_CAT_RC:-0}" ;;
   *" start "*) [ "${FAKE_START_MAKES_SOCK:-0}" = 1 ] && python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$AGORABUS_CACHE/sock"
+               [ "${FAKE_START_HANG:-0}" = 1 ] && exec sleep 5
                exit "${FAKE_START_RC:-0}" ;;
 esac
 exit 0
@@ -74,6 +76,36 @@ run
 [ "$elapsed" -le 6 ] && ok "d: within 6s (${elapsed}s)" || bad "d: within 6s (${elapsed}s)"
 grep -q nohup-daemon "$T/calls" && bad "d: no second owner" || ok "d: no second owner"
 grep -qh '"phase":"daemon_up".*"result":"fail"' "$T/cache/handshake/"*.log 2>/dev/null && ok "d: failure logged" || bad "d: failure logged"
+
+hl() { cat "$T/cache/handshake/"*.log 2>/dev/null; }
+
+# (e) cat ok, start times out (rc 124, job may be queued), socket never
+# appears -> no nohup spawn (one bus owner), exit 0 within 6 s, rc logged
+run FAKE_START_HANG=1
+grep -q nohup-daemon "$T/calls" && bad "e: no nohup spawn" || ok "e: no nohup spawn"
+[ "$rc" = 0 ] && ok "e: exit 0" || bad "e: exit 0 (rc=$rc)"
+[ "$elapsed" -le 6 ] && ok "e: within 6s (${elapsed}s)" || bad "e: within 6s (${elapsed}s)"
+hl | grep -q '"phase":"daemon_up".*"result":"fail".*"start":"unit","start_rc":124' && ok "e: rc 124 logged" || bad "e: rc 124 logged"
+
+# (f) cat ok, start rc 124 but the queued job brings the socket up -> adopt it
+run FAKE_START_RC=124 FAKE_START_MAKES_SOCK=1
+grep -q nohup-daemon "$T/calls" && bad "f: no nohup spawn" || ok "f: no nohup spawn"
+[ "$rc" = 0 ] && ok "f: exit 0" || bad "f: exit 0 (rc=$rc)"
+hl | grep -q '"phase":"daemon_up".*"result":"ok".*"start_rc":124' && ok "f: ok + rc 124 logged" || bad "f: ok + rc 124 logged"
+
+# (g) cat ok, start refused (rc 5, nothing queued) -> nohup fallback once
+run FAKE_START_RC=5
+n=$(grep -c nohup-daemon "$T/calls")
+[ "$n" = 1 ] && ok "g: nohup fallback once" || bad "g: nohup fallback once (n=$n)"
+[ "$rc" = 0 ] && ok "g: exit 0" || bad "g: exit 0 (rc=$rc)"
+hl | grep -q '"start":"nohup","start_rc":5' && ok "g: rc 5 logged" || bad "g: rc 5 logged"
+
+# (h) cat hangs (manager hung, timeout rc 124) -> nohup fallback once, no start
+run FAKE_CAT_HANG=1
+n=$(grep -c nohup-daemon "$T/calls")
+[ "$n" = 1 ] && ok "h: nohup fallback once" || bad "h: nohup fallback once (n=$n)"
+grep -q 'start' "$T/calls" && bad "h: no unit start" || ok "h: no unit start"
+[ "$rc" = 0 ] && ok "h: exit 0" || bad "h: exit 0 (rc=$rc)"
 
 echo "passed=$pass failed=$fail"
 [ "$fail" = 0 ]

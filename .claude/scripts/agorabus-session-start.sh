@@ -56,10 +56,12 @@ _now_ms() {
 }
 
 _log_handshake() {
-    local hlog="$1" ts sid phase attempt_n result elapsed_ms
+    # Optional $8: extra JSON members (no leading comma), e.g. '"start_rc":124'.
+    local hlog="$1" ts sid phase attempt_n result elapsed_ms extra
     ts="$2"; sid="$3"; phase="$4"; attempt_n="$5"; result="$6"; elapsed_ms="$7"
-    printf '{"ts":"%s","sid":"%s","phase":"%s","attempt_n":%s,"result":"%s","elapsed_ms":%s}\n' \
-        "$ts" "$sid" "$phase" "$attempt_n" "$result" "$elapsed_ms" \
+    extra="${8:+,$8}"
+    printf '{"ts":"%s","sid":"%s","phase":"%s","attempt_n":%s,"result":"%s","elapsed_ms":%s%s}\n' \
+        "$ts" "$sid" "$phase" "$attempt_n" "$result" "$elapsed_ms" "$extra" \
         >> "$hlog" 2>/dev/null || true
 }
 
@@ -165,33 +167,45 @@ phase_start=$(_now_ms)
 
 if ! pgrep -f 'agorabus daemon' >/dev/null 2>&1; then
     # A1447: bring the bus up through agorabus.service so systemd owns and
-    # restarts it; the nohup spawn is only the fallback where no user manager
-    # answers (or the unit is absent). Never reached while a daemon is live.
-    unit_started=0
-    if timeout 1 systemctl --user cat agorabus.service >/dev/null 2>&1 \
-       && timeout 1 systemctl --user start --no-block agorabus.service >/dev/null 2>&1; then
-        unit_started=1
+    # restarts it. The bus has exactly one owner: once `systemctl --user cat`
+    # answers, the unit path is committed. `start --no-block` rc 0 queued the
+    # job; rc 124 (timeout, slow manager) may have queued it too, so neither
+    # spawns nohup (that would make two owners of $sock). Only a refused start
+    # (any other nonzero rc, nothing queued) or no answering manager/unit
+    # falls back to the nohup daemon. Never reached while a daemon is live.
+    start_via="nohup"; start_rc=""
+    if timeout 1 systemctl --user cat agorabus.service >/dev/null 2>&1; then
+        timeout 2 systemctl --user start --no-block agorabus.service >/dev/null 2>&1
+        start_rc=$?
+        if [ "$start_rc" -eq 0 ] || [ "$start_rc" -eq 124 ]; then
+            start_via=unit
+        fi
     fi
-    if [ "$unit_started" -eq 0 ]; then
+    if [ "$start_via" = nohup ]; then
         nohup "$agorabus" daemon >"$daemon_log" 2>&1 &
         disown
     fi
+    log_extra="\"start\":\"$start_via\"${start_rc:+,\"start_rc\":$start_rc}"
     socket_ok=0
-    if [ "$unit_started" -eq 1 ]; then wait_n=15; wait_s=0.25; else wait_n=10; wait_s=0.3; fi
+    if [ "$start_via" = unit ]; then wait_n=15; wait_s=0.25; else wait_n=10; wait_s=0.3; fi
+    # Fail-open bound: the whole daemon_up phase stays under ~5.5 s even
+    # after a 1 s cat + 2 s start timeout.
+    wait_deadline=$(( phase_start + 5500 ))
     for _ in $(seq 1 "$wait_n"); do
         if [ -S "$sock" ]; then
             socket_ok=1
             break
         fi
+        [ "$(_now_ms)" -ge "$wait_deadline" ] && break
         sleep "$wait_s"
     done
     elapsed=$(( $(_now_ms) - phase_start ))
     if [ "$socket_ok" -eq 1 ]; then
         _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-            "$sid" "daemon_up" 1 "ok" "$elapsed"
+            "$sid" "daemon_up" 1 "ok" "$elapsed" "$log_extra"
     else
         _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-            "$sid" "daemon_up" 1 "fail" "$elapsed"
+            "$sid" "daemon_up" 1 "fail" "$elapsed" "$log_extra"
         # Fail-open: daemon never came up, nothing else to do.
         exit 0
     fi
