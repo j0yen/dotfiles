@@ -8,6 +8,10 @@ in="$(cat)"; [ -n "$in" ] || exit 1
 seat="$(jq -r '.seat // "ctl"' <<<"$in" 2>/dev/null)"; id="$(jq -r '.id // empty' <<<"$in" 2>/dev/null)"
 [ -n "$id" ] || exit 1
 line="FOLLOW-UP $(jq -r '.kind // "obligation"' <<<"$in") $id: $(jq -r '.detail // ""' <<<"$in")"
+# A suggestion-only obligation carries its typed key (id + rev + sha1(fp)[:12]) so the waiter can route it and an approval can name it exactly.
+if [ "$(jq -r '.kind // empty' <<<"$in")" = suggestion-only ]; then
+  line="$line OBLIGATION-KEY id=$id rev=$(jq -r '.rev // 0' <<<"$in") fp=$(jq -r '.fp // ""' <<<"$in" | tr -d '\n' | sha1sum | cut -c1-12)"
+fi
 bin="${SEAT_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}"
 [ -x "$bin" ] || bin="$(command -v seat-event.sh)" || exit 1
 SEAT_EVENT_NOWAKE=1 EVENT_SOURCE=followup-loop "$bin" "$seat" "$line" >/dev/null 2>&1

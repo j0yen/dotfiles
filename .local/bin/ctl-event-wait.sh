@@ -10,6 +10,7 @@
 #   due       an open-asks.tsv row owned by aide|ctl whose due has passed and was not reported before
 #   verifier  a new or updated ~/.local/state/aide-verifier/*/result.json
 #   taskfile  a new or changed task file in ~/wintermute-operations/feedback/ (names with status/monitor/receipt are informational)
+#   obligation a followup-loop bell carrying a typed `OBLIGATION-KEY id= rev= fp=` field (a suggestion-only obligation; W4), held in $EW/obl.pending until emitted
 #   hold      HOLD.json appeared, changed or was removed
 #   alarm     a new status.json alarm (text with digits stripped) not seen before
 # Liveness lease: every 20 min `aide-wake.sh arm 35`, so a dead waiter lets aide-wake.timer's idle check poke the pane.
@@ -25,6 +26,7 @@ FB="${FEEDBACK_DIR:-$HOME/wintermute-operations/feedback}"
 SJ="${STATUS_JSON:-$HOME/.cache/fleet-dash/status.json}"
 WAKE="${AIDE_WAKE_BIN:-$HOME/.local/bin/aide-wake.sh}"
 ACT='^[^|]*\| *(hermes[^ |]*|joe[^ |]*|fivewhys[^ |]*|rb|r7|controller|plain) *\|'
+OBL='\| *followup-loop *\|.* OBLIGATION-KEY id=[A-Za-z0-9._-]+ rev=[0-9]+ fp=[0-9a-f]{12}( |$)'
 now() { printf '%s' "${EW_NOW:-$(date +%s)}"; }
 num() { [[ "${1:-}" =~ ^[0-9]{1,12}$ ]] && printf '%s' "$1" || printf 0; }
 jstr() { python3 -I -c 'import json,sys; print(json.dumps(sys.stdin.read().rstrip("\n")))'; }
@@ -44,7 +46,8 @@ inbox_new() { # print actionable new lines since pos; advance pos; informational
   case "$chunk" in *$'\n'*) nl="${chunk%$'\n'*}"; size=$((pos + ${#nl} + 1)); chunk="$nl" ;; *) return 1 ;; esac
   new="$(printf '%s\n' "$chunk" | grep -a .)"
   printf '%s\n' "$size" > "$EW/pos"
-  printf '%s\n' "$new" | grep -a -vcE "$ACT" > "$EW/info.tmp"
+  printf '%s\n' "$new" | grep -a -E "$OBL" >> "$EW/obl.pending"   # typed obligation bells are kept until emitted (at-least-once; the route dedupes by key)
+  printf '%s\n' "$new" | grep -a -vE "$OBL" | grep -a -vcE "$ACT" > "$EW/info.tmp"
   printf '%s\n' "$new" | grep -a -E "$ACT"
 }
 due_new() { # ids owned by aide|ctl with a passed ISO due, minus those already reported
@@ -128,6 +131,10 @@ while :; do
   if [ -x "$WAKE" ] && [ $((t - last_arm)) -ge 1200 ]; then "$WAKE" arm 35 >/dev/null 2>&1; last_arm=$t; fi
   lines="$(inbox_new)"; info_total=$((info_total + $(num "$(cat "$EW/info.tmp" 2>/dev/null)")))
   if [ -n "$lines" ]; then emit inbox "$(printf '%s\n' "$lines" | cut -c1-400 | python3 -I -c 'import json,sys; print(json.dumps({"lines":sys.stdin.read().rstrip("\n").split("\n")}))')"; exit 0; fi
+  if [ -s "$EW/obl.pending" ]; then
+    o="$(emit obligation "$(cut -c1-400 "$EW/obl.pending" | python3 -I -c 'import json,sys; print(json.dumps({"lines":sys.stdin.read().rstrip("\n").split("\n")}))')")"
+    : > "$EW/obl.pending"; printf '%s\n' "$o"; exit 0
+  fi
   due="$(due_new)"
   if [ -n "$due" ]; then printf '%s\n' "$due" >> "$EW/due-seen"; emit due "$(printf '%s\n' "$due" | python3 -I -c 'import json,sys; print(json.dumps({"ids":sys.stdin.read().split()}))')"; exit 0; fi
   v="$(newer "$AV" -name result.json)"
