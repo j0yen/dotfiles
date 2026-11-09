@@ -1,0 +1,5 @@
+[Unit]
+Description=carbon user-manager watch (starts user@1000.service if inactive)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/carbon-user-manager-watch.sh
