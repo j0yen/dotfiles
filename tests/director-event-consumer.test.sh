@@ -48,7 +48,7 @@ cat > "$T/active" <<'SH'
 #!/usr/bin/env bash
 [ -e "$STUB/active" ]
 SH
-chmod +x "$T"/wm-asks "$T"/launcher "$T"/hold "$T"/active
+chmod 755 "$T"/wm-asks "$T"/launcher "$T"/hold "$T"/active
 
 fresh(){ # new stub + state world
   export STUB="$T/s$1" DIRECTOR_STATE="$T/st$1" DIRECTOR_EVENTS_LOG="$T/ev$1.log"
@@ -335,7 +335,7 @@ cat > "$T/active-set" <<'SH'
 [ -e "$STUB/blind" ] && exit "$(cat "$STUB/blind")"
 grep -qx "$1" "$STUB/actives" 2>/dev/null
 SH
-chmod +x "$T/launcher-live" "$T/active-set"
+chmod 755 "$T/launcher-live" "$T/active-set"
 ready_a100(){ python3 - <<PY
 import json,os
 p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); d["A100"]["ready"]=True; json.dump(d,open(p,"w"))

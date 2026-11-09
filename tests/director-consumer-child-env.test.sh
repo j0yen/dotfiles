@@ -338,7 +338,8 @@ spec = importlib.util.spec_from_file_location("dec", c); m = importlib.util.modu
 os.makedirs(t + "/stov", exist_ok=True)
 ran = t + "/stub.ran"
 outside = t + "/outside-launcher"; open(outside, "w").write("#!/bin/sh\necho x >> %s\n" % ran); os.chmod(outside, 0o755)
-inside = scr + "/ov-" + os.path.basename(t) + "-launcher"; open(inside, "w").write("#!/bin/sh\nexit 0\n"); os.chmod(inside, 0o755)
+od = scr + "/ov-" + os.path.basename(t) + "-dir"; os.makedirs(od, mode=0o700); os.chmod(od, 0o700)
+inside = od + "/launcher"; open(inside, "w").write("#!/bin/sh\nexit 0\n"); os.chmod(inside, 0o755)
 os.symlink(outside, scr + "/ov-" + os.path.basename(t) + "-link")
 def refused(**kw):
     for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"): os.environ.pop(k, None)
@@ -364,7 +365,151 @@ assert m.main(["x", "recover"]) == 78 and not os.path.exists(ran)
 os.environ["DIRECTOR_ISOLATION"] = ""
 print("override refusal ok")
 PY
-  local rc=$?; rm -f "$SCR/ov-"*; [ $rc = 0 ] && ok override_refused || bad override_refused "rc=$rc"
+  local rc=$?; rm -rf "$SCR/ov-"*; [ $rc = 0 ] && ok override_refused || bad override_refused "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused; do "t_$t"; done; fi
+SOCK_PROBE='
+import json, os, socket, sys
+out = []
+for path in json.load(open(sys.argv[1])):
+    r = []
+    for name, t in (("dgram", socket.SOCK_DGRAM), ("stream", socket.SOCK_STREAM)):
+        s = socket.socket(socket.AF_UNIX, t); s.settimeout(3)
+        try:
+            s.connect(path); r.append("OPEN"); break                       # connect only, nothing is sent or read
+        except OSError as e:
+            r.append(str(e.errno))
+        finally:
+            s.close()
+    out.append("sock %s %s" % (path, r[0] if r[0] == "OPEN" or len(r) == 1 else ("OPEN" if "OPEN" in r else "FAIL " + "/".join(r))))
+open(sys.argv[2], "w").write("\n".join(out) + "\n")
+'
+LIST_PROBE='
+import os, sys
+out = []
+for d in sys.argv[2:]:
+    try:
+        out.append("ls %s %d" % (d, len(os.listdir(d))))
+    except OSError as e:
+        out.append("ls %s FAIL %s" % (d, e.errno))
+open(sys.argv[1], "w").write("\n".join(out) + "\n")
+'
+# run_three NAME PROBE-SOURCE JSON-ARGS [sockets]: run the probe in: isolation unit (real props), sockets-only unit (only the new
+# InaccessiblePaths), and a control unit (no properties). Prints nothing; results land in $SCR/$P-<name>unit/{result,only,control}.
+run_three(){
+  python3 - "$C" "$P" "$1" "$2" "$3" "${4:-}" <<'PY'
+import importlib.util, json, os, subprocess, sys
+c, p, name, probe, args, only = sys.argv[1:7]
+home = os.path.expanduser("~"); unit = p + "-" + name + "unit"; sc = home + "/.cache/director-scratch/" + unit
+os.makedirs(sc + "/st"); os.makedirs(sc + "/wmstate")
+os.environ.update(DIRECTOR_STATE=sc + "/st", WM_DECIDE_STATE=sc + "/wmstate", WM_ASKS_CMD=sc + "/wm-asks")
+spec = importlib.util.spec_from_file_location("dec", c); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+open(sc + "/probe.py", "w").write(probe)
+if name == "sock":
+    json.dump(json.loads(args), open(sc + "/paths.json", "w")); targs = lambda res: [sc + "/paths.json", sc + "/" + res]
+else:
+    targs = lambda res: [sc + "/" + res] + json.loads(args)
+argv = mod.launch_argv(unit, "/e.md", tail=["/usr/bin/python3", sc + "/probe.py"] + targs("result"))
+r = subprocess.run(argv[:1] + ["--wait", "--pipe"] + argv[1:], capture_output=True, text=True); sys.stderr.write(r.stderr[-300:])
+if only == "sockets":      # only the socket denial, nothing else: shows the InaccessiblePaths themselves close the names
+    deny = getattr(mod, "socket_deny_paths", lambda: [])()
+    props = ["-p", "InaccessiblePaths=" + " ".join("-" + d for d in deny)] if deny else []
+    r1 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-only"] + props + ["--", "/usr/bin/python3", sc + "/probe.py"] + targs("only"), capture_output=True, text=True); sys.stderr.write(r1.stderr[-300:])
+r2 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-ctl", "--", "/usr/bin/python3", sc + "/probe.py"] + targs("control"), capture_output=True, text=True); sys.stderr.write(r2.stderr[-300:])
+PY
+}
+t_unit_sockets(){
+  # Connect-only attempts (no data sent, errno reported) at journald/syslog, systemd varlink services and the manager notify socket,
+  # from the real isolation unit, from a unit holding only the new InaccessiblePaths, and from a control unit with no properties.
+  local paths; paths="$(python3 -c '
+import glob, json, os
+l = ["/dev/log", "/run/systemd/notify"] + sorted(glob.glob("/run/systemd/journal/*")) + sorted(glob.glob("/run/systemd/io.systemd.*")) + sorted(glob.glob("/run/systemd/*/io.systemd.*"))
+print(json.dumps([x for x in l if os.path.lexists(x) and not os.path.isdir(x) and (os.path.islink(x) or __import__("stat").S_ISSOCK(os.stat(x).st_mode))]))')"
+  run_three sock "$SOCK_PROBE" "$paths" sockets
+  local u="$SCR/$P-sockunit" res ctl only; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"; only="$(cat "$u/only" 2>/dev/null)"
+  echo "--- inside the boundary (errno shown):"; echo "$res"; echo "--- only the socket InaccessiblePaths:"; echo "$only"; echo "--- control (no boundary):"; echo "$ctl"
+  [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_sockets "no probe output"; return; }
+  local w
+  for w in /dev/log /run/systemd/notify /run/systemd/journal/dev-log /run/systemd/journal/stdout /run/systemd/journal/socket /run/systemd/io.systemd.Hostname /run/systemd/io.systemd.Login; do
+    echo "$ctl" | grep -q "^sock $w OPEN" || { bad unit_sockets "control cannot connect to $w (test not discriminating)"; return; }
+  done
+  echo "$res" | grep -q ' OPEN$' && { bad unit_sockets "connectable inside the boundary: $(echo "$res" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  echo "$only" | grep -q ' OPEN$' && { bad unit_sockets "connectable with the InaccessiblePaths alone: $(echo "$only" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  [ "$(echo "$res" | grep -c ' FAIL ')" = "$(echo "$ctl" | grep -c '^sock')" ] || { bad unit_sockets "a path was not probed or not refused"; return; }
+  ok unit_sockets
+}
+LISTING_CLOSED='["/run", "/run/udev", "/run/lock", "/run/systemd", "/run/systemd/journal", "/sys/class/input", "/sys/class/hidraw", "/proc/bus/input"]'
+# Documented residuals: still listable in the unit (names only, no data). /sys/devices and /sys/dev/char expose device names and numbers,
+# /sys/class/* the other device classes; closing them hides hardware sysfs that ordinary tools read, which no worker needs but a unit cannot
+# prove safe to remove wholesale, so they are recorded rather than denied.
+LISTING_RESIDUAL='["/sys/devices", "/sys/dev/char", "/sys/class", "/sys/class/sound", "/sys/class/drm", "/sys/class/net", "/sys/block", "/proc/bus"]'
+t_unit_listing(){
+  run_three list "$LIST_PROBE" "$(python3 -c "import json,sys; print(json.dumps(json.loads('$LISTING_CLOSED')+json.loads('$LISTING_RESIDUAL')))")"
+  local u="$SCR/$P-listunit" res ctl w; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"
+  echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
+  [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_listing "no probe output"; return; }
+  for w in $(python3 -c "import json; print(' '.join(json.loads('$LISTING_CLOSED')))"); do
+    echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "control cannot list $w (test not discriminating)"; return; }
+    echo "$res" | grep -Eq "^ls $w (FAIL [0-9]+|0)$" || { bad unit_listing "names under $w still listable: $(echo "$res" | grep "^ls $w ")"; return; }
+  done
+  echo "residual (documented, still listable): $(echo "$res" | grep -E '^ls [^ ]+ [1-9][0-9]*$' | sed 's/^ls //' | tr '\n' ';')"
+  ok unit_listing
+}
+t_override_hardening(){
+  # check_overrides also requires the file to be owned by the current uid, not group/other writable, st_nlink == 1 and outside every
+  # child-writable bind (the unit scratch dir, the state dirs). Synthetic files only; the foreign-owner case swaps os.getuid in the test.
+  python3 - "$C" "$T" "$SCR" "$P" <<'PY'
+import importlib.util, os, sys, shutil
+c, t, scr, p = sys.argv[1:5]
+base = os.path.dirname(scr) + "/ov6-" + p                         # same filesystem as the scratch root, outside it, for a hardlink source
+os.makedirs(base, exist_ok=True)
+w = scr + "/ov6-" + p; os.makedirs(w, mode=0o700)                 # a launcher dir (not a unit dir) under the scratch root
+unitdir = scr + "/director-run-ov6-" + p + "-a1"; os.makedirs(unitdir + "/home"); os.makedirs(unitdir + "/hermes-home")
+st = w + "/state"; os.makedirs(st)
+os.environ.update(DIRECTOR_STATE=t + "/st6", WM_ASKS_CMD=t + "/wm-asks", WM_DECIDE_STATE=t + "/wm6", DIRECTOR_SCRATCH=unitdir)
+for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD", "DIRECTOR_ISOLATION"): os.environ.pop(k, None)
+spec = importlib.util.spec_from_file_location("dec", c); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.makedirs(t + "/st6", exist_ok=True)
+def mk(path, mode=0o700, body="#!/bin/sh\nexit 0\n"):
+    open(path, "w").write(body); os.chmod(path, mode); return path
+def refused(path, key="DIRECTOR_LAUNCH_CMD"):
+    for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"): os.environ.pop(k, None)
+    os.environ[key] = path; return m.check_overrides()
+good = mk(w + "/good")
+assert refused(good) == [], "baseline file must pass: %r" % refused(good)
+assert refused(good + " arg1 arg2", "DIRECTOR_RESET_CMD") == [], "args after the file"
+outside = mk(base + "/outside")
+os.link(outside, w + "/hardlink")
+assert refused(w + "/hardlink") == ["DIRECTOR_LAUNCH_CMD"], "hardlink to an outside inode (nlink 2) must be refused"
+good2 = mk(w + "/twice"); os.link(good2, w + "/twice-link")
+assert refused(good2) == ["DIRECTOR_LAUNCH_CMD"], "file with a second link must be refused"
+assert refused(mk(w + "/gw", 0o770)) == ["DIRECTOR_LAUNCH_CMD"], "group-writable"
+assert refused(mk(w + "/ow", 0o707)) == ["DIRECTOR_LAUNCH_CMD"], "other-writable"
+assert refused(mk(w + "/gw2", 0o720)) == ["DIRECTOR_LAUNCH_CMD"], "group-writable 0720"
+assert refused(mk(w + "/rx", 0o755)) == [], "group/other read+exec is fine"
+assert refused(mk(unitdir + "/child-wrote")) == ["DIRECTOR_LAUNCH_CMD"], "executable inside the child-writable unit scratch dir"
+assert refused(mk(unitdir + "/home/dropper")) == ["DIRECTOR_LAUNCH_CMD"], "executable the child dropped in its home"
+other = scr + "/director-run-ov6-" + p + "-a0"; os.makedirs(other + "/home"); os.makedirs(other + "/hermes-home")
+assert refused(mk(other + "/prior")) == ["DIRECTOR_LAUNCH_CMD"], "executable a prior child wrote in its own unit dir"
+os.environ["DIRECTOR_STATE"] = st
+assert refused(mk(st + "/in-state")) == ["DIRECTOR_LAUNCH_CMD"], "executable inside the state dir bind"
+os.environ["DIRECTOR_STATE"] = t + "/st6"
+real = os.getuid; os.getuid = lambda: real() + 1
+try:
+    assert refused(good) == ["DIRECTOR_LAUNCH_CMD"], "file owned by another uid"
+finally:
+    os.getuid = real
+assert refused(good) == []
+# a symlink in the scratch root whose target is an outside file is still refused (realpath), and the writable parent dir case
+os.symlink(outside, w + "/sym"); assert refused(w + "/sym") == ["DIRECTOR_LAUNCH_CMD"]
+os.chmod(w, 0o777)
+try:
+    assert refused(good) == ["DIRECTOR_LAUNCH_CMD"], "file in a group/other-writable directory"
+finally:
+    os.chmod(w, 0o700)
+shutil.rmtree(base); shutil.rmtree(w); shutil.rmtree(unitdir); shutil.rmtree(other)
+print("override hardening ok")
+PY
+  local rc=$?; rm -rf "$SCR/ov6-$P" "$(dirname "$SCR")/ov6-$P" "$SCR/director-run-ov6-$P"-*; [ $rc = 0 ] && ok override_hardening || bad override_hardening "rc=$rc"
+}
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_listing override_hardening; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }

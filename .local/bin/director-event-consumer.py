@@ -34,6 +34,7 @@ A failing ready poll appends one durable incident row (ts, command, rc, scrubbed
 with --status all, so a row closed meanwhile still gets its receipt.
 """
 import fcntl
+import glob
 import json
 import os
 import pwd
@@ -421,16 +422,57 @@ HOST_IPC_DENY = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd", 
                  "/run/tailscale", "/run/cups", "/run/avahi-daemon", "/run/polkit", "/run/ssh-unix-local")
 
 
+# Host sockets reached by path: journald/syslog, systemd varlink services and the manager notify socket. Varlink names are globbed at launch.
+SOCKET_DENY_STATIC = ("/dev/log", "/run/systemd/journal", "/run/systemd/notify", "/run/systemd/private", "/run/systemd/userdb")
+SOCKET_DENY_GLOBS = ("/run/systemd/io.systemd.*", "/run/systemd/*/io.systemd.*")
+# Device-name listings denied on top of the tmpfs /run, which already hides /run/udev and /run/lock.
+LISTING_DENY = ("/sys/class/input", "/sys/class/hidraw", "/proc/bus/input")
+
+
+def socket_deny_paths():
+    return list(SOCKET_DENY_STATIC) + sorted(set(g for pat in SOCKET_DENY_GLOBS for g in glob.glob(pat)))
+
+
 class LaunchRefused(Exception):
     pass
 
 
+def child_writable_roots(root):
+    """Realpaths a worker can write: the unit scratch dir it receives, every unit scratch dir under the root (a prior child's), the
+    state dirs. A unit scratch dir is a direct child of the root named director-* or holding a hermes-home dir."""
+    out = [_real(os.path.join(root, "director-child"))]
+    for k in ("DIRECTOR_SCRATCH", "DIRECTOR_STATE", "WM_DECIDE_STATE"):
+        if os.environ.get(k):
+            out.append(_real(os.environ[k]))
+    out.append(_real(STATE))
+    try:
+        for n in os.listdir(root):
+            d = os.path.join(root, n)
+            if n.startswith("director-") or os.path.isdir(os.path.join(d, "hermes-home")):
+                out.append(_real(d))
+    except OSError:
+        pass
+    return out
+
+
+def override_file_ok(r, root, writable):
+    """The resolved launcher file is ours alone: owned by the current uid, no group/other write bit on it or its directory, a single
+    hard link, and outside every child-writable location."""
+    try:
+        st, dst = os.stat(r), os.stat(os.path.dirname(r))
+    except OSError:
+        return False
+    return (st.st_uid == os.getuid() and dst.st_uid == os.getuid() and not st.st_mode & 0o022 and not dst.st_mode & 0o022
+            and st.st_nlink == 1 and not any(_within(r, q) for q in writable))
+
+
 def check_overrides(live_home=None):
     """Isolation mode only: DIRECTOR_LAUNCH_CMD / DIRECTOR_RESET_CMD replace the boundary, so each must name (first word,
-    after realpath) an existing file strictly inside the scratch root. Returns the refused variable names."""
+    after realpath) an existing file strictly inside the scratch root that override_file_ok accepts. Returns the refused variable names."""
     if not isolation_mode():
         return []
     root, bad = scratch_root(live_home), []
+    writable = child_writable_roots(root)
     for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"):
         val = os.environ.get(k)
         if not val:
@@ -440,7 +482,7 @@ def check_overrides(live_home=None):
         except ValueError:
             w = []
         r = _real(w[0]) if w and os.path.isabs(w[0]) else ""
-        if not r or r == root or not _within(r, root) or not os.path.isfile(r):
+        if not r or r == root or not _within(r, root) or not os.path.isfile(r) or not override_file_ok(r, root, writable):
             bad.append(k)
     return bad
 
@@ -492,8 +534,8 @@ def sandbox_props(v, live_home=None, cmds=()):
         if p and not any(_within(_real(p), q) for q in rw):
             rw.append(_real(p))
     ro = [p for p in dict.fromkeys(_real(c) for c in cmds if c) if _within(p, live_home) and os.path.exists(p) and not any(_within(p, q) for q in rw)]
-    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY)
-    props = ["TemporaryFileSystem=%s:ro /dev/shm" % live_home, "BindPaths=" + " ".join(rw)]
+    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY) + socket_deny_paths() + list(LISTING_DENY)
+    props = ["TemporaryFileSystem=%s:ro /dev/shm /run:ro" % live_home, "BindPaths=" + " ".join(rw)]
     if ro:
         props.append("BindReadOnlyPaths=" + " ".join(ro))
     return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "PrivatePIDs=yes", "NoNewPrivileges=yes"]
