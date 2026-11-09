@@ -4,9 +4,53 @@
 # Acts ONLY on what this run created: a fresh umtest-<8 hex> account (any pre-existing account or useradd
 # failure aborts rc 2 with no further call), a drop-in dir made by plain mkdir (a pre-existing dir aborts rc 2
 # untouched), a manager that was inactive before start. Cleanup removes only the conf, dir, start and account it made.
-# Live mode needs sudo -n and UMTEST_LIVE=1 whenever any command below is left at its real default; fake mode
-# points every one of them at tests/fixtures/user-manager-restart-fakes.sh output. Without working sudo: SKIP, exit 77 (never 0).
+# Default run (no environment) is FAKE: the driver below builds tests/fixtures/user-manager-restart-fakes.sh output into a
+# mktemp bindir, points every command and RUNDIR at it and runs the cases, exit 0 on PASS. Live mode runs only with
+# UMTEST_LIVE=1 and needs sudo -n; without working sudo: SKIP, exit 77 (never 0).
 set -u
+if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
+  here=$(cd "$(dirname "$0")" && pwd)
+  work=$(mktemp -d "${TMPDIR:-/tmp}/umtest-fake.XXXXXX") || exit 2
+  trap 'rm -r -- "$work"' EXIT
+  bin=$work/bin
+  bash "$here/fixtures/user-manager-restart-fakes.sh" "$bin" || exit 2
+  npass=0 nfail=0
+  # case <name> <want rc> <grep pattern on output or "-"> [VAR=val ...]
+  runcase() {
+    local name=$1 want=$2 pat=$3 rc out; shift 3
+    export STATE=$work/$name; mkdir -p "$STATE" "$STATE/run"
+    out=$(env -i PATH="$PATH" TMPDIR="$work" STATE="$STATE" UMTEST_CHILD=1 UMTEST_FAKEBIN="$bin" \
+      SYSTEMCTL="$bin/fsystemctl" USERADD="$bin/fuseradd" USERDEL="$bin/fuserdel" GETENT="$bin/fgetent" \
+      KILL="$bin/fkill" SUDO="$bin/fsudo" IDCMD="$bin/fid" MKDIR="$bin/fmkdir" RMDIR="$bin/frmdir" RM="$bin/frm" \
+      TEE="$bin/ftee" RUNDIR="$STATE/run" RESTART_WAIT=2 STOP_WAIT=2 "$@" bash "$0" 2>&1); rc=$?
+    CASE_OUT=$out
+    if [ "$rc" -ne "$want" ] || { [ "$pat" != - ] && ! grep -q -- "$pat" <<<"$out"; }; then
+      echo "FAIL case $name: rc $rc (want $want): $out"; nfail=$((nfail + 1)); return 1
+    fi
+    npass=$((npass + 1))
+  }
+  runcase ok 0 'user-manager-restart PASS' FAKE_MODE=ok
+  runcase norestart 1 'no restart within' FAKE_MODE=norestart
+  runcase restartonstop 1 'active again' FAKE_MODE=restartonstop
+  runcase nosudo 77 'needs sudo' FAKE_NOSUDO=1
+  runcase preexist 2 'already present' FAKE_PREEXIST=1
+  runcase useraddfail 2 'useradd .* failed' FAKE_USERADD_RC=1
+  runcase preactive 2 'not inactive before this run' FAKE_PREACTIVE=1
+  # R4: start fails -> cleanup still stops the unit and deletes the owned account, and only that account
+  if runcase startfail 2 'start user@990.service' FAKE_STARTRC=1; then
+    log=$work/startfail/calls.log
+    owned=$(sed -n 's/^useradd .* \(umtest-[0-9a-f]\{8\}\)$/\1/p' "$log")
+    if [ -n "$owned" ] && grep -qx 'systemctl stop user@990.service' "$log" &&
+       [ "$(grep -c '^userdel ' "$log")" = 1 ] && grep -qx "userdel $owned" "$log"; then
+      npass=$((npass + 1))
+    else
+      echo "FAIL case startfail: calls.log lacks stop or owned-only userdel:"; cat "$log"; nfail=$((nfail + 1))
+    fi
+  fi
+  [ "$nfail" = 0 ] || { echo "user-manager-restart FAKE FAIL pass=$npass fail=$nfail"; exit 1; }
+  echo "user-manager-restart FAKE PASS cases=$npass"
+  exit 0
+fi
 SYSTEMCTL=${SYSTEMCTL:-systemctl}
 USERADD=${USERADD:-useradd}
 USERDEL=${USERDEL:-userdel}
@@ -22,12 +66,19 @@ RUNDIR=${RUNDIR:-/run/systemd/system}
 RESTART_WAIT=${RESTART_WAIT:-15}
 STOP_WAIT=${STOP_WAIT:-10}
 
+# live unless every command resolves (realpath) into the fixture bindir, and that bindir is not a system directory;
+# anything under a system path, or anywhere else, counts as live and needs UMTEST_LIVE=1
+sysdir() { case $1 in /usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/opt|/opt/*|/snap|/snap/*) return 0;; esac; return 1; }
+fakebin=$(realpath -- "${UMTEST_FAKEBIN:-/nonexistent}" 2>/dev/null) || fakebin=
 live=0
+[ -n "$fakebin" ] && ! sysdir "$fakebin" || live=1
 for c in "$SYSTEMCTL" "$USERADD" "$USERDEL" "$GETENT" "$KILL" "$SUDO" "$MKDIR" "$RMDIR" "$RM" "$TEE"; do
-  b=${c%% *}
-  case ${b##*/} in systemctl|useradd|userdel|getent|kill|sudo|mkdir|rmdir|rm|tee) live=1;; esac
+  p=$(command -v -- "${c%% *}") && rp=$(realpath -- "$p" 2>/dev/null) || { live=1; continue; }
+  sysdir "$rp" && live=1
+  [ "$(dirname -- "$rp")" = "$fakebin" ] || live=1
 done
-[ "$RUNDIR" = /run/systemd/system ] && live=1
+rr=$(realpath -m -- "$RUNDIR")
+case $rr in /run/systemd|/run/systemd/*|/etc/systemd|/etc/systemd/*|/usr/lib/systemd/*) live=1;; esac
 if [ "$live" = 1 ] && [ "${UMTEST_LIVE:-0}" != 1 ]; then
   echo "SKIP: live mode needs UMTEST_LIVE=1"
   exit 77
@@ -42,7 +93,8 @@ uid= unit= dropdir= conf=
 fail() { echo "FAIL step $1: $2" >&2; exit 1; }
 abort() { echo "ABORT: $*" >&2; exit 2; }
 
-# every action below is gated on a flag set only after this run itself did the matching create
+# every action below is gated on a flag set by this run; started is set BEFORE the start call, so a failed or
+# timed-out start still gets a stop and the account removal below
 cleanup() {
   local rc=$?
   trap - EXIT
@@ -89,8 +141,8 @@ RestartSec=5
 CONF
 $SUDO $SYSTEMCTL daemon-reload || abort "daemon-reload"
 [ "$(prop ActiveState)" = inactive ] || abort "$unit not inactive before start"
-$SUDO $SYSTEMCTL start "$unit" || abort "start $unit"
 started=1
+$SUDO $SYSTEMCTL start "$unit" || abort "start $unit"
 
 old=$(prop MainPID); n0=$(prop NRestarts)
 case $old in ''|0|*[!0-9]*) abort "no MainPID for $unit";; esac

@@ -3,7 +3,7 @@
 # writes fake systemctl/useradd/userdel/getent/kill/sudo/id/mkdir/rmdir/rm/tee into <bindir>; every fake but
 # sudo and id logs its call to $STATE/calls.log. Fakes read STATE (dir), FAKE_MODE (ok | norestart | restartonstop),
 # FAKE_UID (default 990), FAKE_CALLER_UID (default 1001), FAKE_NOSUDO=1, FAKE_PREEXIST=1 (getent answers uid 990 for
-# any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start).
+# any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails).
 # Usage: user-manager-restart-fakes.sh --seed-dropdir <rundir> <uid>  makes <rundir>/user@<uid>.service.d/sentinel
 # (a pre-existing drop-in dir) and prints the sentinel's sha256.
 set -eu
@@ -64,7 +64,8 @@ w fsystemctl <<'F'
 echo "systemctl $*" >> "$STATE/calls.log"
 case $1 in
   daemon-reload) ;;
-  start) echo 4200 > "$STATE/mainpid"; echo 0 > "$STATE/nrestarts"; echo active > "$STATE/active" ;;
+  start) [ "${FAKE_STARTRC:-0}" = 0 ] || exit "$FAKE_STARTRC"
+    echo 4200 > "$STATE/mainpid"; echo 0 > "$STATE/nrestarts"; echo active > "$STATE/active" ;;
   stop) echo inactive > "$STATE/active"
     if [ "${FAKE_MODE:-ok}" = restartonstop ]; then
       echo $(( $(cat "$STATE/mainpid") + 1 )) > "$STATE/mainpid"; echo $(( $(cat "$STATE/nrestarts") + 1 )) > "$STATE/nrestarts"; echo active > "$STATE/active"
