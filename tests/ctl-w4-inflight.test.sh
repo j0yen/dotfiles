@@ -130,4 +130,13 @@ rm -f "$RT_DIR"/routed/*.json
 route "$C/q-approved.json"
 ck "dup original event replayed afterwards: no third row, no second run" "$(controws)/$(starts)" 1/1
 
+# ---- conc: two DIFFERENT events for one key routed concurrently (barrier start, fresh key each iteration): exactly one continuation row, one runner start
+for n in $(seq 1 ${CONC_N:-10}); do
+  setup conc$n; mkq a "#901" evA; mkq b "#901" evB; rm -f "$T/go"
+  for w in a b; do setsid bash -c "while [ ! -e $T/go ]; do :; done; exec timeout 60 $B/ctl-event-route.sh route $C/q-$w.json" >"$C/out.$w" 2>"$C/err.$w" </dev/null & eval "P$w=\$!"; done
+  sleep 0.3; touch "$T/go"; wait "$Pa" "$Pb" 2>/dev/null
+  ck "conc#$n one continuation row for two concurrent events" "$(controws)" 1
+  ck "conc#$n runner started once" "$(starts)" 1
+done
+
 echo "pass=$p fail=$f"; [ "$f" = 0 ]
