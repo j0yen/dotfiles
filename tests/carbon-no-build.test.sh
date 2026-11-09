@@ -31,7 +31,7 @@ run_hook() {   # run_hook <host> <json> -> rc in $RC, stderr in $ERR
 bashj() { printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"%s"}' "$(jstr "$1")" "$HOME"; }
 editj() { printf '{"tool_name":"%s","tool_input":{"file_path":%s},"cwd":"%s"}' "$1" "$(jstr "$2")" "$HOME"; }
 agentj() { printf '{"tool_name":"Agent","tool_input":{"subagent_type":"%s","prompt":"x"},"cwd":"%s"}' "$1" "$HOME"; }
-MSG_RE='^carbon-no-build: [a-z-]+ denied on carbon; run on redbaron/ryzen7 over ssh \(CLAUDE\.md § Hosts\)$'
+MSG_RE='^carbon-no-build: [a-z-]+ denied on carbon; (allowed here: bash <one literal tests/x\.test\.sh> \(no \$VAR, no glob, one file\); else )?run on redbaron/ryzen7 over ssh \(CLAUDE\.md § Hosts\)$'
 
 deny_case() {   # deny_case <label> <json>: denies on carbon (rc 2, one stderr line of the fixed shape), passes on redbaron
   run_hook carbon "$2"; local rc=$RC err=$ERR
@@ -46,8 +46,17 @@ allow_case() {   # allow_case <label> <json>: allowed on both hosts
 }
 dB() { deny_case "$1" "$(bashj "$1")"; }
 aB() { allow_case "$1" "$(bashj "$1")"; }
+msg_case() {   # msg_case <label> <command> <want|none>: carbon deny line contains (want) or lacks (none) the allowed-form hint
+  run_hook carbon "$(bashj "$2")"
+  if [ "$3" = none ]; then [[ "$ERR" != *"allowed here"* ]] && [ "$RC" = 2 ] && pass "msg: $1" || bad "msg: $1 (rc=$RC err='$ERR')"
+  else [ "$RC" = 2 ] && [[ "$ERR" == *"$3"* ]] && pass "msg: $1" || bad "msg: $1 (rc=$RC err='$ERR')"; fi
+}
 
 # ---- 1. Bash denies (command position)
+aB 'bash tests/x.test.sh'
+msg_case 'a $VAR test path names the allowed form' 'bash tests/$T.test.sh' 'bash <one literal tests/x.test.sh>'
+msg_case 'a glob test path names the allowed form' 'bash tests/*.test.sh' 'bash <one literal tests/x.test.sh>'
+msg_case 'cargo build keeps the unchanged line' 'cargo build --release' none
 dB 'pytest tests/ -x'
 dB 'uv run pytest -q'
 dB 'uv run --frozen python -m pytest'
