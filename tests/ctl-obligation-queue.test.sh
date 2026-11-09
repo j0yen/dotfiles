@@ -91,7 +91,8 @@ t_unavailable_source_fails_visibly(){
   out=$(CTL_OQ_WM_ASKS="$W/bin/wm-asks" python3 "$Q" --test queue 2>&1); rc=$?
   if [ $rc = 4 ] && echo "$out" | grep -qi 'canonical source unavailable'; then ok unavailable; else bad unavailable "rc=$rc out=$out"; fi
   fixture $W/f.json "$(row A1 ctl 2026-11-01T09:00 'x')"
-  src=$(CTL_OQ_FIXTURE="$W/f.json" python3 "$Q" queue --json 2>/dev/null | jq_ "d['source']")
+  printf '#!/bin/sh\necho "[]"\n' >$W/bin/wm-asks; cp $W/bin/wm-asks $W/bin/wm-decide
+  src=$(PATH="$W/bin:$PATH" CTL_OQ_FIXTURE="$W/f.json" python3 "$Q" queue --json 2>/dev/null | jq_ "d['source']")
   [ "$src" = wm-asks ] && ok no-fixture-without-test || bad no-fixture-without-test "source=$src"
   if grep -qi 'tsv' "$Q"; then bad no-tsv-fallback "script mentions a tsv"; else ok no-tsv-fallback; fi
 }
