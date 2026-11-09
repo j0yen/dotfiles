@@ -8,7 +8,7 @@ R="${FQR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 L="$R/.local/bin/fable-launch.sh"; GATE="$R/.claude/hooks/fable-skill-spawn-gate.sh"; NG="$R/.claude/hooks/fable-native-agent-guard.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
-mkdir -p "$T/store"; printf 'TOKEN-PM-yyyyyyyy' >"$T/store/jyen.pm"; printf 'TOKEN-JOSEPH-xxxxxxxx' >"$T/store/josephsyen"; chmod 600 "$T/store"/*
+mkdir -p "$T/store"; printf 'TOKEN-PM-yyyyyyyy' >"$T/store/jyen.pm"; printf 'TOKEN-JOSEPH-xxxxxxxx' >"$T/store/josephsyen"; printf 'TOKEN-TECH-zzzzzzzz' >"$T/store/jyen.tech"; chmod 600 "$T/store"/*
 printf '#!/usr/bin/env bash\necho "spy args=$*" >>"$SPYLOG"\n' >"$T/claude"; chmod +x "$T/claude"
 export FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log" FABLE_RR_DIR="$T/rr" SKILL_ROUTING_DECISIONS="$T/dec.jsonl"
 unset FABLE_LAUNCH_EFFORT_REASON

@@ -3,27 +3,31 @@
 set -u
 D="$(cd "$(dirname "$0")/.." && pwd)"; L="$D/.local/bin/fable-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' > "$T/store/josephsyen"; printf 'TOKEN-PM-yyyyyyyy' > "$T/store/jyen.pm"; chmod 600 "$T/store"/*
+mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' > "$T/store/josephsyen"; printf 'TOKEN-TECH-zzzzzzzz' > "$T/store/jyen.tech"; printf 'TOKEN-PM-yyyyyyyy' > "$T/store/jyen.pm"; chmod 600 "$T/store"/*
 cat > "$T/claude" <<'S'
 #!/usr/bin/env bash
-case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in TOKEN-PM-*) a=jyen.pm;; TOKEN-JOSEPH-*) a=josephsyen;; *) a=none;; esac
+case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in TOKEN-PM-*) a=jyen.pm;; TOKEN-JOSEPH-*) a=josephsyen;; TOKEN-TECH-*) a=jyen.tech;; *) a=none;; esac
 echo "spy acct=$a name=${FABLE_LAUNCH_ACCOUNT:-} args=$*" >> "$SPYLOG"
 S
 chmod +x "$T/claude"
-export FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
+export FABLE_RR_DIR="$T/rr" FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
 run(){ : > "$SPYLOG"; "$L" "$@" 2>"$T/err"; echo $? > "$T/rc"; }
 export FABLE_LAUNCH_EFFORT_REASON="ledger:A1300 named reasoning gap"; run --model claude-fable-5-1 --effort xhigh; unset FABLE_LAUNCH_EFFORT_REASON; ck "fable -> jyen.pm xhigh with reason" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort xhigh" $SPYLOG'
 run --model fable; ck "fable alias, effort defaults high" 'grep -q "acct=jyen.pm" $SPYLOG && grep -q -- "--effort high" $SPYLOG'
 run --model=claude-fable-5-1 --effort max; ck "fable max without reason refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
-for m in claude-sonnet-5-5 sonnet claude-haiku-5-5 haiku claude-opus-5-5 opus; do run --model $m --effort medium; ck "$m -> josephsyen" 'grep -q "acct=josephsyen" $SPYLOG'; done
+for m in claude-sonnet-5-5 sonnet claude-haiku-5-5 haiku claude-opus-5-5 opus; do run --model $m --effort medium; ck "$m -> non-Fable pool (josephsyen|jyen.tech)" 'grep -qE "acct=(josephsyen|jyen.tech)" $SPYLOG'; done
 run --model claude-fable-9-9-9-9; ck "unknown fable-like refused" '[ "$(cat $T/rc)" = 64 ]'
 run; ck "no model refused" '[ "$(cat $T/rc)" = 64 ]'
 # helper isolation: parent env (Fable on jyen.pm) must not decide a helper's account
-: > "$SPYLOG"; CLAUDE_CODE_OAUTH_TOKEN=TOKEN-PM-yyyyyyyy "$L" --helper --model claude-sonnet-5-5 2>/dev/null; ck "helper under PM parent env -> josephsyen" 'grep -q "acct=josephsyen" $SPYLOG'
+: > "$SPYLOG"; CLAUDE_CODE_OAUTH_TOKEN=TOKEN-PM-yyyyyyyy "$L" --helper --model claude-sonnet-5-5 2>/dev/null; ck "helper under PM parent env -> non-Fable pool" 'grep -qE "acct=(josephsyen|jyen.tech)" $SPYLOG'
 run --helper --model fable; ck "helper cannot be fable" '[ "$(cat $T/rc)" = 64 ]'
 # native child inherits parent env (documents the blocker for in-process Agent helpers)
 : > "$SPYLOG"; FABLE_CLAUDE_BIN=/usr/bin/env CLAUDE_CODE_OAUTH_TOKEN=x true; ( export CLAUDE_CODE_OAUTH_TOKEN="TOKEN-PM-yyyyyyyy"; "$T/claude" --model sonnet ); ck "native child inherits PM token (isolation needs --helper)" 'grep -q "acct=jyen.pm" $SPYLOG'
+# A1221 round-robin: alternation, resume pin, no fallback (carried from origin/account-router 16e63f1)
+rm -rf "$T/rr"; run --model sonnet; a1=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); run --model sonnet; a2=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); ck "new non-Fable allocations alternate" '[ "$a1" != "$a2" ] && [ -n "$a1" ] && [ -n "$a2" ]'
+S1=aaaaaaaa-1111-2222-3333-444444444444; run --model sonnet --session-id $S1; p1=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); run --model sonnet; run --model sonnet --resume $S1; p2=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); ck "resume pinned to recorded account" '[ "$p1" = "$p2" ]'
+rm -rf "$T/rr"; mv "$T/store/jyen.tech" "$T/store/x2"; run --model sonnet; run --model sonnet; ck "missing pool credential fails closed 66, no fallback" '[ "$(cat $T/rc)" = 66 ] && [ ! -s $SPYLOG ]'; mv "$T/store/x2" "$T/store/jyen.tech"
 # generic failures never switch: no fallback path exists; missing fable credential fails closed instead of using josephsyen
 mv "$T/store/jyen.pm" "$T/store/x"; run --model fable; ck "missing PM cred fails closed (66), no josephsyen" '[ "$(cat $T/rc)" = 66 ] && [ ! -s $SPYLOG ]'; mv "$T/store/x" "$T/store/jyen.pm"
 # no token in stderr or spy args
@@ -38,4 +42,7 @@ run --model sonnet --effort low --effort=high; ck "duplicate --effort refused" '
 : > "$SPYLOG"; FABLE_LAUNCH_TEST=0 FABLE_ACCOUNT=josephsyen "$L" --model fable 2>"$T/err"; rc=$?; ck "production FABLE_ACCOUNT override refused" '[ $rc = 64 ] && [ ! -s $SPYLOG ]'
 : > "$SPYLOG"; FABLE_LAUNCH_TEST=0 FABLE_BASE_ACCOUNT=jyen.pm "$L" --model sonnet 2>"$T/err"; rc=$?; ck "production FABLE_BASE_ACCOUNT override refused" '[ $rc = 64 ] && [ ! -s $SPYLOG ]'
 run --model fable; ck "marker exports account+model" 'grep -q "name=jyen.pm" $SPYLOG'
+# regression guard: a josephsyen-only router fails here. Four fresh non-Fable launches must use BOTH pool accounts and never jyen.pm.
+rm -rf "$T/rr"; seen=""; for _i in 1 2 3 4; do run --model sonnet; seen="$seen $(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG)"; done
+ck "round-robin uses josephsyen AND jyen.tech, never jyen.pm" 'case "$seen" in *josephsyen*) case "$seen" in *jyen.tech*) case "$seen" in *jyen.pm*) false;; *) true;; esac;; *) false;; esac;; *) false;; esac'
 echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS
