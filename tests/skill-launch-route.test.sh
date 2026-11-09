@@ -4,14 +4,14 @@
 set -u
 D="$(cd "$(dirname "$0")/.." && pwd)"; L="$D/.local/bin/fable-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' >"$T/store/josephsyen"; printf 'TOKEN-PM-yyyyyyyy' >"$T/store/jyen.pm"; chmod 600 "$T/store"/*
+mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' >"$T/store/josephsyen"; printf 'TOKEN-TECH-zzzzzzzz' >"$T/store/jyen.tech"; printf 'TOKEN-PM-yyyyyyyy' >"$T/store/jyen.pm"; chmod 600 "$T/store"/*
 cat >"$T/claude" <<'S'
 #!/usr/bin/env bash
-case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in TOKEN-PM-*) a=jyen.pm;; TOKEN-JOSEPH-*) a=josephsyen;; *) a=none;; esac
+case "${CLAUDE_CODE_OAUTH_TOKEN:-}" in TOKEN-PM-*) a=jyen.pm;; TOKEN-JOSEPH-*) a=josephsyen;; TOKEN-TECH-*) a=jyen.tech;; *) a=none;; esac
 echo "spy acct=$a seat=${WM_SEAT:-} amodel=${ANTHROPIC_MODEL:-} task=${SKILL_ROUTE_TASK_ID:-} args=$*" >>"$SPYLOG"
 S
 chmod +x "$T/claude"
-export FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
+export FABLE_RR_DIR="$T/rr" FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
 export SKILL_ROUTE_POLICY="$D/.config/skill-routing/policy.json" SKILL_ROUTING_DECISIONS="$T/dec.jsonl" SKILL_ROUTE_LEDGER_IDS="$T/ids.txt"
 printf 'A1300\n' >"$SKILL_ROUTE_LEDGER_IDS"; echo e >"$T/ev.md"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
@@ -27,7 +27,7 @@ ck "--session-id passed so the row links to the session" 'grep -q -- "--session-
 WM_SEAT=ctl ANTHROPIC_MODEL=claude-opus-5-5 run -p x; ck "ctl markers in parent env are stripped" '! grep -q "seat=ctl" $SPYLOG && ! grep -q "amodel=claude-opus" $SPYLOG'
 
 req '{"task_id":"B1","skill":"wwhtbt"}'; run -p hello
-ck "wwhtbt baseline -> josephsyen sonnet medium" 'grep -q "acct=josephsyen" $SPYLOG && grep -q -- "--model claude-sonnet-5-5" $SPYLOG && grep -q -- "--effort medium" $SPYLOG'
+ck "wwhtbt baseline -> non-Fable pool sonnet medium" 'grep -qE "acct=(josephsyen|jyen.tech)" $SPYLOG && grep -q -- "--model claude-sonnet-5-5" $SPYLOG && grep -q -- "--effort medium" $SPYLOG'
 ck "exactly one --model on the command line" '[ "$(grep -o -- "--model" $SPYLOG | wc -l)" = 1 ]'
 
 req '{"task_id":"C1","skill":"5whysandrhyme","escalation":{"reason":"recurring_failure","evidence":'"$EVJ"'}}'; run -p hello
@@ -60,5 +60,5 @@ req '{"task_id":"G1","skill":"wwhtbt"}'; run -p x; ck "duplicate dispatch while 
 kill $dp 2>/dev/null; wait 2>/dev/null
 run -p x; ck "restart after worker exit proceeds" '[ "$(cat $T/rc)" = 0 ]'
 # plain (non-route) launches unchanged
-: >"$SPYLOG"; "$L" --model claude-fable-5-1 --effort high 2>"$T/err"; ck "plain Fable high still refused (xhigh only outside a managed route)" '[ $? = 64 ] && [ ! -s $SPYLOG ]'
+: >"$SPYLOG"; "$L" --model claude-fable-5-1 --effort high 2>"$T/err"; ck "plain Fable high accepted outside a managed route" '[ $? = 0 ] && grep -q -- "--effort high" $SPYLOG'
 echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS

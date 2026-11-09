@@ -5,7 +5,8 @@ set -u
 L="$(cd "$(dirname "$0")/.." && pwd)/.local/bin/ctl-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 fail=0; ok() { echo "PASS $1"; }; bad() { echo "FAIL $1"; fail=1; }
-mkdir -p "$T/.config/environment.d" "$T/.cache/fleet-dash"
+mkdir -p "$T/.config/environment.d" "$T/.cache/fleet-dash" "$T/.config/wm-decide"
+printf '%s\n' '{"ctl":{"model":"claude-sonnet-5-5","effort":"medium"}}' >"$T/.config/wm-decide/seat-model-hold.json"   # ctl-launch.sh validates the approved model policy from the HOME it runs under
 echo 'CLAUDE_CODE_OAUTH_TOKEN=test-not-a-token' >"$T/.config/environment.d/90-claude-oauth.conf"
 cat >"$T/stub" <<'S'
 #!/usr/bin/env bash
@@ -33,13 +34,13 @@ E="AIDE_LANE_PEAK_MB=100"; go "$T/mem-small" "$T/hook-yes" --lane build
 [ $rc = 75 ] && grep -q 'MemAvailable 1953 MB - peak 100 MB' "$T/err" && ok "AIDE_LANE_PEAK_MB override is honoured (1953 - 100 < 3072)" || bad "peak override rc=$rc"
 E=; go "$T/mem-big" "$T/hook-yes" --lane 'bad name'
 [ $rc = 64 ] && [ ! -s "$T/stublog" ] && ok "--lane 'bad name': exit 64" || bad "bad name rc=$rc"
-go "$T/mem-big" "$T/hook-yes" --lane build --model x
+go "$T/mem-big" "$T/hook-yes" --lane build --model claude-sonnet-5-5
 grep -q -- '--disallowedTools ScheduleWakeup --model' "$T/stublog" && ok "caller claude args follow the lane flags" || bad "arg order"
 go "$T/mem-big" "$T/hook-yes" --lane build --resume abc
 grep -q -- '--resume abc' "$T/stublog" && ok "--resume passes through" || bad "resume passthrough"
 # compat shim: aide-launch.sh execs ctl-launch.sh (same stub, same WM_SEAT=ctl) and carries no launcher logic of its own
 SH="$(dirname "$L")/aide-launch.sh"
-: >"$T/stublog"; env HOME="$T" STUBLOG="$T/stublog" AIDE_CLAUDE_BIN="$T/stub" bash "$SH" --model x >/dev/null 2>&1; rc=$?
+: >"$T/stublog"; env HOME="$T" STUBLOG="$T/stublog" AIDE_CLAUDE_BIN="$T/stub" bash "$SH" --model claude-sonnet-5-5 >/dev/null 2>&1; rc=$?
 [ $rc = 0 ] && grep -q 'WM_SEAT=ctl WM_AIDE_LANE=main' "$T/stublog" && ok "aide-launch.sh shim reaches the stub with WM_SEAT=ctl" || bad "shim launch rc=$rc"
 grep -q 'ctl-launch.sh' "$SH" && [ "$(grep -vc '^#' "$SH")" -le 3 ] && ok "aide-launch.sh is a shim that names ctl-launch.sh" || bad "aide-launch.sh not a shim"
 grep -q '^export WM_SEAT=ctl$' "$L" && ! grep -q '^export WM_SEAT=aide' "$L" && ok "ctl-launch.sh exports WM_SEAT=ctl" || bad "ctl-launch.sh WM_SEAT assignment"

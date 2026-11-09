@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 5 min: director event consumer recovery pass
+ConditionHost=carbon
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

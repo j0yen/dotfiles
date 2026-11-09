@@ -123,16 +123,6 @@
         ]
       },
       {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/jsy/.claude/hooks/adhd-always-on.sh",
-            "timeout": 10
-          }
-        ]
-      },
-      {
         "matcher": "",
         "hooks": [
           {
@@ -692,9 +682,24 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/home/jsy/.claude/hooks/fable-native-agent-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
             "command": "/home/jsy/.claude/hooks/agent-spawn-spec-lint.sh",
             "timeout": 10
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/skill-agent-effort-guard.sh",
@@ -767,12 +772,17 @@
         ]
       },
       {
-        "matcher": "Edit|Write|MultiEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
             "command": "/home/jsy/.claude/hooks/owed-now.sh guard",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "/home/jsy/.claude/hooks/retired-tsv-guard.sh",
+            "timeout": 10
           }
         ]
       },
@@ -953,7 +963,7 @@
       "effortLevel": "xhigh"
     },
     "claude-sonnet-5-5": {
-      "effortLevel": "high"
+      "effortLevel": "medium"
     },
     "claude-fable-5-1": {
       "effortLevel": "high"

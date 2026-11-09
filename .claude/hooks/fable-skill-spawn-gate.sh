@@ -101,7 +101,7 @@ esac
 
 EFFORT=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$SKILL_MD" \
     | sed -n 's/^effort:[[:space:]]*\([A-Za-z]*\)[[:space:]]*$/\1/p' | head -1)
-[ -n "$EFFORT" ] || EFFORT=xhigh   # approved default (Joe 11-06) when a skill pins none
+[ -n "$EFFORT" ] || EFFORT=high   # fresh Fable default (A1300 addendum 11-08) when a skill pins none
 
 case "$NAME" in
     dream) RET="the PRD paths, lint result, review verdict lines" ;;

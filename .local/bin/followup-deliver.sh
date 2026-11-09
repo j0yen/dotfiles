@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# followup-deliver.sh: the default FOLLOWUP_DELIVER_CMD (ledger asks A1307, A1346). Reads one outbox entry (JSON) on stdin. Exit 0 only when everything was sent / the bell rang, so the outbox keeps the entry otherwise.
+# - no .dest: rings the owning seat's bell with seat-event.sh (appends to the seat's events log; no model turn started by this script).
+# - .dest (e.g. discord:#ops): sends .summary and .attachment through `hermes send`, once per (dest, task, rev, result, kind) and per part.
+#   Before ANY send a durable {"sending_part":true,...} marker is committed to the outbox (append, fsync, read back); if the marker cannot be committed nothing is sent,
+#   the seat bell rings and the exit is 2. Only a POSITIVELY identified provider rejection (nonzero exit AND an HTTP 429 / rate-limit reply from hermes) may be retried
+#   or fall back to chunks, and only that clears the marker ({"send_cleared":true}). Success with a message id turns the marker into a sent_part record. Anything else
+#   (any other nonzero exit, a timeout, a transport error, success without a message id, a crash) leaves the outcome UNKNOWN (hermes send has no readback): the marker
+#   stays, that part is NEVER resent, ONE {"needs_reconcile":true,...} record + ONE seat bell are raised, later parts are held and the exit is 1 (delivered stays false).
+#   A human settles an unknown part with this script (same flock): followup-deliver.sh --reconcile <part> sent|resend [--key K] < event.json
+#   (sent = it did arrive, resend = it did not, release it). Nothing appends to a live outbox by hand.
+#   Each returned message id is recorded as a {"sent_part":true,...} line in the SAME outbox before the next part; a repeat or a second line with the
+#   same identity sends nothing. A 429 on the attachment is retried with backoff (a numeric Retry-After clamped to FOLLOWUP_RETRY_AFTER_MAX, else 2^n s), then the file
+#   goes out as chunked text; a part that never sent leaves exit 1, so the entry stays undelivered and the parts already sent are not repeated. An empty attachment
+#   file (0 bytes) sends a one-line empty-attachment note as the attachment part and the item is delivered.
+# Env: SEAT_EVENT_BIN (default seat-event.sh on PATH / ~/.local/bin); FOLLOWUP_OUTBOX / FOLLOWUP_STATE_DIR (as followup-eval.py); FOLLOWUP_DELIVER_RETRIES (default 3);
+#      FOLLOWUP_CHUNK_BYTES (default 1800); FOLLOWUP_RETRY_AFTER_MAX (default 300 s); FOLLOWUP_LOCK_HELD (set by followup-eval.py replay, which already holds the state lock).
+set -u
+command -v jq >/dev/null 2>&1 || exit 1
+mode=""; rpart=""; ract=""; rkey=""
+if [ "${1:-}" = --reconcile ]; then
+  mode=rec; rpart="${2:-}"; ract="${3:-}"; [ "${4:-}" = --key ] && rkey="${5:-}"
+  [ -n "$rpart" ] && { [ "$ract" = sent ] || [ "$ract" = resend ]; } || { echo "usage: followup-deliver.sh --reconcile <part> sent|resend [--key K] < event.json" >&2; exit 64; }
+fi
+if [ -n "$rkey" ]; then in='{"id":"reconcile","dest":"-"}'; else in="$(cat)"; fi; [ -n "$in" ] || exit 1
+seat="$(jq -r '.seat // "ctl"' <<<"$in" 2>/dev/null)"; id="$(jq -r '.id // empty' <<<"$in" 2>/dev/null)"
+[ -n "$id" ] || exit 1
+dest="$(jq -r '.dest // empty' <<<"$in" 2>/dev/null)"
+if [ -z "$dest" ] && [ -z "$mode" ]; then
+  line="FOLLOW-UP $(jq -r '.kind // "obligation"' <<<"$in") $id: $(jq -r '.detail // ""' <<<"$in")"
+  bin="${SEAT_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}"
+  [ -x "$bin" ] || bin="$(command -v seat-event.sh)" || exit 1
+  SEAT_EVENT_NOWAKE=1 EVENT_SOURCE=followup-loop "$bin" "$seat" "$line" >/dev/null 2>&1
+  exit $?
+fi
+
+sd="${FOLLOWUP_STATE_DIR:-$HOME/.local/state/followup-loop}"; ob="${FOLLOWUP_OUTBOX:-$sd/outbox.jsonl}"
+retries="${FOLLOWUP_DELIVER_RETRIES:-3}"; chunk="${FOLLOWUP_CHUNK_BYTES:-1800}"
+key="$(jq -r '[.dest, (.task // .id), (.rev // 0), (.result // .id), (.kind // "result")] | map(tostring) | join("|")' <<<"$in")"
+[ -n "$rkey" ] && key="$rkey"
+[ -n "$dest" ] || exit 1
+summary="$(jq -r '.summary // empty' <<<"$in")"; att="$(jq -r '.attachment // empty' <<<"$in")"
+if [ -z "${FOLLOWUP_LOCK_HELD:-}" ]; then   # one sender per state dir at a time: check, send and record are atomic against concurrent senders
+  mkdir -p "$sd" && exec 9>"$sd/lock" && flock 9 || exit 1
+fi
+bell() { local bin="${SEAT_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}"; [ -x "$bin" ] || bin="$(command -v seat-event.sh)" || return 0
+  SEAT_EVENT_NOWAKE=1 EVENT_SOURCE=followup-loop "$bin" "$seat" "$1" >/dev/null 2>&1; return 0; }
+nocommit() { # the outbox cannot take a durable line: nothing may be sent
+  echo "followup-deliver: cannot commit to $ob ($1); nothing sent" >&2
+  bell "FOLLOW-UP deliver-blocked $id: could not commit $1 to $ob; nothing was sent, fix the outbox (disk, permissions) and replay"; exit 2; }
+commit_line() { # one JSON line: append, fsync, read back; 0 only when the line is durably the last line of the outbox
+  if [ -s "$ob" ] && [ -n "$(tail -c1 "$ob")" ]; then printf '\n' >>"$ob" || return 1; fi   # a file that does not end in a newline never glues onto its last line
+  printf '%s\n' "$1" >>"$ob" || return 1
+  sync -- "$ob" 2>/dev/null || return 1
+  [ "$(tail -n1 "$ob")" = "$1" ]; }
+commit_atomic() { # one JSON line appended to a COPY of the outbox, fsynced, then renamed over it: a failure at any step leaves the outbox byte-for-byte unchanged, so an unsynced line is never visible to a replay
+  local tmp; tmp="$(mktemp "$ob.XXXXXX")" || return 1
+  { cp -p -- "$ob" "$tmp" && { [ ! -s "$tmp" ] || [ -z "$(tail -c1 "$tmp")" ] || printf '\n' >>"$tmp"; } && printf '%s\n' "$1" >>"$tmp" \
+    && sync -- "$tmp" 2>/dev/null && [ "$(tail -n1 "$tmp")" = "$1" ] && mv -f -- "$tmp" "$ob"; } || { rm -f -- "$tmp"; return 1; }
+  sync -- "$(dirname "$ob")" 2>/dev/null; return 0; }
+if [ ! -e "$ob" ]; then mkdir -p "$(dirname "$ob")" && : >"$ob" && sync -- "$(dirname "$ob")" 2>/dev/null || nocommit "outbox creation"; fi
+jq -e -s . "$ob" >/dev/null 2>&1 || nocommit "unparseable outbox (a malformed or truncated line); no dedupe query can be trusted"
+
+# A reconciled record authorizes nothing until a LATER durable {"reconcile_confirmed":true,"key","part","ref":<its ts>} line exists (two-phase settlement). Readers ignore an
+# unconfirmed one, or one whose confirm was voided by a later reconcile_confirm_failed line (legacy, no longer written; the confirm is written only by commit_atomic = temp copy + fsync + rename, so a non-durable confirm never reaches the outbox; history is never filtered or dropped); the part then reads as the open UNKNOWN it was before, which keeps the single original needs_reconcile notification.
+JQCONF='def conf($a; $i): $a[$i] as $r | any($a[$i+1:][]; .reconcile_confirmed==true and .ref==$r.ts and .key==$r.key and .part==$r.part) and (any($a[$i+1:][]; .reconcile_confirm_failed==true and .ref==$r.ts) | not);'
+sent() { jq -e -s --arg k "$key" --arg p "$1" "$JQCONF"'. as $a | any(range(0; length); . as $i | $a[$i] | (.sent_part==true or (.reconciled==true and .action=="sent" and conf($a; $i))) and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }
+record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" \
+  '{sent_part:true,delivered:true,key:$k,part:$p,message_id:$m,dest:$d,ts:$ts}')"; }
+mark() { # kind part [marker_ts]: kind = sending_part | send_cleared | needs_reconcile; 0 only when durably committed
+  commit_line "$(jq -nc --arg kind "$1" --arg k "$key" --arg p "$2" --arg d "$dest" --arg i "$id" --arg ts "$(date -Ins)" --arg mts "${3:-}" \
+    '{($kind):true,key:$k,part:$p,dest:$d,id:$i,ts:$ts} + (if $mts == "" then {} else {marker_ts:$mts} end)')"; }
+pstate() { # part -> "sending <ts>" when the last effective line for it is an open sending_part (or a legacy reconcile_uncommitted), else "ok"
+  jq -r -s --arg k "$key" --arg p "$1" "$JQCONF"'. as $a | [range(0; length) as $i | $a[$i] | select(.key==$k and .part==$p and (.sent_part==true or .sending_part==true or .send_cleared==true or .reconcile_uncommitted==true or (.reconciled==true and conf($a; $i))))] | last
+    | if . != null and (.sending_part == true or .reconcile_uncommitted == true) then "sending " + .ts else "ok" end' "$ob" 2>/dev/null; }
+reconcile() { # part marker_ts: surface the unknown part once per marker (record + bell), never resend
+  jq -e -s --arg k "$key" --arg p "$1" --arg t "$2" 'any(.[]; .needs_reconcile==true and .key==$k and .part==$p and .marker_ts==$t)' "$ob" >/dev/null 2>&1 && return 0
+  mark needs_reconcile "$1" "$2" || nocommit "needs_reconcile record"   # the bell is rung only once the record is durable
+  bell "FOLLOW-UP needs-reconcile $id: part $1 of $key may already be sent (outcome unknown); not resent, settle with: followup-deliver.sh --reconcile $1 sent|resend --key '$key'"
+  return 0; }
+unknown() { local st; st="$(pstate "$1")"; [ "${st%% *}" = sending ] && reconcile "$1" "${st#* }"; return 0; }
+if [ -n "$mode" ]; then   # flock-guarded human settlement of an unknown part (the lock above is held)
+  st="$(pstate "$rpart")"
+  [ "${st%% *}" = sending ] || { echo "followup-deliver: no open unknown marker for part $rpart of $key" >&2; exit 1; }
+  rts="$(date -Ins)"
+  commit_line "$(jq -nc --arg k "$key" --arg p "$rpart" --arg a "$ract" --arg ts "$rts" '{reconciled:true,key:$k,part:$p,action:$a,by:"reconcile-mode",ts:$ts}')" || nocommit "reconcile record"
+  commit_atomic "$(jq -nc --arg k "$key" --arg p "$rpart" --arg r "$rts" '{reconcile_confirmed:true,key:$k,part:$p,ref:$r}')" || nocommit "reconcile confirm"   # the confirm never exists in the outbox unless it was fsynced first: no void line is needed
+  exit 0
+fi
+rmax="${FOLLOWUP_RETRY_AFTER_MAX:-300}"; [[ "$rmax" =~ ^[0-9]{1,6}$ ]] || rmax=300
+is_rl() { # hermes reply that positively identifies a provider rate-limit rejection: a structured status field equal to 429, never free text
+  jq -e 'type == "object" and ((.http_status // .status // .status_code // .code // "") | tostring) == "429"' <<<"$1" >/dev/null 2>&1; }
+send_retry() { # body -> sets mid; 0 accepted with a message id, 1 positively rate-limited (nothing sent, retries used up), 2 outcome unknown
+  local body="$1" n=1 out rc wait ra backoff
+  while :; do
+    out="$(hermes send --to "$dest" --json "$body" 2>/dev/null)"; rc=$?
+    if [ "$rc" = 0 ]; then mid="$(jq -r '.message_id // empty' <<<"$out" 2>/dev/null)"; [ -n "$mid" ] && return 0; return 2; fi
+    is_rl "$out" || return 2
+    [ "$n" -ge "$retries" ] && return 1
+    backoff=$((2 ** n)); [ "$backoff" -gt "$rmax" ] && backoff=$rmax; wait=$backoff
+    ra="$(jq -r '.retry_after // empty | if type=="string" or type=="number" then tostring else empty end' <<<"$out" 2>/dev/null)"
+    if [[ "$ra" =~ ^[0-9]+(\.[0-9]*)?$ ]]; then   # plain non-negative decimal only; anything else (text, sign, exponent) falls back to the backoff
+      ra="${ra%%.*}"; if [ "${#ra}" -gt 6 ]; then ra=$rmax; else ra=$((10#${ra:-0})); fi
+      [ "$ra" -gt "$rmax" ] && ra=$rmax
+      [ "$ra" -gt "$wait" ] && wait=$ra
+    fi
+    sleep "$wait"; n=$((n + 1))
+  done
+}
+deliver_part() { # part body -> 0 sent, 1 rejected by the provider (retryable), 2 outcome unknown (held for reconcile); a marker that cannot be committed exits 2 before any send
+  local part="$1" body="$2" st rc mts
+  st="$(pstate "$part")"
+  if [ "${st%% *}" = sending ]; then reconcile "$part" "${st#* }"; return 2; fi
+  command -v hermes >/dev/null 2>&1 || return 1
+  mark sending_part "$part" || nocommit "send marker for part $part"
+  mts="$(pstate "$part")"; mts="${mts#* }"   # the open marker's ts: a sent_part line whose fsync failed is not durable, so it is surfaced against this marker
+  send_retry "$body"; rc=$?
+  case $rc in
+    0) record "$part" "$mid" && return 0; reconcile "$part" "$mts"; return 2;;   # sent but the record is not durable (append, fsync or read-back failed): UNKNOWN, surfaced once, never resent
+    1) mark send_cleared "$part" && return 1; unknown "$part"; return 2;;
+    *) unknown "$part"; return 2;;
+  esac
+}
+mid=""; lastid=""; fail=0; held=0
+if [ -n "$summary" ] && ! sent summary; then
+  deliver_part summary "$summary"; case $? in 0) ;; 1) fail=1;; *) fail=1; held=1;; esac
+fi
+if [ -n "$att" ] && [ "$held" = 0 ] && ! sent attachment; then
+  if [ ! -r "$att" ]; then fail=1
+  elif [ ! -s "$att" ]; then   # 0 bytes: nothing to chunk, so say so and finish instead of failing forever
+    deliver_part attachment "[attachment empty: $(basename "$att")]" || fail=1
+  else
+    started=0; jq -e -s --arg k "$key" 'any(.[]; (.sent_part==true or .sending_part==true) and .key==$k and (.part|startswith("attachment-chunk-")))' "$ob" >/dev/null 2>&1 && started=1
+    ok=0
+    if [ "$started" = 0 ]; then
+      # the file itself, one try per backoff round; a 429 here falls through to chunked text
+      deliver_part attachment "MEDIA:$att"; rc=$?
+      if [ "$rc" = 0 ]; then ok=1; elif [ "$rc" = 2 ]; then ok=1; fail=1; fi
+    fi
+    if [ "$ok" = 0 ]; then
+      i=0; allok=1
+      while IFS= read -r -d '' part || [ -n "$part" ]; do
+        i=$((i + 1))
+        sent "attachment-chunk-$i" && continue
+        deliver_part "attachment-chunk-$i" "$part" || { allok=0; break; }
+        lastid="$mid"
+      done < <(python3 -I -c 'import sys
+n=int(sys.argv[2]); t=open(sys.argv[1],errors="replace").read()
+for i in range(0,len(t),n): sys.stdout.write(t[i:i+n]+"\0")' "$att" "$chunk")
+      if [ "$allok" = 1 ] && [ "$i" -gt 0 ]; then record attachment "${lastid:-chunks}" || fail=1; else fail=1; fi
+    fi
+  fi
+fi
+exit "$fail"

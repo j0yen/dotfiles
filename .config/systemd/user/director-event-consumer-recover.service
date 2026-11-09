@@ -1,0 +1,8 @@
+[Unit]
+Description=Director event consumer: replay and crash recovery, no model call when state is unchanged (A1299)
+ConditionHost=carbon
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=%h/.local/bin/director-event-consumer.py recover

@@ -20,6 +20,7 @@ printf '#!/usr/bin/env bash\necho "OWED $1: owed 3, overdue 1, escalated 0, olde
 printf '#!/usr/bin/env bash\ncase "$1" in beat) exit 0;; pending) echo "inbox 2 lines"; exit 0;; esac\n' >"$T/bin/aide-wake.sh"; chmod +x "$T/bin/aide-wake.sh"
 { echo '{"type":"user","message":{"content":"go"}}'; echo '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'; } >"$T/tr.jsonl"
 printf 'A1\t2026-10-31T22:00\taide\t2026-10-31T22:30\tk\tc\toverdue row\n' >"$T/oa.tsv"
+printf '#!/usr/bin/env bash\ncat "$OPEN_ASKS"\n' >"$T/bin/asks-view"; chmod +x "$T/bin/asks-view"   # fake canonical reader, real 7-column schema
 run() { # <hook-cmd...> with env: D=hermes|"" ; stdin in $T/in
   env -u WM_DIRECTOR ${D:+WM_DIRECTOR=$D} PATH="$T/bin:/usr/bin:/bin" HOME="$T/home" TERM=dumb "$@" <"$T/in"
 }
@@ -31,19 +32,19 @@ a="$(D= run env WM_SEAT=rb SEAT_OWED_BIN="$T/bin/seat-owed.sh" bash "$H/seat-owe
 b="$(D=hermes run env WM_SEAT=rb SEAT_OWED_BIN="$T/bin/seat-owed.sh" bash "$H/seat-owed-stop.sh")"; rc=$?
 pair seat-owed-stop "$a" "$b" "$rc"
 # seat-followups stop
-a="$(D= run env WM_SEAT=rb WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"
-b="$(D=hermes run env WM_SEAT=rb WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"; rc=$?
+a="$(D= run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s0" WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"
+b="$(D=hermes run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s1" WM_FOLLOWUPS_TIMEOUT=3 SEAT_FOLLOWUPS_LOG_DIR="$T/l1" bash "$H/seat-followups.sh" stop)"; rc=$?
 pair seat-followups "$a" "$b" "$rc"
-# followup-stop-gate
-a="$(D= run env WM_SEAT=rb WM_DECIDE_BIN="$T/bin/wm-decide" SEATS_TABLE="$T/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$T/l2/fires.log" bash "$H/followup-stop-gate.sh")"
-b="$(D=hermes run env WM_SEAT=rb WM_DECIDE_BIN="$T/bin/wm-decide" SEATS_TABLE="$T/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$T/l3/fires.log" bash "$H/followup-stop-gate.sh")"; rc=$?
+# followup-stop-gate  # each run gets its own FOLLOWUP_STATE_DIR: the gate delivers a fingerprint once (A1307), so a shared dir made the second run silent
+a="$(D= run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s2" WM_DECIDE_BIN="$T/bin/wm-decide" SEATS_TABLE="$T/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$T/l2/fires.log" bash "$H/followup-stop-gate.sh")"
+b="$(D=hermes run env WM_SEAT=rb FOLLOWUP_STATE_DIR="$T/s3" WM_DECIDE_BIN="$T/bin/wm-decide" SEATS_TABLE="$T/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$T/l3/fires.log" bash "$H/followup-stop-gate.sh")"; rc=$?
 pair followup-stop-gate "$a" "$b" "$rc"
 # aide-wake-stop
 a="$(D= run env WM_SEAT=aide AIDE_WAKE_BIN="$T/bin/aide-wake.sh" AIDE_WAKE_DIR="$T/wake" bash "$H/aide-wake-stop.sh")"
 b="$(D=hermes run env WM_SEAT=aide AIDE_WAKE_BIN="$T/bin/aide-wake.sh" AIDE_WAKE_DIR="$T/wake" bash "$H/aide-wake-stop.sh")"; rc=$?
 pair aide-wake-stop "$a" "$b" "$rc"
 # owed-now Stop
-a="$(D= run env WM_SEAT=aide OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st1" bash "$H/owed-now.sh" hook)"
-b="$(D=hermes run env WM_SEAT=aide OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st2" bash "$H/owed-now.sh" hook)"; rc=$?
+a="$(D= run env WM_SEAT=aide ASKS_VIEW_BIN="$T/bin/asks-view" ASKS_VIEW_TEST=1 OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st1" bash "$H/owed-now.sh" hook)"
+b="$(D=hermes run env WM_SEAT=aide ASKS_VIEW_BIN="$T/bin/asks-view" ASKS_VIEW_TEST=1 OPEN_ASKS="$T/oa.tsv" OWED_NOW_STATE="$T/st2" bash "$H/owed-now.sh" hook)"; rc=$?
 pair owed-now "$a" "$b" "$rc"
 [ "$fail" = 0 ] && echo "PASS director-hermes-stop-gates" || { echo "FAIL director-hermes-stop-gates"; exit 1; }

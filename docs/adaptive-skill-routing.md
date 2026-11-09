@@ -54,3 +54,14 @@ A denied route exits 64 before anything starts and writes a `denied` row. An all
 2. Installed copies: restore the previous `fable-launch.sh`, `fable-skill-spawn-gate.sh`, `skill-agent-effort-guard.sh`, `fable-native-agent-guard.sh`, `analysis-skill-router.sh`, `model-effort-audit.sh`, `skill-model-policy.sh`; remove `skill-route-prompt-guard.sh` and its `UserPromptSubmit` entry from `~/.claude/settings.json`; remove `~/.local/lib/skill-route*.{sh,py}` and `~/.config/skill-routing/`.
 3. Soft rollback without a revert: delete a skill's key from `policy.json`. It becomes ungoverned and the hooks stop acting on it.
 4. The decision log is append-only history; leave it.
+
+## Fable quota routing addendum (A1300, Joe 2026-11-08) — source slice A/C
+- Fresh Fable defaults to `high`. `fable-launch.sh` (unmanaged launch) accepts `high`, defaults an omitted effort to `high`, and accepts
+  `xhigh`/`max` only with `FABLE_LAUNCH_EFFORT_REASON` (>= 8 chars, echoed to stderr); other values exit 64. Managed routes still come from
+  `.config/skill-routing/policy.json` (5whysandrhyme baseline fable-high; wwhtbt baseline sonnet-medium; evidenced xhigh escalation).
+- `fable-native-agent-guard.sh`: a native Fable Agent under jyen.pm needs effort `high`; xhigh/max are directed to the launcher with a reason.
+- `fable-skill-spawn-gate.sh`: unpinned fable-spawn skills print `--effort high`; 5whysandrhyme/wwhtbt SKILL.md pin `effort: high`.
+- `fable-review.sh` default effort `high` (`FABLE_REVIEW_EFFORT` overrides).
+- Test: `tests/fable-quota-routing.test.sh` (`FQR_ROOT=<tree>` replays it on other bytes for RED).
+- Not in this slice: grader (swarm-decide `wm_decide/regrade.py` `EFFORT`), write/improv/beauty/dream skills (live-only, not tracked here),
+  `max` as a managed skill route, ~/.claude/CLAUDE.md pin text, install.
