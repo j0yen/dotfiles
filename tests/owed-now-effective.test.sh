@@ -16,6 +16,14 @@ ck "unchanged fingerprint passes (stop 3)" "$(blk)" pass
 echo '[{"ask_id":"T1","rev":2,"owner":"ctl","due":"2026-11-08T10:00","what":"x"}]' >"$FX_ASKS"
 ck "changed rev blocks once" "$(blk)" block
 ck "changed rev then passes" "$(blk)" pass
+U='{"hook_event_name":"UserPromptSubmit","session_id":"u1"}'
+up(){ [ -n "$(printf '%s' "$U" | bash "$H" hook)" ] && echo emit || echo quiet; }
+ck "prompt 1 recites a new owed fingerprint" "$(up)" emit
+ck "prompt 2 unchanged fingerprint is quiet" "$(up)" quiet
+ck "prompt 3 unchanged fingerprint is quiet" "$(up)" quiet
+echo '[{"ask_id":"T1","rev":3,"owner":"ctl","due":"2026-11-08T09:00","what":"x"},{"ask_id":"T2","rev":1,"owner":"ctl","due":"2026-11-08T10:00","what":"y"}]' >"$FX_ASKS"
+ck "prompt with a changed row set recites once" "$(up)" emit
+ck "prompt after that is quiet again" "$(up)" quiet
 printf '#!/bin/bash\nexit 7\n' >"$W/asks.sh"
 ck "ledger outage visible in lint" "$(bash "$H" lint --seat ctl | head -1 | cut -f1)" LEDGER
 ck "ledger outage: lint never reads the retired TSV" "$(OPEN_ASKS=/nonexistent bash "$H" lint --seat ctl | head -1 | cut -f1)" LEDGER

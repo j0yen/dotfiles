@@ -138,6 +138,11 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
     jq -cn --arg r "$body (Stop block $((n + 1))/$STOPMAX this turn)" '{decision:"block", reason:$r}'; fi
   else
     echo 0 >"$cf"
+    if [ "$(src)" = asks ]; then   # canonical mode: a prompt recites the owed rows only when their fingerprint changed since this session's last prompt
+      local ufp uf; ufp="$(printf '%s\n' "$rows" | sha256sum | cut -c1-16)"; uf="$st/$sid.upfp"
+      [ "$(cat "$uf" 2>/dev/null)" != "$ufp" ] || return 0
+      echo "$ufp" >"$uf"
+    fi
     jq -cn --arg r "$body" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
   fi
 }
