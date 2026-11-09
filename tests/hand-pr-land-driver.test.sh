@@ -191,10 +191,10 @@ cleanup
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; HPLD_EXPIRES="not-a-date" tick; HPLD_EXPIRES="not-a-date" tick
 [ "$(n '^verifier')" = 0 ] && [ "$(n '^wm-decide list')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "malformed expiry fails closed: no action, one ring" || bad "malformed expiry ($(cat "$T/calls.log"))"
 cleanup
-setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 12:00:01" +%s) tick; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 12:00:01" +%s) tick
-[ "$(n '^verifier')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "default expiry 2026-11-08 12:00 holds after the boundary: no action, one ring" || bad "default expiry after ($(cat "$T/calls.log"))"
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-15 12:00:01" +%s) tick; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-15 12:00:01" +%s) tick
+[ "$(n '^verifier')" = 0 ] && [ "$(n '^seat-ask ctl')" = 1 ] && grep -q 'expired' "$T/calls.log" && pass "default expiry 2026-11-15 12:00 holds after the boundary: no action, one ring" || bad "default expiry after ($(cat "$T/calls.log"))"
 cleanup
-setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-08 11:59:00" +%s) tick
+setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; EXPIRY_DEFAULT=real HPLD_NOW=$(date -d "2026-11-15 11:59:00" +%s) tick
 [ "$(n '^verifier launch')" = 1 ] && [ "$(n '^seat-ask ctl')" = 0 ] && pass "default expiry before the boundary: tick acts" || bad "default expiry before ($(cat "$T/calls.log"))"
 cleanup
 setup; row g1 600 r7 design "GATED $REPO#41 COMMIT=$H1"; pr $REPO 41 $H1; PREMISE_CMD=false tick; PREMISE_CMD=false tick
