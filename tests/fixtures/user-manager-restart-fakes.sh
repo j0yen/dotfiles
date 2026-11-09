@@ -2,6 +2,8 @@
 # Fake mode for tests/user-manager-restart.test.sh. Usage: user-manager-restart-fakes.sh <bindir>
 # writes fake systemctl/useradd/userdel/getent/kill/sudo/id/mkdir/rmdir/rm/tee into <bindir>; fake sudo drops a
 # leading -n (the test calls "$SUDO" -n "$X" ...); every fake but sudo and id logs its call to $STATE/calls.log.
+# A1488: fake sudo runs only a regular executable directly inside its own bindir (not itself); "true" alone (the
+# test's "$SUDO" -n true probe) exits 0 running nothing; anything else logs "fsudo-refused <argv1> <resolved>", exit 126.
 # Fakes read STATE (dir), FAKE_MODE (ok | norestart | restartonstop),
 # FAKE_UID (default 990), FAKE_CALLER_UID (default 1001), FAKE_NOSUDO=1, FAKE_PREEXIST=1 (getent answers uid 990 for
 # any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails).
@@ -14,13 +16,22 @@ if [ "$1" = --seed-dropdir ]; then
   sha256sum < "$dd/sentinel" | cut -d' ' -f1
   exit 0
 fi
-d=$1; mkdir -p "$d"
+d=$1; mkdir -p "$d"; chmod go-w "$d"
 w() { cat > "$d/$1"; chmod +x "$d/$1"; }
 w fsudo <<'F'
 #!/usr/bin/env bash
 [ "${FAKE_NOSUDO:-0}" = 1 ] && exit 1
 [ "${1:-}" = -n ] && shift
-exec "$@"
+[ "$*" = true ] && exit 0
+self=$(realpath -e -- "$0") || exit 126
+t=$(command -v -- "${1:-}") && t=$(realpath -e -- "$t") || t=
+if [ -z "$t" ] || [ "$t" = "$self" ] || [ "$(dirname -- "$t")" != "$(dirname -- "$self")" ] || [ ! -f "$t" ] || [ ! -x "$t" ]; then
+  [ -n "${STATE:-}" ] && echo "fsudo-refused ${1:-} ${t:--}" >> "$STATE/calls.log"
+  echo "fsudo: refused ${1:-} (${t:--}): not a fake in $(dirname -- "$self")" >&2
+  exit 126
+fi
+shift
+exec "$t" "$@"
 F
 w fid <<'F'
 #!/usr/bin/env bash
