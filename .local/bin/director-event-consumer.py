@@ -49,6 +49,13 @@ HOLD_GATE = os.environ.get("HOLD_GATE") or os.path.join(HOME, ".local/bin/hold-g
 ASKS = shlex.split(os.environ.get("WM_ASKS_CMD") or "wm-asks")
 HERMES = os.environ.get("DIRECTOR_HERMES_CMD") or os.path.join(HOME, ".local/bin/hermes")
 SELF = os.path.realpath(__file__)
+LIVE_STATE = os.path.join(HOME, ".local/state/director-consumer")
+LIVE_DECIDE_STATE = os.path.join(HOME, ".local/state/swarm-decide")
+# Child (worker) environment: the transient unit inherits the user manager's whole environment (tokens included), so the
+# worker is started by `child-exec`, which rebuilds the environment from this allowlist only and fails closed first.
+CHILD_PASS = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME", "TZ", "HERMES_HOME")
+CHILD_ISO_VARS = ("DIRECTOR_STATE", "WM_ASKS_CMD", "WM_DECIDE_STATE")
+EX_CONFIG = 78
 
 EVENT_RE = re.compile(r"^[A-Za-z0-9._-]{4,80}$")
 ASK_RE = re.compile(r"^A[0-9]+$")
@@ -349,6 +356,81 @@ and write the receipt; do not create a duplicate effect.
     return path
 
 
+def isolation_mode():
+    """Isolation = the consumer runs on a state dir that is not the live one, or DIRECTOR_ISOLATION=1."""
+    return bool(os.environ.get("DIRECTOR_ISOLATION")) or os.path.realpath(STATE) != os.path.realpath(LIVE_STATE)
+
+
+def child_vars():
+    """The exact vars the worker receives (name -> value), set explicitly on the unit; nothing else is passed."""
+    v = {k: os.environ[k] for k in CHILD_PASS if os.environ.get(k)}
+    v["DIRECTOR_STATE"] = STATE
+    v["DIRECTOR_CONSUMER"] = CONSUMER
+    if os.environ.get("WM_ASKS_CMD"):
+        v["WM_ASKS_CMD"] = os.environ["WM_ASKS_CMD"]
+    if os.environ.get("WM_DECIDE_STATE"):
+        v["WM_DECIDE_STATE"] = os.environ["WM_DECIDE_STATE"]
+    req = ["DIRECTOR_STATE"] + [k for k in ("WM_ASKS_CMD", "WM_DECIDE_STATE") if k in v]
+    if isolation_mode():
+        v["DIRECTOR_ISOLATION"] = "1"
+        req = list(CHILD_ISO_VARS)
+        if os.environ.get("DIRECTOR_CHILD_HOME"):
+            v["HOME"] = os.environ["DIRECTOR_CHILD_HOME"]
+    v["DIRECTOR_CHILD_REQUIRE"] = ",".join(req)
+    return v
+
+
+def sandbox_props(v):
+    """systemd sandbox for the transient unit: home read-only except state, the hermes home and scratch."""
+    home = v.get("HOME", HOME)
+    rw = [STATE, v.get("HERMES_HOME") or os.path.join(home, ".hermes"), os.path.join(home, ".cache/director-scratch")]
+    return ["ProtectHome=read-only", "PrivateTmp=yes", "NoNewPrivileges=yes",
+            "ReadWritePaths=" + " ".join("-" + p for p in rw)]
+
+
+def launch_argv(unit, env):
+    v = child_vars()
+    argv = ["systemd-run", "--user", "--unit", unit, "--collect"]
+    for k in sorted(v):
+        argv += ["--setenv", "%s=%s" % (k, v[k])]
+    for p in sandbox_props(v):
+        argv += ["-p", p]
+    return argv + ["--", sys.executable, SELF, "child-exec", "--", HERMES, "chat", "-Q", "--query-file", env]
+
+
+def cmd_child_exec(argv):
+    """Runs inside the unit before any provider call: verify isolation, rebuild the environment from the allowlist, exec.
+    Exits 78 (nothing started) when a required var is missing or an isolation run points at live state."""
+    if "--" not in argv:
+        print("usage: child-exec -- <command...>", file=sys.stderr)
+        return 64
+    cmd = argv[argv.index("--") + 1:]
+    e = os.environ
+    req = [k for k in e.get("DIRECTOR_CHILD_REQUIRE", "").split(",") if k]
+    miss = [k for k in ["DIRECTOR_STATE", "DIRECTOR_CHILD_REQUIRE"] + req if not e.get(k)]
+    if miss or not cmd:
+        print("child-exec: refused, missing %s" % ",".join(miss or ["command"]), file=sys.stderr)
+        return EX_CONFIG
+    iso = bool(e.get("DIRECTOR_ISOLATION")) or os.path.realpath(e["DIRECTOR_STATE"]) != os.path.realpath(LIVE_STATE)
+    if iso:
+        bad = [k for k in CHILD_ISO_VARS if not e.get(k)]
+        if e.get("DIRECTOR_STATE") and os.path.realpath(e["DIRECTOR_STATE"]) == os.path.realpath(LIVE_STATE):
+            bad.append("DIRECTOR_STATE=live")
+        if e.get("WM_DECIDE_STATE") and os.path.realpath(e["WM_DECIDE_STATE"]) == os.path.realpath(LIVE_DECIDE_STATE):
+            bad.append("WM_DECIDE_STATE=live")
+        if e.get("WM_ASKS_CMD") and e["WM_ASKS_CMD"].split() == ["wm-asks"]:
+            bad.append("WM_ASKS_CMD=live")
+        if bad:
+            print("child-exec: refused in isolation mode: %s" % ",".join(bad), file=sys.stderr)
+            return EX_CONFIG
+    clean = {k: e[k] for k in CHILD_PASS + ("DIRECTOR_STATE", "DIRECTOR_CONSUMER", "DIRECTOR_ISOLATION", "WM_ASKS_CMD", "WM_DECIDE_STATE") if e.get(k)}
+    try:
+        os.execvpe(cmd[0], cmd, clean)
+    except OSError as ex:
+        print("child-exec: exec failed: %s" % ex, file=sys.stderr)
+        return 127
+
+
 def launch(r):
     """One launch attempt. Returns True when the launcher started the run. Exit 75 = provider outage: the claim is kept,
     the attempt is not counted and recover retries."""
@@ -365,8 +447,7 @@ def launch(r):
     if lc:
         argv = shlex.split(lc) + [unit, env]
     else:
-        argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--",
-                HERMES, "chat", "-Q", "--query-file", env]
+        argv = launch_argv(unit, env)
     rc, _, err = sh(argv)
     r["unit"] = unit
     if rc == 0:
@@ -925,6 +1006,8 @@ def cmd_reconcile(eid, verdict, by):
 
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "consume"
+    if cmd == "child-exec":
+        return cmd_child_exec(argv[2:])
     if cmd not in ("consume", "recover", "complete", "reconcile"):
         print("usage: director-event-consumer.py [consume|recover|complete <event_id> --effect <path>|reconcile <event_id> --verdict present|absent --by <who>]", file=sys.stderr)
         return 64
