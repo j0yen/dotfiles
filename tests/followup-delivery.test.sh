@@ -233,6 +233,7 @@ jq -e -s 'length > 1' "$FOLLOWUP_OUTBOX" >/dev/null && [ "$(sends)" = 2 ]; st=$?
 # (i) fsync-only failure: `sync` fails (PATH stub, only for a last outbox line matching $SYNC_FAIL_RE) while append and read-back succeed
 cat >"$base/bin/sync" <<'STUB'
 #!/usr/bin/env bash
+[ -n "${SYNC_RO_RE:-}" ] && [ -f "${2:-}" ] && tail -n1 "$2" | grep -Eq "$SYNC_RO_RE" && { chmod a-w "$2"; exit 1; }   # fsync fails AND the outbox turns read-only: no compensating line can follow
 [ -n "${SYNC_FAIL_RE:-}" ] && [ -f "${2:-}" ] && tail -n1 "$2" | grep -Eq "$SYNC_FAIL_RE" && exit 1
 exec /usr/bin/sync "$@"
 STUB
@@ -262,7 +263,40 @@ SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary sent --key 'discord:#ops|
 reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rm -f "$FH_ACCEPT"
 SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary resend --key 'discord:#ops|T1|1|R1|result' </dev/null >/dev/null 2>&1; : >"$base/bell"
 "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
-[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 1 ] && jq -e -s 'any(.[]; .reconciled==true and .action=="resend")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "i3c: uncommitted resend record is not honoured: replays send 0 more times (summary sends $(grep -c 'analysis done' "$FH_LOG")), one notification (bells $(nbell needs-reconcile)), history kept" "$st"
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 0 ] && jq -e -s 'any(.[]; .reconciled==true and .action=="resend")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "i3c: uncommitted resend record is not honoured: replays send 0 more times (summary sends $(grep -c 'analysis done' "$FH_LOG")), no new bell beyond the original (bells $(nbell needs-reconcile)), history kept" "$st"
+
+# j: two-phase reconcile settlement: a reconciled record authorizes only with a LATER durable reconcile_confirmed line; no confirm = open UNKNOWN (held, zero sends, no new bell)
+K='discord:#ops|T1|1|R1|result'
+jsetup() { reset; echo summary:nonzero >"$FH_ACCEPT"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rm -f "$FH_ACCEPT"; }
+jreplays() { : >"$base/bell"; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; }
+# j1: resend record fsync fails
+jsetup; SYNC_FAIL_RE='"reconciled"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; jreplays
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 0 ]; st=$?; chk "j1: resend record fsync fails: replays send 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG")), no new bell (bells $(nbell needs-reconcile))" "$st"
+# j2: resend record commits, CONFIRM fsync fails
+jsetup; SYNC_FAIL_RE='"reconcile_confirmed"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; rc=$?; jreplays
+[ "$rc" = 2 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ] && [ "$(nbell needs-reconcile)" = 0 ]; st=$?; chk "j2: resend confirm fsync fails: exit 2 (rc $rc), replays send 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG")), no new bell" "$st"
+# j3: double fault: the record's fsync fails and the outbox turns read-only, so no compensating line can be appended
+jsetup; SYNC_RO_RE='"reconciled"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; rc=$?; chmod u+w "$FOLLOWUP_OUTBOX"; jreplays
+[ "$rc" = 2 ] && grep -q '"reconciled"' "$FOLLOWUP_OUTBOX" && ! grep -q 'reconcile_' "$FOLLOWUP_OUTBOX" && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j3: record fsync fails and nothing can be appended after it: replays send 0 (rc $rc, summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
+# j4: action sent with a failing confirm: still undelivered, nothing sent
+jsetup; SYNC_FAIL_RE='"reconcile_confirmed"' "$DEL" --reconcile summary sent --key "$K" </dev/null >/dev/null 2>&1; jreplays
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1; rc=$?
+[ "$rc" = 1 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j4: sent with failing confirm: replay rc $rc (delivered false), summary sends $(grep -c 'analysis done' "$FH_LOG")" "$st"
+# j5: happy paths
+jsetup; "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; rc=$?; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; r2=$?; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1
+[ "$rc" = 0 ] && [ "$r2" = 0 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 2 ]; st=$?; chk "j5: confirmed resend then replay sends once (summary sends $(grep -c 'analysis done' "$FH_LOG"), rc $rc/$r2)" "$st"
+jsetup; "$DEL" --reconcile summary sent --key "$K" </dev/null >/dev/null 2>&1; "$DEL" <<<"$(ev R1)" >/dev/null 2>&1; r2=$?
+[ "$r2" = 0 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j5: confirmed sent then replay sends 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG"), rc $r2)" "$st"
+# j6: a second --reconcile supersedes an unconfirmed one
+jsetup; SYNC_FAIL_RE='"reconcile_confirmed"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1; "$DEL" --reconcile summary sent --key "$K" </dev/null >/dev/null 2>&1; rc=$?
+"$DEL" <<<"$(ev R1)" >/dev/null 2>&1; r2=$?
+[ "$rc" = 0 ] && [ "$r2" = 0 ] && [ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j6: a later confirmed --reconcile supersedes the unconfirmed one (rc $rc/$r2, summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
+# j7: legacy reconcile_uncommitted lines (written by 27cab75) still read as UNKNOWN
+jsetup; l1="$(jq -nc --arg k "$K" --arg ts "$(date -Ins)" '{reconciled:true,key:$k,part:"summary",action:"resend",ts:$ts}')"
+l2="$(jq -nc --arg k "$K" --arg ts "$(date -Ins)" '{reconcile_uncommitted:true,key:$k,part:"summary",action:"resend",ts:$ts}')"
+printf '%s\n%s\n' "$l1" "$l2" >>"$FOLLOWUP_OUTBOX"
+jreplays
+[ "$(grep -c 'analysis done' "$FH_LOG")" = 1 ]; st=$?; chk "j7: legacy reconcile_uncommitted line is still an open UNKNOWN: replays send 0 more (summary sends $(grep -c 'analysis done' "$FH_LOG"))" "$st"
 
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"
