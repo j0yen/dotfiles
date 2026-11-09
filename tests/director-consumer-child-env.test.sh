@@ -216,6 +216,7 @@ def uc(name, addr):
 uc("docker", "/var/run/docker.sock"); uc("docker-run", "/run/docker.sock"); uc("dbus", "/run/dbus/system_bus_socket")
 uc("snapd", "/run/snapd.socket"); uc("tailscale", "/run/tailscale/tailscaled.sock"); uc("cups", "/run/cups/cups.sock")
 uc("x11-abstract", "\0/tmp/.X11-unix/X0"); uc("x11-abstract1", "\0/tmp/.X11-unix/X1")
+uc("x11-own", "\0/tmp/.X11-unix/" + sys.argv[4])      # abstract listener this test binds itself, so the control never depends on a running X server
 s = socket.socket(); s.settimeout(5)
 try:
     s.connect(("127.0.0.1", int(sys.argv[1]))); out.append("tcp-loopback OPEN")
@@ -242,13 +243,14 @@ os.environ.update(DIRECTOR_STATE=sc + "/st", WM_DECIDE_STATE=sc + "/wmstate", WM
 spec = importlib.util.spec_from_file_location("dec", c); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 open(sc + "/probe.py", "w").write(probe)
 srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8); port = str(srv.getsockname()[1])   # listener of this test, in this process
-argv = mod.launch_argv(unit, "/e.md", tail=["/usr/bin/python3", sc + "/probe.py", port, m, sc + "/result"])
+xsrv = socket.socket(socket.AF_UNIX); xname = p + "-x11own"; xsrv.bind("\0/tmp/.X11-unix/" + xname); xsrv.listen(8)   # abstract socket in the host netns
+argv = mod.launch_argv(unit, "/e.md", tail=["/usr/bin/python3", sc + "/probe.py", port, m, sc + "/result", xname])
 open(t + "/ipc.argv", "w").write(" ".join(argv))
 r = subprocess.run(argv[:1] + ["--wait", "--pipe"] + argv[1:], capture_output=True, text=True)
 sys.stderr.write(r.stderr[-300:])
 if os.path.exists("/dev/shm/%s-child" % m):      # a write that reached the host
     open(t + "/iso-shm-child", "w").close(); os.unlink("/dev/shm/%s-child" % m)
-r2 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-ctl", "--", "/usr/bin/python3", sc + "/probe.py", port, m, sc + "/control"],
+r2 = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--collect", "--unit", unit + "-ctl", "--", "/usr/bin/python3", sc + "/probe.py", port, m, sc + "/control", xname],
                     capture_output=True, text=True)
 sys.stderr.write(r2.stderr[-300:])
 PY
@@ -256,11 +258,11 @@ PY
   echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
   local host_leak=no ctl_leak=no; [ -e "$T/iso-shm-child" ] && host_leak=yes; [ -e "/dev/shm/$m-child" ] && ctl_leak=yes
   echo "host-visible /dev/shm write from isolated child: $host_leak; from control child: $ctl_leak"; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"
-  for w in docker docker-run dbus snapd tailscale cups x11-abstract x11-abstract1 tcp-loopback; do
+  for w in docker docker-run dbus snapd tailscale cups x11-abstract x11-abstract1 x11-own tcp-loopback; do
     echo "$res" | grep -q "^$w OPEN" && { bad unit_ipc_net_shm "$w reachable inside the boundary"; return; }
     echo "$res" | grep -q "^$w FAIL " || { bad unit_ipc_net_shm "$w not probed"; return; }
   done
-  for w in docker dbus tcp-loopback x11-abstract; do
+  for w in docker dbus tcp-loopback x11-own; do
     echo "$ctl" | grep -q "^$w OPEN" || { bad unit_ipc_net_shm "control cannot reach $w (test not discriminating)"; return; }
   done
   echo "$ctl" | grep -q "^shm-host-marker VISIBLE" && [ "$ctl_leak" = yes ] || { bad unit_ipc_net_shm "control does not share /dev/shm (test not discriminating)"; return; }
@@ -442,14 +444,36 @@ LISTING_CLOSED='["/run", "/run/udev", "/run/lock", "/run/systemd", "/run/systemd
 # /sys/class/* the other device classes; closing them hides hardware sysfs that ordinary tools read, which no worker needs but a unit cannot
 # prove safe to remove wholesale, so they are recorded rather than denied.
 LISTING_RESIDUAL='["/sys/devices", "/sys/dev/char", "/sys/class", "/sys/class/sound", "/sys/class/drm", "/sys/class/net", "/sys/block", "/proc/bus"]'
+# Empty-host allowance for the POSITIVE enumeration only: /sys/class/hidraw with a control count of exactly 0. Never a waiver of the in-boundary denial.
+listing_na(){ [ "$1" = /sys/class/hidraw ] && [ "$2" = 0 ]; }
+t_listing_na_selfcheck(){
+  listing_na /sys/class/hidraw 0 || { bad listing_na_selfcheck "hidraw with count 0 must be N/A"; return; }
+  local p c
+  for c in 1 6; do listing_na /sys/class/hidraw "$c" && { bad listing_na_selfcheck "hidraw with count $c must not be N/A"; return; }; done
+  for p in /run /run/udev /run/lock /run/systemd /run/systemd/journal /sys/class/input /proc/bus/input; do
+    listing_na "$p" 0 && { bad listing_na_selfcheck "$p with count 0 must not be N/A"; return; }
+  done
+  listing_na /sys/class/hidraw "" && { bad listing_na_selfcheck "hidraw with no count must not be N/A"; return; }
+  ok listing_na_selfcheck
+}
 t_unit_listing(){
   run_three list "$LIST_PROBE" "$(python3 -c "import json,sys; print(json.dumps(json.loads('$LISTING_CLOSED')+json.loads('$LISTING_RESIDUAL')))")"
   local u="$SCR/$P-listunit" res ctl w; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"
   echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
   [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_listing "no probe output"; return; }
+  local na="" cnt
   for w in $(python3 -c "import json; print(' '.join(json.loads('$LISTING_CLOSED')))"); do
-    echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "control cannot list $w (test not discriminating)"; return; }
+    cnt="$(echo "$ctl" | sed -n "s|^ls $w \([0-9][0-9]*\)$|\1|p" | head -1)"
+    if listing_na "$w" "$cnt"; then na="$na $w"; echo "note: $w is empty on this host (no HID device), nothing to enumerate; the in-boundary denial below still applies"
+    else echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "control cannot list $w (test not discriminating)"; return; }; fi
     echo "$res" | grep -Eq "^ls $w (FAIL [0-9]+|0)$" || { bad unit_listing "names under $w still listable: $(echo "$res" | grep "^ls $w ")"; return; }
+  done
+  # the N/A branch fires for hidraw alone; any other path in it means the empty-host allowance leaked
+  [ -z "${na# }" ] || [ "${na# }" = /sys/class/hidraw ] || { bad unit_listing "N/A branch fired for:$na"; return; }
+  # non-empty anchors: the unit always has /run and /run/systemd entries, so these never take the N/A branch on any host
+  for w in /run /run/systemd; do
+    echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "anchor $w has no control entries (test not discriminating)"; return; }
+    echo "$res" | grep -Eq "^ls $w (FAIL [0-9]+|0)$" || { bad unit_listing "anchor $w still listable inside the boundary: $(echo "$res" | grep "^ls $w ")"; return; }
   done
   echo "residual (documented, still listable): $(echo "$res" | grep -E '^ls [^ ]+ [1-9][0-9]*$' | sed 's/^ls //' | tr '\n' ';')"
   ok unit_listing
@@ -593,5 +617,5 @@ print("override hardening ok")
 PY
   local rc=$?; rm -rf "$SCR/ov6-$P" "$(dirname "$SCR")/ov6-$P" "$SCR/director-run-ov6-$P"-*; [ $rc = 0 ] && ok override_hardening || bad override_hardening "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_listing unit_groups override_hardening; do "t_$t"; done; fi
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets listing_na_selfcheck unit_listing unit_groups override_hardening; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }
