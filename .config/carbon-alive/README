@@ -1,0 +1,10 @@
+carbon-alive (A1446): off-host witness of carbon. Runs on ryzen7 and RedBaron as a
+SYSTEM unit with User=jsy, so it does not depend on the witness host's own user manager.
+
+Install on a witness host:
+  install -m 755 .local/bin/carbon-alive ~/.local/bin/carbon-alive
+  sudo install -m 644 .config/carbon-alive/carbon-alive.{service,timer} /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --now carbon-alive.timer
+Delivery: a dedicated Discord webhook URL in ~/.config/carbon-alive/webhook.url, mode 0600.
+Until it exists, alerts stay in ~/.local/state/carbon-alive/outbox and replay in order.
+Status: carbon-alive status
