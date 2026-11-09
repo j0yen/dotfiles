@@ -93,11 +93,19 @@ if [ -n "${nd:-}" ]; then   # no-destination bell outcome (lock held): failure r
   if [ "$nd_rc" != 0 ]; then
     nd_has nodest_failure || commit_line "$(jq -nc --arg k "$nd" --arg i "$id" --arg s "$seat" --arg ts "$(date -Ins)" --arg rc "$nd_rc" '{nodest_failure:true,key:$k,id:$i,seat:$s,class:"bell",rc:($rc|tonumber),ts:$ts}')" || nocommit "nodest failure record"
     wma="${WM_ASKS_BIN:-wm-asks}"; marker="nodestfail:$(printf '%s' "$nd" | sha1sum | cut -c1-12)"
-    hit="$("$wma" asks query --json --status all --text "$marker" 2>/dev/null | jq -r --arg m "$marker" '[.[]? | select(((.what // "") + " ") | contains($m + " "))] | length' 2>/dev/null)"
-    if [ "$hit" = 0 ]; then
+    qout="$("$wma" asks query --json --status all --text "$marker" 2>/dev/null)"; qrc=$?
+    hit="$([ "$qrc" = 0 ] && jq -r --arg m "$marker" '[.[]? | select(((.what // "") + " ") | contains($m + " "))] | length' <<<"$qout" 2>/dev/null)"
+    owned=0; [ -n "$hit" ] && [ "$hit" != 0 ] && owned=1
+    if [ "$qrc" = 0 ] && [ "$hit" = 0 ]; then
       due="$(date -d '+60 minutes' +%Y-%m-%dT%H:%M)"
       "$wma" asks add --owner ctl --due "$due" --key "$id" --check "grep -qF '\"nodest_settled\":true,\"key\":\"$nd\"' $ob" \
-        --what "followup bell to $seat failed (rc $nd_rc) for $id; deliver it or settle | waits-on=seat-event $marker" --by followup-deliver >/dev/null 2>&1
+        --what "followup bell to $seat failed (rc $nd_rc) for $id; deliver it or settle | waits-on=seat-event $marker" --by followup-deliver >/dev/null 2>&1 && owned=1
+    fi
+    if [ "$owned" = 1 ]; then   # a row exists: the unowned marker (if any) is cleared, once
+      ! nd_has nodest_unowned || nd_has nodest_owned || commit_line "$(jq -nc --arg k "$nd" --arg ts "$(date -Ins)" '{nodest_owned:true,key:$k,ts:$ts}')" || nocommit "nodest owned marker"
+    else   # wm-asks query/add failed: loud line every time, ONE durable marker per key that followup-eval lists as nodest-unowned
+      echo "followup-deliver: nodest row NOT created (wm-asks query rc $qrc, key $nd): id=$id rev=$(jq -r '.rev // 0' <<<"$in") key=$nd; surfaced by followup-eval as nodest-unowned" >&2
+      nd_has nodest_unowned || commit_line "$(jq -nc --arg k "$nd" --arg i "$id" --arg s "$seat" --arg r "$(jq -r '.rev // 0' <<<"$in")" --arg ts "$(date -Ins)" '{nodest_unowned:true,key:$k,id:$i,rev:($r|tonumber),seat:$s,ts:$ts}')" || nocommit "nodest unowned marker"
     fi
     exit 1
   fi

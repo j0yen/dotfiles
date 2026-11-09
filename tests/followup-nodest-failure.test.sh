@@ -50,4 +50,22 @@ b4="$(cksum <"$FOLLOWUP_OUTBOX")"; jq -nc '{id:"E3",rev:1,kind:"x",seat:"ctl",fp
 # dest path unchanged: no hermes on PATH -> exit 1, no nodest records for it
 n0="$(nf)"; jq -nc '{id:"D1",dest:"discord:#ops",summary:"s",task:"T",rev:1,result:"r",kind:"result"}' | PATH=/usr/bin:/bin "$DEL" >/dev/null 2>&1; rc=$?
 [ "$rc" = 1 ] && [ "$(nf)" = "$n0" ]; chk "7: dest path without hermes still exits 1 and writes no nodest record" $?
+# wm-asks outage (query or add fails persistently): the failure is loud, ONE dedupe-keyed nodest_unowned marker exists per key, followup-eval surfaces it
+# as a nodest-unowned disposition, and recovery creates exactly ONE row and clears the marker.
+OUT="$base/out"; mkdir -p "$OUT"
+export FOLLOWUP_OUTBOX="$OUT/outbox.jsonl" FOLLOWUP_STATE_DIR="$OUT/state" NODEST_UNOWNED_MIN=0 ASKS="$OUT/asks.jsonl"; mkdir -p "$FOLLOWUP_STATE_DIR"; : >"$ASKS"
+printf '%s\n' "$(jq -nc '{id:"O1",rev:1,kind:"correction-owed",seat:"ctl",fp:"fp-out",detail:"o",ts:"2026-11-09T10:00:00",delivered:false}')" >"$FOLLOWUP_OUTBOX"
+echo 9 >"$BELL_RC"; export WM_ASKS_BIN="$OUT/wm-asks-down"; printf '#!/usr/bin/env bash\nexit 1\n' >"$WM_ASKS_BIN"; chmod +x "$WM_ASKS_BIN"
+for i in 1 2 3; do python3 -I "$EV" replay >/dev/null 2>&1; done
+uc() { jq -s '[.[] | select(.nodest_unowned==true)] | length' "$FOLLOWUP_OUTBOX"; }
+[ "$(uc)" = 1 ] && [ "$(grep -c 'for O1;' "$ASKS")" = 0 ] && [ "$(nf)" = 1 ]; st=$?; chk "8: outage leaves ONE nodest_unowned marker (got $(uc)) and one failure record, no row" "$st"
+jq -s -e '[.[]|select(.nodest_unowned==true)][0] | (.key|startswith("nodest|O1|1|")) and .id=="O1"' "$FOLLOWUP_OUTBOX" >/dev/null; chk "8b: marker names id and the failure key" $?
+echo "$(jq -nc '{id:"O1",rev:1,kind:"correction-owed",seat:"ctl",fp:"fp-out",detail:"o"}')" | env -u FOLLOWUP_LOCK_HELD WM_ASKS_BIN="$OUT/wm-asks-down" "$DEL" >/dev/null 2>"$OUT/err"; grep -q 'O1' "$OUT/err" && grep -q 'rev=1' "$OUT/err" && grep -q 'nodest|O1|1|' "$OUT/err"; chk "8c: each failed row creation prints a loud stderr line naming id/rev/key" $?
+python3 -I "$EV" eval --seat ctl | jq -e '[.dispositions[] | select(.kind=="nodest-unowned" and .id=="O1")] | length == 1' >/dev/null; chk "8d: followup-eval surfaces the unowned record as a nodest-unowned disposition" $?
+python3 -I "$EV" new --seat ctl >/dev/null 2>&1; python3 -I "$EV" new --seat ctl >/dev/null 2>&1
+[ "$(uc)" = 1 ]; st=$?; chk "8e: repeated eval/new/replay never grow the marker (got $(uc))" "$st"
+export WM_ASKS_BIN="$base/wm-asks"; python3 -I "$EV" replay >/dev/null 2>&1; python3 -I "$EV" replay >/dev/null 2>&1
+o1rows() { grep -c 'for O1;' "$ASKS"; }
+[ "$(o1rows)" = 1 ] && [ "$(jq -s '[.[]|select(.nodest_failure==true and .id=="O1")]|length' "$FOLLOWUP_OUTBOX")" = 1 ]; st=$?; chk "9: wm-asks recovery creates exactly ONE row for O1 (rows $(o1rows))" "$st"
+python3 -I "$EV" eval --seat ctl | jq -e '[.dispositions[] | select(.kind=="nodest-unowned")] | length == 0' >/dev/null; chk "9b: the disposition clears once the row exists" $?
 echo "followup-nodest-failure: $pass pass, $fail fail"; [ "$fail" = 0 ]
