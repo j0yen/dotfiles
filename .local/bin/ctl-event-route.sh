@@ -216,19 +216,34 @@ if kind == "inbox" and lines and all(seat(l) in ("ctl", "aide", "fleet-dash") fo
 if kind == "inbox" and any(seat(l).startswith("joe") for l in lines):
     finish("fable", "fable", "joe-direction-never-classified-away", "deliver", 0)
 
-if kind == "taskfile" and files:   # W20: a task file carrying the approved `Dispatch: ctl` marker has ONE execution route, ctl-dispatch-claim.sh; the bridge never executes it a second time
-    def _marked(f):
+if kind != "verifier" and files:   # W20: a file carrying the approved `Dispatch: ctl` marker has ONE execution route, ctl-dispatch-claim.sh; the bridge never executes it a second time (every kind that carries detail.files)
+    _MARK = re.compile(r"Dispatch: ctl[ \t\r\v\f]*")   # = the dispatcher regex ^Dispatch: ctl[[:space:]]*$ in the C locale, per "\n" line
+    def _state(f):
         try:
-            return any(l.rstrip() == "Dispatch: ctl" for l in open(f, errors="replace").read().splitlines())
+            if not os.path.isfile(f): return "unknown"
+            return "marked" if any(_MARK.fullmatch(l) for l in open(f, errors="replace").read().split("\n")) else "plain"
         except OSError:
-            return False
-    _owned = [f for f in files if _marked(f)]
+            return "unknown"
+    _st = {f: _state(f) for f in files}
+    _unknown = [f for f in files if _st[f] == "unknown"]
+    if _unknown:   # a missing, unreadable or non-regular file cannot be proven unmarked: hold the whole event (no cache, no ack, no prompt); the bridge re-routes the queued id every cycle until every file is readable
+        _hl = os.path.join(RT, "held-log"); _hs = os.path.join(_hl, eid)   # one mech + stderr line per id per HELD_LOG_SEC (default 900); exit 75 = held, read by the bridge
+        try: _quiet = time.time() - os.path.getmtime(_hs) < float(os.environ.get("HELD_LOG_SEC", "900"))
+        except OSError: _quiet = False
+        if not _quiet:
+            mech({"result": "UNKNOWN", "unknown": _unknown, "held": True})
+            os.makedirs(_hl, exist_ok=True); open(_hs, "w").close()
+            sys.stderr.write("held: unknown file state, retry\n")
+        sys.exit(75)
+    _owned = [f for f in files if _st[f] == "marked"]
     if _owned and len(_owned) == len(files):
         mech({"result": "dispatch-owned", "files": files})
         finish("deterministic", "none", "dispatch-marker-owns-route", "dispatch-owned", 0)
     if _owned:   # mixed event: the marked files keep their one dispatch route; only the unmarked files reach the classifier and executor
         files = [f for f in files if f not in _owned]
+        lines = [l for l in lines if not any(o in l for o in _owned)]
         detail = dict(detail, files=files, dispatch_owned_count=len(_owned))
+        if "lines" in detail: detail["lines"] = lines
         mech({"result": "dispatch-partition", "dispatch_owned": _owned, "bridge_files": files})
 
 if kind == "verifier":
