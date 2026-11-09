@@ -135,8 +135,8 @@ def evaluate(seat, rows, now):
         if due > now:
             continue
         if PROSE.search(str(r.get("what") or "")):
-            out.append(mk("overdue-ack", "prose-waits-on", "overdue since %s with only a prose waits-on / PID / ACK; record a claim or a structured blocker (owner, dependency, next check)%s" % (due, note), True)); continue
-        out.append(mk("ready", "overdue", "overdue since %s, no live claim and no structured blocker (owner, dependency, next check)%s" % (due, note), True))
+            out.append(mk("overdue-ack", "prose-waits-on", "overdue since %s with only a prose waits-on / PID / ACK; record a live claim (wm-asks asks claim) or append waits-on=row:<open-ask-id> naming an open dependency ask (wm-asks asks update %s --by ctl --expect-rev %s --append waits-on=row:<id>)%s" % (due, rid, rev, note), True)); continue
+        out.append(mk("ready", "overdue", "overdue since %s, no live claim and no open dependency; claim it, or append waits-on=row:<open-ask-id> (wm-asks asks update %s --by ctl --expect-rev %s --append waits-on=row:<id>)%s" % (due, rid, rev, note), True))
     return out
 
 
@@ -175,7 +175,7 @@ NEXT = {
 
 def reason(new):
     parts = ["%s [%s/%s] %s -> next: %s" % (n["id"], n["disposition"], n["kind"], n["detail"],
-             NEXT.get(n["kind"], "claim it with a live worker, record a structured blocker (owner, dependency, next check), or resolve it with a PASS acceptance")) for n in new[:5]]
+             NEXT.get(n["kind"], "claim it with a live worker, append waits-on=row:<open-ask-id> for an open dependency ask, or resolve it with a PASS acceptance")) for n in new[:5]]
     return "FOLLOW-UP ACTION REQUIRED (escalated once, queued in the outbox; an unchanged id is not recited): " + "; ".join(parts) + (" and %d more" % (len(new) - 5) if len(new) > 5 else "")
 
 
