@@ -228,6 +228,22 @@ def outbox_path(sd):
     return os.environ.get("FOLLOWUP_OUTBOX") or os.path.join(sd, "outbox.jsonl")
 
 
+def superseded_ids(ob):
+    """Exact (id, rev, fp, entry ts) identities recorded in the reviewed sidecar next to the outbox (followup-outbox-reconcile.py --apply); replay never delivers these."""
+    side = (ob[:-6] if ob.endswith(".jsonl") else ob) + ".superseded.jsonl"
+    out = set()
+    try:
+        for line in open(side, encoding="utf-8", errors="replace"):
+            try:
+                r = json.loads(line)
+                out.add((str(r["id"]), str(r.get("rev", 0)), str(r["fp"]), str(r.get("entry_ts"))))
+            except (ValueError, KeyError, TypeError):
+                pass
+    except OSError:
+        pass
+    return out
+
+
 def cmd_new(seat):
     sd = state_dir(); fh = locked(sd)
     rows, why = read_ledger()
@@ -405,7 +421,9 @@ def cmd_replay():
     if not dc:
         return
     fh = locked(sd); lines = []
-    for line in open(ob):
+    raw = open(ob, "rb").read(); n0 = len(raw)   # deliver.sh appends sent-part records to this file while we hold the lock: keep whatever lands after n0
+    env = dict(os.environ, FOLLOWUP_LOCK_HELD="1"); sup = superseded_ids(ob)
+    for line in raw.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -413,14 +431,15 @@ def cmd_replay():
             e = json.loads(line)
         except ValueError:
             lines.append(line); continue
-        if e.get("delivered") is False and not e.get("resolved"):
+        if e.get("delivered") is False and not e.get("resolved") and (str(e.get("id")), str(e.get("rev", 0)), str(e.get("fp")), str(e.get("ts"))) not in sup:
             try:
-                if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=30).returncode == 0:
+                if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=300, env=env).returncode == 0:
                     e["delivered"] = True
             except (OSError, subprocess.TimeoutExpired):
                 pass
         lines.append(json.dumps(e, separators=(",", ":")))
-    atomic_write(ob, "\n".join(lines) + ("\n" if lines else ""))
+    tail = open(ob, "rb").read()[n0:].decode("utf-8", "replace")
+    atomic_write(ob, "\n".join(lines) + ("\n" if lines else "") + tail)
     fh.close()
 
 

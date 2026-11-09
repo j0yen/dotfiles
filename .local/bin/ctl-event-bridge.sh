@@ -53,8 +53,10 @@ json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"
 
 # A1255: the row marker is looked up in the canonical ledger (asks-view); no TSV file is read or passed on.
 cached_route() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" route; }
-deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes never reach the pane
+held() { [ -e "$RTD/held/$1" ]; } # the router held this id (exit 75, an unreadable file): queued, but nothing acts on it until it routes
+deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes and held ids never reach the pane
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
+  held "$1" && return 1
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
 evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in the canonical ledger
@@ -63,16 +65,39 @@ evidence_ok() { # consumer success: results/<id>.json has an exit field and, whe
   row="$(jget "$c" row)"
   [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id"
 }
+held_err() { # one route.err line per held id per HELD_LOG_SEC (default 900) naming the router exit code; stamp $RTD/held-log/<id>.rc
+  local s="$RTD/held-log/$1.rc" w="${HELD_LOG_SEC:-900}" m
+  m="$(stat -c %Y "$s" 2>/dev/null || echo 0)"
+  [ $(( $(epoch) - m )) -lt "$w" ] && return 0
+  mkdir -p "$RTD/held-log" && : > "$s"
+  echo "$(iso) held id $1: router exit $2 (still held and queued, not delivered)" >> "$BR/route.err"
+}
+clear_held() { rm -f "$RTD/held/$1" "$RTD/held-log/$1" "$RTD/held-log/$1.rc"; }
+sweep_held() { # marker files whose queue file is gone (acked, deleted by hand) are removed
+  local m b
+  for m in "$RTD"/held/* "$RTD"/held-log/*; do
+    [ -e "$m" ] || continue
+    b="$(basename "$m")"; b="${b%.rc}"
+    [ -f "$BR/queue/$b.json" ] || rm -f "$m"
+  done
+}
 route_pending() { # route each queued id once; ack deterministic/haiku ids only after consumer evidence exists
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
+  sweep_held
   [ -x "$RTB" ] || return 0
-  local f id c rt
+  local f id c rt rc
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     c="$RTD/routed/$id.json"
-    [ -f "$c" ] || RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
+    if [ ! -f "$c" ]; then
+      RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err"
+      rc=$?
+      if [ $rc -eq 75 ]; then mkdir -p "$RTD/held" && : > "$RTD/held/$id"
+      elif [ $rc -ne 0 ] && held "$id"; then held_err "$id" "$rc"; fi   # a previously held id stays held and queued (no fail-open to the pane), but a router failure is logged
+    fi
     [ -f "$c" ] || continue
+    rm -f "$RTD/held/$id"
     rt="$(jget "$c" route)"
     if [ "$rt" = fable ] && [ "${BR_FABLE:-1}" != 0 ] && [ -x "$FEB" ]; then   # real escalation (A1148 defect 11-07): separate Fable process, once per id
       ( setsid "$FEB" "$f" >> "$BR/fable-esc.log" 2>&1 & ) 
@@ -159,7 +184,8 @@ ack() {
   [ -n "$want" ] || { echo "usage: ack <id>|--all" >&2; return 2; }
   mkdir -p "$BR/queue" "$BR/done"
   if [ "$want" = "--all" ]; then
-    for f in "$BR"/queue/*.json; do [ -f "$f" ] && ackone "$f" && n=$((n+1)); done
+    sweep_held
+    for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && ackone "$f" && n=$((n+1)); done
     echo "acked $n"; return 0
   fi
   [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$BR/queue/$want.json" ] || { echo "unknown id: $want" >&2; return 1; }
@@ -169,7 +195,7 @@ ackone() {
   local f="$1" id; id="$(basename "$f" .json)"
   python3 -I -c 'import json,sys
 d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3],"w"))' "$f" "$(epoch)" "$BR/done/$id.json" && rm -f "$f" \
-    && handled_receipt "$id" && echo "$(iso) ack $id" >> "$BR/deliveries.log"
+    && clear_held "$id" && handled_receipt "$id" && echo "$(iso) ack $id" >> "$BR/deliveries.log"
 }
 # The ledger done-check for an event row is `test -e $RTD/handled/<id>`; the ack is the handler's completion, so it writes the receipt (atomic: tmp + mv).
 handled_receipt() {
@@ -191,7 +217,7 @@ selftest() {
 
 case "${1:-}" in
   run) run ;;
-  pending) for f in "$BR"/queue/*.json; do [ -f "$f" ] && { cat "$f"; echo; }; done; exit 0 ;;
+  pending) for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && { cat "$f"; echo; }; done; exit 0 ;;
   ack) shift; ack "${1:-}" ;;
   status) cat "$BR/status.json" 2>/dev/null || echo '{"status":"no status yet"}' ;;
   --selftest) selftest ;;

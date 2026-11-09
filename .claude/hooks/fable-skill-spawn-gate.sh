@@ -3,7 +3,7 @@
 # skill whose SKILL.md frontmatter says `fable-spawn: true` is told to spawn a
 # Fable subagent instead.
 #
-# Those skills pin `model: fable` + `effort: max` (/dream vibecode-kit#4,
+# Those skills pin `model: fable` + their own `effort:` (the recipe below reads it from the SKILL.md frontmatter) (/dream vibecode-kit#4,
 # /5whysandrhyme, /wwhtbt; Joe 2026-10-24). Invoked inline from an Opus seat
 # (rb/r7/ctl/aide), the pin switches the session model for that turn, and a
 # model switch rebuilds the whole prompt cache. A subagent runs in its own
@@ -49,6 +49,27 @@ allow() {
     exit 0
 }
 
+# A1300 adaptive routing: skills named in .config/skill-routing/policy.json are governed. Inline calls are denied unless this
+# process IS the managed worker for that skill (fable-launch.sh --route-request exported SKILL_ROUTE_*); the route comes from the
+# resolver, never from the SKILL.md pin. A broken policy fails closed for the skill-shaped call only.
+for _l in "${SKILL_ROUTE_LIB:-}" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.local/lib/skill-route.sh" "$HOME/.local/lib/skill-route.sh"; do
+    [ -n "$_l" ] && [ -r "$_l" ] && { . "$_l"; break; }; done
+if command -v sr_governed >/dev/null 2>&1; then
+    sr_governed "$NAME"; _g=$?
+else
+    _g=2
+fi
+if [ "$_g" = 2 ]; then
+    case "$NAME" in 5whysandrhyme|wwhtbt)
+        echo "fable-skill-spawn-gate: skill-routing policy/helpers unreadable; /${NAME} is refused (fail closed). Restore .config/skill-routing/policy.json and .local/lib/skill-route.sh." >&2; exit 2 ;;
+    esac
+elif [ "$_g" = 0 ]; then
+    if sr_managed_worker "$NAME"; then allow; fi
+    { echo "fable-skill-spawn-gate: /${NAME} is a governed skill; its model and effort come from the routing policy, not this session."
+      sr_recipe "$NAME" "$("$JQ" -r '.tool_input.args // empty' <<<"$INPUT" 2>/dev/null)"; } >&2
+    exit 2
+fi
+
 SKILLS_DIR=${FABLE_SKILLS_DIR:-$HOME/.claude/skills}
 SKILL_MD="$SKILLS_DIR/$NAME/SKILL.md"
 [ -r "$SKILL_MD" ] || allow
@@ -78,16 +99,19 @@ case "$MODEL_LC" in
     *fable*) allow ;;
 esac
 
+EFFORT=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$SKILL_MD" \
+    | sed -n 's/^effort:[[:space:]]*\([A-Za-z]*\)[[:space:]]*$/\1/p' | head -1)
+[ -n "$EFFORT" ] || EFFORT=high   # fresh Fable default (A1300 addendum 11-08) when a skill pins none
+
 case "$NAME" in
     dream) RET="the PRD paths, lint result, review verdict lines" ;;
-    *)     RET="the page path, lint result, review verdict lines, the weakest link and each mechanism with its state" ;;
+    *)     RET="the page path, lint result, review verdict lines if a justified review ran, the weakest link and each mechanism with its state" ;;
 esac
 
 {
-    echo "fable-skill-spawn-gate: /${NAME} runs on Fable max (SKILL.md fable-spawn: true); calling it inline from ${MODEL} switches this session's model and rebuilds its prompt cache."
-    echo "Spawn it instead (one Agent call, the seat's cache stays warm):"
-    echo "  Agent(subagent_type=general-purpose, model=fable, effort=max,"
-    echo "        prompt=\"Invoke the ${NAME} skill (Skill tool, skill: ${NAME}, args: ${ARGS:-<args>}). Context + evidence: <paste>. Return ${RET}, and any finding for Joe, as one line each.\")"
+    echo "fable-skill-spawn-gate: /${NAME} runs on Fable ${EFFORT} (SKILL.md fable-spawn: true); calling it inline from ${MODEL} switches this session's model and rebuilds its prompt cache."
+    echo "Spawn it instead as a separate Fable process on jyen.pm (a native Agent would inherit this session's account; fable-native-agent-guard.sh denies it):"
+    echo "  Bash: ~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort ${EFFORT} -p \"Invoke the ${NAME} skill (Skill tool, skill: ${NAME}, args: ${ARGS:-<args>}). Context + evidence: <paste>. Return ${RET}, and any finding for Joe, as one line each.\""
     echo "Then log the result as a DECISION row as usual."
 } >&2
 exit 2
