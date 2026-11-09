@@ -454,6 +454,88 @@ t_unit_listing(){
   echo "residual (documented, still listable): $(echo "$res" | grep -E '^ls [^ ]+ [1-9][0-9]*$' | sed 's/^ls //' | tr '\n' ';')"
   ok unit_listing
 }
+GROUP_PROBE='
+import os, stat, sys
+res, named, roots = sys.argv[1], sys.argv[2].split(","), sys.argv[3].split(",")
+def opens(path, st):
+    # open+close only, never a read or write. Read open for a file with no other-read bit, write open for one with no other-write bit.
+    got = []
+    if stat.S_ISDIR(st.st_mode):
+        flags = [(os.O_RDONLY | os.O_DIRECTORY, 4)]
+    elif stat.S_ISREG(st.st_mode):
+        flags = [(os.O_RDONLY | os.O_NONBLOCK, 4), (os.O_WRONLY | os.O_NONBLOCK, 2)]
+    else:
+        return got
+    for f, bit in flags:
+        if st.st_mode & bit:
+            continue                     # open to everyone: not group dependent
+        try:
+            os.close(os.open(path, f)); got.append("rw"[bit == 2])
+        except OSError:
+            pass
+    return got
+out = []
+for p in named:
+    try:
+        os.close(os.open(p, os.O_RDONLY | os.O_NONBLOCK)); out.append("named %s OPEN" % p)
+    except OSError as e:
+        out.append("named %s FAIL %d" % (p, e.errno))
+me = os.getuid(); seen = 0; hit = []
+for r in roots:
+    for top, dirs, files in os.walk(r):
+        for n in dirs + files:
+            p = os.path.join(top, n)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode) or st.st_uid == me:
+                continue
+            seen += 1
+            g = opens(p, st)
+            if g:
+                hit.append("%s:%s" % (p, "".join(g)))
+out.append("walk seen %d groupdep-open %d" % (seen, len(hit)))
+out += ["hit " + h for h in hit]
+for need in [sys.argv[0], "/usr/bin/python3", "/etc/passwd"]:
+    try:
+        os.close(os.open(need, os.O_RDONLY)); out.append("need %s OPEN" % need)
+    except OSError as e:
+        out.append("need %s FAIL %d" % (need, e.errno))
+st = os.environ.get("DIRECTOR_STATE")
+if st:
+    try:
+        open(os.path.join(st, "gprobe"), "w").write("x"); os.remove(os.path.join(st, "gprobe")); out.append("need state-bind WRITE OK")
+    except OSError as e:
+        out.append("need state-bind WRITE FAIL %d" % e.errno)
+open(res, "w").write("\n".join(out) + "\n")
+'
+# Supplementary groups cannot be dropped from a user unit: probed (RED evidence in receipt7) `setpriv --clear-groups` under NoNewPrivileges/PrivateUsers
+# and unshare -Ur/-U --map-* all keep the kernel credentials or fail EPERM (no newuidmap, no CAP_SETGID), so the files whose access depends on a group
+# are hidden by InaccessiblePaths from a launch-time scan (group_gated_paths). The probe walks the same roots INSIDE the unit and tries to open every
+# non-owned file that has no other-read (or other-write) bit: any success is group dependent, independent of the gids the unit displays (65534).
+GROUP_NAMED='/var/log/auth.log,/var/log/syslog,/var/log/kern.log,/etc/ppp/peers/provider,/etc/chatscripts/provider'
+GROUP_ROOTS='/etc,/var/log,/var/lib,/var/cache,/var/spool,/var/backups,/opt,/srv,/boot,/sys,/usr/sbin,/usr/bin,/usr/share/ppd'
+t_unit_groups(){
+  run_three grp "$GROUP_PROBE" "$(python3 -c "import json; print(json.dumps(['$GROUP_NAMED','$GROUP_ROOTS']))")"
+  local u="$SCR/$P-grpunit" res ctl; res="$(cat "$u/result" 2>/dev/null)"; ctl="$(cat "$u/control" 2>/dev/null)"
+  echo "--- inside the boundary:"; echo "$res" | head -40; echo "--- control (no boundary):"; echo "$ctl" | head -40
+  [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_groups "no probe output"; return; }
+  local w
+  for w in /var/log/auth.log /var/log/syslog /var/log/kern.log; do
+    echo "$ctl" | grep -q "^named $w OPEN" || { bad unit_groups "control cannot open $w (test not discriminating)"; return; }
+  done
+  echo "$ctl" | grep -Eq '^walk seen [0-9]+ groupdep-open [1-9][0-9]*$' || { bad unit_groups "control walk found no group-dependent open"; return; }
+  echo "$res" | grep -q '^named .* OPEN' && { bad unit_groups "group-gated file opens in the unit: $(echo "$res" | grep '^named .* OPEN' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  echo "$res" | grep -Eq '^walk seen [0-9]+ groupdep-open 0$' || { bad unit_groups "group-dependent opens in the unit: $(echo "$res" | grep '^hit ' | head -8 | tr '\n' ' ')"; return; }
+  for w in /usr/bin/python3 /etc/passwd; do
+    echo "$res" | grep -q "^need $w OPEN" || { bad unit_groups "unit lost access to $w"; return; }
+  done
+  echo "$res" | grep -q '^need .*probe.py OPEN' || { bad unit_groups "unit cannot read its scratch probe"; return; }
+  echo "$res" | grep -q 'need state-bind WRITE OK' || { bad unit_groups "state bind not writable"; return; }
+  echo "residual (documented): group-gated paths created after launch or outside the scanned roots (/usr/lib, /usr/share besides ppd, /mnt, /media, /home) stay open; override check is launch-time only (same-uid swap); scratch root is 0775 and the launcher dir's ancestors are unchecked; sockets created after launch under /run are hidden only by the /run tmpfs"
+  ok unit_groups
+}
 t_override_hardening(){
   # check_overrides also requires the file to be owned by the current uid, not group/other writable, st_nlink == 1 and outside every
   # child-writable bind (the unit scratch dir, the state dirs). Synthetic files only; the foreign-owner case swaps os.getuid in the test.
@@ -511,5 +593,5 @@ print("override hardening ok")
 PY
   local rc=$?; rm -rf "$SCR/ov6-$P" "$(dirname "$SCR")/ov6-$P" "$SCR/director-run-ov6-$P"-*; [ $rc = 0 ] && ok override_hardening || bad override_hardening "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_listing override_hardening; do "t_$t"; done; fi
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_listing unit_groups override_hardening; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }

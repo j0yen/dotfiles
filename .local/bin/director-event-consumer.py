@@ -40,6 +40,7 @@ import os
 import pwd
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -429,6 +430,41 @@ SOCKET_DENY_GLOBS = ("/run/systemd/io.systemd.*", "/run/systemd/*/io.systemd.*")
 LISTING_DENY = ("/sys/class/input", "/sys/class/hidraw", "/proc/bus/input")
 
 
+# Supplementary groups cannot be dropped from a user unit (probed: setpriv --clear-groups, unshare -Ur and PrivateUsers=yes all keep the
+# kernel credentials or fail with EPERM; no newuidmap here), so the files whose access depends on one are hidden by InaccessiblePaths.
+# Fast roots only (/var/tmp and /usr are slow and hold nothing group-gated beyond the listed subdirs); /home and /tmp are not on the
+# host side of the unit (tmpfs / PrivateTmp).
+GROUP_GATED_ROOTS = ("/etc", "/var/log", "/var/lib", "/var/cache", "/var/spool", "/var/backups", "/opt", "/srv", "/boot", "/sys", "/run",
+                     "/usr/sbin", "/usr/bin", "/usr/share/ppd")
+
+
+def group_gated_paths(roots=GROUP_GATED_ROOTS):
+    """Files and directories not owned by us that the kernel lets us read, write or search although their other bits do not
+    (access through a supplementary group or an ACL entry: adm logs, journal files, dip ppp config, input-group sysfs LEDs, ...).
+    Scan time is launch-time only; a path created later is a documented residual."""
+    me = os.getuid()
+    out = []
+    for r in roots:
+        for top, dirs, files in os.walk(r):
+            keep = []
+            for n in dirs + files:
+                p = os.path.join(top, n)
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                if stat.S_ISLNK(st.st_mode):
+                    continue
+                if st.st_uid != me and any(os.access(p, m) and not st.st_mode & bit for m, bit in ((os.R_OK, 4), (os.W_OK, 2), (os.X_OK, 1))):
+                    while any(c.isspace() for c in p):      # a property value is whitespace separated: deny the nearest clean ancestor
+                        p = os.path.dirname(p)
+                    out.append(p)
+                elif n in dirs:
+                    keep.append(n)
+            dirs[:] = keep
+    return sorted(set(out))
+
+
 def socket_deny_paths():
     return list(SOCKET_DENY_STATIC) + sorted(set(g for pat in SOCKET_DENY_GLOBS for g in glob.glob(pat)))
 
@@ -534,7 +570,7 @@ def sandbox_props(v, live_home=None, cmds=()):
         if p and not any(_within(_real(p), q) for q in rw):
             rw.append(_real(p))
     ro = [p for p in dict.fromkeys(_real(c) for c in cmds if c) if _within(p, live_home) and os.path.exists(p) and not any(_within(p, q) for q in rw)]
-    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY) + socket_deny_paths() + list(LISTING_DENY)
+    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY) + socket_deny_paths() + list(LISTING_DENY) + group_gated_paths()
     props = ["TemporaryFileSystem=%s:ro /dev/shm /run:ro" % live_home, "BindPaths=" + " ".join(rw)]
     if ro:
         props.append("BindReadOnlyPaths=" + " ".join(ro))
