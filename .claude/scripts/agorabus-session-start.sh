@@ -31,9 +31,30 @@
 # polling (10 × 0.3s = 3s) with one re-spawn attempt on first failure,
 # then 5 × 0.3s more. Total max wait per phase: ~4.5s — never blocking Claude
 # startup because all failure paths exit 0.
+#
+# Hook-wide budget (A1447 gate, 2026-11-09): every wait in the hook draws on
+# one 5000 ms budget counted from hook entry. A sleep runs only if it ends
+# before the deadline, and each daemon query is capped by `timeout` at the
+# remaining budget, so the hook returns inside ~5 s even when the unit start
+# times out and the socket comes up late.
 # ────────────────────────────────────────────────────────────────────────
 
 set -u
+
+HOOK_BUDGET_MS=5000
+
+_now_ms() {
+    # milliseconds since epoch; $EPOCHREALTIME (bash 5) avoids a fork per read
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        local t="${EPOCHREALTIME/[.,]/}"
+        printf '%s\n' "$(( t / 1000 ))"
+    else
+        date +%s%3N 2>/dev/null || echo 0
+    fi
+}
+
+hook_t0=$(_now_ms)
+hook_deadline=$(( hook_t0 + HOOK_BUDGET_MS ))
 
 agorabus="${AGORABUS_BIN:-/home/jsy/.local/bin/agorabus}"
 cache="${AGORABUS_CACHE:-/home/jsy/.cache/agorabus}"
@@ -50,18 +71,43 @@ find "$handshake_dir" -maxdepth 1 -name '*.log' -mtime +14 -delete 2>/dev/null |
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-_now_ms() {
-    # milliseconds since epoch (GNU date %3N)
-    date +%s%3N 2>/dev/null || echo 0
+# Budget left in ms (may be <= 0), into $budget_ms without a subshell.
+_budget_left() {
+    local t
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        t="${EPOCHREALTIME/[.,]/}"; t=$(( t / 1000 ))
+    else
+        t=$(date +%s%3N 2>/dev/null || echo "$hook_deadline")
+    fi
+    budget_ms=$(( hook_deadline - t ))
+}
+
+# Sleep $1 seconds ($2 = the same in ms) only if it ends before the deadline.
+# Returns 1 (no sleep) once the budget cannot cover it.
+_budget_sleep() {
+    _budget_left
+    [ "$budget_ms" -gt "$2" ] || return 1
+    sleep "$1"
+}
+
+# Run a command capped at the remaining budget; rc 1 if none is left.
+_budget_run() {
+    local s
+    _budget_left
+    [ "$budget_ms" -gt 0 ] || return 1
+    printf -v s '%d.%03d' $(( budget_ms / 1000 )) $(( budget_ms % 1000 ))
+    timeout "$s" "$@"
 }
 
 _log_handshake() {
     # Optional $8: extra JSON members (no leading comma), e.g. '"start_rc":124'.
-    local hlog="$1" ts sid phase attempt_n result elapsed_ms extra
+    # total_ms = time since hook entry, checked against HOOK_BUDGET_MS.
+    local hlog="$1" ts sid phase attempt_n result elapsed_ms extra total_ms
     ts="$2"; sid="$3"; phase="$4"; attempt_n="$5"; result="$6"; elapsed_ms="$7"
     extra="${8:+,$8}"
-    printf '{"ts":"%s","sid":"%s","phase":"%s","attempt_n":%s,"result":"%s","elapsed_ms":%s%s}\n' \
-        "$ts" "$sid" "$phase" "$attempt_n" "$result" "$elapsed_ms" "$extra" \
+    _budget_left; total_ms=$(( HOOK_BUDGET_MS - budget_ms ))
+    printf '{"ts":"%s","sid":"%s","phase":"%s","attempt_n":%s,"result":"%s","elapsed_ms":%s,"total_ms":%s%s}\n' \
+        "$ts" "$sid" "$phase" "$attempt_n" "$result" "$elapsed_ms" "$total_ms" "$extra" \
         >> "$hlog" 2>/dev/null || true
 }
 
@@ -75,7 +121,7 @@ _read_spawned_pid() {
     local pidfile="$1" i
     for i in 1 2 3 4 5; do
         [ -s "$pidfile" ] && break
-        sleep 0.1
+        _budget_sleep 0.1 100 || break
     done
     cat "$pidfile" 2>/dev/null || true
     rm -f "$pidfile" 2>/dev/null || true
@@ -100,16 +146,16 @@ _spawn_death_watchdog() {
 }
 
 # Poll until `agorabus peers` lists a peer matching $1, up to $2 times at 0.3s.
-# Returns 0 if found, 1 if exhausted.
+# Returns 0 if found, 1 if exhausted or the hook budget is spent.
 _poll_peer() {
     local peer_id="$1" max_attempts="$2" i
     for i in $(seq 1 "$max_attempts"); do
-        if "$agorabus" peers 2>/dev/null \
+        if _budget_run "$agorabus" peers 2>/dev/null \
                | jq -e --arg p "$peer_id" 'any(.[]; .session_id == $p)' \
                >/dev/null 2>&1; then
             return 0
         fi
-        sleep 0.3
+        _budget_sleep 0.3 300 || return 1
     done
     return 1
 }
@@ -187,17 +233,16 @@ if ! pgrep -f 'agorabus daemon' >/dev/null 2>&1; then
     fi
     log_extra="\"start\":\"$start_via\"${start_rc:+,\"start_rc\":$start_rc}"
     socket_ok=0
-    if [ "$start_via" = unit ]; then wait_n=15; wait_s=0.25; else wait_n=10; wait_s=0.3; fi
-    # Fail-open bound: the whole daemon_up phase stays under ~5.5 s even
-    # after a 1 s cat + 2 s start timeout.
-    wait_deadline=$(( phase_start + 5500 ))
+    if [ "$start_via" = unit ]; then wait_n=15; wait_s=0.25; wait_ms=250
+    else wait_n=10; wait_s=0.3; wait_ms=300; fi
+    # Fail-open bound: the socket wait draws on the hook-wide budget, so
+    # after a 1 s cat + 2 s start timeout it stops at hook entry + 5000 ms.
     for _ in $(seq 1 "$wait_n"); do
         if [ -S "$sock" ]; then
             socket_ok=1
             break
         fi
-        [ "$(_now_ms)" -ge "$wait_deadline" ] && break
-        sleep "$wait_s"
+        _budget_sleep "$wait_s" "$wait_ms" || break
     done
     elapsed=$(( $(_now_ms) - phase_start ))
     if [ "$socket_ok" -eq 1 ]; then
@@ -231,7 +276,7 @@ else
     sub_pid=$(_read_spawned_pid "$sub_pidfile")
     _spawn_death_watchdog "$root" "$sub_pid"
     # Brief moment for the subscriber's announce to land.
-    sleep 0.2
+    _budget_sleep 0.2 200
 
     if _poll_peer "$sid" 10; then
         elapsed=$(( $(_now_ms) - phase_start ))
@@ -241,24 +286,29 @@ else
         # First attempt failed — re-spawn once, then give it 5 more polls.
         _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
             "$sid" "sub_attach" 1 "fail" "$(( $(_now_ms) - phase_start ))"
-        # Kill the failed subscriber if still alive.
-        pkill -f "agorabus subscribe --session-id $sid" 2>/dev/null || true
-        sleep 0.1
-        sub_pidfile="$cache/.sub-pid.${sid}.$$"
-        setsid bash -c "echo \$\$ >'$sub_pidfile'; exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
-        disown
-        sub_pid=$(_read_spawned_pid "$sub_pidfile")
-        _spawn_death_watchdog "$root" "$sub_pid"
-        sleep 0.2
-        if _poll_peer "$sid" 5; then
-            elapsed=$(( $(_now_ms) - phase_start ))
-            _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-                "$sid" "sub_attach" 2 "ok" "$elapsed"
-        else
-            elapsed=$(( $(_now_ms) - phase_start ))
-            _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-                "$sid" "sub_attach" 2 "fail" "$elapsed"
-            # Fail-open: log the failure and continue to worker phase.
+        # Re-spawn only while >= 600 ms of budget remain; otherwise keep the
+        # first subscriber (it announces once the daemon answers).
+        _budget_left
+        if [ "$budget_ms" -ge 600 ]; then
+            # Kill the failed subscriber if still alive.
+            pkill -f "agorabus subscribe --session-id $sid" 2>/dev/null || true
+            sleep 0.1
+            sub_pidfile="$cache/.sub-pid.${sid}.$$"
+            setsid bash -c "echo \$\$ >'$sub_pidfile'; exec '$agorabus' subscribe --session-id '$sid' '' >>'$log' 2>&1" </dev/null &
+            disown
+            sub_pid=$(_read_spawned_pid "$sub_pidfile")
+            _spawn_death_watchdog "$root" "$sub_pid"
+            _budget_sleep 0.2 200
+            if _poll_peer "$sid" 5; then
+                elapsed=$(( $(_now_ms) - phase_start ))
+                _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+                    "$sid" "sub_attach" 2 "ok" "$elapsed"
+            else
+                elapsed=$(( $(_now_ms) - phase_start ))
+                _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+                    "$sid" "sub_attach" 2 "fail" "$elapsed"
+                # Fail-open: log the failure and continue to worker phase.
+            fi
         fi
     fi
 fi
@@ -267,7 +317,7 @@ fi
 
 # Advertise a minimal default identity and working path. Task-level detail is
 # published separately as agent.activity metadata, never inferred from prompts.
-"$agorabus" intent set --session-id "$sid" --skill "claude" --paths "$cwd" \
+_budget_run "$agorabus" intent set --session-id "$sid" --skill "claude" --paths "$cwd" \
     >/dev/null 2>&1 || true
 
 # Spawn the RPC worker so this session auto-replies to ping / self.describe /
@@ -294,7 +344,7 @@ else
     # worker script that ignores a 3rd arg behaves exactly as before.
     setsid bash -c "exec '$worker' '$sid' '$cwd' '$root' >>'$spawn_log' 2>&1" </dev/null &
     disown
-    sleep 0.2
+    _budget_sleep 0.2 200
 
     if _poll_peer "$worker_sid" 10; then
         elapsed=$(( $(_now_ms) - phase_start ))
@@ -304,27 +354,31 @@ else
         # First attempt failed — re-spawn once.
         _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
             "$sid" "worker_attach" 1 "fail" "$(( $(_now_ms) - phase_start ))"
-        pkill -f "agorabus-worker.sh $sid\$" 2>/dev/null || true
-        sleep 0.1
-        setsid bash -c "exec '$worker' '$sid' '$cwd' '$root' >>'$spawn_log' 2>&1" </dev/null &
-        disown
-        sleep 0.2
-        if _poll_peer "$worker_sid" 5; then
-            elapsed=$(( $(_now_ms) - phase_start ))
-            _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-                "$sid" "worker_attach" 2 "ok" "$elapsed"
-        else
-            elapsed=$(( $(_now_ms) - phase_start ))
-            _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-                "$sid" "worker_attach" 2 "fail" "$elapsed"
-            # Fail-open: log and continue.
+        # Re-spawn only while >= 600 ms of budget remain.
+        _budget_left
+        if [ "$budget_ms" -ge 600 ]; then
+            pkill -f "agorabus-worker.sh $sid\$" 2>/dev/null || true
+            sleep 0.1
+            setsid bash -c "exec '$worker' '$sid' '$cwd' '$root' >>'$spawn_log' 2>&1" </dev/null &
+            disown
+            _budget_sleep 0.2 200
+            if _poll_peer "$worker_sid" 5; then
+                elapsed=$(( $(_now_ms) - phase_start ))
+                _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+                    "$sid" "worker_attach" 2 "ok" "$elapsed"
+            else
+                elapsed=$(( $(_now_ms) - phase_start ))
+                _log_handshake "$hlog" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+                    "$sid" "worker_attach" 2 "fail" "$elapsed"
+                # Fail-open: log and continue.
+            fi
         fi
     fi
 fi
 
 # ── Peer banner (other sessions only) ────────────────────────────────────
 
-peers=$("$agorabus" peers 2>/dev/null)
+peers=$(_budget_run "$agorabus" peers 2>/dev/null)
 case "$peers" in
     ""|"[]") exit 0 ;;
 esac
