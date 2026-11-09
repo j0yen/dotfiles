@@ -199,5 +199,19 @@ fresh; echo "$EV_DTASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
 fresh; echo "$EV_TASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
 [ "$(rolecalls exe)" = 1 ]; chk "(w20) a task file without the marker still takes the haiku route" $?
 
+# W20 partition: a mixed event (one Dispatch: ctl file, one plain file) hands ONLY the plain file to the executor
+printf 'TASK: plain mixed-event job\n' > "$T/plain.md"
+EV_MIX="{\"event\":\"taskfile\",\"ts\":\"t\",\"detail\":{\"files\":[\"$T/dtask.md\",\"$T/plain.md\"]}}"
+fresh; echo "$EV_MIX" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
+[ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ]; chk "(w20) mixed event: unmarked file still takes the haiku route and is acked" $?
+grep -q 'plain mixed-event job' "$T/last-prompt.exe"; chk "(w20) mixed event: executor prompt carries the unmarked file text" $?
+! grep -qF "$T/dtask.md" "$T/last-prompt.exe" && ! grep -q 'write the weekly summary' "$T/last-prompt.exe"; chk "(w20) mixed event: exact marked path and text absent from the EXECUTOR prompt (EVENT-DETAIL included)" $?
+! grep -qF "$T/dtask.md" "$T/last-prompt.cls" && ! grep -q 'write the weekly summary' "$T/last-prompt.cls"; chk "(w20) mixed event: exact marked path and text absent from the CLASSIFIER prompt" $?
+# repeated bridge cycles over the same mixed event: one effect, never a second executor call
+c1="$(calls)"; BR_CYCLES=2 br run
+[ "$(calls)" = "$c1" ] && [ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ]; chk "(w20) mixed event: further bridge cycles add no executor or classifier call (one effect)" $?
+fresh; echo "$EV_MIX" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
+[ "$(rolecalls exe)" = 1 ]; chk "(w20) mixed event: several bridge cycles still run exactly one executor call" $?
+
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f

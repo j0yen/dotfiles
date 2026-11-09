@@ -222,9 +222,14 @@ if kind == "taskfile" and files:   # W20: a task file carrying the approved `Dis
             return any(l.rstrip() == "Dispatch: ctl" for l in open(f, errors="replace").read().splitlines())
         except OSError:
             return False
-    if all(_marked(f) for f in files):
+    _owned = [f for f in files if _marked(f)]
+    if _owned and len(_owned) == len(files):
         mech({"result": "dispatch-owned", "files": files})
         finish("deterministic", "none", "dispatch-marker-owns-route", "dispatch-owned", 0)
+    if _owned:   # mixed event: the marked files keep their one dispatch route; only the unmarked files reach the classifier and executor
+        files = [f for f in files if f not in _owned]
+        detail = dict(detail, files=files, dispatch_owned_count=len(_owned))
+        mech({"result": "dispatch-partition", "dispatch_owned": _owned, "bridge_files": files})
 
 if kind == "verifier":
     outs, probs = parse_artifacts()
