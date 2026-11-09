@@ -266,5 +266,30 @@ fresh; evf taskfile "[\"$T/held-late3.md\"]" > "$T/ev"; rm -f "$T/held-late3.md"
 env_ HELD_LOG_SEC=0 BR_CYCLES=3 bash "$BR" run
 [ "$(grep -c UNKNOWN "$T/rt/mechanical.log")" -ge 3 ]; chk "(w20 5a) HELD_LOG_SEC=0 logs every cycle (cap is the window)" $?
 
+# 8: a previously held id whose router later exits non-75 stays held and queued (no fail-open), with a bounded route.err line naming the exit code; a never-held id still delivers fail-safe
+printf '#!/bin/sh\nexit 3\n' > "$T/rc3-router"; chmod +x "$T/rc3-router"
+fresh; evf taskfile "[\"$T/held-rc.md\"]" > "$T/ev"; rm -f "$T/held-rc.md"; BR_CYCLES=1 br run
+XRT_BIN="$T/rc3-router" RETRY_SEC=0 BR_CYCLES=5 br run
+[ "$(sends)" = 0 ] && [ "$(q)" = 1 ] && [ -e "$T/rt/held/$(basename "$(only "$T/br/queue")" .json)" ]; chk "(w20 item8) held id then router exit 3: stays held and queued, 0 pane sends" $?
+[ "$(grep -c 'router exit 3' "$T/br/route.err")" = 1 ]; chk "(w20 item8) 5 cycles of router exit 3 on a held id: 1 bounded route.err line naming the exit code" $?
+env_ XRT_BIN="$T/rc3-router" RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 RETRY_SEC=0 BR_CYCLES=3 bash "$BR" run
+[ "$(grep -c 'router exit 3' "$T/br/route.err")" -ge 4 ]; chk "(w20 item8) HELD_LOG_SEC=0 logs the router failure every cycle" $?
+fresh; echo '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN="$T/rc3-router" RETRY_SEC=0 BR_CYCLES=2 br run
+[ "$(sends)" -ge 1 ] && ! grep -q 'router exit' "$T/br/route.err" 2>/dev/null; chk "(w20 item8) never-held id with router exit 3 still delivers fail-safe, no held line" $?
+# 10: ack / ackone remove the markers; markers whose queue file is gone are swept
+fresh; evf taskfile "[\"$T/held-ack.md\"]" > "$T/ev"; rm -f "$T/held-ack.md"; BR_CYCLES=6 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"
+[ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ]; chk "(w20 item10) precondition: held and held-log markers exist" $?
+env_ bash "$BR" ack "$hid" >/dev/null
+[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 1 ]; chk "(w20 item10) ack <id> removes held and held-log markers" $?
+fresh; evf taskfile "[\"$T/held-del.md\"]" > "$T/ev"; rm -f "$T/held-del.md"; BR_CYCLES=6 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"; env_ RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 BR_CYCLES=1 bash "$BR" run
+[ -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) precondition: rc stamp exists" $?
+rm -f "$T/br/queue/$hid.json"; BR_CYCLES=1 br run
+[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ ! -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) markers of a queue file deleted by hand are swept on the next cycle" $?
+fresh; evf taskfile "[\"$T/held-all.md\"]" > "$T/ev"; rm -f "$T/held-all.md"; BR_CYCLES=1 br run
+hid="$(basename "$(only "$T/br/queue")" .json)"; rm -f "$T/br/queue/$hid.json"; env_ bash "$BR" ack --all >/dev/null
+[ ! -e "$T/rt/held/$hid" ]; chk "(w20 item10) ack --all sweeps markers with no queue file" $?
+
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f
