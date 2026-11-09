@@ -14,7 +14,7 @@ D="$here/.local/bin/carbon-alive-discord.sh"; wf="$XDG_CONFIG_HOME/carbon-alive/
 SECRET="TOKENsecret9f3a"; URL="https://discord.example/api/webhooks/123/$SECRET"
 alert='{"kind":"alert","host":"testhost","state":"gateway-down","since":1,"outage_since":1,"states":["gateway-down","bus-down"],"at":2,"text":"x","readings":{"host_up":"1","gateway":"failed"}}'
 setwf() { rm -f "$wf"; printf '%s\n' "$2" > "$wf"; chmod "$1" "$wf"; }
-creset() { rm -rf "$CA_CURL_LOG"; mkdir -p "$CA_CURL_LOG"; unset CA_FAKE_HTTP CA_FAKE_CURL_RC; }
+creset() { rm -rf "$CA_CURL_LOG"; mkdir -p "$CA_CURL_LOG"; unset CA_FAKE_HTTP CA_FAKE_HTTP_SEQ CA_FAKE_CURL_RC; }
 calls() { [ -f "$CA_CURL_LOG/calls" ] && wc -l < "$CA_CURL_LOG/calls" || echo 0; }
 
 creset; setwf 600 "$URL"; printf '%s' "$alert" | "$D" alert > "$T/out" 2>&1; r=$?
@@ -52,8 +52,36 @@ ob="$XDG_STATE_HOME/carbon-alive/outbox.jsonl"
 export CA_FAKE_HTTP=500 CA_FAKE_RC=255; run; run
 [ "$(calls)" = 1 ] && [ "$(wc -l < "$ob")" = 1 ] && ok "8 carbon-alive default deliverer, curl 500 -> alert stays in outbox" || bad "8 outbox on 500 (calls=$(calls))"
 unset CA_FAKE_HTTP CA_FAKE_RC; run
-[ "$(calls)" = 3 ] && [ ! -s "$ob" ] && grep -q '"content": "carbon-alive\[testhost\] recovery' "$CA_CURL_LOG/stdin" \
+[ "$(calls)" = 3 ] && [ ! -s "$ob" ] && grep -q '"content": "1970-01-12T[0-9:]*Z carbon-alive\[testhost\] recovery' "$CA_CURL_LOG/stdin" \
   && ok "9 next run 204 -> outbox replayed, then recovery delivered" || bad "9 replay (calls=$(calls))"
 ! grep -rqF "$SECRET" "$XDG_STATE_HOME" && ok "10 URL absent from state dir" || bad "10 URL leaked to state"
+
+# G2: HTTP 4xx other than 429 = permanent (exit 3); 429 and 5xx = retry (exit 1)
+creset; setwf 600 "$URL"; export CA_FAKE_HTTP=400; printf '%s' "$alert" | "$D" alert > "$T/out" 2>&1; r400=$?
+export CA_FAKE_HTTP=429; printf '%s' "$alert" | "$D" alert > "$T/out2" 2>&1; r429=$?
+[ "$r400" = 3 ] && [ "$r429" = 1 ] && ! grep -qF "$SECRET" "$T/out" "$T/out2" && ok "11 http 400 -> exit 3, 429 -> exit 1 ($r400/$r429)" \
+  || bad "11 4xx exit codes $r400/$r429"
+
+# (n) via carbon-alive.sh: 400 for the first outbox entry, 204 after -> first dead-lettered, second delivered, URL never logged
+creset; rm -rf "$XDG_STATE_HOME"; mkdir -p "$XDG_STATE_HOME/carbon-alive"; setwf 600 "$URL"; clock=1000000
+for i in 1 2; do echo "{\"kind\":\"alert\",\"host\":\"h\",\"state\":\"bus-down\",\"at\":$i,\"id\":\"e$i\",\"readings\":{}}"; done > "$ob"
+export CA_FAKE_HTTP_SEQ="400 204"; run 2> "$T/err"; unset CA_FAKE_HTTP_SEQ
+dead="$XDG_STATE_HOME/carbon-alive/outbox.dead.jsonl"
+[ "$(calls)" = 2 ] && grep -q '"id":"e1"' "$dead" && ! grep -q '"id":"e2"' "$dead" && [ ! -s "$ob" ] \
+  && python3 -I -c 'import json,sys;c=json.load(open(sys.argv[1]))["content"];assert c.startswith("1970-01-01T00:00:02Z REPLAY 1970-01-12T13:46:40Z "),c' "$CA_CURL_LOG/stdin" \
+  && grep -q 'kind=alert state=bus-down at=1 permanently, moved to outbox.dead.jsonl' "$T/err" && ! grep -qF "$SECRET" "$T/err" \
+  && ! grep -qF discord.example "$T/err" && ok "n 400 then 204 -> e1 in outbox.dead.jsonl, e2 delivered, one log line without the URL" \
+  || { bad "n dead-letter (calls=$(calls))"; cat "$T/err"; }
+
+# (p) G3: replayed entry -> text starts with the original at, then REPLAY and the replay time
+creset; setwf 600 "$URL"
+ra='{"kind":"alert","host":"testhost","state":"bus-down","executor":"stale","at":1762700000,"replay_at":1762703600,"states":["bus-down"],"readings":{"bus":"down"}}'
+printf '%s' "$ra" | "$D" alert >/dev/null 2>&1; r=$?
+[ "$r" = 0 ] && python3 -I -c 'import json,sys;c=json.load(open(sys.argv[1]))["content"]
+assert c.startswith("2025-11-09T14:53:20Z REPLAY 2025-11-09T15:53:20Z carbon-alive[testhost] alert: state=bus-down executor=stale "),c' "$CA_CURL_LOG/stdin" \
+  && ok "p replayed entry -> text starts with original at, REPLAY, replay time; names executor" || { bad "p replay text"; cat "$CA_CURL_LOG/stdin"; }
+printf '%s' "${ra/,\"replay_at\":1762703600/}" | "$D" alert >/dev/null 2>&1
+python3 -I -c 'import json,sys;c=json.load(open(sys.argv[1]))["content"];assert c.startswith("2025-11-09T14:53:20Z carbon-alive[") and "REPLAY" not in c,c' "$CA_CURL_LOG/stdin" \
+  && ok "p2 fresh entry -> at time first, no REPLAY" || bad "p2 fresh text"
 
 echo "carbon-alive-discord.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
