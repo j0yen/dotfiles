@@ -45,8 +45,9 @@ def now(): return datetime.datetime.now().astimezone().isoformat(timespec="secon
 def append(name, obj):
     with open(os.path.join(RT, name), "a") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
 def wjson(path, obj):
-    with open(path + ".tmp", "w") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
-    os.replace(path + ".tmp", path)
+    tmp = "%s.tmp.%d.%s" % (path, os.getpid(), os.urandom(4).hex())
+    with open(tmp, "w") as f: f.write(json.dumps(obj, sort_keys=True) + "\n")
+    os.replace(tmp, path)
 def rjson(path):
     try: return json.load(open(path))
     except Exception: return None
@@ -251,15 +252,39 @@ def run_action(k, appr, act):
     """Launch the typed action under the approval (its own receipt: obligations/<key>.run.json); idempotent on replay. False = the runner itself failed."""
     if act is None: return True
     p = subprocess.run(["python3", "-I", RUN_BIN, "run", "--dir", OD, "--key", k, "--approval", appr, "--action", json.dumps(act)], capture_output=True, text=True)   # no kill timer: the hang guard is the owner-set OBL_RUN_TIMEOUT_SEC inside the runner
+    if p.returncode == 75:   # a live owner already runs this key: UNKNOWN, retry later (distinct code), never a second execution
+        sys.stderr.write("action-in-flight: %s (retry later)\n" % k); sys.exit(75)
     return p.returncode == 0
+LOCKTMO = float(os.environ.get("RT_KEYLOCK_TIMEOUT_S") or 60)
+def keylock(name):
+    """Per-key mutual exclusion for query-prior -> open_row (check-then-act). Blocking flock polled to a bounded timeout; returns the held fd, or None on timeout/error (callers fail closed to row-write-failed). Never held across run_action."""
+    try:
+        os.makedirs(OD, exist_ok=True)
+        fd = os.open(os.path.join(OD, name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    except Exception:
+        return None
+    end = time.time() + LOCKTMO
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); return fd
+        except OSError:
+            if time.time() >= end: os.close(fd); return None
+            time.sleep(0.05)
+def unlock(fd):
+    try: os.close(fd)   # closing releases the flock
+    except Exception: pass
 def surface(text, waits, key):
     """One owned row per obligation key (dedupe by the key marker); the event marker is kept so the bridge's evidence check passes."""
     marker = "okey:" + key
-    q = asks_cmd("query", "--json", "--status", "all", "--text", marker)
-    if q.returncode != 0: return None
-    hit = [r for r in json.loads(q.stdout or "[]") if marker + " " in r["what"] + " "]
-    if hit: return ""    # already surfaced by an earlier event: no second row, nothing executes
-    return open_row(text, waits, extra=" " + marker)
+    fd = keylock(key)
+    if fd is None: return None
+    try:
+        q = asks_cmd("query", "--json", "--status", "all", "--text", marker)
+        if q.returncode != 0: return None
+        hit = [r for r in json.loads(q.stdout or "[]") if marker + " " in r["what"] + " "]
+        if hit: return ""    # already surfaced by an earlier event: no second row, nothing executes
+        return open_row(text, waits, extra=" " + marker)
+    finally: unlock(fd)
 
 if kind == "obligation":
     keys = []
@@ -296,6 +321,12 @@ if kind == "inbox" and any("-OBLIGATION" in l for l in lines):
         qd = asks_cmd("query", "--json", "--status", "all", "--text", "event:" + eid)
         done = [x for x in (json.loads(qd.stdout or "[]") if qd.returncode == 0 else []) if "authorized continuation of" in x["what"] and ("okey:" + k + " ") in x["what"] + " "]
         if done:   # replay after a restart: the row of THIS event exists; finish the resolve + receipt, never open a second row
+            first = re.search(r"\(approval (#[0-9]+)\)", done[0]["what"])   # the approval the first pass verified
+            ao = "differs-from-first-pass" if (first and first.group(1) != appr) else approval_ok(appr, i)   # re-read the approvals record: a revoked or swapped approval does not finish
+            if ao != "ok":
+                got = surface("replay of approval %s for obligation %s refused: %s (first pass %s; not executed)" % (appr, k, ao, first.group(1) if first else "?"), "ctl-reads-approval", "line." + k + "." + appr.lstrip("#") + ".replay")
+                if got is None: sys.exit("row-write-failed")
+                outcomes.append({"key": k, "result": "refused-replay-approval-" + ao}); continue
             if resolve(i, r, h, appr, False) not in ("ok", "already"): sys.exit("resolve-failed")
             os.makedirs(OD, exist_ok=True)
             wjson(os.path.join(OD, k + ".handled.json"), {"key": k, "approval": appr, "row": done[0]["ask_id"], "event": eid, "ts": now()})
@@ -315,12 +346,20 @@ if kind == "inbox" and any("-OBLIGATION" in l for l in lines):
             if got is None: sys.exit("row-write-failed")
             outcomes.append({"key": k, "result": "refused-" + st}); continue
         act = typed_action(i, r, h)
-        if act:   # typed spec: the runner does the work under the approval and the done-check reads its receipt
-            rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): typed action %s runs under the approval; done when its receipt %s/%s.run.json has rc 0" % (k, appr, act.get("verb"), OD, k),
-                           "ctl-works-continuation", chk="python3 -I %s check --dir %s --key %s" % (RUN_BIN, OD, k), extra=" okey:" + k)
-        else:
-            rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): do the suggested work, then touch %s/%s.done" % (k, appr, OD, k),
-                           "ctl-works-continuation", chk="test -e %s/%s.done" % (OD, k), extra=" okey:" + k)
+        lk = keylock(k)   # serialize query-prior -> open_row per key; released before run_action
+        if lk is None: sys.exit("row-write-failed")
+        try:
+            qk = asks_cmd("query", "--json", "--status", "all", "--text", "okey:" + k)   # a continuation row opened by an EARLIER event for this key is the one row
+            if qk.returncode != 0: sys.exit("row-write-failed")
+            prior = [x for x in json.loads(qk.stdout or "[]") if "authorized continuation of" in x["what"] and ("okey:" + k + " ") in x["what"] + " "]
+            if prior: rid = prior[0]["ask_id"]
+            elif act:   # typed spec: the runner does the work under the approval and the done-check reads its receipt
+                rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): typed action %s runs under the approval; done when its receipt %s/%s.run.json has rc 0" % (k, appr, act.get("verb"), OD, k),
+                               "ctl-works-continuation", chk="python3 -I %s check --dir %s --key %s" % (RUN_BIN, OD, k), extra=" okey:" + k)
+            else:
+                rid = open_row("authorized continuation of suggestion-only obligation %s (approval %s): do the suggested work, then touch %s/%s.done" % (k, appr, OD, k),
+                               "ctl-works-continuation", chk="test -e %s/%s.done" % (OD, k), extra=" okey:" + k)
+        finally: unlock(lk)
         if rid is None: sys.exit("row-write-failed")
         if resolve(i, r, h, appr, False) not in ("ok", "already"): sys.exit("resolve-failed")
         os.makedirs(OD, exist_ok=True)
