@@ -248,5 +248,23 @@ printf 'Dispatch: ctl\x0c\nTASK: ff trailing\n' > "$T/ff2.md"
 fresh; evf taskfile "[\"$T/ff2.md\"]" > "$T/ev"; br run
 [ "$(calls)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 3e) marker line with trailing form feed is still marked (dispatcher [[:space:]])" $?
 
+# 5b: a held id stays queued but never reaches the pane or the pending list; recovery routes normally; non-held unrouted still delivers fail-safe
+fresh; evf taskfile "[\"$T/held-late.md\"]" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; rm -f "$T/held-late.md"; RETRY_SEC=0 BR_CYCLES=4 br run
+[ "$(sends)" = 0 ] && [ "$(q)" = 1 ] && [ "$(calls)" = 0 ]; chk "(w20 5b) held id: 0 pane sends over 4 cycles (RETRY_SEC=0), still queued, 0 model calls" $?
+[ -z "$(env_ bash "$BR" pending)" ]; chk "(w20 5b) held id is not listed by pending" $?
+env_ bash "$BR" ack --all >/dev/null; [ "$(q)" = 1 ]; chk "(w20 5b) ack --all leaves the held id queued" $?
+printf 'TASK: held recovery job\n' > "$T/held-late.md"; RETRY_SEC=0 BR_CYCLES=3 br run
+[ "$(rolecalls exe)" = 1 ] && [ "$(d)" = 1 ] && [ "$(q)" = 0 ]; chk "(w20 5b) recovery: readable file routes and executes once, id acked" $?
+fresh; evf taskfile "[\"$T/held-late2.md\"]" > "$T/ev"; rm -f "$T/held-late2.md"; BR_CYCLES=1 br run
+printf 'Dispatch: ctl\nTASK: x\n' > "$T/held-late2.md"; RETRY_SEC=0 BR_CYCLES=3 br run
+[ ! -e "$T/rt/held/$(basename "$(only "$T/br/done")" .json)" ] && [ "$(sends)" = 0 ] && [ "$(d)" = 1 ]; chk "(w20 5b) recovery with a marked file: held marker cleared, never sent to the pane" $?
+fresh; printf '%s\n' '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN=/nonexistent RETRY_SEC=0 BR_CYCLES=2 br run
+[ "$(sends)" -ge 1 ]; chk "(w20 5b) non-held id with no cached route (router absent) still delivers fail-safe" $?
+# 5a: held log/mech repeats bounded per id
+fresh; evf taskfile "[\"$T/held-late3.md\"]" > "$T/ev"; rm -f "$T/held-late3.md"; BR_CYCLES=6 br run
+[ "$(grep -c UNKNOWN "$T/rt/mechanical.log")" = 1 ] && [ "$(grep -c held: "$T/br/route.err")" = 1 ]; chk "(w20 5a) 6 held cycles: 1 UNKNOWN mech line and 1 route.err line" $?
+env_ HELD_LOG_SEC=0 BR_CYCLES=3 bash "$BR" run
+[ "$(grep -c UNKNOWN "$T/rt/mechanical.log")" -ge 3 ]; chk "(w20 5a) HELD_LOG_SEC=0 logs every cycle (cap is the window)" $?
+
 echo "ctl-event-route test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $f

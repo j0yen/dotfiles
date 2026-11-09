@@ -53,8 +53,10 @@ json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"
 
 # A1255: the row marker is looked up in the canonical ledger (asks-view); no TSV file is read or passed on.
 cached_route() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" route; }
-deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes never reach the pane
+held() { [ -e "$RTD/held/$1" ]; } # the router held this id (exit 75, an unreadable file): queued, but nothing acts on it until it routes
+deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes and held ids never reach the pane
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
+  held "$1" && return 1
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
 evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in the canonical ledger
@@ -71,8 +73,12 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     c="$RTD/routed/$id.json"
-    [ -f "$c" ] || RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err" || true
+    if [ ! -f "$c" ]; then
+      RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err"
+      if [ $? -eq 75 ]; then mkdir -p "$RTD/held" && : > "$RTD/held/$id"; fi
+    fi
     [ -f "$c" ] || continue
+    rm -f "$RTD/held/$id"
     rt="$(jget "$c" route)"
     if [ "$rt" = fable ] && [ "${BR_FABLE:-1}" != 0 ] && [ -x "$FEB" ]; then   # real escalation (A1148 defect 11-07): separate Fable process, once per id
       ( setsid "$FEB" "$f" >> "$BR/fable-esc.log" 2>&1 & ) 
@@ -159,7 +165,7 @@ ack() {
   [ -n "$want" ] || { echo "usage: ack <id>|--all" >&2; return 2; }
   mkdir -p "$BR/queue" "$BR/done"
   if [ "$want" = "--all" ]; then
-    for f in "$BR"/queue/*.json; do [ -f "$f" ] && ackone "$f" && n=$((n+1)); done
+    for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && ackone "$f" && n=$((n+1)); done
     echo "acked $n"; return 0
   fi
   [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$BR/queue/$want.json" ] || { echo "unknown id: $want" >&2; return 1; }
@@ -191,7 +197,7 @@ selftest() {
 
 case "${1:-}" in
   run) run ;;
-  pending) for f in "$BR"/queue/*.json; do [ -f "$f" ] && { cat "$f"; echo; }; done; exit 0 ;;
+  pending) for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && { cat "$f"; echo; }; done; exit 0 ;;
   ack) shift; ack "${1:-}" ;;
   status) cat "$BR/status.json" 2>/dev/null || echo '{"status":"no status yet"}' ;;
   --selftest) selftest ;;

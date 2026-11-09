@@ -227,8 +227,14 @@ if kind != "verifier" and files:   # W20: a file carrying the approved `Dispatch
     _st = {f: _state(f) for f in files}
     _unknown = [f for f in files if _st[f] == "unknown"]
     if _unknown:   # a missing, unreadable or non-regular file cannot be proven unmarked: hold the whole event (no cache, no ack, no prompt); the bridge re-routes the queued id every cycle until every file is readable
-        mech({"result": "UNKNOWN", "unknown": _unknown, "held": True})
-        sys.exit("held: unknown file state, retry")
+        _hl = os.path.join(RT, "held-log"); _hs = os.path.join(_hl, eid)   # one mech + stderr line per id per HELD_LOG_SEC (default 900); exit 75 = held, read by the bridge
+        try: _quiet = time.time() - os.path.getmtime(_hs) < float(os.environ.get("HELD_LOG_SEC", "900"))
+        except OSError: _quiet = False
+        if not _quiet:
+            mech({"result": "UNKNOWN", "unknown": _unknown, "held": True})
+            os.makedirs(_hl, exist_ok=True); open(_hs, "w").close()
+            sys.stderr.write("held: unknown file state, retry\n")
+        sys.exit(75)
     _owned = [f for f in files if _st[f] == "marked"]
     if _owned and len(_owned) == len(files):
         mech({"result": "dispatch-owned", "files": files})
