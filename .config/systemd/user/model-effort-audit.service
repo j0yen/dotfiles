@@ -1,0 +1,7 @@
+[Unit]
+Description=Deterministic model/effort policy drift audit (ledger A1159; no model calls)
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/model-effort-audit.sh --notify
+SuccessExitStatus=1
+Nice=10

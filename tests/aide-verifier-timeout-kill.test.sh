@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/aide-verifier-timeout-kill.test.sh: (1) the aide-verifier.sh --selftest TKG cases (stubs only: default timeout 2400, --timeout 5400 reaches `timeout`, 99999/59/abc exit 2,
+# tests/aide-verifier-timeout-kill.test.sh: (1) the aide-verifier.sh --selftest TKG cases (stubs only, no-cap contract: launch.sh has no exec timeout wrapper, --timeout is informational (meta timeout_s, lint 60..7200: 99999/59/abc exit 2),
 # finish reports timeout_s, launch.sh deny rules + unit-scoped hook, prompt line); (2) verifier-kill-guard.sh refuses pkill/killall/kill-by-pattern and allows `kill 12345`.
 # No claude, no systemd unit, no real row. Run: bash tests/aide-verifier-timeout-kill.test.sh
 set -u
@@ -9,8 +9,10 @@ fail=0
 pass() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 th=$(mktemp -d "${TMPDIR:-/tmp}/avtk-test.XXXXXX"); trap 'rm -rf "$th"' EXIT
-out=$(HOME="$th" bash "$script" --selftest 2>&1)
-for c in 'default launch.sh runs' '--timeout 5400 reaches' '--timeout 99999 -> exit 2' '--timeout 59 -> exit 2' '--timeout abc -> exit 2' 'finish reports the recorded timeout_s' 'launch.sh denies Bash(pkill' 'prompt forbids pkill'; do
+# the selftest launches are refused on a host named carbon (CARBON no-suites rule), so run it under a hostname shim: the cases test the script, not the host
+mkdir -p "$th/shim"; printf '#!/bin/sh\necho ryzen7\n' >"$th/shim/hostname"; chmod +x "$th/shim/hostname"
+out=$(PATH="$th/shim:$PATH" HOME="$th" bash "$script" --selftest 2>&1)
+for c in 'default launch.sh has no timeout wrapper' '--timeout 5400 reaches meta only' '--timeout 99999 -> exit 2' '--timeout 59 -> exit 2' '--timeout abc -> exit 2' 'finish reports the recorded timeout_s' 'TKG effort: sonnet launch.sh carries --effort medium' 'TKG effort: opus launch.sh carries --effort high' 'launch.sh denies Bash(pkill' 'prompt forbids pkill'; do
   printf '%s\n' "$out" | grep -F 'PASS TKG ' | grep -qF -- "$c" && pass "selftest TKG: $c" || { bad "selftest TKG case missing or failing: $c"; printf '%s\n' "$out" | grep -F 'TKG' | head -n 12; }
 done
 printf '%s\n' "$out" | grep -q '^FAIL' && { bad "selftest has a FAIL line"; printf '%s\n' "$out" | grep -n '^FAIL' | head -n 20; printf '%s\n' "$out" | tail -n 1; } || pass "selftest has no FAIL line"

@@ -27,3 +27,29 @@ followups_line() {
   { [ "$n" = 0 ] && [ "$m" = 0 ]; } && return 0
   jq -r --arg s "$1" '(.ids // []) as $i | "FOLLOW-UPS OWED (seat \($s)): \(.owed) owed, \((.overdue // 0) + (.escalated // 0)) overdue: " + ([$i[0:10][] | "\(.id) \(.age_h)h \(.state)"] | join(", ")) + (if ($i|length) > 10 then " and \(($i|length) - 10) more" else "" end)' <<<"$j"
 }
+
+# ---- canonical obligation evaluator (ledger asks A1307, A1346) ---------------------------------------------------------------------------
+# ONE evaluator: .local/bin/followup-eval.py reads the canonical store (`wm-asks asks query --status open --json`) and the seat's overdue or escalated
+# `wm-decide followups` ids, gives each a disposition, and persists ONE fingerprint file (fingerprints.json) plus an outbox under one flock. An unchanged
+# obligation escalates exactly once; a new id, a changed rev, a changed disposition or an expired next_check is a new fingerprint. The functions below
+# only call it: it ships from the same tree as the hooks, so a missing evaluator allows (no second copy to drift).
+# Env: WM_ASKS_BIN WM_DECIDE_BIN FOLLOWUP_STATE_DIR FOLLOWUP_OUTBOX FOLLOWUP_DELIVER_CMD FOLLOWUP_WORKER_ALIVE_CMD FOLLOWUP_NOW FOLLOWUP_EVAL (tests).
+fu_eval_bin() {
+  local c here
+  here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  for c in "${FOLLOWUP_EVAL:-}" "$here/../../.local/bin/followup-eval.py" "$HOME/.local/bin/followup-eval.py"; do [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }; done
+  return 1
+}
+# fu_eval <seat> : FU_EVAL = JSON array of {id,due,kind,detail,...} for the seat's actionable obligations; rc 1 + FU_REASON when the ledger cannot be read.
+fu_eval() {
+  local ev out
+  FU_EVAL="[]"; FU_REASON=""
+  ev="$(fu_eval_bin)" || { FU_REASON="followup-eval.py absent"; return 1; }
+  out="$(python3 -I "$ev" eval --seat "$1" 2>/dev/null)" || { FU_REASON="evaluation failed"; return 1; }
+  FU_REASON="$(jq -r '.error // empty' <<<"$out" 2>/dev/null)"; [ -z "$FU_REASON" ] || return 1
+  FU_EVAL="$(jq -c '[.dispositions[] | select(.actionable)]' <<<"$out" 2>/dev/null)" || { FU_REASON="evaluation failed"; FU_EVAL="[]"; return 1; }
+  return 0
+}
+fu_new_obligations() { local ev; ev="$(fu_eval_bin)" || return 0; python3 -I "$ev" new --seat "$1" 2>/dev/null | jq -c '.new[]?' 2>/dev/null; return 0; }
+fu_outbox_replay() { local ev; ev="$(fu_eval_bin)" || return 0; python3 -I "$ev" replay >/dev/null 2>&1; return 0; }
+fu_block_reason() { local ev; ev="$(fu_eval_bin)" || return 0; python3 -I "$ev" reason <<<"$1" 2>/dev/null; }

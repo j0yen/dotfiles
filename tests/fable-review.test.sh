@@ -18,7 +18,7 @@ R="$here/.local/bin/fable-review.sh"
 res=$("$R" "$T/page.md" 2>"$T/err"); rc=$?
 chk "exit 0 and row id printed" "$([ $rc = 0 ] && grep -q '^d-2026.* VERDICT: APPROVE-WITH-EDITS' <<<"$res" && echo 0 || echo 1)" "rc=$rc res=$res"
 chk "page inline on stdin" "$(grep -q 'body line' "$T/stdin" && echo 0 || echo 1)" ""
-chk "fable model + xhigh + empty tools" "$(grep -qx claude-fable-5-1 "$T/args" && grep -qx xhigh "$T/args" && grep -qx -- --tools "$T/args" && echo 0 || echo 1)" "$(cat "$T/args")"
+chk "fable model + high + empty tools" "$(grep -qx claude-fable-5-1 "$T/args" && grep -qx high "$T/args" && grep -qx -- --tools "$T/args" && echo 0 || echo 1)" "$(cat "$T/args")"
 chk "row kind design, via fable-review, verdict in what" "$(grep -qx design "$T/rec" && grep -qx fable-review "$T/rec" && grep -q 'VERDICT: APPROVE-WITH-EDITS' "$T/rec" && echo 0 || echo 1)" "$(cat "$T/rec")"
 rm -f "$T/rec"; FAKE_VERDICT="no verdict here" "$R" "$T/page.md" >/dev/null 2>"$T/err"; rc=$?
 chk "unparseable: exit 3, no row" "$([ $rc = 3 ] && [ ! -e "$T/rec" ] && echo 0 || echo 1)" "rc=$rc"

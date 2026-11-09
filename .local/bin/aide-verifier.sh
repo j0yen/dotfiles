@@ -36,7 +36,7 @@
 #       3 CEILING  active (aide|rb|r7)-verifier-* units (own unit excluded) must be < SLOT_CEIL (4): exit 2 without --queue, else wait.
 #       4 ROOM     need = max(PEAK_MB, PEAK_MB x (active+1) - SUM_cur) MB, PEAK_MB = 1024 (the per-verifier admission price), SUM_cur = sum of MemoryCurrent of the active
 #         units (their current RSS is already out of MemAvailable, their remaining ramp is not); `carbon-room.sh <need> --json` must exit 0: else exit 3 without --queue, else wait.
-#         MemoryMax=2G per unit stays the kill ceiling, not the price. Then systemd-run (lock fd closed for the unit).
+#         The unit starts with MemoryMax=infinity and TasksMax=infinity (W11 no worker caps, caps C187); PEAK_MB stays the admission price. Then systemd-run (lock fd closed for the unit).
 #       5 LOAD     load1 (first field of /proc/loadavg; AIDE_VERIFIER_LOADAVG_FILE overrides, tests) + 2 x active (aide|rb|r7)-verifier-* units (own excluded) must be
 #         < AIDE_VERIFIER_MAX_LOAD (default 2 x nproc, caps C186, A650; minimum 1; an integer >= 1 else exit 9): exit 13 without --queue, else wait up to AIDE_VERIFIER_LOAD_WAIT_S
 #         (default = QUEUE_MAX_S) then exit 6. Evaluated under the same lock as the launch. A loaded host makes pytest skip its load-guarded tests (SYNTHORG_LOAD_GUARD=1), see finish.
@@ -469,7 +469,7 @@ cmd_launch() {
     shift 2
   done
   # ---- LINT ----
-  # unit timeout: --timeout, else AIDE_VERIFIER_TIMEOUT_S (outside the selftest, where that name is the command timeout), else 2400
+  # --timeout (informational since W11: linted and recorded in meta, never a kill; launch.sh has no timeout wrapper), else AIDE_VERIFIER_TIMEOUT_S (outside the selftest, where that name is the command timeout), else 2400
   if [ -z "$VTIMEOUT" ] && [ "${AIDE_VERIFIER_SELFTEST:-}" != 1 ]; then VTIMEOUT="${AIDE_VERIFIER_TIMEOUT_S:-}"; fi
   [ -n "$VTIMEOUT" ] || VTIMEOUT=2400
   [[ "$VTIMEOUT" =~ ^[0-9]{1,4}$ ]] && [ "$VTIMEOUT" -ge 60 ] && [ "$VTIMEOUT" -le 7200 ] || die 2 "lint: --timeout must be an integer from 60 to 7200 seconds (got '$VTIMEOUT')"
@@ -480,7 +480,7 @@ cmd_launch() {
   [[ "$GATED" =~ ^d-[0-9]{8}-[0-9]{6}-[a-z0-9]+-[0-9a-f]{4}$ ]] || die 2 "lint: --gated must look like d-YYYYMMDD-HHMMSS-<agent>-<4hex>"
   [ -n "${TOKEN//[[:space:]]/}" ] || die 2 "lint: --token (the G3 token line) is empty"
   case "$TOKEN" in *'"'*|*'`'*|*'$'*|*$'\n'*) die 2 "lint: --token must not contain \" \` \$ or a newline" ;; esac
-  case "$MODEL" in sonnet) MODEL_ID=claude-sonnet-5-5 ;; opus) MODEL_ID=claude-opus-5-5 ;; *) die 2 "lint: --model must be sonnet or opus (got '$MODEL')" ;; esac
+  case "$MODEL" in sonnet) MODEL_ID=claude-sonnet-5-5; EFFORT=medium ;; opus) MODEL_ID=claude-opus-5-5; EFFORT=high ;; *) die 2 "lint: --model must be sonnet or opus (got '$MODEL')" ;; esac
   if [ -n "$LOG" ] && [ -n "$SUITE" ]; then die 2 "lint: --log and --suite are mutually exclusive"; fi
   if [ -z "$LOG" ] && [ -z "$SUITE" ]; then die 2 "lint: give exactly one of --suite '<cmd>' or --log <path>"; fi
   LOGHOST=""; LOGFETCH=""; CMDCHECK=""; LOGNOTE=""
@@ -631,16 +631,16 @@ cmd_launch() {
     printf 'D=%q\n' "$DIR"
     echo 'cd "$D" || exit 70'
     # --disallowedTools is variadic: it is the last option and `--` ends it before the prompt operand
-    printf 'exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-%s}" %q -p --dangerously-skip-permissions --model %s --output-format json --settings "$D/settings.json" --disallowedTools %q %q -- "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$VTIMEOUT" "$claude" "$MODEL_ID" 'Bash(pkill:*)' 'Bash(killall:*)'
+    printf 'exec %q -p --dangerously-skip-permissions --model %s --effort %s --output-format json --settings "$D/settings.json" --disallowedTools %q %q -- "$(cat "$D/prompt.md")" > "$D/result.json" 2> "$D/stderr.log"\n' "$claude" "$MODEL_ID" "$EFFORT" 'Bash(pkill:*)' 'Bash(killall:*)'
   } >"$DIR/launch.sh"
   chmod 755 "$DIR/launch.sh"
   printf '%s' "$SUITE" >"$DIR/suite.txt" || die 2 "cannot write $DIR/suite.txt"   # the EXACT rendered suite, no newline added: rb-merge.sh admits only the log whose CMD equals it (fef9)
-  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\nlog=%s\nsuite_sha256=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$LOG" "$(sha256sum "$DIR/suite.txt" | cut -d' ' -f1)" >"$DIR/meta"
+  printf 'repo=%s\npr=%s\nhead=%s\ngated=%s\ntoken=%s\nagent=%s\ntimeout_s=%s\nmodel=%s\neffort=%s\nlog=%s\nsuite_sha256=%s\n' "$REPO" "$PR" "$HEAD" "$GATED" "$TOKEN" "$AGENT" "$VTIMEOUT" "$MODEL" "$EFFORT" "$LOG" "$(sha256sum "$DIR/suite.txt" | cut -d' ' -f1)" >"$DIR/meta"
   write_hook "$DIR" || die 2 "cannot write the verifier hook in $DIR"
   # main's verifier-kill-guard.sh stays as a second PreToolUse entry after the vtg1 hook (entry 0)
   jq --arg h "$(dirname "$SELF")/verifier-kill-guard.sh" '.hooks.PreToolUse += [{matcher:"Bash",hooks:[{type:"command",command:$h}]}]' "$DIR/settings.json" >"$DIR/settings.json.new" && mv "$DIR/settings.json.new" "$DIR/settings.json" || die 2 "cannot write $DIR/settings.json"
   # ---- start ----
-  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
+  if ! timeout "$CMD_TIMEOUT_S" "$SD_RUN" --user --unit "$unit" -p MemoryMax=infinity -p TasksMax=infinity -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME="$HOME" --setenv=PATH="$UNIT_PATH" "$DIR/launch.sh" >"$DIR/run.out" 2>&1 9>&-; then
     echo "$(iso) launch-failed unit=$unit: $(head -c 300 "$DIR/run.out" | tr '\n' ' ')" >>"$DIR/state"
     die 1 "systemd-run failed: $(head -c 300 "$DIR/run.out" | tr '\n' ' ' | redact)"
   fi
@@ -1209,7 +1209,7 @@ F
   out="$(L ok1 "${A[@]}" --head "$H" --notes 'a "quoted" note; $(not run)' --expect '663 tests')"; rc=$?
   local D="$T/av/ok1"
   [ "$rc" = 0 ] && [ "$out" = aide-verifier-ok1 ]; chk "launch ok: exit 0, prints the unit name" $?
-  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=2G -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=2G, CPUWeight, Nice, IOWeight, HOME, PATH, launch.sh" $?
+  grep -q -- "--user --unit aide-verifier-ok1 -p MemoryMax=infinity -p TasksMax=infinity -p CPUWeight=20 -p Nice=10 -p IOWeight=20 --setenv=HOME=$T/home --setenv=PATH=.*/.local/bin.*:/usr/bin:/bin $D/launch.sh\$" "$T/sdrun.log"; chk "systemd-run argv: unit, MemoryMax=infinity, TasksMax=infinity, CPUWeight, Nice, IOWeight, HOME, PATH, launch.sh" $?
   grep -q "$H" "$D/prompt.md" && grep -q "$G" "$D/prompt.md" && grep -qF 'tests/*.test.sh EXIT=0' "$D/prompt.md" && grep -q 'HARD CONSTRAINTS' "$D/prompt.md" \
     && grep -qF '^[[:space:]]*(co-authored-by:|generated with)' "$D/prompt.md" && grep -q 'wm-verify-run' "$D/prompt.md" && grep -qF '$(not run)' "$D/prompt.md" \
     && grep -q -- "--what \"MERGE-OK j0yen/dotfiles#7 COMMIT=$H agent=verifier:aide-verifier-ok1 scope=suite recorded_by=unit:aide-verifier-ok1 session=own-headless-claude-p" "$D/prompt.md" \
@@ -1261,9 +1261,12 @@ F
   grep -qF 'The merge gate admits only the one attached log whose CMD equals the suite above, run at the PR head on a clean tree; never wm-verify-run a cat/echo/printf/tee of an existing log, a script you wrote that replays one, or a self-written pass line. Attach only logs at the PR head with DIRTY=0 and no expected FAIL lines; cite mutation logs by path + sha256 in the bundle.' "$D/prompt.md" \
     && ! grep -q 'checks\.sh' "$D/prompt.md" && [ "$(grep -c 'wm-verify-run' "$D/prompt.md")" -ge 2 ] && [ "$(grep -c '^   cd \$d/repo && ~/.local/bin/wm-verify-run ' "$D/prompt.md")" = 1 ]; chk "vtg1 (v9): the rendered prompt states the no-replay sentence verbatim, keeps ONE wm-verify-run {{SUITE_Q}} call, and has no hand-written checks.sh advice" $?
   # ---- unit timeout + kill guard (TKG) ----
-  grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-2400}" ' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh runs timeout with AIDE_VERIFIER_TIMEOUT_S default 2400, meta timeout_s=2400" $?
+  ! grep -q 'timeout' "$D/launch.sh" && grep -q '^exec /' "$D/launch.sh" && grep -q '^timeout_s=2400$' "$D/meta"; chk "TKG timeout: default launch.sh has no timeout wrapper, meta timeout_s=2400 (informational)" $?
+  grep -qF -- '--model claude-sonnet-5-5 --effort medium --output-format json' "$D/launch.sh" && grep -q '^effort=medium$' "$D/meta"; chk "TKG effort: sonnet launch.sh carries --effort medium and meta effort=medium" $?
+  out="$(L tkgo "${A[@]}" --head "$H" --model opus)"; rc=$?
+  grep -qF -- '--model claude-opus-5-5 --effort high --output-format json' "$T/av/tkgo/launch.sh" && grep -q '^effort=high$' "$T/av/tkgo/meta" && [ "$rc" = 0 ]; chk "TKG effort: opus launch.sh carries --effort high and meta effort=high" $?
   out="$(L tkg5 "${A[@]}" --head "$H" --timeout 5400)"; rc=$?
-  grep -q '^exec timeout "${AIDE_VERIFIER_TIMEOUT_S:-5400}" ' "$T/av/tkg5/launch.sh" && grep -q '^timeout_s=5400$' "$T/av/tkg5/meta" && [ "$rc" = 0 ]; chk "TKG timeout: --timeout 5400 reaches the timeout command and meta" $?
+  ! grep -q 'timeout' "$T/av/tkg5/launch.sh" && grep -q '^timeout_s=5400$' "$T/av/tkg5/meta" && [ "$rc" = 0 ]; chk "TKG timeout: --timeout 5400 reaches meta only, launch.sh has no timeout wrapper" $?
   rm -f "$T/sdrun.log"; out="$(L tkg6 "${A[@]}" --head "$H" --timeout 99999)"; rc=$?
   [ "$rc" = 2 ] && [[ "$out" == *"60 to 7200"* ]] && [ ! -e "$T/sdrun.log" ] && [ ! -e "$T/av/tkg6" ]; chk "TKG timeout: --timeout 99999 -> exit 2, nothing started" $?
   out="$(L tkg7 "${A[@]}" --head "$H" --timeout 59)"; rc=$?; [ "$rc" = 2 ]; chk "TKG timeout: --timeout 59 -> exit 2" $?
@@ -1326,7 +1329,7 @@ F
   [ "$rc" = 2 ] && [[ "$out" == *"verifier cap reached"* ]]; chk "the cap spans agents: an rb- and an aide-verifier-* unit block an aide launch" $?
   : >"$T/active"; rm -f "$T/bell.log" "$T/wmd.log" "$T/sdrun.log"
   out="$(AIDE_VERIFIER_AGENT=r7 L ag1 "${A[@]}" --head "$H")"; rc=$?; D="$T/av/ag1"
-  [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=2G " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
+  [ "$rc" = 0 ] && [ "$out" = r7-verifier-ag1 ] && grep -q -- "--user --unit r7-verifier-ag1 -p MemoryMax=infinity -p TasksMax=infinity " "$T/sdrun.log"; chk "r7: unit r7-verifier-<name> (printed and passed to systemd-run)" $?
   grep -q -- "wm-decide record --agent r7 --via verifier --model sonnet --kind verdict --gates $G" "$D/prompt.md" \
     && grep -q -- "agent=verifier:r7-verifier-ag1 scope=suite recorded_by=unit:r7-verifier-ag1 session=own-headless-claude-p" "$D/prompt.md" \
     && ! sed "s|$T|<T>|g" "$D/prompt.md" | grep -qE -- '--agent aide|aide-verifier-'; chk "r7: template carries --agent r7, agent=verifier:r7-verifier-<name>, recorded_by=unit:r7-verifier-<name>, no aide unit/agent" $?

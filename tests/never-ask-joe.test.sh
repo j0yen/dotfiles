@@ -116,5 +116,8 @@ s="$here/.claude/settings.json"
 jq -e '[.hooks.Stop[].hooks[].command | select(endswith("never-ask-joe.sh"))] | length >= 1' "$s" >/dev/null && ok "settings: Stop entry" || bad "settings: Stop entry"
 jq -e '[.hooks.PreToolUse[] | select(.matcher=="AskUserQuestion") | .hooks[].command | select(endswith("never-ask-joe.sh"))] | length >= 1' "$s" >/dev/null && ok "settings: PreToolUse AskUserQuestion entry" || bad "settings: PreToolUse entry"
 
+# SIGPIPE regression: with WM_SEAT unset the hook must drain stdin, or a large writer upstream dies with rc 141 under pipefail.
+head -c 4000000 /dev/zero | tr '\0' 'x' | env -u WM_SEAT bash "$hook" >/dev/null 2>&1; rcs=("${PIPESTATUS[@]}")
+if [ "${rcs[0]}" -eq 0 ] && [ "${rcs[2]}" -eq 0 ]; then ok "WM_SEAT unset drains stdin (no SIGPIPE upstream)"; else bad "WM_SEAT unset drains stdin (rcs=${rcs[*]})"; fi
 echo "never-ask-joe.test.sh: pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

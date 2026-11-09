@@ -10,7 +10,8 @@ bad() { echo "FAIL $1"; fail=1; }
 chk() { if [ "$2" = 0 ]; then ok "$1"; else bad "$1"; fi; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-export HOME="$T/home"; mkdir -p "$HOME/.local/bin" "$HOME/.claude/state" "$HOME/.cache" "$HOME/.local/state" "$HOME/.config"
+export HOME="$T/home"; mkdir -p "$HOME/.local/bin" "$HOME/.claude/state" "$HOME/.cache" "$HOME/.local/state" "$HOME/.config/wm-decide"
+printf '%s\n' '{"ctl":{"model":"claude-sonnet-5-5","effort":"medium"}}' >"$HOME/.config/wm-decide/seat-model-hold.json"   # ctl-relaunch.sh validates the approved model policy before the hold gate
 ln -s "$bin/hold-gate.sh" "$HOME/.local/bin/hold-gate.sh"
 unset WM_SEAT WM_AIDE_LANE
 printf 'ctl\tticker\tsid-x\t20\t600\t-\t1\t-\n' >"$HOME/.claude/state/seats.tsv"
