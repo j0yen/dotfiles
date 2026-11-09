@@ -63,5 +63,5 @@ A denied route exits 64 before anything starts and writes a `denied` row. An all
 - `fable-skill-spawn-gate.sh`: unpinned fable-spawn skills print `--effort high`; 5whysandrhyme/wwhtbt SKILL.md pin `effort: high`.
 - `fable-review.sh` default effort `high` (`FABLE_REVIEW_EFFORT` overrides).
 - Test: `tests/fable-quota-routing.test.sh` (`FQR_ROOT=<tree>` replays it on other bytes for RED).
-- Not in this slice: grader (swarm-decide `wm_decide/regrade.py` `EFFORT`), write/improv/beauty/dream skills (live-only, not tracked here),
+- Not in this slice: grader (swarm-decide `wm_decide/regrade.py` `EFFORT`), dream skill (vibecode-kit, separate repo; see dream-phase routing), write/improv/beauty now tracked at effort high (tests/skill-creative-pins-high.test.sh; live copies under ~/.claude/skills change only at promotion),
   `max` as a managed skill route, ~/.claude/CLAUDE.md pin text, install.
