@@ -65,7 +65,8 @@ EOS
   ask() { out="$("$SELF" tst "$@" 2>&1)"; rc=$?; got="${out##*$T/fake-tick tst --ask }"; got="${got#\[seat-ask from * ahead\] }"; }
   local got
   ask "rb 6:1x AM: typed label body"
-  [ "$rc" = 0 ] && [[ "$out" == "$pre"*" -p WorkingDirectory=$HOME $T/fake-tick tst --ask [seat-ask from selftest sent 9:07 PM; queue="*" ahead] selftest 9:07 PM: typed label body" ]]; chk "typed 'rb 6:1x AM:' replaced by the real stamp, source selftest ($got)" $?
+  [ "$rc" = 0 ] && [[ "$out" == "$pre"*" -p WorkingDirectory=$HOME -p TasksMax=infinity $T/fake-tick tst --ask [seat-ask from selftest sent 9:07 PM; queue="*" ahead] selftest 9:07 PM: typed label body" ]]; chk "typed 'rb 6:1x AM:' replaced by the real stamp, source selftest ($got)" $?
+  [[ "$out" == *" -p TasksMax=infinity "* ]]; chk "A1466: dry-run command carries -p TasksMax=infinity" $?
   ask "r7 2:19 AM re ctl 2:1x regrade: second body"
   [ "$got" = "selftest 9:07 PM re ctl 2:1x regrade: second body" ]; chk "'r7 2:19 AM re ctl 2:1x regrade: body' keeps the re part after the real stamp ($got)" $?
   ask "no label here"
@@ -154,7 +155,7 @@ text="[seat-ask from $src sent $sent; queue=$AQ_N ahead] $text"
 unit="seat-ask-$seat-$(date +%s)-$$"
 if [ "${SEAT_ASK_TEST:-}" = 1 ]; then onfail="${SEAT_ASK_ONFAILURE-}"; else onfail="${SEAT_ASK_ONFAILURE-seat-tick-failed@$seat.service}"; fi
 cmd=(systemd-run --user --collect --unit "$unit"); [ -n "$onfail" ] && cmd+=(-p "OnFailure=$onfail")
-cmd+=(-p "WorkingDirectory=$HOME" "${SEAT_ASK_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$seat" --ask "$text")
+cmd+=(-p "WorkingDirectory=$HOME" -p TasksMax=infinity "${SEAT_ASK_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$seat" --ask "$text")
 if [ "${SEAT_ASK_DRY:-${CTL_ASK_DRY:-}}" = 1 ]; then echo "${cmd[*]}"; exit 0; fi
 "${cmd[@]}" >/dev/null 2>&1 || { echo "seat-ask: systemd-run failed" >&2; exit 1; }
 ask_queue "$seat"; qdepth="seat-ask: $seat queue=$AQ_N oldest=$([[ "$AQ_OLD" =~ ^[0-9]+$ ]] && echo "${AQ_OLD}m" || echo "?")"   # taken now, while the new unit is surely active; printed after the refusal check
