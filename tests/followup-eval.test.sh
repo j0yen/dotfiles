@@ -139,4 +139,13 @@ fi
 [ "$(disp F2)" != verified ]; chk "15: stale accept_current=false is never verified" $?
 [ "$(disp F3)" != verified ]; chk "15: file-only flat PASS (no verdict_row) is not verified" $?
 [ "$(disp F4)" = blocked ] && [ "$(disp F5)" = blocked ]; chk "15: verifier-required ending rows stay blocked on stale or file-only PASS" $?
+# 16: real claim shape. The @stamp is the claim time, so a live worker with a past stamp is claimed, never lease-expired; seat:token handles resolve through the bare token
+row L1 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" | asks; [ "$(disp L1)" = claimed ]; chk "16: a live claim stamped in the past is claimed (stamp is claim time, not a lease)" $?
+row L2 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" "[]" '{"claim_lease":"2026-11-08T11:30"}' | asks; [ "$(disp L2)" = stale-worker ]; chk "16: an explicit claim_lease in the past is still lease-expired" $?
+tag="fu-live-$$-$RANDOM"; bash -c 'sleep 60; :' "$tag" & lp=$!
+al() { (export HANDLE="$1"; unset FOLLOWUP_WORKER_ALIVE_CMD; python3 -I -c 'import importlib.util,sys;s=importlib.util.spec_from_file_location("fe",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);sys.exit(0 if m.alive(__import__("os").environ["HANDLE"]) else 1)' "$EV"); }
+al "ctl:$tag"; chk "16: seat:token handle is live while a process carries the token" $?
+al "ctl:nobody-$RANDOM-zz"; [ $? != 0 ]; chk "16: seat:token handle with no tmux session or process is dead" $?
+kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+grep -q 'wm-asks asks claim' "$EV"; chk "16: the dead-worker recipe names the real verb wm-asks asks claim" $?
 echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
