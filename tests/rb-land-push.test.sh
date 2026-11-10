@@ -245,10 +245,16 @@ def find(o):
         for v in o:
             r=find(v)
             if r is not None: return r
-d=find(json.load(open(sys.argv[1]))) or {}
+d=find(json.load(open(sys.argv[1])))
+if d is None: print("NOKEY"); sys.exit(0)
 print(" ".join(sorted({"controller"}|{k for k,v in d.items() if v=="controller"})))' "$SCHEMA")
   have=$(sed -n 's/^CONTROLLER_AGENTS="\(.*\)"$/\1/p' "$wrap" | tr ' ' '\n' | sort | paste -sd' ')
+  if [ "$want" = NOKEY ]; then
+    # the installed swarm-decide predates x-agent-compare-aliases (PR69, d1c5d2c): no alias set to compare against on this host
+    echo "SKIP - rb-land-push: ctl (f) no-drift check, $SCHEMA has no x-agent-compare-aliases (installed swarm-decide predates PR69)"
+  else
   [ -n "$want" ] && [ "$want" = "$have" ] && ok "ctl (f) no drift: script controller set '$have' == schema x-agent-compare-aliases set '$want'" || bad "ctl (f) drift: script='$have' schema='$want'"
+  fi
 else
   echo "SKIP - rb-land-push: ctl (f) no-drift check, swarm-decide schema not found at $SCHEMA"
 fi
