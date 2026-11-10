@@ -123,7 +123,7 @@ selftest() {
   [ "$(last_line)" = "selftest 9:07 PM: see rb 6:1x AM: in the middle" ]; chk "a label in the MIDDLE of the text is untouched ($(last_line))" $?
   SEAT_EVENT_DRY=1 "$SELF" tst "aide 6:41 AM: already stamped looking" >/dev/null 2>&1
   [ "$(last_line)" = "selftest 9:07 PM: already stamped looking" ]; chk "a leading stamp-looking label is always replaced (not idempotent by design)" $?
-  ! tail -n 5 "$L" | grep -v 'in the middle' | grep -Eq '6:1x|2:19|6:41' ; chk "typed clocks (6:1x, 2:19, 6:41) never reach the stored log lines" $?
+  ! tail -n 5 "$L" | sed -E 's/^[^|]+ \| //' | grep -v 'in the middle' | grep -Eq '6:1x|2:19|6:41' ; chk "typed clocks (6:1x, 2:19, 6:41) never reach the stored log lines" $?
   [ "$(wc -l <"$L")" = $((n0 + 5)) ] && [ "$(jq -r '.stamped' "$J")" = $((s0 + 5)) ] && [ "$(jq -r '.typed_label_replaced' "$J")" = $((t0 + 3)) ]; chk "counters: +5 stamped, +3 typed_label_replaced ($(jq -c '[.stamped,.typed_label_replaced]' "$J"))" $?
   SEAT_EVENT_DRY=1 "$SELF" tst "rb 6:2x AM: typed label body" >/dev/null 2>&1; SEAT_STAMP_NOW="9:08 PM" SEAT_EVENT_DRY=1 "$SELF" tst "typed label body" >/dev/null 2>&1
   [ "$(wc -l <"$L")" = $((n0 + 5)) ] && [ "$(jq -r '.dropped_dup' "$J")" = 3 ]; chk "debounce compares label-stripped bodies: a repeat with another typed/real clock is a dup (dropped_dup=$(jq -r '.dropped_dup' "$J"))" $?
