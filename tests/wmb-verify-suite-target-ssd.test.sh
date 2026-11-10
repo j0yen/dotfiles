@@ -23,7 +23,7 @@ mkdir -p "$T/ssd"; echo 500 > "$T/avail"
 run() { # name, extra env... ; runs the suite in the clone, output to $T/<name>.out, rc to $T/<name>.rc
   local n=$1; shift
   : > "$T/$n.slot"
-  ( cd "$T/clone" && env SLOT_LOG="$T/$n.slot" WMB_SLOT="$T/slot" WMB_TARGET_MNT="$T/ssd" WMB_ROOT_REF=/proc \
+  ( cd "$T/clone" && env -u CARGO_PROFILE_DEV_DEBUG -u CARGO_PROFILE_TEST_DEBUG SLOT_LOG="$T/$n.slot" WMB_SLOT="$T/slot" WMB_TARGET_MNT="$T/ssd" WMB_ROOT_REF=/proc \
       WMB_FAKE_AVAIL_FILE="$T/avail" WMB_TARGET_POLL_S=1 "$@" bash "$S" --flags '' "$B" > "$T/$n.out" 2>&1; echo $? > "$T/$n.rc" )
 }
 
