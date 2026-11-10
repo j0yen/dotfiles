@@ -10,7 +10,11 @@
 # Fakes read STATE (dir), FAKE_MODE (ok | norestart | restartonstop),
 # FAKE_UID (default 990), FAKE_CALLER_UID (default 1001; set empty = fid -u prints an empty line), FAKE_ID_RC (fid exit
 # status, default 0), FAKE_NOSUDO=1, FAKE_PREEXIST=1 (getent answers uid 990 for
-# any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails).
+# any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails),
+# FAKE_N0 / FAKE_N1 (set, even empty = `systemctl show -p NRestarts` prints it verbatim before / after the fake kill;
+# printed only, never evaluated, the nrestarts state file keeps the real count).
+# A1488 F1: every fake is written mode 755 by an explicit chmod and new parent dirs are made under umask 022,
+# whatever the caller's umask (the test refuses a group/world-writable dir or fake between its root and the bindir).
 # Usage: user-manager-restart-fakes.sh --seed-dropdir <rundir> <uid>  makes <rundir>/user@<uid>.service.d/sentinel
 # (a pre-existing drop-in dir) and prints the sentinel's sha256.
 set -eu
@@ -20,9 +24,9 @@ if [ "$1" = --seed-dropdir ]; then
   sha256sum < "$dd/sentinel" | cut -d' ' -f1
   exit 0
 fi
-d=$1; mkdir -p "$d"; chmod go-w "$d"
+d=$1; (umask 022 && mkdir -p -- "$d"); chmod go-w "$d"
 # w <name>: the fake body on stdin, after the fixed shebang and PATH
-w() { { printf '#!/bin/bash -p\nPATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH\n'; cat; } > "$d/$1"; chmod +x "$d/$1"; }
+w() { { printf '#!/bin/bash -p\nPATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH\n'; cat; } > "$d/$1"; chmod 755 "$d/$1"; }
 w fsudo <<'F'
 [ "${FAKE_NOSUDO:-0}" = 1 ] && exit 1
 [ "${1:-}" = -n ] && shift
@@ -66,7 +70,7 @@ F
 done
 w fkill <<'F'
 echo "kill $*" >> "$STATE/calls.log"
-pid=$2
+pid=$2; : > "$STATE/killed"
 [ "$pid" = "$(cat "$STATE/mainpid")" ] || exit 1
 if [ "${FAKE_MODE:-ok}" = norestart ]; then echo inactive > "$STATE/active"
 else echo $((pid + 1)) > "$STATE/mainpid"; echo $(( $(cat "$STATE/nrestarts") + 1 )) > "$STATE/nrestarts"; fi
@@ -85,7 +89,8 @@ case $1 in
     a=$(cat "$STATE/active" 2>/dev/null || echo $d)
     case $4 in
       MainPID) [ "$a" = active ] && cat "$STATE/mainpid" || echo 0 ;;
-      NRestarts) cat "$STATE/nrestarts" ;;
+      NRestarts) f=FAKE_N0; [ -e "$STATE/killed" ] && f=FAKE_N1
+        if [ -n "${!f+x}" ]; then printf '%s\n' "${!f}"; else cat "$STATE/nrestarts"; fi ;;
       ActiveState) echo "$a" ;;
       SubState) [ "$a" = active ] && echo running || echo dead ;;
     esac ;;
