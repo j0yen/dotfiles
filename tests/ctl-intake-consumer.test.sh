@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # named test: delivery acks the wake; a failing delivery leaves it pending and replays; unavailable ledger exits 66
 set -u
+command -v wm-decide >/dev/null 2>&1 || { echo "SKIP: wm-decide not installed on this host"; exit 0; }
 S="$(mktemp -d)"; export WM_DECIDE_STATE="$S/state"; mkdir -p "$S/state"
 E='{"source_event_id":"tg:t1","source_ref":"t","text":"x","received_at":"2026-11-10T06:40:00","request_type":"new","authorized_by":"hermes"}'
 C='{"owner":"ctl","due":"2026-11-10T09:00","what":"t","check":"test -n x","depends":[]}'
