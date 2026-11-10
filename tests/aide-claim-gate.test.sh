@@ -43,6 +43,8 @@ exp="$(sed -n 's/^expires=//p' "$CL/dotfiles#127" 2>/dev/null)"; now=$(date +%s)
 [ $rc = 0 ] && grep -q '^lane=build$' "$CL/dotfiles#127" && grep -q '^sid=sid-test-0001$' "$CL/dotfiles#127" && [ "${exp:-0}" -ge $((now + 7190)) ] && [ "${exp:-0}" -le $((now + 7210)) ] && ok "no claim: rc 0 and claims/dotfiles#127 names lane build, expires ~ now + 2 h" || bad "claim-on-act rc=$rc exp=$exp"
 G_ENV="WM_SEAT=aide"; rm -rf "$CL"; gate 'gh pr merge 5 --repo j0yen/dotfiles'
 grep -q '^lane=main$' "$CL/dotfiles#5" && ok "WM_AIDE_LANE unset: claim names main" || bad "main claim"
+G_ENV="WM_SEAT=ctl"; rm -rf "$CL"; gate 'gh pr merge 5 --repo j0yen/dotfiles'
+grep -q '^lane=main$' "$CL/dotfiles#5" && ok "WM_SEAT=ctl: gate acts like the aide (claim names main)" || bad "ctl claim"
 G_ENV="$B"; rm -rf "$CL"; gate 'git push origin aide-lanes'; [ $rc = 0 ] && [ ! -e "$CL" ] && ok "git push: rc 0, no claim written (not an object)" || bad "git push rc=$rc"
 gate 'gh pr merge 9 --repo j0yen/dotfiles ; echo "unterminated'; [ $rc = 0 ] && ok "unparsable quoting fails open" || bad "quote rc=$rc"
 rm -rf "$CL"; gate 'rb-land-push.sh --confirm d-1 --repo /mnt/data/wt/foo --branch wm-build/foo'; [ $rc = 0 ] && [ -e "$CL/foo#wm-build_foo" ] && ok "rb-land-push.sh: object <dir>#<branch>" || bad "land-push rc=$rc: $(ls "$CL" 2>/dev/null)"

@@ -29,6 +29,8 @@ out="$(run UserPromptSubmit '{"session_id":"test-sid-cursor-12345678"}')"
 printf '%s' "$out" | grep -q 'hello one' && bad "line re-printed" || ok "no re-print on second read"
 # non-aide seat records nothing
 d2="$tmp/fd2"; mkdir -p "$d2"
+printf '%s' '{"session_id":"test-sid-ctl-1234"}' | env HOME="$tmp" WM_SEAT=ctl EVENTS_DIR="$d" bash "$H" SessionStart >/dev/null 2>&1
+grep -q '^test-sid-ctl-1234 ' "$d/aide-sids" && echo "PASS WM_SEAT=ctl records its session id in aide-sids" || { echo "FAIL WM_SEAT=ctl sid not recorded"; fail=1; }
 printf '%s' '{"session_id":"test-sid-nonaide-1234"}' | env -u WM_SEAT HOME="$tmp" EVENTS_DIR="$d2" bash "$H" SessionStart >/dev/null 2>&1
 [ ! -s "$d2/aide-sids" ] && ok "non-aide records no sid" || bad "non-aide recorded a sid"
 exit $fail

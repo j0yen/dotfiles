@@ -1,0 +1,8 @@
+[Unit]
+Description=Weekly (RedBaron only): cargo deny on agorabus main; when red, cargo update + tests and stage a local lock-refresh commit for the rb seat (A1487). Sends nothing; premise: one clone + one cargo build per week.
+
+[Service]
+Type=oneshot
+IOWeight=50
+TimeoutStartSec=3000
+ExecStart=/usr/bin/bash -lc "%h/.local/bin/agorabus-lock-refresh.sh"

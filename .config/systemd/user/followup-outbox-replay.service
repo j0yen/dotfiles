@@ -1,0 +1,8 @@
+[Unit]
+Description=Follow-up loop: replay queued escalations from the outbox (A1307); no model turn
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=300
+ExecStart=%h/.local/bin/followup-outbox-replay.sh

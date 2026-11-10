@@ -15,7 +15,6 @@
     "/home/jsy/.claude/hooks/peon-ping/peon.sh",
     "/home/jsy/.claude/hooks/lean-skip.sh /home/jsy/.claude/hooks/not-on-compact.sh /home/jsy/.claude/scripts/summa-candidates-start.sh",
     "/home/jsy/.claude/scripts/summa-vault-sync.sh",
-    "/home/jsy/.claude/hooks/adhd-always-on.sh",
     "sh -c '[ -x \"$HOME/.claude/hooks/model-role-check.sh\" ] && exec \"$HOME/.claude/hooks/model-role-check.sh\"; exit 0'"
   ],
   "UserPromptSubmit": [

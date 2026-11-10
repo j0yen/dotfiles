@@ -1,0 +1,24 @@
+[Unit]
+Description=off-host probe of carbon from this host (RedBaron/ryzen7, never carbon): user manager, hermes-gateway, agorabus socket, fleet-dash age (A1446)
+# SYSTEM unit (successor of the user unit pair of #370): the witness runs under the system manager with User=jsy, so a
+# SIGKILL of this host's own user@1000 (the 11-09 carbon failure class) cannot stop it. Installed by copy into
+# /etc/systemd/system on redbaron and ryzen7 only; this repo dir is not on the user manager's unit search path.
+ConditionHost=!carbon
+
+[Service]
+Type=oneshot
+User=jsy
+Group=jsy
+# the home specifier would expand to the system manager's home (/root), so the paths are named. HOME alone gives
+# carbon-alive.sh its state dir (~/.local/state/carbon-alive) and config dir (~/.config/carbon-alive); it reads no
+# XDG_RUNTIME_DIR, user bus or systemctl --user locally (that call runs on carbon inside the ssh payload).
+Environment=HOME=/home/jsy
+Nice=10
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# the only path the probe writes; the deliverer's temp config goes to the private /tmp. Must exist before start
+# (the user unit's runs created it; the install steps create it on a fresh host).
+ReadWritePaths=/home/jsy/.local/state/carbon-alive
+ExecStart=/home/jsy/.local/bin/carbon-alive.sh

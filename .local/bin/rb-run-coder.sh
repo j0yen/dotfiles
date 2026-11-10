@@ -5,7 +5,8 @@
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
 # spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; shares exit 78 with the model gate, told apart by the REFUSED text),
-# memcap 71 (rb-coder-memcap.sh caps this coder's own unit; runs last, just before `claude -p`).
+# memcap (WARN only, never refuses; rb-coder-memcap.sh sets this coder's own unit to infinity, d-20261109-125934-hermes-98a1 / A1483; runs last, just before the repo-routing step and `claude -p`).
+# routing: .config/fleet/coder-hosts.tsv (repo<TAB>host) or env RB_CODER_HOST sends the coder to another host after the gates; remote failure = exit 79 (see the repo routing block).
 # nocargo-hooks 70 (--no-cargo only: core.hooksPath = .local/share/rb-git-hooks, wmb-nocargo-checks.sh at pre-commit + pre-push; ctl 8220).
 # env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read), RB_MEMCAP_BIN (default ~/.local/bin/rb-coder-memcap.sh).
 # fable-verdict 80 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
@@ -25,6 +26,7 @@ hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="
 # host gate (aide A25, rb row d-20261031-152854-rb-9122; Joe 10-27 "Carbon is for administration and monitoring. Nothing should be built nor coded on carbon"):
 # a coder session runs on redbaron or ryzen7 only; any other host exits 79 before the OAuth source, every other gate and STEP 0.
 h="$(hostname -s 2>/dev/null)"; case "$h" in redbaron|ryzen7) ;; *) echo "REFUSED host=${h:-unknown} (rb-run-coder.sh runs on redbaron or ryzen7 only)" >&2; exit 79 ;; esac
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" rb-run-coder || exit 1   # hold gate (hermes-handover 2.4): after the host gate, before the credential source and any spawn step
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
 cd "$HOME"
@@ -138,18 +140,40 @@ if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
   echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
 fi
 echo "$room_l1 $room_tail" > "$D/$n.room"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ROOM $room_l1 $room_tail" || true
-# memcap gate (rb 11-02, Fable CORRECT fcdf/05b3: coders ran on redbaron with MemoryMax=infinity): rb-coder-memcap.sh sets MemoryHigh/MemoryMax
-# (12G/14G) on this coder's own unit and reads the cgroup back. Fails CLOSED: only rc 0 + a `memcap ok:` first line allows; anything else exits 71.
+# memcap step (rb 11-02, Fable CORRECT fcdf/05b3 capped coders at 12G/14G; lifted by Hermes d-20261109-125934-hermes-98a1, ask A1483 r6): rb-coder-memcap.sh sets
+# MemoryHigh/MemoryMax/TasksMax=infinity on this coder's own unit and reads the cgroup back. A `memcap NO` or nonzero rc is recorded as WARN and the launch continues.
 memcap_bin="${RB_MEMCAP_BIN:-$HOME/.local/bin/rb-coder-memcap.sh}"
 mc_out=$("$memcap_bin" 2>&1); rc_m=$?; mc_l1=$(printf '%s\n' "$mc_out" | head -n 1)
 if [ "$rc_m" != 0 ] || ! [[ $mc_l1 =~ ^memcap\ ok: ]]; then
-  echo "REFUSED memcap rc=$rc_m: $mc_l1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED memcap rc=$rc_m: $mc_l1" || true; exit 71
+  EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n WARN memcap rc=$rc_m: $mc_l1" || true
 fi
 echo "$mc_l1" > "$D/$n.memcap"
 # --no-cargo coder (ctl 8220 11-03): env-level core.hooksPath = .local/share/rb-git-hooks, whose pre-commit + pre-push run
 # wmb-nocargo-checks.sh on a wm-build tree and refuse a red commit or push. Fails CLOSED (exit 70) when the hooks dir is missing.
 if [ "$nocargo" = 1 ]; then rb_hooks="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../share/rb-git-hooks" 2>/dev/null && pwd)"; [ -x "$rb_hooks/pre-commit" ] && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$rb_hooks" || {
   echo "REFUSED nocargo-hooks: rb-git-hooks missing" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED nocargo-hooks: rb-git-hooks missing" || true; exit 70; }; fi
+# repo routing (ask A57, Joe 10-27 12:34 PM approvals #49 "Build synthorg and wm-build on ryzen7"): the prompt's first line names `j0yen/<repo>`; .config/fleet/coder-hosts.tsv
+# (repo<TAB>host, `default` row) picks the target host, env RB_CODER_HOST overrides. Target = this host: the local `claude -p` below, unchanged. Otherwise every gate above has
+# already run HERE; the prompt is scp'd to <host>:.cache/rb-seat/coders/<n>.prompt and started as `systemd-run --user --unit rb-coder-<n>` with RB_CODER_HOST pinned (no re-route there).
+# Failure = REFUSED remote-launch, exit 79, never a local fallback. A missing map file = local (today's path). Admission on the target host stays r7's (this adds none).
+repo="$(head -n 1 "$pf" | grep -oE 'j0yen/[A-Za-z0-9_.-]+' | head -n 1 | cut -d/ -f2 | sed 's/[.]*$//')"
+if [ -n "${RB_CODER_HOST:-}" ]; then th="$RB_CODER_HOST"
+else
+  hmap="${RB_CODER_HOSTS_MAP:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/fleet/coder-hosts.tsv}"; [ -f "$hmap" ] || hmap="$HOME/.config/fleet/coder-hosts.tsv"
+  th="$h"; if [ -f "$hmap" ]; then
+    th="$(awk -F'\t' -v r="$repo" '$1 !~ /^#/ && NF>=2 { if ($1==r && r!="") { print $2; f=1; exit } else if ($1=="default") d=$2 } END { if (!f) print d }' "$hmap")"; th="${th:-$h}"
+  fi
+fi
+case "$th" in redbaron|ryzen7) ;; *) echo "REFUSED coder-host=$th (redbaron|ryzen7 only)" >&2; exit 79 ;; esac
+if [ "$th" != "$h" ]; then
+  rd=".cache/rb-seat/coders"; unit="rb-coder-$n"; sopt=(-o ConnectTimeout=10 -o BatchMode=yes); nc_arg=""; [ "$nocargo" = 1 ] && nc_arg=" --no-cargo"
+  refuse_launch() { echo "REFUSED remote-launch host=$th: $1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED remote-launch host=$th" || true; echo "REFUSED remote-launch host=$th: $1" >&2; exit 79; }
+  ssh "${sopt[@]}" "$th" "mkdir -p ~/$rd" >/dev/null 2>&1 || refuse_launch "ssh mkdir failed"
+  scp -q "${sopt[@]}" "$pf" "$th:$rd/$n.prompt" >/dev/null 2>&1 || refuse_launch "scp prompt failed"
+  ssh "${sopt[@]}" "$th" "systemd-run --user --unit $unit --collect -p IOWeight=50 --setenv=RB_CODER_HOST=$th --setenv=RB_CODER_MODEL=$model ~/.local/bin/rb-run-coder.sh $n ~/$rd/$n.prompt$nc_arg" >/dev/null 2>&1 || refuse_launch "systemd-run failed"
+  EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n LAUNCHED remote host=$th unit=$unit report=$th:~/$rd/$n.report.md" || true
+  echo "report=$th:~/$rd/$n.report.md"; exit 0
+fi
 # watchman reap (ctl k1039, 11-03): rb-coder-rcpt9 failed 06:44:40 on a stop-sigterm timeout; the watchman server its coder started lived in the
 # unit's cgroup and outlived claude until SIGKILL. On exit (TERM included), TERM then KILL only watchman pids in THIS unit's cgroup
 # (rb-coder-$n.service), by pid; a watchman in any other cgroup is untouched. Env (tests): RB_CODER_CGROUP, RB_CODER_CGROUP_FS.

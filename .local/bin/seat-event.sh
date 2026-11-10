@@ -60,7 +60,8 @@ selftest() {
   [ "$rc" = 0 ]; chk "append: exit 0" $?
   grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+[+-][0-9:]+ \| selftest \| selftest 9:07 PM: ALARM landrisk: 1025 CI red$' "$L"; chk "append: '<ISO> | <source> | <source> <time>: <line>' ($(tail -n1 "$L" | cut -c1-80))" $?
   [ "$(stat -c %a "$L")" = 600 ] && [ "$(stat -c %a "$J")" = 600 ]; chk "log and json mode 0600" $?
-  [[ "$out" == "systemd-run --user --collect --unit seat-event-tst-"*" -p WorkingDirectory=$HOME $T/fake-tick tst --event" ]]; chk "free lock: spawn command (dry): '${out:0:150}'" $?
+  [[ "$out" == "systemd-run --user --collect --unit seat-event-tst-"*" -p WorkingDirectory=$HOME -p TasksMax=infinity $T/fake-tick tst --event" ]]; chk "free lock: spawn command (dry): '${out:0:150}'" $?
+  [[ "$out" == *" -p TasksMax=infinity "* ]]; chk "A1466: dry-run command carries -p TasksMax=infinity" $?
   [ ! -e "$T/spawned" ] && [ ! -e "$EVENTS_DIR/tst.wake" ]; chk "dry run started nothing and touched no .wake" $?
   [ "$(jq -r '.appended' "$J")" = 1 ] && [ "$(jq -r '.woke_tick' "$J")" = 1 ]; chk "json: appended=1 woke_tick=1" $?
   [ "$(jq -r '.last_event' "$J")" != null ] && [ "$(jq -r '.last_wake' "$J")" != null ]; chk "json: the FIRST-ever append sets last_event and last_wake (not null): $(jq -c '[.last_event,.last_wake]' "$J")" $?
@@ -150,6 +151,12 @@ selftest() {
   PATH="$T/fakebin2:$PATH" "$SELF" tst "normal row still wakes" >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && grep -q -- '--unit seat-event-tst-' "$T/sr-called" 2>/dev/null; chk "normal (role rb) row still wakes: systemd-run called for seat-event-tst-" $?
   rm -rf "$T/fakebin2"
+  # 9. ctl alias (hermes-handover 2.3): with only a ctl inbox row, `aide` is accepted and both names write aide-events.log
+  printf '# t\nctl\tinbox\tsid-c\t0\t0\t-\t-\n' >"$SEATS_TABLE"
+  SEAT_EVENT_DRY=1 "$SELF" aide "ctl -> hermes: alias line" >/dev/null 2>&1; r1=$?
+  SEAT_EVENT_DRY=1 "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
+  [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ ! -e "$EVENTS_DIR/ctl-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 2 ]; chk "ctl alias: aide + ctl both append to aide-events.log (2 lines, no ctl-events.log)" $?
+  "$SELF" nosuch "x" >/dev/null 2>&1; [ $? = 64 ]; chk "ctl alias does not admit other unknown seats (64)" $?
   # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
   [ "$("$SELF" --inbox-row aide)" = "$(printf 'aide\tinbox\t-\t0\t0\t-\t-')" ]; chk "--inbox-row aide prints the tab-separated row" $?
   "$SELF" --inbox-row 'bad name' >/dev/null 2>&1; [ $? = 64 ]; chk "--inbox-row refuses a bad seat name (64)" $?
@@ -164,6 +171,9 @@ if [ "${1:-}" = "--inbox-row" ]; then   # the seats.tsv row for an inbox-only se
 fi
 [ $# -ge 1 ] || { echo 'usage: seat-event.sh <seat> "<line>"  |  seat-event.sh --inbox-row <seat>  |  seat-event.sh --selftest' >&2; exit 64; }
 SEAT="$1"; shift
+# ctl = the aide since 11-06 (#244, hermes-handover 2.3): `aide` is an alias of `ctl` once seats.tsv carries only the ctl row, and both write
+# aide-events.log, the path aide-inbox.sh reads (internal file names keep the old seat name; CLAUDE.md § CTL).
+[ "$SEAT" = aide ] && ! known_seat aide && known_seat ctl && SEAT=ctl
 known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
 [ -n "$LINE" ] || { echo 'seat-event: empty line' >&2; exit 2; }
@@ -176,7 +186,8 @@ fi
 DIR="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
 ( umask 077; mkdir -p "$DIR" ) || exit 1
 # aide lanes (10-27): `aide:<lane>` is a seat name; its files map `:` -> `-` (aide-build-events.log), `aide` itself is unchanged
-LOG="$DIR/${SEAT//:/-}-events.log"; JSON="$DIR/${SEAT//:/-}-events.json"
+LOGSEAT="$SEAT"; [ "$SEAT" = ctl ] && LOGSEAT=aide   # ctl writes the aide log (see alias above)
+LOG="$DIR/${LOGSEAT//:/-}-events.log"; JSON="$DIR/${LOGSEAT//:/-}-events.json"
 SRC="$(seat_stamp_source)"
 seat_stamp_apply "$SRC" "$LINE"; STAMPED="$SEAT_STAMPED"; TYPED="$SSP_TYPED"
 
@@ -208,9 +219,12 @@ dup=0
 if inbox_seat "$SEAT"; then { flock 7; bump inbox_only; } 7>>"$DIR/$SEAT-events.lock"; exit 0; fi
 [ "${SEAT_EVENT_NOWAKE:-}" = 1 ] && exit 0
 
+# hold gate (hermes-handover 2.4): only the wake (systemd-run seat-tick --event / .wake) is gated; the log append above is the receipt channel and has already happened, so the exit stays 0
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" "seat-event:$SEAT" || exit 0
+
 # wake: is a turn running? (flock -n, released at once; the lock file is the one seat-tick.sh holds for a whole turn)
 if ( flock -n 9 ) 9>>"$DIR/$SEAT.lock" 2>/dev/null; then
-  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s%N)-$$" -p "WorkingDirectory=$HOME" "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
+  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s%N)-$$" -p "WorkingDirectory=$HOME" -p TasksMax=infinity "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
   { flock 7; bump woke_tick; } 7>>"$DIR/$SEAT-events.lock"
   if [ "${SEAT_EVENT_DRY:-}" = 1 ]; then echo "${cmd[*]}"; exit 0; fi
   # a same-second duplicate unit name fails: harmless, the first unit's turn reads this line (it composes its prompt after taking the lock)
