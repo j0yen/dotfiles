@@ -6,3 +6,4 @@ Type=oneshot
 IOWeight=50
 TimeoutStartSec=3000
 ExecStart=/usr/bin/bash -lc "%h/.local/bin/agorabus-lock-refresh.sh"
+ExecStartPost=-%h/.local/bin/agorabus-lock-refresh-consume.sh
