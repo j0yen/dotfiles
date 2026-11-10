@@ -439,6 +439,41 @@ print(json.dumps([x for x in l if os.path.lexists(x) and not os.path.isdir(x) an
   [ "$(echo "$res" | grep -c ' FAIL ')" = "$(echo "$ctl" | grep -c '^sock')" ] || { bad unit_sockets "a path was not probed or not refused"; return; }
   ok unit_sockets
 }
+SOCKNEG_PROBE='
+import errno, os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1]); print("CONNECT OPEN")           # connect only, no data sent
+except OSError as e:
+    print("CONNECT FAIL %s" % errno.errorcode.get(e.errno, e.errno))
+'
+t_unit_socket_negative(){
+  # Discriminating socket control: a unix socket this test owns (so file mode never denies it) is connectable from a plain child and
+  # from a plain transient unit, and must NOT be connectable from a unit that lists its directory in InaccessiblePaths.
+  # Listen/connect only, nothing sent, no network, no privileged socket.
+  local d="$SCR/$P-sockneg" r plain unit neg
+  mkdir -p "$d/s"; printf '%s\n' "$SOCKNEG_PROBE" > "$d/probe.py"
+  if ! r="$(systemd-run --user --wait --collect --pipe /usr/bin/true 2>&1)"; then
+    echo "SKIP unit_socket_negative: SKIP-WITH-REASON systemd-run --user cannot run a transient unit here: $(echo "$r" | tail -c 200 | tr '\n' ' ')"; return
+  fi
+  python3 -I - "$d/s/sock" "$d" <<'PY' &
+import os, socket, sys, time
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(8)
+open(sys.argv[2] + "/ready", "w").close()
+time.sleep(60)
+PY
+  local spid=$! n=0
+  while [ ! -e "$d/ready" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+  plain="$(python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  unit="$(systemd-run --user --quiet --wait --collect --pipe -- /usr/bin/python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  neg="$(systemd-run --user --quiet --wait --collect --pipe -p "InaccessiblePaths=$d/s" -- /usr/bin/python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+  echo "positive (plain child): $plain"; echo "positive (plain unit): $unit"; echo "negative (InaccessiblePaths=$d/s): $(echo "$neg" | tail -n 3 | tr '\n' ' ')"
+  [ "$plain" = "CONNECT OPEN" ] || { bad unit_socket_negative "positive control: plain child cannot connect (test not discriminating)"; return; }
+  echo "$unit" | grep -qx "CONNECT OPEN" || { bad unit_socket_negative "positive control: plain unit cannot connect (test not discriminating)"; return; }
+  echo "$neg" | grep -qE '^CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' || { bad unit_socket_negative "socket reachable or unit failed inside InaccessiblePaths: $(echo "$neg" | tail -n 3 | tr '\n' ' ')"; return; }
+  ok unit_socket_negative
+}
 LISTING_CLOSED='["/run", "/run/udev", "/run/lock", "/run/systemd", "/run/systemd/journal", "/sys/class/input", "/sys/class/hidraw", "/proc/bus/input"]'
 # Documented residuals: still listable in the unit (names only, no data). /sys/devices and /sys/dev/char expose device names and numbers,
 # /sys/class/* the other device classes; closing them hides hardware sysfs that ordinary tools read, which no worker needs but a unit cannot
@@ -617,5 +652,5 @@ print("override hardening ok")
 PY
   local rc=$?; rm -rf "$SCR/ov6-$P" "$(dirname "$SCR")/ov6-$P" "$SCR/director-run-ov6-$P"-*; [ $rc = 0 ] && ok override_hardening || bad override_hardening "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets listing_na_selfcheck unit_listing unit_groups override_hardening; do "t_$t"; done; fi
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_socket_negative listing_na_selfcheck unit_listing unit_groups override_hardening; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }
