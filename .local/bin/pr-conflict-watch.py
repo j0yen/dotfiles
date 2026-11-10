@@ -174,6 +174,22 @@ def log(line):
     print(line)
 
 
+SKIP_LABELS = {"superseded"}  # ctl rulings keep a superseded PR open unmerged; never bell its owner (A1510)
+
+
+def skip_reason(pr, include_daemon):
+    if pr.get("isDraft"):
+        return "draft"
+    if pr.get("isCrossRepository"):
+        return "cross-repo"
+    if pr["headRefName"].startswith("wm-build/") and not include_daemon:
+        return "daemon"
+    hit = sorted({l.get("name", "") for l in pr.get("labels") or []} & SKIP_LABELS)
+    if hit:
+        return "label:" + hit[0]
+    return None
+
+
 def run_repo(repo, apply, st, counts, include_daemon):
     mirror = os.path.join(STATE, "mirrors", repo.replace("/", "__") + ".git")
     url = "https://github.com/%s.git" % repo
@@ -181,16 +197,17 @@ def run_repo(repo, apply, st, counts, include_daemon):
         sh(["git", "clone", "-q", "--mirror", url, mirror])
     sh(["git", "--git-dir", mirror, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/pull/*/head:refs/pull/*/head"])
     p = sh(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json",
-            "number,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,mergeable"])
+            "number,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,mergeable,labels"])
     prs = json.loads(p.stdout)
     base_shas = {}
     for pr in prs:
         n, head, branch, base = pr["number"], pr["headRefOid"], pr["headRefName"], pr["baseRefName"]
         key = "%s#%d" % (repo, n)
         counts["prs"] += 1
-        if pr["isDraft"] or pr["isCrossRepository"] or (branch.startswith("wm-build/") and not include_daemon):
+        why = skip_reason(pr, include_daemon)
+        if why:
             counts["skipped"] += 1
-            st["prs"][key] = {"class": "skipped", "head": head}
+            st["prs"][key] = {"class": "skipped", "head": head, "why": why}
             continue
         if base not in base_shas:
             base_shas[base] = sh(["git", "--git-dir", mirror, "rev-parse", "refs/heads/" + base]).stdout.strip()
@@ -261,6 +278,12 @@ def selftest():
     def chk(c, msg):
         nonlocal ok
         print(("PASS " if c else "FAIL ") + msg); ok = ok and c
+    pr0 = {"headRefName": "fix-x", "isDraft": False, "isCrossRepository": False, "labels": []}
+    chk(skip_reason(pr0, False) is None, "unlabelled PR is watched")
+    chk(skip_reason(dict(pr0, labels=[{"name": "superseded"}]), False) == "label:superseded", "PR labelled superseded is skipped, no bell")
+    chk(skip_reason(dict(pr0, labels=[{"name": "bug"}]), False) is None, "other labels do not skip")
+    chk(skip_reason(dict(pr0, headRefName="wm-build/x"), False) == "daemon" and skip_reason(dict(pr0, headRefName="wm-build/x"), True) is None, "daemon branches skipped unless --include-daemon")
+    chk(skip_reason(dict(pr0, isDraft=True), False) == "draft", "draft PR skipped")
     chk(res["clean"]["class"] == "clean", "clean branch classified clean")
     chk(chk0 == "generated" and res["verbump"]["files"] == ["Cargo.toml"], "version-line-only Cargo.toml conflict classified generated")
     chk(res["codeconf"]["class"] == "code" and res["codeconf"]["files"] == ["app.py"], "code conflict names app.py")
