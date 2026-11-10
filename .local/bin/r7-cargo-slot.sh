@@ -5,7 +5,12 @@
 #   the cargo target dir, a PRIVATE cargo home and one self-created scratch dir (lib: ~/.local/lib/hand-sandbox.sh, Fable F1-F4 10-21).
 # EXPIRES: when rb's cargo-slot.sh is ported here (this file then execs it) or 2026-11-18, whichever first. Decision rows: 3bae (gate), guard row 10-21 1:3x PM (sandbox).
 # usage: r7-cargo-slot.sh [--cap-gb N] [--wait-s S] -- cargo <args>   (exit 75 = refused by the gate, 77 = sandbox refused, 2 = usage)
+#        r7-cargo-slot.sh --run-confined [--rw PATH]... -- <exe> [args...]   (userns mode: no bwrap, so nested user namespaces work; exit = the exe's, 75 refused, 77 unit/rc file failed, 2 = usage)
 #        r7-cargo-slot.sh --selftest | --check
+# --run-confined (A1542): AppArmor's bwrap-userns-restrict profile denies the nested uid_map inside the bwrap sandbox, so a built test binary that creates a user namespace (mcphost)
+#   fails there. This mode runs an ALREADY-BUILT executable (build it first with `-- cargo test --no-run`) in a transient systemd user unit instead (design: r7-legs gate562i-fff.sh runt(), green on mcphost#562):
+#   ProtectSystem=strict, ProtectHome=read-only, PrivateTmp, NoNewPrivileges; rw only on /mnt/ssd/cargo-target, /mnt/ssd/r7-legs, ~/.cache/mcphost-dev (each if present) + every --rw PATH (not under /tmp: PrivateTmp hides it);
+#   TMPDIR=/tmp UV_CACHE_DIR=/tmp/uvc LC_ALL=C (+ CARGO_MANIFEST_DIR when set); MemoryMax = the class cap. Same memory gate in front as cargo mode (pre-check, then the daemon acquire).
 # PRECHECK-1021 (CTRL 2:05 PM 10-21): default class is INNER (rank 0), never land. Prefix from the top dir name: mcphost* → --prefix mcphost- (inner 11.5 G),
 #   synthorg* → --prefix synthorg- (inner 6.0 G); both caps are READ from [cargo_jobs.mem_caps_gb.<prefix>.<class>] in the config (hardcoded fallback only if that key is missing:
 #   inner 11.5 / hand 5). wm-build* tops stay class hand, no prefix. The scope MemoryMax = that cap rounded UP to whole G (mcphost 12, synthorg 6); --cap-gb still overrides the scope only.
@@ -39,12 +44,41 @@ if [ "${1:-}" = --__inner ]; then  # runs inside the acquired slot + scope; env 
   RW=("$R7I_TOP" "$R7I_TGT" "$R7I_CH" "$R7I_SCR"); [ -n "${R7I_JOBHOME:-}" ] && RW+=("$R7I_JOBHOME")
   sandbox_exec --tmpfs-gb "${R7_SLOT_TMPFS_GB:-2}" "${RW[@]}" -- env CARGO_HOME="$R7I_CH" CARGO_TARGET_DIR="$R7I_TGT" SLOT_RESULTS_DIR="$R7I_SCR" "$@"; exit $?   # not exec: sandbox_exec is a lib FUNCTION (exec: not found rc 127, #373 verifier 14:02 10-21)
 fi
+CRW=(); RUNN=0
+run_confined() { # $1 = exe (absolute), rest = args; rw paths in CRW, memory cap in CAP; exit code = the exe's, 77 = unit did not start / no rc file
+  local exe=$1 rcd rc n rwp=() envs d; shift; RUNN=$((RUNN+1)); n=$RUNN
+  rcd=$(mktemp -d "$LOGD/rc.XXXXXX") || return 77
+  for d in /mnt/ssd/cargo-target /mnt/ssd/r7-legs "$HOME/.cache/mcphost-dev"; do [ -d "$d" ] && rwp+=(-p "ReadWritePaths=$d"); done
+  for d in "${CRW[@]}"; do rwp+=(-p "ReadWritePaths=$d"); done
+  case $PWD in /tmp|/tmp/*|/var/tmp|/var/tmp/*) ;; *) rwp+=(-p "WorkingDirectory=$PWD");; esac   # PrivateTmp hides a cwd under /tmp: the unit would not start
+  envs=(-E TMPDIR=/tmp -E UV_CACHE_DIR=/tmp/uvc -E LC_ALL=C -E "RCF=$rcd/rc"); [ -n "${CARGO_MANIFEST_DIR:-}" ] && envs+=(-E "CARGO_MANIFEST_DIR=$CARGO_MANIFEST_DIR")
+  systemd-run --user --wait --pipe --quiet --collect --unit "r7-slotrun-$$-$n" "${envs[@]}" \
+    -p ProtectSystem=strict -p ProtectHome=read-only -p PrivateTmp=yes -p NoNewPrivileges=yes \
+    "${rwp[@]}" -p "ReadWritePaths=$rcd" -p "MemoryMax=${CAP:-12}G" -p TasksMax=infinity -p RuntimeMaxSec=infinity \
+    /bin/bash -c '"$@"; echo $? > "$RCF"' runt "$exe" "$@"
+  rc=$(cat "$rcd/rc" 2>/dev/null); rm -rf -- "$rcd"
+  [[ ${rc:-} =~ ^[0-9]+$ ]] || { echo "r7-cargo-slot: confined unit r7-slotrun-$$-$n left no rc file" >&2; return 77; }
+  return "$rc"
+}
+if [ "${1:-}" = --__confined ]; then  # runs after the daemon acquire; env R7C_* set by the parent
+  shift; CAP=${R7C_CAP:-12}; [ -n "${R7C_RW:-}" ] && mapfile -t CRW <<< "$R7C_RW"
+  run_confined "$@"; exit $?
+fi
 CFG=${R7_SLOT_CONFIG:-/home/jsy/.config/wm-build/config.toml}
 WM=${R7_SLOT_WMBUILD:-/home/jsy/.cargo/bin/wm-build}
-CAP=""; WAIT_S=480; MODE=run
+CAP=""; WAIT_S=480; MODE=run; SAWDD=0
+usage_confined() { echo "usage: r7-cargo-slot.sh --run-confined [--rw PATH]... -- <exe> [args...]   (userns mode: transient systemd user unit, no bwrap)" >&2; exit 2; }
 while [ $# -gt 0 ]; do case "$1" in
+  --run-confined) MODE=confined; shift;; --rw) [ $# -ge 2 ] || usage_confined; CRW+=("$2"); shift 2;;
   --cap-gb) CAP=$2; shift 2;; --wait-s) WAIT_S=$2; shift 2;; --check) MODE=check; shift;; --selftest) MODE=selftest; shift;;
-  --) shift; break;; *) echo "r7-cargo-slot: unknown flag $1" >&2; exit 2;; esac; done
+  --) SAWDD=1; shift; break;; *) echo "r7-cargo-slot: unknown flag $1" >&2; exit 2;; esac; done
+if [ "$MODE" = confined ]; then
+  [ "$SAWDD" = 1 ] && [ $# -gt 0 ] || usage_confined
+  case "$1" in */*) CEXE=$(realpath -e -- "$1" 2>/dev/null);; *) CEXE=$(command -v -- "$1" 2>/dev/null);; esac
+  [ -n "$CEXE" ] && [ -f "$CEXE" ] && [ -x "$CEXE" ] || { echo "r7-cargo-slot: executable not found: $1" >&2; usage_confined; }
+  shift; set -- "$CEXE" "$@"
+  for d in "${CRW[@]}"; do [ -e "$d" ] || { echo "r7-cargo-slot: --rw path does not exist: $d" >&2; usage_confined; }; done
+elif [ ${#CRW[@]} -gt 0 ]; then usage_confined; fi
 TOP=$(realpath -e "$(git rev-parse --show-toplevel 2>/dev/null || pwd)") || exit 77
 CLS=inner; PFX=""; case "$(basename "$TOP")" in wm-build*) CLS=hand;; mcphost*) PFX=mcphost-;; synthorg*) PFX=synthorg-;; esac
 # A566 (r7 11-02): a clone whose dir name matches none of the above is classed by its origin URL, then its Cargo.toml package name, so a renamed wm-build clone stays class hand.
@@ -116,14 +150,38 @@ selftest_precheck() { # exit-75 path + pass-through, driven by the FAKE env; own
   case $D in /home/jsy/hand/.slot-selftest.????*) rm -rf -- "$D";; esac
   return $fail
 }
+selftest_confined() { # needs a reachable user manager; calls run_confined in-process (no daemon acquire, no slot taken)
+  local st rc fail=0 P W; st=$(systemctl --user is-system-running 2>/dev/null)
+  case $st in running|degraded) ;; *) echo "SKIP confined: no user manager (is-system-running=${st:-none})"; return 0;; esac
+  CRW=(); run_confined /bin/sh -c 'exit 3'; rc=$?
+  if [ $rc = 3 ]; then echo "PASS confined: exit code carried (3)"; else echo "FAIL confined: exit code carried rc=$rc"; fail=1; fi
+  P=$HOME/slotrun-probe-$$; run_confined /bin/sh -c "echo x > '$P'" 2>/dev/null; rc=$?
+  if [ $rc != 0 ] && [ $rc != 77 ] && [ ! -e "$P" ]; then echo "PASS confined: write under HOME refused (rc=$rc)"; else echo "FAIL confined: write under HOME rc=$rc exists=$([ -e "$P" ] && echo yes || echo no)"; rm -f -- "$P"; fail=1; fi
+  W=$(mktemp -d "$LOGD/rw.XXXXXX"); CRW=("$W"); run_confined /bin/sh -c "echo x > '$W/f'"; rc=$?
+  if [ $rc = 0 ] && [ -f "$W/f" ]; then echo "PASS confined: write under --rw dir"; else echo "FAIL confined: write under --rw dir rc=$rc"; fail=1; fi
+  rm -rf -- "$W"; CRW=()
+  if command -v unshare >/dev/null 2>&1; then run_confined "$(command -v unshare)" -Ur true; rc=$?
+    if [ $rc = 0 ]; then echo "PASS confined: nested userns (unshare -Ur true)"; else echo "FAIL confined: nested userns rc=$rc"; fail=1; fi
+  else echo "SKIP confined: nested userns (no unshare)"; fi
+  return $fail
+}
 # --cap-gb sets ONLY the scope MemoryMax/High; the daemon prices its config class cap (CTRL 1:38 PM 10-21: no per-call cap overrides; the mem_caps_gb override key is unknown on 0.77.85 anyway)
 [ -n "$CAP" ] || CAP=$(slotcalc cap "$CLS" "$PFX" | awk '{printf "%d", ($1==int($1)) ? $1 : int($1)+1}'); [ -n "$CAP" ] || CAP=$([ "$CLS" = hand ] && echo 5 || echo 12)
 HIGH=$((CAP - 2)); [ "$HIGH" -lt 1 ] && HIGH=1
 WAIT_MIN=$(( (WAIT_S + 59) / 60 )); [ "$WAIT_MIN" -lt 1 ] && WAIT_MIN=1
 case "$MODE" in
-  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G high=${HIGH}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
+  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; selftest_confined || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G high=${HIGH}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
   check) "$WM" builder cargo-jobs list 2>&1 | tail -5; precheck /dev/null 2>/dev/null; echo "PRECHECK: $PCV: $PCM"; echo "CHECK v3: class=$CLS cap=${CAP}G avail=$(availg)G top=$TOP (grant decided by the daemon acquire; sandbox lib $(sha256sum "$LIB" | cut -c1-8))"; exit 0;;
 esac
+if [ "$MODE" = confined ]; then  # same gate as cargo mode: pre-check (75), then the daemon acquire; the unit carries MemoryMax = the class cap
+  precheck "$LOG" || exit 75; [ "$PCV" = error ] && echo "r7-cargo-slot: $PCM" >&2
+  echo "$(date -Is) ACQ pid=$$ class=$CLS cap=${CAP}G wait=${WAIT_MIN}m avail=$(availg)G top=$TOP confined cmd=$*" >> "$LOG"
+  R7C_RW=$(printf '%s\n' "${CRW[@]}") R7C_CAP=$CAP \
+  "$WM" builder cargo-jobs acquire --class "$CLS" ${PFX:+--prefix "$PFX"} --producer cargo-slot --config "$CFG" --state-dir /home/jsy/.local/state/wm-build --wait-minutes "$WAIT_MIN" -- "$0" --__confined "$@"
+  rc=$?
+  [ "$rc" = 75 ] && echo "$(date -Is) REFUSE pid=$$ class=$CLS cap=${CAP}G avail=$(availg)G (acquire 75, confined)" >> "$LOG" || echo "$(date -Is) END pid=$$ rc=$rc avail=$(availg)G confined" >> "$LOG"
+  exit "$rc"
+fi
 [ $# -gt 0 ] || { echo "r7-cargo-slot: no command after --" >&2; exit 2; }
 [ "$1" = cargo ] || [ "$(basename "$1")" = cargo ] || { echo "r7-cargo-slot: only cargo commands (got $1)" >&2; exit 2; }
 precheck "$LOG" || exit 75; [ "$PCV" = error ] && echo "r7-cargo-slot: $PCM" >&2
