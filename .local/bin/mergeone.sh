@@ -31,6 +31,13 @@ if cmp=$(gh api "repos/$R/compare/main...$sha" 2>/dev/null) && mb=$(jq -r '.merg
   fi
 fi
 [ "$dr" = true ] && gh pr ready "$n" -R "$R" >/dev/null 2>&1
+# branch author check (A1296, faaf15ee on dotfiles#394): GitHub appends "Co-authored-by: <author>" to the squash for every branch
+# commit author other than the merger even when --body is explicit, so a branch commit not authored by j0yen is refused before the gate.
+AUTHOR_OK_RE='^(jyen\.tech@gmail\.com|([0-9]+\+)?j0yen@users\.noreply\.github\.com)$'
+authors=$(gh api "repos/$R/pulls/$n/commits" --paginate -q '.[].commit.author.email' 2>/dev/null) || authors=""
+[ -n "$authors" ] || { echo "$repo#$n SKIP ATTRIBUTION-AUTHOR-UNCHECKED (branch commits unreadable or empty)"; exit 10; }
+bad_auth=$(printf '%s\n' "$authors" | grep -vE "$AUTHOR_OK_RE" | sort -u | paste -sd' ' -)
+[ -z "$bad_auth" ] || { echo "$repo#$n SKIP ATTRIBUTION-AUTHOR $bad_auth (the squash would carry Co-authored-by; re-commit as jyen.tech@gmail.com on a new branch)"; exit 10; }
 if [ -n "$vid" ]; then
   if ! WM_SEAT=aide wm-decide merge-gate "$vid" --pr "$n" --repo "$R" > "${MERGEONE_GATE_OUT:-/dev/null}" 2>&1; then echo "$repo#$n SKIP merge-gate rc!=0 (verdict $vid; fails in ${MERGEONE_GATE_OUT:-/dev/null})"; exit 9; fi
 fi
