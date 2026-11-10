@@ -1,0 +1,10 @@
+[Unit]
+Description=off-host probe of carbon from this host (RedBaron/ryzen7, never carbon): user manager, hermes-gateway, agorabus socket, fleet-dash age (A1446)
+# the file installs everywhere (install.sh links the whole tree); enable it on redbaron and ryzen7 only.
+ConditionHost=!carbon
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=60
+ExecStart=%h/.local/bin/carbon-alive.sh

@@ -253,6 +253,10 @@ def run_action(k, appr, act):
     if act is None: return True
     p = subprocess.run(["python3", "-I", RUN_BIN, "run", "--dir", OD, "--key", k, "--approval", appr, "--action", json.dumps(act)], capture_output=True, text=True)   # no kill timer: the hang guard is the owner-set OBL_RUN_TIMEOUT_SEC inside the runner
     if p.returncode == 75:   # a live owner already runs this key: UNKNOWN, retry later (distinct code), never a second execution
+        try: unk = json.loads(p.stdout or "{}").get("status") == "unknown-started"
+        except Exception: unk = False
+        if unk:   # dead owner left a started record and no receipt: the effect may be done; surface ONE owned row per key (surface() dedupes), still rc 75, nothing re-runs
+            surface("obligation %s: a dead runner left a started record and no receipt, so its effect is UNKNOWN; not re-run. Release only by an evidence-bound `ctl-obligation-run.py reconcile` (typed recipe + approval naming the key)" % k, "ctl-reads-unknown", "unknown." + k)
         sys.stderr.write("action-in-flight: %s (retry later)\n" % k); sys.exit(75)
     return p.returncode == 0
 LOCKTMO = float(os.environ.get("RT_KEYLOCK_TIMEOUT_S") or 60)

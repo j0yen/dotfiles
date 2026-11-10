@@ -11,6 +11,8 @@ burst-idle-guard.service	mechanical	fleet	no	no
 burst-idle-guard.timer	mechanical	fleet	no	yes
 caps-drift.service	mechanical	fleet	no	no
 caps-drift.timer	mechanical	fleet	no	yes
+carbon-alive.service	mechanical	fleet	no	no
+carbon-alive.timer	mechanical	fleet	no	yes
 carbon-build-procs.service	mechanical	fleet	no	no
 carbon-build-procs.timer	mechanical	fleet	no	yes
 claude-build.service	mechanical	fleet	no	no
@@ -19,6 +21,8 @@ claude-vibeloop-digest.service	mechanical	fleet	no	no
 claude-vibeloop-measure.service	mechanical	fleet	no	no
 claude-vibeloop.service	mechanical	fleet	no	no
 ctl-event-bridge.service	mechanical	fleet	no	yes
+ctl-silence-recover.service	mechanical	fleet	yes	no
+ctl-silence-recover.timer	mechanical	fleet	no	yes
 director-event-consumer-recover.service	mechanical	fleet	yes	no
 director-event-consumer-recover.timer	mechanical	fleet	no	yes
 director-event-consumer.service	mechanical	fleet	yes	no
