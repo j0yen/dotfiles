@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fake mode for tests/user-manager-restart.test.sh. Usage: user-manager-restart-fakes.sh <bindir>
-# writes fake systemctl/useradd/userdel/getent/kill/sudo/id/mkdir/rmdir/rm/tee into <bindir>; every fake but
-# sudo and id logs its call to $STATE/calls.log. Fakes read STATE (dir), FAKE_MODE (ok | norestart | restartonstop),
+# writes fake systemctl/useradd/userdel/getent/kill/sudo/id/mkdir/rmdir/rm/tee into <bindir>; fake sudo drops a
+# leading -n (the test calls "$SUDO" -n "$X" ...); every fake but sudo and id logs its call to $STATE/calls.log.
+# Fakes read STATE (dir), FAKE_MODE (ok | norestart | restartonstop),
 # FAKE_UID (default 990), FAKE_CALLER_UID (default 1001), FAKE_NOSUDO=1, FAKE_PREEXIST=1 (getent answers uid 990 for
 # any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails).
 # Usage: user-manager-restart-fakes.sh --seed-dropdir <rundir> <uid>  makes <rundir>/user@<uid>.service.d/sentinel
@@ -18,6 +19,7 @@ w() { cat > "$d/$1"; chmod +x "$d/$1"; }
 w fsudo <<'F'
 #!/usr/bin/env bash
 [ "${FAKE_NOSUDO:-0}" = 1 ] && exit 1
+[ "${1:-}" = -n ] && shift
 exec "$@"
 F
 w fid <<'F'
