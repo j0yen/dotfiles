@@ -51,4 +51,16 @@ reset; EV="$tmp/absent.py" run
 
 reset; printf 'import sys\nsys.exit(2)\n' >"$tmp/bad.py"; EV="$tmp/bad.py" run
 grep -q 'EMIT-ERR A1' "$tmp/log" && [ "$RC" -ne 0 ] && [ -s "$tmp/state/errors.jsonl" ]; chk "evaluator without a usable emit subcommand: owned error + nonzero" $?
+
+# A1303 presence-only: counterfeit report must not be PASS; behavioural grep stays PASS; SKIP unchanged
+printf 'no worker, no effect, no verdict, no successor\n' >"$tmp/counterfeit.md"; : >"$tmp/empty.md"
+reset; export FAKE_CHECK="test -s $tmp/counterfeit.md"; run
+grep -q ' PRESENCE A1' "$tmp/log" && ! grep -q ' PASS A1' "$tmp/log" && [ "$(cat "$tmp/outbox")" = "A1|0|presence-only-check" ]; chk "presence_counterfeit_report_not_pass: test -s on nonempty file logs PRESENCE + one presence-only-check, never PASS" $?
+reset; export FAKE_CHECK="test -s $tmp/empty.md"; run
+grep -q ' FAIL A1' "$tmp/log"; chk "presence_empty_file_fails: test -s on empty file logs FAIL" $?
+reset; export FAKE_CHECK="grep -q worker $tmp/counterfeit.md"; run
+grep -q ' PASS A1' "$tmp/log" && [ ! -s "$tmp/outbox" ]; chk "behaviour_grep_pass: grep -q of a present pattern logs PASS" $?
+reset; export FAKE_CHECK='python3 x.py'; run
+grep -q ' SKIP A1' "$tmp/log" && [ "$(cat "$tmp/outbox")" = "A1|0|check-unrunnable" ]; chk "skip_unchanged: python3 check logs SKIP + check-unrunnable" $?
+unset FAKE_CHECK
 exit $fail
