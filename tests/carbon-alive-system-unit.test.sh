@@ -51,6 +51,10 @@ if git -C "$here" cat-file -e "$base^{commit}" 2>/dev/null && git -C "$here" rev
   ( cd "$here" && env -u FLEET_SYNC_RETIRED -u XDG_STATE_HOME HOME="$T/shome" PATH="$T/bin:$PATH" bash ./install.sh --dry-run --link-only --paths-from "$base" HEAD ) > "$T/sout" 2>&1
   grep -qx "stale: $T/shome/.config/systemd/user/carbon-alive.service" "$T/sout" && grep -qx "stale: $T/shome/.config/systemd/user/carbon-alive.timer" "$T/sout" \
     && ok "9 install.sh --paths-from $base..HEAD reports both old user unit links stale" || bad "9 stale report: $(grep -c '^stale:' "$T/sout") stale lines"
+  # fleet-sync retire_scan's own diff (--no-renames, so the timer moved to system-units still counts as a deletion)
+  dl="$(git -C "$here" -c core.quotepath=off diff --no-renames --name-status --diff-filter=D "$base" HEAD | cut -f2- | grep '^\.config/systemd/user/carbon-alive' | sort | tr '\n' ' ')"
+  [ "$dl" = ".config/systemd/user/carbon-alive.service .config/systemd/user/carbon-alive.timer " ] \
+    && ok "9b fleet-sync's retire diff records both user unit paths as deleted (retired.tsv rows)" || bad "9b retire diff: '$dl'"
 else
   echo "SKIP 9 base $base not in this clone's history"
 fi
