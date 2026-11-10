@@ -10,6 +10,7 @@ fail=0; npass=0
 pass() { npass=$((npass+1)); echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 R=$(mktemp -d "${TMPDIR:-/tmp}/rb-run-coder-room-test.XXXXXX") || exit 2
+: > "$R/coder-hosts.empty.tsv"; export RB_CODER_HOSTS_MAP="$R/coder-hosts.empty.tsv"   # gate tests stay on the local path: the repo routing map (default row redbaron) would send them to another host when run on ryzen7
 trap 'case "$R" in */rb-run-coder-room-test.*) rm -rf "$R";; esac' EXIT
 
 # room fakes (shared)
