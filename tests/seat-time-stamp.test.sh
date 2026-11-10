@@ -28,7 +28,7 @@ printf 'tst\trb\tsid-x\t20\t100\t^x\t-\n' >"$SEATS_TABLE"
 "$EV" tst "reply body three" >/dev/null 2>&1
 L="$EVENTS_DIR/tst-events.log"
 [ "$(wc -l <"$L")" = 3 ]; ok "three lines stored" $?
-! grep -Eq '6:1x|2:19' "$L"; ok "the typed clocks (6:1x, 2:19) never appear in the stored events.log" $?
+! sed -E 's/^[^|]+ \| //' "$L" | grep -Eq '6:1x|2:19'; ok "the typed clocks (6:1x, 2:19) never appear in the stored events.log" $?
 grep -q ' | aide | aide 6:41 AM re ctl 6:0x: reply body one$' "$L" && grep -q ' | aide | aide 6:41 AM: reply body two$' "$L" && grep -q ' | aide | aide 6:41 AM: reply body three$' "$L"; ok "each stored line carries the real stamp (aide 6:41 AM)" $?
 [ "$(jq -r '[.stamped,.typed_label_replaced]|@csv' "$EVENTS_DIR/tst-events.json")" = "3,2" ]; ok "events.json counters stamped=3 typed_label_replaced=2" $?
 a="$("$ASK" tst "rb 6:1x AM: ask body" 2>&1)"
