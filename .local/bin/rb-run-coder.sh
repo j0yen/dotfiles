@@ -5,7 +5,7 @@
 # --no-cargo (3rd positional or anywhere): exempt this spawn from the rb-spawn-hold gate; only for prompts that run no cargo on redbaron.
 # gates, in order (exit): model 78, host 79 (redbaron|ryzen7 only), empty-prompt 74, pair-lint 77 (wm-decide record with --target AND --pr; .local/lib/rb-prompt-lint.sh),
 # spawn-hold 76, spec-lint 73, STEP 0 75, fable-verdict 80 (78 is the model gate), room 78 (carbon-room.sh <need-MB>, CLAUDE.md § Hosts ROOM; shares exit 78 with the model gate, told apart by the REFUSED text),
-# memcap 71 (rb-coder-memcap.sh caps this coder's own unit; runs last, just before `claude -p`).
+# memcap (WARN only, never refuses; rb-coder-memcap.sh sets this coder's own unit to infinity, d-20261109-125934-hermes-98a1 / A1483; runs last, just before `claude -p`).
 # nocargo-hooks 70 (--no-cargo only: core.hooksPath = .local/share/rb-git-hooks, wmb-nocargo-checks.sh at pre-commit + pre-push; ctl 8220).
 # env: RB_ROOM_BIN (default ~/.local/bin/carbon-room.sh), RB_ROOM_PEAK_MB (the coder's peak in MB; skips the journal read), RB_MEMCAP_BIN (default ~/.local/bin/rb-coder-memcap.sh).
 # fable-verdict 80 (ctl b209 10-23 9:50 PM; sqw5's verdict row d-20261023-224235-rb-cdf6 was filed after the spawn): every cited *.spec.md must be
@@ -132,12 +132,12 @@ if [ "$rc_r" != 0 ] || ! [[ $room_l1 =~ ^room\ (ok|n/a): ]]; then
   echo "REFUSED room rc=$rc_r: $room_l1 $room_tail" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED room rc=$rc_r: $room_l1 $room_tail" || true; exit 78
 fi
 echo "$room_l1 $room_tail" > "$D/$n.room"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n ROOM $room_l1 $room_tail" || true
-# memcap gate (rb 11-02, Fable CORRECT fcdf/05b3: coders ran on redbaron with MemoryMax=infinity): rb-coder-memcap.sh sets MemoryHigh/MemoryMax
-# (12G/14G) on this coder's own unit and reads the cgroup back. Fails CLOSED: only rc 0 + a `memcap ok:` first line allows; anything else exits 71.
+# memcap step (rb 11-02, Fable CORRECT fcdf/05b3 capped coders at 12G/14G; lifted by Hermes d-20261109-125934-hermes-98a1, ask A1483 r6): rb-coder-memcap.sh sets
+# MemoryHigh/MemoryMax/TasksMax=infinity on this coder's own unit and reads the cgroup back. A `memcap NO` or nonzero rc is recorded as WARN and the launch continues.
 memcap_bin="${RB_MEMCAP_BIN:-$HOME/.local/bin/rb-coder-memcap.sh}"
 mc_out=$("$memcap_bin" 2>&1); rc_m=$?; mc_l1=$(printf '%s\n' "$mc_out" | head -n 1)
 if [ "$rc_m" != 0 ] || ! [[ $mc_l1 =~ ^memcap\ ok: ]]; then
-  echo "REFUSED memcap rc=$rc_m: $mc_l1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED memcap rc=$rc_m: $mc_l1" || true; exit 71
+  EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n WARN memcap rc=$rc_m: $mc_l1" || true
 fi
 echo "$mc_l1" > "$D/$n.memcap"
 # --no-cargo coder (ctl 8220 11-03): env-level core.hooksPath = .local/share/rb-git-hooks, whose pre-commit + pre-push run
