@@ -109,14 +109,14 @@ printf '#!/usr/bin/env bash\nexit 1\n' > "$H/.local/bin/systemctl"
 HOME=$H RB_ROOM_HOSTNAME=carbon RB_DECISIONS_DB="$R/hatch.db" RB_SPAWN_HOLD_BIN="$R/ok-hold" RB_MEMCAP_BIN="$R/ok-memcap" RB_ROOM_BIN="$R/ok-fake" RB_ROOM_PEAK_MB=900 CARBON_ROOM_STATE="$H/s.json" CARBON_ROOM_LEDGER="$H/l.jsonl" bash "$runc" t "$H/prompt.md" >/dev/null 2>&1; rc=$?
 room=$(cat "$D/t.room" 2>/dev/null)
 [ $rc = 0 ] && [[ $room == *active=\?* ]] && pass "(k) systemctl failure -> '$room'" || bad "(k) rc=$rc room='$room'"
-# (mc1) memcap NO (room ok) -> 71, report REFUSED memcap rc=3:, event, no claude (memcap gate, Fable CORRECT fcdf/05b3)
+# (mc1) memcap NO (room ok) -> no refusal: launch continues to claude, WARN event, .memcap holds the line (d-20261109-125934-hermes-98a1, A1483)
 case_ mc1 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_MEMCAP_BIN="$R/no-memcap"
-rep=$(cat "$D/t.report.md" 2>/dev/null)
-if [ $rc = 71 ] && [[ $rep == "REFUSED memcap rc=3: memcap NO:"* ]] && [ ! -e "$H/claude.ran" ] && grep -q 'RB-CODER t REFUSED memcap rc=3' "$H/events"; then
-  pass "(mc1) memcap NO -> rc=71, report '$rep', claude not run"; else bad "(mc1) rc=$rc rep='$rep' ran=$(ls "$H/claude.ran" 2>&1)"; fi
-# (mc2) missing memcap binary -> 71 (fail closed); (a) above already proves ok-memcap writes t.memcap
+rep=$(cat "$D/t.report.md" 2>/dev/null); mcl=$(cat "$D/t.memcap" 2>/dev/null)
+if [ $rc != 71 ] && [[ $rep != REFUSED* ]] && [[ $mcl == "memcap NO:"* ]] && [ -e "$H/claude.ran" ] && grep -q 'RB-CODER t WARN memcap rc=3' "$H/events" && ! grep -q 'REFUSED memcap' "$H/events"; then
+  pass "(mc1) memcap NO -> rc=$rc, WARN event, claude ran"; else bad "(mc1) rc=$rc rep='$rep' memcap='$mcl' ran=$(ls "$H/claude.ran" 2>&1)"; fi
+# (mc2) missing memcap binary -> also WARN only, claude runs; (a) above already proves ok-memcap writes t.memcap
 case_ mc2 "$R/ok-fake" "" "" RB_ROOM_PEAK_MB=900 RB_MEMCAP_BIN="$R/does-not-exist"
-[ $rc = 71 ] && [ ! -e "$H/claude.ran" ] && [ -e "$R/a/.cache/rb-seat/coders/t.memcap" ] && pass "(mc2) missing RB_MEMCAP_BIN -> rc=71; (a) wrote t.memcap" || bad "(mc2) rc=$rc"
+[ $rc != 71 ] && [ -e "$H/claude.ran" ] && [ -e "$R/a/.cache/rb-seat/coders/t.memcap" ] && pass "(mc2) missing RB_MEMCAP_BIN -> rc=$rc, claude ran; (a) wrote t.memcap" || bad "(mc2) rc=$rc"
 
 # --- RedBaron cases (l-p): host != carbon -> the real carbon-room.sh is forced (CARBON_ROOM_HOST) against a fake meminfo, plus the MemGate sigma.
 realroom="$here/../.local/bin/carbon-room.sh"
