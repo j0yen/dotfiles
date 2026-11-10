@@ -35,7 +35,8 @@ else
   if [ -z "$c" ]; then echo "skip - network/gh api unavailable; landed-commit check not run"
   else
     sha="${c%%$'\t'*}"; rest="${c#*$'\t'}"; cdate="${rest%%$'\t'*}"; msg="${rest#*$'\t'}"; msg="${msg//$'\001'/$'\n'}"
-    hits="$(printf '%s\n' "$msg" | grep -ciE '^[[:space:]]*(co-authored-by:|generated with)' || true)"
+    # a GitHub squash adds the PR author's own noreply as Co-authored-by (25043e44); that is the human author, not Claude attribution
+    hits="$(printf '%s\n' "$msg" | grep -iE '^[[:space:]]*(co-authored-by:|generated with)' | grep -vciE '^[[:space:]]*co-authored-by:[^<]*<([0-9]+\+)?j0yen@users\.noreply\.github\.com>' || true)"
     since="$(cat "$since_f" 2>/dev/null || true)"
     if [ "$hits" = 0 ]; then echo "ok - latest main commit ${sha:0:7} carries no attribution trailer"
     elif [ -n "$since" ] && [[ "$cdate" > "$since" ]]; then echo "NOT OK - ATTRIBUTION-LANDED $sha ($cdate is after the mechanism marker $since)"; fail=1

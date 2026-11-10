@@ -1,0 +1,4 @@
+# repo	host: rb-run-coder.sh sends a coder for j0yen/<repo> to <host> (ask A57, Joe 10-27 approvals #49); env RB_CODER_HOST overrides
+synthorg	ryzen7
+wm-build	ryzen7
+default	redbaron
