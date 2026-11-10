@@ -13,6 +13,8 @@
 # any umtest-* name), FAKE_USERADD_RC (nonzero = useradd fails, no account), FAKE_PREACTIVE=1 (manager active before start), FAKE_STARTRC (nonzero = systemctl start fails),
 # FAKE_N0 / FAKE_N1 (set, even empty = `systemctl show -p NRestarts` prints it verbatim before / after the fake kill;
 # printed only, never evaluated, the nrestarts state file keeps the real count).
+# A1499: FAKE_P0 / FAKE_P1 (set, even empty = `systemctl show -p MainPID` prints it verbatim before / after the fake
+# kill; printed only, never evaluated, the mainpid state file keeps the real pid).
 # A1488 F1: every fake is written mode 755 by an explicit chmod and new parent dirs are made under umask 022,
 # whatever the caller's umask (the test refuses a group/world-writable dir or fake between its root and the bindir).
 # Usage: user-manager-restart-fakes.sh --seed-dropdir <rundir> <uid>  makes <rundir>/user@<uid>.service.d/sentinel
@@ -88,7 +90,8 @@ case $1 in
   show) d=inactive; [ "${FAKE_PREACTIVE:-0}" = 1 ] && d=active
     a=$(cat "$STATE/active" 2>/dev/null || echo $d)
     case $4 in
-      MainPID) [ "$a" = active ] && cat "$STATE/mainpid" || echo 0 ;;
+      MainPID) f=FAKE_P0; [ -e "$STATE/killed" ] && f=FAKE_P1
+        if [ -n "${!f+x}" ]; then printf '%s\n' "${!f}"; elif [ "$a" = active ]; then cat "$STATE/mainpid"; else echo 0; fi ;;
       NRestarts) f=FAKE_N0; [ -e "$STATE/killed" ] && f=FAKE_N1
         if [ -n "${!f+x}" ]; then printf '%s\n' "${!f}"; else cat "$STATE/nrestarts"; fi ;;
       ActiveState) echo "$a" ;;

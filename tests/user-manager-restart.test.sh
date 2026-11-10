@@ -25,6 +25,9 @@
 # variable's target file is owned by this uid and not group/world-writable. F4: a byte-identity compare that cannot
 # run (cmp rc other than 0/1, e.g. 127 when missing) refuses SKIP 77, never passes. F3: the single-word class is
 # explicit ASCII (A-Z a-z 0-9 _ . / + @ -), independent of the locale.
+# A1499: a MainPID is 1-10 ASCII digits, no leading 0, not 1 (pattern check, no arithmetic) right after each read, else
+# ABORT rc 2 before the kill or compare (0 after the kill = not restarted yet). A1500: the checks run cmp, stat, id,
+# realpath and dirname from /usr/bin or /bin (root-owned, go-w), never from PATH; none usable: SKIP 77.
 set -u
 CMDVARS='SYSTEMCTL USERADD USERDEL GETENT KILL SUDO IDCMD MKDIR RMDIR RM TEE'
 if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
@@ -176,7 +179,8 @@ if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
   # shellcheck disable=SC2086
   runcase sudolink-good 0 'user-manager-restart PASS' $allin
   # A1488 D3: sentinels first on PATH never run from fsudo or a fake: mkdir/rm/rmdir/tee plus fsudo's own
-  # realpath/dirname/cat for direct fsudo calls; only mkdir/rm/rmdir/tee for a child run (the test itself uses realpath)
+  # realpath/dirname/cat for direct fsudo calls; only mkdir/rm/rmdir/tee for a child run (A1500 case a1500-good covers
+  # realpath/dirname, which the test's checks run from /usr/bin)
   sp=$work/sentpath sp4=$work/sentpath4; mkdir -p "$sp" "$sp4"
   for m in mkdir rm rmdir tee realpath dirname cat; do
     printf '#!/bin/sh\n: > "%s"\n' "$work/ESCAPED" > "$sp/$m" && chmod +x "$sp/$m" || exit 2
@@ -260,13 +264,14 @@ if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
       *) runcase "f1-$t" 77 "target $nb/$t is not a file of uid" ${allin//"$sb"/"$nb"} && nothing "f1-$t";;
     esac
   done
-  # F4: a copy of fsudo as IDCMD while cmp cannot compare (stub first on PATH exiting 127 = missing, or 2) -> rc 77
+  # F4: a copy of fsudo as IDCMD with a cmp stub first on PATH exiting 127 (= missing) or 2 -> rc 77; since A1500 the
+  # compare uses /usr/bin or /bin cmp, never the PATH stub, so the copy is refused as sudo
   cs=$work/cmpstub; mkdir -p "$cs"
   for crc in 127 2; do
     printf '#!/bin/sh\nexit %s\n' "$crc" > "$cs/cmp" && chmod 755 "$cs/cmp" || exit 2
     rm -f -- "$work/ESCAPED"
     # shellcheck disable=SC2086
-    runcase "cmp$crc-copy" 77 'byte-identity compare with sudo failed' "PATH=$cs:$work/pathbin:$PATH" $allin \
+    runcase "cmp$crc-copy" 77 'IDCMD resolves to sudo' "PATH=$cs:$work/pathbin:$PATH" $allin \
       "IDCMD=$sb/fcopy" && nothing "cmp$crc-copy"
   done
   # F3: a command variable with a non-ASCII letter (e-acute) under LC_ALL=C.UTF-8 is not a single word: rc 77
@@ -278,6 +283,61 @@ if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
     "KILL=$nb/fkill"$'\303\251' && nothing f3-utf8
   # shellcheck disable=SC2086
   runcase f3-good 0 'user-manager-restart PASS' LC_ALL=C.UTF-8 ${allin//"$sb"/"$nb"}
+  # A1499: MainPID printed malformed, 0 or 1 before the kill (FAKE_P0) -> rc 2 with no kill line; malformed or 1 after
+  # the kill (FAKE_P1) -> rc 2 with only the owned kill of 4200; no ESCAPED, the owned account removed once
+  for ph in 0 1; do
+    n=0
+    for val in 00 0 1 007 12345678901 '' "$inj" "$injp"; do
+      [ "$ph$val" = 10 ] && continue
+      n=$((n + 1)) c=pid$ph-bad$n; rm -f -- "$work/ESCAPED"
+      runcase "$c" 2 'MainPID of user@990.service is not a pid' "FAKE_P$ph=$val" || continue
+      log=$work/$c/calls.log
+      owned=$(sed -n 's/^useradd .* \(umtest-[0-9a-f]\{8\}\)$/\1/p' "$log")
+      kills=$(grep '^kill ' "$log") wk=
+      [ "$ph" = 1 ] && wk='kill -KILL 4200'
+      if [ -e "$work/ESCAPED" ] || [ -z "$owned" ] || [ "$kills" != "$wk" ] ||
+         [ "$(grep -c '^userdel ' "$log")" != 1 ] || ! grep -qx "userdel $owned" "$log"; then
+        echo "FAIL case $c: ESCAPED, kill lines '$kills' (want '$wk') or userdel not owned-only:"; cat "$log"; nfail=$((nfail + 1))
+      else
+        npass=$((npass + 1))
+      fi
+    done
+  done
+  # A1499: 0 after the kill is "no main process yet" (systemd's value while restarting): no restart -> rc 1
+  runcase pid1-zero 1 'no restart within' FAKE_P1=0
+  runcase pid-good 0 'old=4200 new=4201' FAKE_P0=4200
+  runcase pid-good2 0 'old=4200 new=4202' FAKE_P0=4200 FAKE_P1=4202
+  # A1500: stubs first on PATH named cmp/stat/id (lying, each leaves ESCAPED) never run; the unsafe fixture each would
+  # hide is still refused rc 77 by the /usr/bin tools: a byte copy of fsudo as IDCMD (cmp stub exits 1 = differ), a
+  # 777 middle dir (stat stub prints 755 and the caller uid), a KILL whose target is root-owned (id stub)
+  st=$work/a1500; mkdir -p "$st/cmp" "$st/stat" "$st/id" "$st/realpath" "$st/dirname" "$st/all"
+  printf '#!/bin/sh\n: > "%s"\nexit 1\n' "$work/ESCAPED" > "$st/cmp/cmp"
+  # shellcheck disable=SC2016 # $* and $UID belong to the stub
+  printf '#!/bin/bash\n: > "%s"\ncase "$*" in *%%a*) echo 755;; *) echo "$UID";; esac\n' "$work/ESCAPED" > "$st/stat/stat"
+  # shellcheck disable=SC2016
+  printf '#!/bin/bash\n: > "%s"\necho "$UID"\n' "$work/ESCAPED" > "$st/id/id"
+  for m in realpath dirname; do printf '#!/bin/sh\n: > "%s"\nexec /usr/bin/%s "$@"\n' "$work/ESCAPED" "$m" > "$st/$m/$m"; done
+  for m in cmp stat id realpath dirname; do chmod 755 "$st/$m/$m" && cp -- "$st/$m/$m" "$st/all/$m" || exit 2; done
+  nb=$work/a1500fx/mid/bin
+  bash "$here/fixtures/user-manager-restart-fakes.sh" "$nb" && ln -s -- /usr/bin/true "$nb/froot" || exit 2
+  rm -f -- "$work/ESCAPED"
+  # shellcheck disable=SC2086 # $allin is one VAR=word per field, no spaces inside a word
+  runcase a1500-cmp 77 'IDCMD resolves to sudo' "PATH=$st/cmp:$PATH" $allin "IDCMD=$sb/fcopy" && nothing a1500-cmp
+  chmod 777 -- "${nb%/bin}" || exit 2
+  rm -f -- "$work/ESCAPED"
+  # shellcheck disable=SC2086
+  runcase a1500-stat 77 "dir ${nb%/bin} between .* is not of uid" "PATH=$st/stat:$PATH" ${allin//"$sb"/"$nb"} &&
+    nothing a1500-stat
+  chmod 755 -- "${nb%/bin}" || exit 2
+  rm -f -- "$work/ESCAPED"
+  # shellcheck disable=SC2086
+  runcase a1500-id 77 'variable KILL target /.* is not a file of uid' "PATH=$st/id:$PATH" ${allin//"$sb"/"$nb"} \
+    "KILL=$nb/froot" && nothing a1500-id
+  # GREEN: every stub (cmp stat id realpath dirname) first on PATH over a 755 tree: PASS and no stub ran
+  rm -f -- "$work/ESCAPED"
+  # shellcheck disable=SC2086
+  runcase a1500-good 0 'user-manager-restart PASS' "PATH=$st/all:$PATH" ${allin//"$sb"/"$nb"}
+  if [ -e "$work/ESCAPED" ]; then echo "FAIL case a1500-good: a PATH stub ran (ESCAPED)"; nfail=$((nfail + 1)); else npass=$((npass + 1)); fi
   [ "$nfail" = 0 ] || { echo "user-manager-restart FAKE FAIL pass=$npass fail=$nfail"; exit 1; }
   echo "user-manager-restart FAKE PASS cases=$npass"
   exit 0
@@ -296,6 +356,25 @@ TEE=${TEE:-tee}
 RUNDIR=${RUNDIR:-/run/systemd/system}
 RESTART_WAIT=${RESTART_WAIT-15}
 STOP_WAIT=${STOP_WAIT-10}
+# A1500: the tools the checks below rely on (cmp, stat, id, realpath, dirname) come from /usr/bin or /bin only, never
+# from the caller's PATH: the first of the two that exists is used, and it (and a symlink's final file) must be a
+# regular, root-owned, executable file with no group/other write bit, else SKIP 77 before any command runs. stat is
+# checked by itself. The command variables (CMDVARS) are not affected.
+sysbin() {
+  local p m
+  for p in "/usr/bin/$1" /bin/"$1"; do [ -e "$p" ] || [ -L "$p" ] && break; p=; done
+  [ -n "$p" ] && [ -f "$p" ] && [ -x "$p" ] || return 1
+  m=$(LC_ALL=C "$STAT" -L -c '%u %a' -- "$p") || return 1
+  case $m in "0 "[01234567][0145][0145]|"0 "[01234567][01234567][0145][0145]) ;; *) return 1;; esac
+  if [ -L "$p" ]; then m=$(LC_ALL=C "$STAT" -c %u -- "$p") && [ "$m" = 0 ] || return 1; fi
+  printf '%s\n' "$p"
+}
+STAT=/usr/bin/stat; [ -e "$STAT" ] || [ -L "$STAT" ] || STAT=/bin/stat
+if ! { [ -f "$STAT" ] && [ -x "$STAT" ] && STAT=$(sysbin stat); }; then echo "SKIP: no root-owned stat in /usr/bin or /bin"; exit 77; fi
+for t in CMP:cmp ID:id REALPATH:realpath DIRNAME:dirname; do
+  p=$(sysbin "${t#*:}") || { echo "SKIP: no root-owned, go-w executable ${t#*:} in /usr/bin or /bin"; exit 77; }
+  printf -v "${t%%:*}" '%s' "$p"
+done
 for v in RESTART_WAIT STOP_WAIT; do
   case ${!v} in ''|*[!0123456789]*|?????*) echo "SKIP: $v is not 1-4 ASCII digits: '${!v}'"; exit 77;; esac
 done
@@ -306,7 +385,7 @@ for v in $CMDVARS RUNDIR; do
   esac
 done
 # A1488 (a): resolved target of a command word (command -v, then realpath -e), empty if none
-target() { local p; p=$(command -v -- "$1" 2>/dev/null) && [ "${p#/}" != "$p" ] && realpath -e -- "$p" 2>/dev/null; }
+target() { local p; p=$(command -v -- "$1" 2>/dev/null) && [ "${p#/}" != "$p" ] && "$REALPATH" -e -- "$p" 2>/dev/null; }
 sudo_rp=$(target "$SUDO")
 # the sudo files: $SUDO's target and a fsudo in UMTEST_FAKEBIN; a hardlink (-ef) or a copy (cmp -s) of one is sudo too
 sudos=()
@@ -317,7 +396,7 @@ issudo() {
   local s r
   for s in "${sudos[@]}"; do
     [ "$1" -ef "$s" ] && return 0
-    cmp -s -- "$1" "$s"; r=$?
+    "$CMP" -s -- "$1" "$s"; r=$?
     case $r in 0) return 0;; 1) ;; *) return 2;; esac
   done
   return 1
@@ -333,19 +412,19 @@ for v in $CMDVARS; do
 done
 # A1488 (b): fixture-root containment of a set UMTEST_FAKEBIN outside live mode
 # gowok <path>: stat mode is 1-4 octal digits (checked before the arithmetic) with no group/other write bit
-gowok() { local m; m=$(stat -c %a -- "$1") || return 1; case $m in ''|*[!01234567]*|?????*) return 1;; esac; (( (8#$m & 8#022) == 0 )); }
-safedir() { [ -d "$1" ] && [ "$(stat -c %u -- "$1")" = "$(id -u)" ] && gowok "$1"; }
-safefile() { [ -f "$1" ] && [ "$(stat -c %u -- "$1")" = "$(id -u)" ] && gowok "$1"; }
+gowok() { local m; m=$("$STAT" -c %a -- "$1") || return 1; case $m in ''|*[!01234567]*|?????*) return 1;; esac; (( (8#$m & 8#022) == 0 )); }
+safedir() { [ -d "$1" ] && [ "$("$STAT" -c %u -- "$1")" = "$("$ID" -u)" ] && gowok "$1"; }
+safefile() { [ -f "$1" ] && [ "$("$STAT" -c %u -- "$1")" = "$("$ID" -u)" ] && gowok "$1"; }
 if [ -n "${UMTEST_FAKEBIN:-}" ] && [ "${UMTEST_LIVE:-0}" != 1 ]; then
-  fb=$(realpath -e -- "$UMTEST_FAKEBIN" 2>/dev/null) || { echo "SKIP: UMTEST_FAKEBIN $UMTEST_FAKEBIN does not resolve"; exit 77; }
-  safedir "$fb" || { echo "SKIP: UMTEST_FAKEBIN $fb is not a dir of uid $(id -u) or is group/world-writable"; exit 77; }
-  fx=$(realpath -e -- "$(dirname -- "$0")/fixtures" 2>/dev/null) || fx=/nonexistent
+  fb=$("$REALPATH" -e -- "$UMTEST_FAKEBIN" 2>/dev/null) || { echo "SKIP: UMTEST_FAKEBIN $UMTEST_FAKEBIN does not resolve"; exit 77; }
+  safedir "$fb" || { echo "SKIP: UMTEST_FAKEBIN $fb is not a dir of uid $("$ID" -u) or is group/world-writable"; exit 77; }
+  fx=$("$REALPATH" -e -- "$("$DIRNAME" -- "$0")/fixtures" 2>/dev/null) || fx=/nonexistent
   fr=
   if [ -n "${UMTEST_FAKEROOT:-}" ]; then
-    fr=$(realpath -e -- "$UMTEST_FAKEROOT" 2>/dev/null) || fr=
+    fr=$("$REALPATH" -e -- "$UMTEST_FAKEROOT" 2>/dev/null) || fr=
     case ${fr##*/} in umtest-fake.??????) ;; *) fr=;; esac
     case ${fr##*/umtest-fake.} in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) fr=;; esac
-    if [ -z "$fr" ] || ! safedir "$fr"; then echo "SKIP: UMTEST_FAKEROOT $UMTEST_FAKEROOT is not an umtest-fake.XXXXXX dir of uid $(id -u), mode go-w"; exit 77; fi
+    if [ -z "$fr" ] || ! safedir "$fr"; then echo "SKIP: UMTEST_FAKEROOT $UMTEST_FAKEROOT is not an umtest-fake.XXXXXX dir of uid $("$ID" -u), mode go-w"; exit 77; fi
   fi
   root=
   case $fb in "$fx"/*) root=$fx;; esac
@@ -354,32 +433,32 @@ if [ -n "${UMTEST_FAKEBIN:-}" ] && [ "${UMTEST_LIVE:-0}" != 1 ]; then
   # F1: every dir from the root down to the bindir (both included) passes the dir rule
   p=$fb
   while :; do
-    safedir "$p" || { echo "SKIP: dir $p between $root and UMTEST_FAKEBIN is not of uid $(id -u) or is group/world-writable"; exit 77; }
+    safedir "$p" || { echo "SKIP: dir $p between $root and UMTEST_FAKEBIN is not of uid $("$ID" -u) or is group/world-writable"; exit 77; }
     [ "$p" = "$root" ] && break
     p=${p%/*}
   done
   # F1: every command variable's target file is this uid's and not group/world-writable (an absolute word that
   # command -v skips, e.g. a non-executable mode-666 file, is resolved by realpath -e)
   for v in $CMDVARS; do
-    rp=$(target "${!v}") || rp=$(realpath -e -- "${!v}" 2>/dev/null) || rp=
+    rp=$(target "${!v}") || rp=$("$REALPATH" -e -- "${!v}" 2>/dev/null) || rp=
     [ -z "$rp" ] || safefile "$rp" ||
-      { echo "SKIP: command variable $v target $rp is not a file of uid $(id -u) or is group/world-writable"; exit 77; }
+      { echo "SKIP: command variable $v target $rp is not a file of uid $("$ID" -u) or is group/world-writable"; exit 77; }
   done
 fi
 
 # live unless every command is an absolute path that resolves (realpath) into the fixture bindir, and that bindir is not a system directory;
 # anything under a system path, or anywhere else, counts as live and needs UMTEST_LIVE=1
 sysdir() { case $1 in /usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/opt|/opt/*|/snap|/snap/*) return 0;; esac; return 1; }
-fakebin=$(realpath -- "${UMTEST_FAKEBIN:-/nonexistent}" 2>/dev/null) || fakebin=
+fakebin=$("$REALPATH" -- "${UMTEST_FAKEBIN:-/nonexistent}" 2>/dev/null) || fakebin=
 live=0
 [ -n "$fakebin" ] && ! sysdir "$fakebin" || live=1
 for v in $CMDVARS; do
   case ${!v} in /*) ;; *) live=1; continue;; esac
-  if ! rp=$(realpath -e -- "${!v}" 2>/dev/null); then live=1; continue; fi
+  if ! rp=$("$REALPATH" -e -- "${!v}" 2>/dev/null); then live=1; continue; fi
   sysdir "$rp" && live=1
-  [ "$(dirname -- "$rp")" = "$fakebin" ] || live=1
+  [ "$("$DIRNAME" -- "$rp")" = "$fakebin" ] || live=1
 done
-rr=$(realpath -m -- "$RUNDIR")
+rr=$("$REALPATH" -m -- "$RUNDIR")
 case $rr in /run/systemd|/run/systemd/*|/etc/systemd|/etc/systemd/*|/usr/lib/systemd/*) live=1;; esac
 if [ "$live" = 1 ] && [ "${UMTEST_LIVE:-0}" != 1 ]; then
   echo "SKIP: live mode needs UMTEST_LIVE=1"
@@ -412,6 +491,9 @@ trap cleanup EXIT
 isuid() { case $1 in ''|*[!0123456789]*) return 1;; esac; [ "${#1}" -le 10 ]; }
 # a count/pid read from systemctl is 1-18 ASCII digits, checked before it reaches any compare or $(( ))
 isnum() { case $1 in ''|*[!0123456789]*) return 1;; esac; [ "${#1}" -le 18 ]; }
+# A1499: a MainPID is 1-10 ASCII digits with no leading 0 (0, 00, 007 refused) and is not 1 (init), checked by a
+# pattern only (no arithmetic), right after the read and before any kill or compare
+ispid() { case $1 in ''|0*|1|*[!0123456789]*|???????????*) return 1;; esac; }
 # caller uid before any account is made: IDCMD must exit 0 and print one uid, else nothing has run to clean up
 cu=$("$IDCMD" -u 2>/dev/null) || abort "IDCMD $IDCMD -u failed (rc $?)"
 isuid "$cu" || abort "IDCMD $IDCMD -u printed no all-digit uid: '$cu'"
@@ -454,7 +536,7 @@ started=1
 "$SUDO" -n "$SYSTEMCTL" start "$unit" || abort "start $unit"
 
 old=$(prop MainPID)
-case $old in ''|0|*[!0123456789]*) abort "no MainPID for $unit";; esac
+ispid "$old" || abort "MainPID of $unit is not a pid (1-10 digits, no leading 0, not 1) before SIGKILL: '$old'"
 n0=$(prop NRestarts)
 isnum "$n0" || abort "NRestarts of $unit is not all ASCII digits before SIGKILL: '$n0'"
 
@@ -464,7 +546,8 @@ new='' n1=''
 for ((i = 0; i < 10#$RESTART_WAIT; i++)); do
   sleep 1
   new=$(prop MainPID)
-  isnum "$new" || abort "MainPID of $unit is not all ASCII digits after SIGKILL: '$new'"
+  # 0 = no main process yet (systemd prints 0 between the kill and the restart); anything else must be a pid
+  [ "$new" = 0 ] || ispid "$new" || abort "MainPID of $unit is not a pid (1-10 digits, no leading 0, not 1) after SIGKILL: '$new'"
   n1=$(prop NRestarts)
   isnum "$n1" || abort "NRestarts of $unit is not all ASCII digits after SIGKILL: '$n1'"
   [ "$(prop ActiveState)" = active ] && [ -n "$new" ] && [ "$new" != 0 ] && [ "$new" != "$old" ] && break
