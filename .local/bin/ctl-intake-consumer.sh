@@ -19,7 +19,7 @@ while read -r seq kind ask rev; do
   # claims it: deliver once, remind every REMIND seconds, and try the ACK each run (it lands as soon as the claim exists).
   f="$ST/$CONS.$seq"; now=$(date +%s)
   if [ ! -e "$f" ] || [ $((now - $(cat "$f" 2>/dev/null || echo 0))) -ge "$REMIND" ]; then
-    if "$NOTIFY" aide "intake wake seq=$seq kind=$kind ask=$ask rev=$rev: claim via wm-decide intake claim --ask $ask --expect-rev $rev" --due "$(date -d '+20 min' +%H:%M)" --done-check "wm-asks asks query --ids $ask --json" >/dev/null 2>&1; then
+    if EVENT_SOURCE=ctl-intake-consumer "$NOTIFY" aide "intake wake seq=$seq kind=$kind ask=$ask rev=$rev: claim via wm-decide intake claim --ask $ask --expect-rev $rev" --due "$(date -d '+20 min' +%H:%M)" --done-check "wm-asks asks query --ids $ask --json" >/dev/null 2>&1; then
       echo "$now" > "$f"; n=$((n+1))
     else bad=$((bad+1)); continue; fi
   fi

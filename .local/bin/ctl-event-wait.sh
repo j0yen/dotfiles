@@ -6,7 +6,7 @@
 #   status                          print the current snapshot JSON (what `wait` writes every poll) and exit
 #   --selftest                      run the fixture tests in a temp HOME (no real log, no notifications)
 # Events (each emitted at most once; state in $EW_DIR):
-#   inbox     a new aide-events.log line from hermes-*, joe-*, fivewhys-*, rb, r7, controller or plain (own ctl/aide receipts are not events)
+#   inbox     a new aide-events.log line from hermes-*, joe-*, fivewhys-*, rb, r7, controller, plain or ctl-intake-consumer (own ctl/aide receipts are not events)
 #   due       an open-asks.tsv row owned by aide|ctl whose due has passed and was not reported before
 #   verifier  a new or updated ~/.local/state/aide-verifier/*/result.json
 #   taskfile  a new or changed task file in ~/wintermute-operations/feedback/ (names with status/monitor/receipt are informational)
@@ -25,7 +25,7 @@ AV="${AV_DIR:-$HOME/.local/state/aide-verifier}"
 FB="${FEEDBACK_DIR:-$HOME/wintermute-operations/feedback}"
 SJ="${STATUS_JSON:-$HOME/.cache/fleet-dash/status.json}"
 WAKE="${AIDE_WAKE_BIN:-$HOME/.local/bin/aide-wake.sh}"
-ACT='^[^|]*\| *(hermes[^ |]*|joe[^ |]*|fivewhys[^ |]*|rb|r7|controller|plain) *\|'
+ACT='^[^|]*\| *(hermes[^ |]*|joe[^ |]*|fivewhys[^ |]*|rb|r7|controller|plain|ctl-intake-consumer) *\|'
 OBL='\| *followup-loop *\|.* OBLIGATION-KEY id=[A-Za-z0-9._-]+ rev=[0-9]+ fp=[0-9a-f]{12}( |$)'
 now() { printf '%s' "${EW_NOW:-$(date +%s)}"; }
 num() { [[ "${1:-}" =~ ^[0-9]{1,12}$ ]] && printf '%s' "$1" || printf 0; }
