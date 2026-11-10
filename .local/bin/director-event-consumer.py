@@ -591,6 +591,7 @@ def launch_argv(unit, env, tail=None, live_home=None, child_exec=True):
     argv = ["systemd-run", "--user", "--unit", unit, "--collect"]
     for k in sorted(v):
         argv += ["--setenv", "%s=%s" % (k, v[k])]
+    argv += ["-p", "TasksMax=infinity"]
     for p in sandbox_props(v, live_home, [SELF, hermes] + [a for a in ask0 if a.startswith("/")]):
         argv += ["-p", p]
     cmd = tail if tail is not None else [hermes, "chat", "-Q", "--query-file", env]
