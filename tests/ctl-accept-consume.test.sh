@@ -62,5 +62,18 @@ reset; export FAKE_CHECK="grep -q worker $tmp/counterfeit.md"; run
 grep -q ' PASS A1' "$tmp/log" && [ ! -s "$tmp/outbox" ]; chk "behaviour_grep_pass: grep -q of a present pattern logs PASS" $?
 reset; export FAKE_CHECK='python3 x.py'; run
 grep -q ' SKIP A1' "$tmp/log" && [ "$(cat "$tmp/outbox")" = "A1|0|check-unrunnable" ]; chk "skip_unchanged: python3 check logs SKIP + check-unrunnable" $?
+for v in "presence_and_true|test -s $tmp/counterfeit.md && true" "presence_and_true|[ -s $tmp/counterfeit.md ] && true" "presence_or_false|test -s $tmp/counterfeit.md || false" "presence_ls_redirect|ls $tmp/counterfeit.md >/dev/null" "presence_ls_redirect|ls -l $tmp/counterfeit.md >/dev/null 2>&1" "presence_semicolon_true|test -e $tmp/counterfeit.md; true"; do
+  reset; export FAKE_CHECK="${v#*|}"; run
+  grep -q ' PRESENCE A1' "$tmp/log" && ! grep -q ' PASS A1' "$tmp/log" && [ "$(cat "$tmp/outbox")" = "A1|0|presence-only-check" ]; chk "${v%%|*}: '${v#*|}' logs PRESENCE, never PASS" $?
+done
+# content-bearing mixes keep PASS/FAIL
+reset; export FAKE_CHECK="test -s $tmp/counterfeit.md && grep -q worker $tmp/counterfeit.md"; run
+grep -q ' PASS A1' "$tmp/log"; chk "mixed_presence_and_grep_pass: presence && grep stays PASS" $?
+# real positive/negative: pattern computed from a file produced by a fixture command, not the counterfeit text
+printf 'build-%s-ok\n' "$(printf 'x7q' | tr a-z A-Z)" >"$tmp/real.out"
+reset; export FAKE_CHECK="grep -q build-X7Q-ok $tmp/real.out"; run
+grep -q ' PASS A1' "$tmp/log" && ! grep -q PRESENCE "$tmp/log"; chk "real_grep_present_pass: grep -q of a computed-present pattern logs PASS" $?
+reset; export FAKE_CHECK="grep -q build-X7Q-bad $tmp/real.out"; run
+grep -q ' FAIL A1' "$tmp/log"; chk "real_grep_absent_fail: grep -q of an absent pattern logs FAIL" $?
 unset FAKE_CHECK
 exit $fail
