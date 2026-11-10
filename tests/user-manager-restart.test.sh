@@ -12,7 +12,11 @@
 # A1488: no command variable but SUDO may resolve to fsudo or to $SUDO's own target (sudo only as the prefix), and
 # outside UMTEST_LIVE=1 a set UMTEST_FAKEBIN must be a dir of this uid, not group/world-writable, under the driver's
 # mktemp root (UMTEST_FAKEROOT, an umtest-fake.XXXXXX dir of this uid, mode go-w) or this repo's tests/fixtures;
-# else SKIP 77 before any command variable runs.
+# else SKIP 77 before any command variable runs. A command variable that is the same file as fsudo or $SUDO's target
+# (-ef, e.g. a hardlink) or byte-identical to it (cmp -s, a copy) is refused the same way. A1486: RUNDIR gets the
+# single-word rule too. Every fake runs with the fixed PATH /usr/sbin:/usr/bin:/sbin:/bin under #!/bin/bash -p.
+# A1488 caller-uid guard: IDCMD -u must exit 0 and print an all-digit uid before any account is made, else ABORT
+# rc 2; the scratch uid is all-digit and every uid compare aborts when it fails or errors (fail closed).
 set -u
 CMDVARS='SYSTEMCTL USERADD USERDEL GETENT KILL SUDO IDCMD MKDIR RMDIR RM TEE'
 if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
@@ -132,6 +136,65 @@ if [ "${UMTEST_LIVE:-0}" != 1 ] && [ -z "${UMTEST_CHILD:-}" ]; then
     if [ "$rc" = 126 ] && grep -q "^fsudo-refused $t " "$STATE/calls.log"; then escaped fsudo-direct fsudo-refused
     else echo "FAIL case fsudo-direct $t: rc $rc (want 126):"; cat "$STATE/calls.log" 2>/dev/null; nfail=$((nfail + 1)); fi
   done
+  # A1488 D1: IDCMD -u that fails, prints nothing or prints a non-uid aborts rc 2 before any account is made;
+  # a caller uid equal to the scratch uid aborts rc 2 with no write/start/kill and only the owned account removed
+  acts2='^(useradd |userdel |kill |systemctl |mkdir |tee |rm |rmdir )'
+  runcase id-empty 2 "IDCMD $bin/fid -u printed no all-digit uid" FAKE_CALLER_UID= && nocall id-empty "$acts2"
+  runcase id-alpha 2 "IDCMD $bin/fid -u printed no all-digit uid" FAKE_CALLER_UID=abc && nocall id-alpha "$acts2"
+  runcase id-space 2 "IDCMD $bin/fid -u printed no all-digit uid" 'FAKE_CALLER_UID=12 3' && nocall id-space "$acts2"
+  runcase id-rc1 2 "IDCMD $bin/fid -u failed (rc 1)" FAKE_ID_RC=1 && nocall id-rc1 "$acts2"
+  if runcase id-same 2 'equals caller uid' FAKE_CALLER_UID=990 && nocall id-same \
+       '^(kill |systemctl (start|stop|kill|daemon-reload)( |$)|mkdir |tee |rm |rmdir )'; then
+    log=$work/id-same/calls.log
+    owned=$(sed -n 's/^useradd .* \(umtest-[0-9a-f]\{8\}\)$/\1/p' "$log")
+    if [ -n "$owned" ] && [ "$(grep -c '^userdel ' "$log")" = 1 ] && grep -qx "userdel $owned" "$log"; then
+      npass=$((npass + 1))
+    else
+      echo "FAIL case id-same: userdel not owned-only:"; cat "$log"; nfail=$((nfail + 1))
+    fi
+  fi
+  runcase id-good 0 'user-manager-restart PASS' FAKE_CALLER_UID=1234
+  # A1488 D2: a hardlink or copy of fsudo under another name is still sudo: rc 77 before any command runs
+  sb=$work/d2/bin
+  bash "$here/fixtures/user-manager-restart-fakes.sh" "$sb" && ln -- "$sb/fsudo" "$sb/hlink" && cp -- "$sb/fsudo" "$sb/fcopy" || exit 2
+  allin="UMTEST_FAKEBIN=$sb SYSTEMCTL=$sb/fsystemctl USERADD=$sb/fuseradd USERDEL=$sb/fuserdel GETENT=$sb/fgetent"
+  allin="$allin KILL=$sb/fkill SUDO=$sb/fsudo IDCMD=$sb/fid MKDIR=$sb/fmkdir RMDIR=$sb/frmdir RM=$sb/frm TEE=$sb/ftee"
+  for vf in IDCMD:hlink GETENT:hlink KILL:hlink IDCMD:fcopy; do
+    rm -f -- "$work/ESCAPED"
+    # shellcheck disable=SC2086 # $allin is one VAR=word per field, no spaces inside a word
+    runcase "sudolink-${vf%%:*}-${vf#*:}" 77 "${vf%%:*} resolves to sudo" "PATH=$work/pathbin:$PATH" $allin \
+      "${vf%%:*}=$sb/${vf#*:}" && escaped "sudolink-${vf%%:*}-${vf#*:}" -
+  done
+  # shellcheck disable=SC2086
+  runcase sudolink-good 0 'user-manager-restart PASS' $allin
+  # A1488 D3: sentinels first on PATH never run from fsudo or a fake: mkdir/rm/rmdir/tee plus fsudo's own
+  # realpath/dirname/cat for direct fsudo calls; only mkdir/rm/rmdir/tee for a child run (the test itself uses realpath)
+  sp=$work/sentpath sp4=$work/sentpath4; mkdir -p "$sp" "$sp4"
+  for m in mkdir rm rmdir tee realpath dirname cat; do
+    printf '#!/bin/sh\n: > "%s"\n' "$work/ESCAPED" > "$sp/$m" && chmod +x "$sp/$m" || exit 2
+  done
+  for m in mkdir rm rmdir tee; do cp -- "$sp/$m" "$sp4/$m" || exit 2; done
+  export STATE=$work/sentinel-direct; mkdir -p "$STATE"
+  for c in "fmkdir -- $STATE/d" "ftee $STATE/f" "frm -f -- $STATE/f" "frmdir -- $STATE/d"; do
+    rm -f -- "$work/ESCAPED"
+    # shellcheck disable=SC2086 # $c is the fake name plus its plain-word args
+    PATH="$sp:$PATH" "$bin/fsudo" -n "$bin"/$c </dev/null >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 0 ] && [ ! -e "$work/ESCAPED" ]; then npass=$((npass + 1))
+    else echo "FAIL case sentinel-direct $c: rc $rc, ESCAPED $([ -e "$work/ESCAPED" ] && echo yes || echo no)"; nfail=$((nfail + 1)); fi
+  done
+  rm -f -- "$work/ESCAPED"
+  runcase sentinel-run 0 'user-manager-restart PASS' "PATH=$sp4:$PATH"
+  if [ -e "$work/ESCAPED" ]; then echo "FAIL case sentinel-run: ESCAPED"; nfail=$((nfail + 1)); else npass=$((npass + 1)); fi
+  runcase sentinel-baseline 0 'user-manager-restart PASS'
+  # A1486: RUNDIR is one word like the command variables: rc 77 before any command runs
+  mkdir -p "$work/a b"
+  n=0
+  for r in '/tmp/a b' "$work/a b" "$work/run;x"; do
+    n=$((n + 1)); rm -f -- "$work/ESCAPED"
+    runcase "rundir-word$n" 77 'RUNDIR is not a single word' "RUNDIR=$r" && escaped "rundir-word$n" -
+  done
+  mkdir -p "$work/rundir-good"
+  runcase rundir-good 0 'user-manager-restart PASS' "RUNDIR=$work/rundir-good"
   [ "$nfail" = 0 ] || { echo "user-manager-restart FAKE FAIL pass=$npass fail=$nfail"; exit 1; }
   echo "user-manager-restart FAKE PASS cases=$npass"
   exit 0
@@ -150,16 +213,21 @@ TEE=${TEE:-tee}
 RUNDIR=${RUNDIR:-/run/systemd/system}
 RESTART_WAIT=${RESTART_WAIT:-15}
 STOP_WAIT=${STOP_WAIT:-10}
-for v in $CMDVARS; do
-  case ${!v} in ''|*[![:alnum:]_./+@-]*) echo "SKIP: command variable $v is not a single word: ${!v}"; exit 77;; esac
+for v in $CMDVARS RUNDIR; do
+  case ${!v} in ''|*[![:alnum:]_./+@-]*) echo "SKIP: variable $v is not a single word: ${!v}"; exit 77;; esac
 done
 # A1488 (a): resolved target of a command word (command -v, then realpath -e), empty if none
 target() { local p; p=$(command -v -- "$1" 2>/dev/null) && [ "${p#/}" != "$p" ] && realpath -e -- "$p" 2>/dev/null; }
 sudo_rp=$(target "$SUDO")
+# the sudo files: $SUDO's target and a fsudo in UMTEST_FAKEBIN; a hardlink (-ef) or a copy (cmp -s) of one is sudo too
+sudos=()
+[ -n "$sudo_rp" ] && sudos+=("$sudo_rp")
+[ -n "${UMTEST_FAKEBIN:-}" ] && [ -f "$UMTEST_FAKEBIN/fsudo" ] && sudos+=("$UMTEST_FAKEBIN/fsudo")
+issudo() { local s; for s in "${sudos[@]}"; do { [ "$1" -ef "$s" ] || cmp -s -- "$1" "$s"; } && return 0; done; return 1; }
 for v in $CMDVARS; do
   [ "$v" = SUDO ] && continue
   rp=$(target "${!v}")
-  if [ "${rp##*/}" = fsudo ] || [ "${!v##*/}" = fsudo ] || { [ -n "$rp" ] && [ "$rp" = "$sudo_rp" ]; }; then
+  if [ "${rp##*/}" = fsudo ] || [ "${!v##*/}" = fsudo ] || { [ -n "$rp" ] && issudo "$rp"; }; then
     echo "SKIP: command variable $v resolves to sudo (${rp:-${!v}}); sudo is only the SUDO prefix"; exit 77
   fi
 done
@@ -222,6 +290,11 @@ cleanup() {
   exit $rc
 }
 trap cleanup EXIT
+# a uid is 1-10 ASCII digits (no sign, space or empty), so every compare below gets an integer
+isuid() { case $1 in ''|*[!0123456789]*) return 1;; esac; [ "${#1}" -le 10 ]; }
+# caller uid before any account is made: IDCMD must exit 0 and print one uid, else nothing has run to clean up
+cu=$("$IDCMD" -u 2>/dev/null) || abort "IDCMD $IDCMD -u failed (rc $?)"
+isuid "$cu" || abort "IDCMD $IDCMD -u printed no all-digit uid: '$cu'"
 
 # P1/P2: a unique name, refused if any account by that name exists; owned only on useradd rc 0 for it
 UMUSER=umtest-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
@@ -234,10 +307,10 @@ OWNED_USER=1
 IFS=: read -r pwname _ uid _ <<<"$("$GETENT" passwd "$UMUSER" 2>/dev/null)"
 [ "${pwname:-}" = "$UMUSER" ] || abort "getent has no entry for $UMUSER after useradd"
 # HARD GUARD: before any write, start or kill
-case $uid in ''|*[!0-9]*) abort "no numeric uid for $UMUSER";; esac
-[ "$uid" -eq 1000 ] && abort "scratch uid is 1000"
-[ "$uid" -eq "$("$IDCMD" -u)" ] && abort "scratch uid equals caller uid"
-[ "$uid" -lt 900 ] && abort "scratch uid $uid < 900"
+isuid "$uid" || abort "no all-digit uid for $UMUSER: '$uid'"
+[ "$uid" -ne 1000 ] || abort "scratch uid is 1000"
+[ "$uid" -ne "$cu" ] || abort "scratch uid $uid equals caller uid ($IDCMD -u)"
+[ "$uid" -ge 900 ] || abort "scratch uid $uid < 900"
 
 unit=user@$uid.service
 prop() { "$SUDO" -n "$SYSTEMCTL" show "$unit" -p "$1" --value 2>/dev/null; }
