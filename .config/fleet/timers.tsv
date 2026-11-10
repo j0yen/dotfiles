@@ -1,4 +1,6 @@
 unit	class	owner	hold_gated	enabled
+agorabus-lock-refresh.service	mechanical	fleet	no	no
+agorabus-lock-refresh.timer	mechanical	fleet	no	yes
 aide-account-follow.service	launching	hermes	exempt	no
 aide-account-follow.timer	launching	hermes	exempt	yes
 aide-hold-probe.service	mechanical	fleet	no	no
