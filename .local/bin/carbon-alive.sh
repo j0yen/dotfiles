@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # carbon-alive.sh — off-host witness for carbon (A1446, five-whys 2026-11-09 mechanism 3).
-# Runs as a systemd --user timer on RedBaron and ryzen7, never on carbon: on 11-09 user@1000 was SIGKILLed twice and every
-# recoverer and observer sat inside the killed cgroup, so the fleet was down ~2 h with no alarm.
+# Runs as a SYSTEM timer with User=jsy on RedBaron and ryzen7, never on carbon (.config/systemd/system-units/): on 11-09
+# user@1000 was SIGKILLed twice and every recoverer and observer sat inside the killed cgroup, so the fleet was down ~2 h
+# with no alarm; under the system manager a SIGKILL of the witness host's own user manager cannot stop the witness either.
+# Needs only HOME (state/config dirs below): no XDG_RUNTIME_DIR, user bus or local systemctl.
 #
 # One ssh per run (ssh binary: $CARBON_ALIVE_SSH) prints key=value readings: host_up, user_manager, gateway, bus,
 # dash_age_s, executor_age_s (age of the ctl heartbeat file), um_inv / um_nrestarts / um_enter_mono (InvocationID,
