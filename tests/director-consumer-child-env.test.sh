@@ -439,6 +439,72 @@ print(json.dumps([x for x in l if os.path.lexists(x) and not os.path.isdir(x) an
   [ "$(echo "$res" | grep -c ' FAIL ')" = "$(echo "$ctl" | grep -c '^sock')" ] || { bad unit_sockets "a path was not probed or not refused"; return; }
   ok unit_sockets
 }
+SOCKNEG_PROBE='
+import errno, os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1]); print("CONNECT OPEN")           # connect only, no data sent
+except OSError as e:
+    print("CONNECT FAIL %s" % errno.errorcode.get(e.errno, e.errno))
+'
+t_unit_socket_negative(){
+  # Discriminating socket control: a unix socket this test owns (so file mode never denies it) is connectable from a plain child and
+  # from a plain transient unit, and must NOT be connectable from a unit that lists its directory in InaccessiblePaths.
+  # Listen/connect only, nothing sent, no network, no privileged socket.
+  local d="$SCR/$P-sockneg" r plain unit neg
+  mkdir -p "$d/s"; printf '%s\n' "$SOCKNEG_PROBE" > "$d/probe.py"
+  if ! r="$(systemd-run --user --wait --collect --pipe /usr/bin/true 2>&1)"; then
+    echo "SKIP unit_socket_negative: SKIP-WITH-REASON systemd-run --user cannot run a transient unit here: $(echo "$r" | tail -c 200 | tr '\n' ' ')"; return
+  fi
+  python3 -I - "$d/s/sock" "$d" <<'PY' &
+import os, socket, sys, time
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(8)
+open(sys.argv[2] + "/ready", "w").close()
+time.sleep(60)
+PY
+  local spid=$! n=0
+  while [ ! -e "$d/ready" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+  plain="$(python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  unit="$(systemd-run --user --quiet --wait --collect --pipe -- /usr/bin/python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  neg="$(systemd-run --user --quiet --wait --collect --pipe -p "InaccessiblePaths=$d/s" -- /usr/bin/python3 -I "$d/probe.py" "$d/s/sock" 2>&1)"
+  kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+  echo "positive (plain child): $plain"; echo "positive (plain unit): $unit"; echo "negative (InaccessiblePaths=$d/s): $(echo "$neg" | tail -n 3 | tr '\n' ' ')"
+  [ "$plain" = "CONNECT OPEN" ] || { bad unit_socket_negative "positive control: plain child cannot connect (test not discriminating)"; return; }
+  echo "$unit" | grep -qx "CONNECT OPEN" || { bad unit_socket_negative "positive control: plain unit cannot connect (test not discriminating)"; return; }
+  echo "$neg" | grep -qE '^CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' || { bad unit_socket_negative "socket reachable or unit failed inside InaccessiblePaths: $(echo "$neg" | tail -n 3 | tr '\n' ' ')"; return; }
+  ok unit_socket_negative
+}
+t_unit_socket_installed_builder(){
+  # Binds the socket control to the consumer's own launcher: the unit argv comes from launch_argv() in $C (the code the installed
+  # consumer runs), not from a hand-written systemd-run line. An owned unix socket is connectable through the builder's unit with the stock
+  # deny list and refused once the socket is added to SOCKET_DENY_STATIC (the mechanism that builds InaccessiblePaths). Listen/connect
+  # only; plain unit is the positive control; no provider, network or privileged socket.
+  local tag="$P-sockbld" d r out
+  d="$SCR/$tag"; mkdir -p "$d/st" "$d/wmstate" "$d/own"; printf '%s\n' "$SOCKNEG_PROBE" > "$d/probe.py"
+  if ! r="$(systemd-run --user --wait --collect --pipe /usr/bin/true 2>&1)"; then
+    echo "SKIP unit_socket_installed_builder: SKIP-WITH-REASON systemd-run --user cannot run a transient unit here: $(echo "$r" | tail -c 200 | tr '\n' ' ')"; return
+  fi
+  out="$(DIRECTOR_STATE="$d/st" WM_DECIDE_STATE="$d/wmstate" WM_ASKS_CMD="$d/wm-asks" python3 -I - "$C" "$d" "$tag" <<'PY' 2>&1
+import importlib.util, socket, subprocess, sys, threading
+C, d, tag = sys.argv[1:4]
+sock = d + "/own/s"
+srv = socket.socket(socket.AF_UNIX); srv.bind(sock); srv.listen(8)
+threading.Thread(target=lambda: [srv.accept()[0].close() for _ in range(8)], daemon=True).start()
+def load():
+    spec = importlib.util.spec_from_file_location("dec_" + tag.replace("-", "_"), C); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+def run(m):
+    argv = m.launch_argv(tag, "/e.md", tail=["/usr/bin/python3", "-I", d + "/probe.py", sock])
+    r = subprocess.run(argv[:1] + ["--wait", "--pipe"] + argv[1:], capture_output=True, text=True)
+    return (r.stdout.strip().splitlines() or ["NO OUTPUT " + r.stderr[-160:].replace("\n", " ")])[-1]
+m0 = load(); print("allowed:", run(m0))
+m1 = load(); m1.SOCKET_DENY_STATIC = tuple(m1.SOCKET_DENY_STATIC) + (sock,); print("denied:", run(m1))
+PY
+)"
+  echo "builder-launched unit: $(echo "$out" | tr '\n' ' ')"
+  echo "$out" | grep -qx 'allowed: CONNECT OPEN' || { bad unit_socket_installed_builder "positive control: builder unit cannot reach the owned socket (not discriminating): $(echo "$out" | tr '\n' ' ')"; return; }
+  echo "$out" | grep -qE '^denied: CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' || { bad unit_socket_installed_builder "socket still reachable with it on SOCKET_DENY_STATIC: $(echo "$out" | tr '\n' ' ')"; return; }
+  ok unit_socket_installed_builder
+}
 LISTING_CLOSED='["/run", "/run/udev", "/run/lock", "/run/systemd", "/run/systemd/journal", "/sys/class/input", "/sys/class/hidraw", "/proc/bus/input"]'
 # Documented residuals: still listable in the unit (names only, no data). /sys/devices and /sys/dev/char expose device names and numbers,
 # /sys/class/* the other device classes; closing them hides hardware sysfs that ordinary tools read, which no worker needs but a unit cannot
@@ -617,5 +683,5 @@ print("override hardening ok")
 PY
   local rc=$?; rm -rf "$SCR/ov6-$P" "$(dirname "$SCR")/ov6-$P" "$SCR/director-run-ov6-$P"-*; [ $rc = 0 ] && ok override_hardening || bad override_hardening "rc=$rc"
 }
-if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets listing_na_selfcheck unit_listing unit_groups override_hardening; do "t_$t"; done; fi
+if [ $# -gt 0 ]; then "t_$1"; else for t in credential_stripped missing_var_fails_closed live_path_fails_closed live_home_fails_closed symlink_alias_fails_closed scratch_home_positive launch_argv unit_boundary_fake_home unit_real_home unit_ipc_net_shm unit_devices_proc override_refused unit_sockets unit_socket_negative unit_socket_installed_builder listing_na_selfcheck unit_listing unit_groups override_hardening; do "t_$t"; done; fi
 [ "$fails" -eq 0 ] || { echo "FAILURES: $fails"; exit 1; }
