@@ -38,20 +38,21 @@ C026a	regrade 60-quota-stretch.conf	60 min	ryzen7,orch (tracked in dotfiles)	~/.
 C026b	grader batch	100 rows	carbon	swarm-decide wm_decide/regrade.py MAX_BATCH	cadence	Joe 10-31 10:2x PM "grade 100 per turn"	KEEP	rb	larger batch = throughput; confirm 100 is live (CLAUDE.md still says "rb, due 12:30 AM")	throughput: Joe 10-31 10:2x PM grade 100 per turn		joe-2026-10-31 #170
 C027	regrade MemoryMax	1500M	carbon	~/.config/systemd/user/swarm-decide-regrade.service:11	memory	none found	KEEP	aide	-			
 C028	regrade TimeoutStartSec	3660 s	carbon	~/.config/systemd/user/swarm-decide-regrade.service:12	hang-guard	Joe 10-24 "remove daily cap"	KEEP	aide	3600 s hang guard + margin			
-C029	seat-model hold (opus seats)	expires 2026-11-09	carbon	~/.config/wm-decide/seat-model-hold.json:7	expiry	approvals #155/#156	KEEP	aide	renewed aide 11-02 10:00 AM: premise (opus correction share <= 25 % over last 20 graded rows) measured true; EXPIRES 2026-11-09 in the hold file		2026-11-09	
-C030	seat-model hold (aide)	expires 2026-11-07	carbon	~/.config/wm-decide/seat-model-hold.json:31	expiry	approvals #191	KEEP	aide	-		2026-11-07	
+C029	seat-model hold (opus seats)	expires 2026-11-16	carbon	~/.config/wm-decide/seat-model-hold.json:7	expiry	approvals #155/#156	KEEP	aide	renewed ctl 11-10 1:2x AM: premise (opus correction share <= 25 % over last 20 graded rows) measured true (rb 0/20 on the operator card); EXPIRES 2026-11-16 in the hold file (rb key, line 7)		2026-11-16	
+C030	seat-model hold (ctl)	expires 2026-11-14	carbon	~/.config/wm-decide/seat-model-hold.json:37	expiry	approvals #191 ; #244 ; #245	KEEP	ctl	the aide key (EXPIRES 2026-11-07) lapsed when aide merged into ctl 11-06 (#244); the live hold is the ctl key, premise hermes-stage-a trial (Stage A live 7 days)		2026-11-14	
 C031	429-watch MIN_AWAY	1200 s	carbon,ryzen7,orch	~/.local/bin/fleet-token-429-watch.sh:39	safety	none found	KEEP	aide	account failover ring, not rationing			
 C032	429-watch FLOOR	21600 s	carbon,ryzen7,orch	~/.local/bin/fleet-token-429-watch.sh:40	safety	none found	KEEP	aide	no flap back to a depleted account			
 C033	FLEET_TOKEN_STORE_MAX_DAYS	30 d	carbon	~/.local/bin/fleet-token-429-watch.sh:56	expiry	none found	KEEP	aide	-			
 C034	TOKEN_LEDGER_SSH_TIMEOUT	carbon 120 ; default 30	carbon,ryzen7,orch	token-ledger.service.d/ssh-timeout.conf:4 ; ~/.local/bin/token-ledger:85	hang-guard	none found	KEEP	aide	-			
 C035	land-red-hold bounds	64 MiB / 7200 s / 300 s / 5400 s / 86400 s / 3 tries	carbon,ryzen7,orch	~/.local/bin/land-red-hold.sh:66	hang-guard	none found	KEEP	r7	bounded retries, compatible with #194			
 C036	aide-verifier CMD_TIMEOUT_S	120 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:64	hang-guard	none found	KEEP	aide	-			
-C037	aide-verifier VTIMEOUT	2400 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:341	hang-guard	none found	KEEP	aide	-			
+C037	aide-verifier VTIMEOUT	2400 s (informational since W11; no wall-clock kill)	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:341	hang-guard	none found	DROP	ctl W11	launch.sh no longer wraps the reviewer in timeout; --timeout still lint-checked (60..7200) and recorded in meta as informational; Joe removed fleet runtime caps, Hermes 11-08 W11 A1346			
 C038	aide-verifier QUEUE_MAX_S	3600 s	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:38,388	hang-guard	none found	KEEP	aide	-			
 C039	aide-verifier WATCH_MAX_S	3000 s	carbon	~/.local/bin/aide-verifier.sh:539	hang-guard	none found	KEEP	aide	-			
 C186	aide-verifier MAX_LOAD	2 × nproc (16 on carbon)	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh:546	safety	A650 rb 11-02 (was nproc - 3 = 5 on carbon, which never admitted at carbon load 7.5-12; dot266-v3/dot267-v3 waited 10 min)	KEEP	rb	load1 + 2 x running verifier units must stay under MAX_LOAD; overload guard for load-guarded pytest skips	carbon normal 1-min load 6-12 from seat hooks		
+C187	aide-verifier unit MemoryMax / TasksMax	MemoryMax=2G (was); now infinity + TasksMax=infinity	carbon,ryzen7,orch	~/.local/bin/aide-verifier.sh systemd-run argv (aide and r7 paths)	memory	Hermes 11-08 W11 A1346 (Joe removed fleet runtime/memory caps)	DROP	ctl W11	admission stays: SLOT_CEIL 4, PEAK_MB 1024 room check, MAX_LOAD (C186)			
 C040	verifier-cap-watch CAP / PEAK_MB	4 / 1024	carbon,ryzen7,orch	~/.local/bin/verifier-cap-watch.sh:23-24	memory	none found	KEEP	r7	-			
-C041	verifier-cap-watch EXPIRES	2026-11-06T00:00-07:00	carbon,ryzen7,orch	~/.config/systemd/user/verifier-cap-watch.service:11	expiry	watcher premise+expiry rule	KEEP	r7	-		2026-11-06	
+C041	verifier-cap-watch EXPIRES	2026-11-06T00:00-07:00	carbon,ryzen7,orch	~/.config/systemd/user/verifier-cap-watch.service:11	expiry	watcher premise+expiry rule	DEAD	r7	expired 2026-11-06: past EXPIRES the watcher logs `disarmed` once and exits 0 (verifier-cap-watch.sh), no renewal; remove the unit or re-arm by a reviewed edit		2026-11-06	
 C042	grand-loop MAX_TICKS_PER_DAY	4	carbon,ryzen7,orch	~/.local/bin/grand-loop-tick.sh:59 ; grand-loop-status:39	rationing	none found; Joe 09-12 "remove daily cap"	DROP	aide A298	daily count cap with no memory or safety reason (#195)			
 C043	grand-loop MEASURE_BUDGET_S	4800 s	carbon,ryzen7,orch	~/.local/bin/grand-loop-demand.sh:53	hang-guard	none found	KEEP	aide	time bound			
 C044	vibeloop-measure MAX_MEASURES_PER_DAY	3	carbon,ryzen7,orch	~/.local/bin/vibeloop-measure.sh:62	rationing	none found	DROP	aide A298	daily count cap (#195)			
@@ -159,7 +160,7 @@ C144	ryzen7-pressure-guard cadence	5 min	ryzen7	ryzen7-pressure-guard.timer:5	ca
 C145	burst-idle-guard cadence	5 min	ryzen7,orch	burst-idle-guard.timer:6	cadence	none found	KEEP	r7	-			
 C146	r7-tmp-inode-guard cadence	5 min	ryzen7	r7-tmp-inode-guard.timer:5	cadence	none found	KEEP	r7	-			
 C147	hand-pr-land-driver cadence / timeout	10 min / 1800 s	ryzen7,orch	hand-pr-land-driver.timer:7 ; .service:16	cadence	#194 merge all now	KEEP	r7	-			
-C148	hand-pr-land-driver EXPIRES	2026-11-08 12:00	ryzen7,orch	hand-pr-land-driver.service:7	expiry	watcher rule	KEEP	r7	-		2026-11-08	
+C148	hand-pr-land-driver EXPIRES	2026-11-15 12:00	ryzen7,orch	hand-pr-land-driver.service:7	expiry	watcher rule	KEEP	r7	-	wm-decide importable + rb-merge.sh present + aide-verifier.sh supports --timeout	2026-11-15	
 C149	operator-overlap-digest TimeoutStartSec	60	ryzen7,orch	operator-overlap-digest.service:6	hang-guard	none found	KEEP	r7	-			
 C150	r7-land-hold-watch	30 s / 120 s / 256M	ryzen7	r7-land-hold-watch.timer:5 ; .service:5-6	memory	none found	KEEP	r7	-			
 C151	r7-wlmf-guard cadence	15 s	ryzen7	r7-wlmf-guard.timer:5	cadence	none found	KEEP	r7	-			

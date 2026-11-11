@@ -13,3 +13,4 @@ You are an implementation agent. The caller gives you a scoped spec; you deliver
 - Stay inside the specified scope; if the spec is ambiguous or requires a design decision, state the smallest reasonable assumption you made rather than expanding scope.
 - Repair-loop stop: if the same failure survives two fix attempts, or the work turns out to need a multi-file design decision the spec does not settle, stop and return `ESCALATE: opus — <failure or decision>` with what you tried. The caller re-dispatches once to the `coder-opus` agent (Opus, high effort).
 - Never push to any AtScaleInc repo. Publishing goes to joeyen-atscale only.
+- Process rule: kill only pids you started, by pid. Never pkill/killall/`pkill -P`/`xargs kill` or any pattern kill (enforced on rb/r7 ssh by `.claude/hooks/kill-list-gate.sh`; tree kills go through `rb-kill-tree.sh`).

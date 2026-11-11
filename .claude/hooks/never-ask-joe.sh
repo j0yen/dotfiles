@@ -11,6 +11,9 @@
 # (default ~/.local/state/never-ask-joe). Message text beyond the matched phrase is never logged.
 set -euo pipefail
 
+# Scoped to WM_SEAT sessions (handover 2.7): a plain/director session is never gated.
+[ -n "${WM_SEAT:-}" ] || { cat >/dev/null 2>&1; exit 0; }  # drain stdin: an early exit gives the piping writer SIGPIPE (rc 141 under pipefail)
+
 SEAT="${WM_SEAT:-plain}"
 
 STATE_DIR="${NAJ_STATE_DIR:-$HOME/.local/state/never-ask-joe}"

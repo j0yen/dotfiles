@@ -4,7 +4,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 CHK="${APCHECK_BIN:-$HERE/.local/bin/approval-check.sh}"
-export TMPDIR="${TMPDIR:-/mnt/data/tmp}"
+export TMPDIR="${TMPDIR:-/tmp}"
 d=$(mktemp -d "$TMPDIR/apcheck-unparsed.XXXXXX"); trap 'rm -rf "$d"' EXIT
 pass=0; fail=0
 ok() { echo "PASS $1"; pass=$((pass+1)); }; bad() { echo "FAIL $1"; fail=$((fail+1)); }

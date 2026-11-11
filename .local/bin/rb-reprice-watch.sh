@@ -100,7 +100,7 @@ rw_arm(){ # $1 = config path for the premise, $2 = EXPIRES ISO (default: end of 
   wp_arm rb-reprice-watch "$(rw_premise_cmd "$1")" "${2:-$EXPIRES 23:59:59}" "RedBaron runs wm-build host mode with 1 <= max_runs <= 2 and an inner cap configured (local config.toml only)" || true; }
 runs_to_1(){ # $1 why -> d-4acd reverse: max_runs 1 via limits-guard (set + enforce), logged
   if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs -> 1 (d-4acd reverse: $1)" "$1" "wm-build-limits-guard set max_runs=<t4_lowered_from> (T4R restores it) or by hand"; then  # RWH3 gate: set + enforce are one write
-    wm-build-limits-guard set max_runs=1 --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch: d-4acd reverse ($1)" >> "$LOG" 2>&1; log "max_runs->1 set rc=$?"
+    wm-build-limits-guard set max_runs=1 --by "watcher:rb-reprice-watch" "rb-reprice-watch: d-4acd reverse ($1)" >> "$LOG" 2>&1; log "max_runs->1 set rc=$?"
     wm-build-limits-guard enforce >> "$LOG" 2>&1; log "limits enforce rc=$?"
   else log "WP-DISARMED max_runs->1 NOT set (${WP_VERDICT:-no-lib}${WP_DEFECT:+ defect=$WP_DEFECT})"; fi; }
 load_conf(){ MEM_AVAIL_MIN_KB=12582912; PSI_FULL_AVG60_MAX=10; IO_FULL_AVG60_MAX=10; IO_RECOVER_AVG60_MAX=5; T4R_WINDOW=600; [ -f "$CONF" ] && . "$CONF"; }
@@ -299,7 +299,7 @@ t4r_fire(){ # recovery window met: (a) re-read the row, (b) max_runs 1 -> t4_low
   if [ -n "$why" ]; then log "T4R max_runs=${cur:-unreadable} left (redrive skipped: $why; t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable})"  # AGATE
   elif [ -n "$T4R_FROM" ] && [ "$T4R_FROM" -gt 1 ] && [ "$cur" = 1 ]; then  # MAXRUNS1 FLAGGATE
     if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs 1 -> $T4R_FROM (T4R restore after run $id)" "io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" "wm-build-limits-guard set max_runs=1"; then  # RWH3 gate (set + enforce)
-      wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
+      wm-build-limits-guard set max_runs=$T4R_FROM --by "watcher:rb-reprice-watch" "rb-reprice-watch T4R: io_full_avg60<=$IO_RECOVER_AVG60_MAX for $T4R_N passes" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
       wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
     else log "WP-DISARMED T4R max_runs->$T4R_FROM NOT set (${WP_VERDICT:-no-lib})"; res="disarmed(left $cur)"; fi
   else log "T4R max_runs=${cur:-unreadable} left (t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable} t4_lowered_from=${T4R_FROM:-none})"; fi
@@ -330,7 +330,7 @@ t4r_seat_redrove(){ # R16: the state is present and the row is open but no longe
   log "T4R seat-redrove run=$id (row open, no longer paused): state cleared, no redrive"
   if [ -n "$T4R_FROM" ] && [ "$T4R_FROM" -gt 1 ] && [ "$cur" = 1 ]; then  # SEATRESTORE
     if wp_gate && wp_emit_write limit redbaron:max_runs "max_runs 1 -> $T4R_FROM (T4R restore, seat redrove run $id)" "row open, no longer paused" "wm-build-limits-guard set max_runs=1"; then  # RWH3 gate (set + enforce)
-      wm-build-limits-guard set max_runs=$T4R_FROM --by "joe-2026-10-22" "STOP WAITING FOR MY APPROVAL. rb-reprice-watch T4R: the seat redrove run $id by hand, restoring what the pause lowered" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
+      wm-build-limits-guard set max_runs=$T4R_FROM --by "watcher:rb-reprice-watch" "rb-reprice-watch T4R: the seat redrove run $id by hand, restoring what the pause lowered" >> "$LOG" 2>&1; sr=$?; log "T4R max_runs->$T4R_FROM set rc=$sr t4_lowered_from=$T4R_FROM"
       wm-build-limits-guard enforce >> "$LOG" 2>&1; er=$?; log "T4R limits enforce rc=$er"; res="$T4R_FROM(set rc=$sr enforce rc=$er t4_lowered_from=$T4R_FROM)"
     else log "WP-DISARMED T4R max_runs->$T4R_FROM NOT set (${WP_VERDICT:-no-lib})"; res="disarmed(left $cur)"; fi
   else log "T4R max_runs=${cur:-unreadable} left (t4_lowered_from=${T4R_FROM:-none})"; res="left(${cur:-unreadable} t4_lowered_from=${T4R_FROM:-none})"; fi

@@ -86,13 +86,12 @@ fi
 
 # --- 1b. Joe's own sessions are exempt ---------------------------------------
 # Aide (Joe 2026-10-22 4:3x PM "yes, exempt the aide"): started ONLY by
-# aide-launch.sh, which exports WM_SEAT=aide. Plain sessions (no WM_SEAT, Joe's
+# ctl-launch.sh, which exports WM_SEAT=ctl (WM_SEAT=aide before 2026-11-06 and
+# still accepted via the aide-launch.sh shim; hermes-handover item 2.2). Plain sessions (no WM_SEAT, Joe's
 # own `claude`) exempt since 2026-11-01 (approvals #195 "stop using rationing
 # limits"; the gate saved tokens only, and a gated plain session wrote script
-# files around it, adding steps). Only fleet seats (WM_SEAT=rb/r7/ctl/...) stay gated.
-if [ -z "${WM_SEAT:-}" ] || [ "${WM_SEAT:-}" = aide ]; then
-    exit 0
-fi
+# files around it, adding steps). Only fleet seats (WM_SEAT=rb/r7/...) stay gated.
+case "${WM_SEAT:-}" in ""|aide|ctl) exit 0 ;; esac
 
 # --- 2. One-shot override -------------------------------------------------
 if [ -f "$OVERRIDE_FLAG" ]; then

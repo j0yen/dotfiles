@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# followup-eval (ledger ask A1346, repair of A1307): ONE shared evaluator (.local/bin/followup-eval.py) gives every open obligation a disposition
+# (verified | claimed | blocked | ready | overdue-ack | stale-worker) and persists ONE fingerprint file that owed-now.sh and seat-followups.sh both read,
+# so an unchanged accounted item is cited at most once across both hooks. Fixture state dirs and a fake wm-asks only; no real ledger, no product build.
+set -uo pipefail
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+base="$(mktemp -d "${TMPDIR:-/tmp}/followup-eval.XXXXXX")"; trap 'rm -rf "$base"' EXIT
+fail=0; pass=0
+chk() { if [ "$2" = 0 ]; then echo "PASS $1"; pass=$((pass + 1)); else echo "FAIL $1"; fail=$((fail + 1)); fi; }
+EV="$here/.local/bin/followup-eval.py"; OWED="$here/.claude/hooks/owed-now.sh"; SF="$here/.claude/hooks/seat-followups.sh"
+[ -f "$EV" ]; chk "0: followup-eval.py exists" $?
+cat >"$base/wm-asks" <<'FAKE'
+#!/usr/bin/env bash
+[ "${1:-}" = asks ] && [ "${2:-}" = query ] || exit 2   # real CLI shape: wm-asks asks query
+[ -n "${FU_ASKS_FAIL:-}" ] && exit "$FU_ASKS_FAIL"
+[ -n "${FU_ASKS_GARBAGE:-}" ] && { echo 'not json'; exit 0; }
+cat "$FU_ASKS"
+FAKE
+printf '#!/usr/bin/env bash\n[ -e "$FU_ALIVE_DIR/$1" ]\n' >"$base/alive"
+printf '#!/usr/bin/env bash\ncat >>"$FU_DELIVERED"; [ ! -e "$FU_DELIVER_FAIL" ]\n' >"$base/deliver"
+printf '%s\n' '#!/usr/bin/env bash' "echo '{\"owed\":0,\"ids\":[]}'" >"$base/wm-decide"
+chmod +x "$base/wm-asks" "$base/alive" "$base/deliver" "$base/wm-decide"
+export PATH="$base:$PATH"
+export HOME="$base/home" WM_ASKS_BIN="$base/wm-asks" FU_ASKS="$base/asks.json" FU_ALIVE_DIR="$base/alive.d" FU_DELIVERED="$base/delivered.log" FU_DELIVER_FAIL="$base/deliver.fail"
+export FOLLOWUP_STATE_DIR="$base/state" FOLLOWUP_OUTBOX="$base/state/outbox.jsonl" FOLLOWUP_WORKER_ALIVE_CMD="$base/alive" FOLLOWUP_DELIVER_CMD="$base/deliver" FOLLOWUP_NOW="2026-11-08T12:00"
+export SEATS_TABLE="$base/none.tsv" FOLLOWUP_STOP_FIRES_LOG="$base/state/fires.log"
+mkdir -p "$HOME" "$FU_ALIVE_DIR"; unset WM_DIRECTOR TMUX; export WM_SEAT=ctl
+row() { # row id rev due [claim] [waits_on-json] [extra-json]
+  jq -nc --arg id "$1" --argjson rev "$2" --arg due "$3" --arg claim "${4:-}" --argjson w "${5:-[]}" --argjson x "${6:-{\}}" \
+    '{ask_id:$id,owner:"ctl",rev:$rev,due:$due,status:"open",claim:(if $claim=="" then null else $claim end),waits_on:$w,what:"w"} + $x'; }
+asks() { jq -sc . >"$FU_ASKS"; }
+disp() { python3 -I "$EV" eval --seat ctl 2>/dev/null | jq -r --arg id "$1" '.dispositions[] | select(.id==$id) | .disposition'; }
+newids() { python3 -I "$EV" new --seat ctl 2>/dev/null | jq -r '.new[].id' | paste -sd, -; }
+stopsf() { printf '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":%s}' "${1:-false}" | FOLLOWUP_EVAL="$EV" bash "$SF" stop 2>/dev/null; }
+stopowed() { printf '{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":%s}' "${1:-false}" | FOLLOWUP_EVAL="$EV" bash "$OWED" hook 2>/dev/null; }
+
+# 1. dispositions
+touch "$FU_ALIVE_DIR/w-live"
+{ row V1 1 2026-11-07T10:00 "" "[]" '{"acceptance":{"verdict":"PASS"}}'
+  row C1 1 2026-11-07T10:00 "w-live@2099-01-01T00:00"
+  row B1 1 2026-11-07T10:00 "" '[{"owner":"hermes","dependency":"event:x","next_check":"2026-11-09T09:00"}]'
+  row R1 1 2026-11-07T10:00
+  row O1 1 2026-11-07T10:00 "" "[]" '{"what":"waits-on=seat:rb PID 123 ACK"}'
+  row S1 1 2026-11-07T10:00 "w-dead@2099-01-01T00:00"
+  row D1 1 2099-01-01T00:00 "" '["DEP1"]'
+  row DEP1 1 2099-01-01T00:00; } | asks
+[ "$(disp V1)" = verified ]; chk "1: a PASS acceptance is verified" $?
+[ "$(disp C1)" = claimed ]; chk "1: a live claim is claimed" $?
+[ "$(disp B1)" = blocked ]; chk "1: a structured blocker is blocked" $?
+[ "$(disp R1)" = ready ]; chk "1: an overdue unclaimed unblocked row is ready" $?
+[ "$(disp O1)" = overdue-ack ]; chk "1: a prose waits-on / PID / ACK row is overdue-ack, not an accounted disposition" $?
+[ "$(disp S1)" = stale-worker ]; chk "1: a claim by a dead worker is stale-worker" $?
+[ "$(disp D1)" = blocked ]; chk "1: a row whose open dependency is still open is blocked, not ready" $?
+# 2. dependency clearing => ready (the dependency leaves the open set)
+{ row D1 1 2099-01-01T00:00 "" '["DEP1"]'; } | asks
+[ "$(disp D1)" = ready ]; chk "2: once the dependency is gone the row is ready" $?
+# 3. same blocked item through 3 stops: one escalation, no repeat citation (both hooks share the one fingerprint file)
+row R1 1 2026-11-07T10:00 | asks
+a="$(stopsf false)"; b="$(stopsf true)"; c="$(stopowed false)"
+grep -q R1 <<<"$a"; chk "3: first stop (seat-followups) cites the id with a next action" $?
+[ -z "$b" ] && [ -z "$c" ]; chk "3: second stop and the owed-now stop on the unchanged item stay silent (shared fingerprint)" $?
+[ "$(wc -l <"$FOLLOWUP_OUTBOX" 2>/dev/null || echo 0)" = 1 ]; chk "3: one outbox entry" $?
+[ -s "$FOLLOWUP_STATE_DIR/fingerprints.json" ] && jq -e . "$FOLLOWUP_STATE_DIR/fingerprints.json" >/dev/null; chk "3: one persisted fingerprint file, valid JSON" $?
+ls "$FOLLOWUP_STATE_DIR" | grep -q '\.tmp'; [ $? -ne 0 ]; chk "3: no stray temp file after the atomic write" $?
+# 4. next-check expiry re-escalates the same id
+row B2 1 2026-11-07T10:00 "" '[{"owner":"hermes","dependency":"event:y","next_check":"2026-11-08T12:30"}]' | asks
+[ -z "$(newids)" ]; chk "4: a live structured blocker raises nothing" $?
+FOLLOWUP_NOW="2026-11-08T13:00" python3 -I "$EV" new --seat ctl | jq -e '.new[0].id=="B2"' >/dev/null; chk "4: expired next_check re-escalates B2" $?
+# 5. independent task failure is not suppressed by the unchanged one
+{ row R1 1 2026-11-07T10:00; row F1 1 2026-11-08T11:00 "w-dead@2099-01-01T00:00"; } | asks
+[ "$(newids)" = F1 ]; chk "5: a new independent failure escalates alone" $?
+# 6. healthy vs stale claim
+row C2 1 2026-11-07T10:00 "w-live@2099-01-01T00:00" | asks; [ "$(disp C2)" = claimed ]; chk "6: healthy claim" $?
+rm -f "$FU_ALIVE_DIR/w-live"; [ "$(disp C2)" = stale-worker ]; chk "6: same claim after the worker dies" $?
+touch "$FU_ALIVE_DIR/w-live"
+# 7. changed task revision re-escalates; revision-stale claim
+row R1 2 2026-11-07T10:00 | asks; [ "$(newids)" = R1 ]; chk "7: changed revision is a new fingerprint" $?
+row C3 5 2026-11-07T10:00 "w-live@2099-01-01T00:00" "[]" '{"claim_rev":4}' | asks; [ "$(disp C3)" = stale-worker ]; chk "7: a claim taken at an older revision is stale" $?
+# 8. two concurrent evaluators yield one escalation
+rm -rf "$FOLLOWUP_STATE_DIR"; row Z1 1 2026-11-07T10:00 | asks
+for i in 1 2 3 4 5 6; do python3 -I "$EV" new --seat ctl >"$base/c$i.out" 2>/dev/null & done; wait
+n="$(cat "$base"/c?.out | jq -r '.new[]?.id' | grep -c Z1)"; [ "$n" = 1 ]; chk "8: six concurrent evaluators produce exactly one escalation (got $n)" $?
+# 9. restart / replay: fresh process, same state, nothing new
+[ -z "$(newids)" ]; chk "9: a fresh process on persisted state raises nothing" $?
+# 10. failed delivery then recovery
+touch "$FU_DELIVER_FAIL"; : >"$FU_DELIVERED"
+python3 -I "$EV" replay >/dev/null 2>&1; grep -q '"delivered":false' "$FOLLOWUP_OUTBOX"; chk "10: failed delivery leaves the entry queued" $?
+rm -f "$FU_DELIVER_FAIL"; python3 -I "$EV" replay >/dev/null 2>&1; ! grep -q '"delivered":false' "$FOLLOWUP_OUTBOX"; chk "10: replay after recovery delivers it" $?
+c1="$(wc -l <"$FU_DELIVERED")"; python3 -I "$EV" replay >/dev/null 2>&1; [ "$(wc -l <"$FU_DELIVERED")" = "$c1" ]; chk "10: and does not deliver twice" $?
+# 11. malformed input fails visibly
+rm -rf "$FOLLOWUP_STATE_DIR"; echo 'not json' >"$FU_ASKS"; FU_ASKS_GARBAGE=1 python3 -I "$EV" new --seat ctl | jq -e '.new[0].id=="LEDGER"' >/dev/null; chk "11: garbage ledger is a visible LEDGER obligation" $?
+FU_ASKS_FAIL=3 python3 -I "$EV" eval --seat ctl | jq -e '.error != null' >/dev/null; chk "11: ledger command failure reports an error, never an empty pass" $?
+echo '[{"ask_id":"X1","rev":1}]' >"$FU_ASKS"; python3 -I "$EV" eval --seat ctl | jq -e '.dispositions[0].id=="X1"' >/dev/null; chk "11: a row missing fields is still evaluated, not dropped" $?
+# 12. known-bad control (the live loop): wm-decide owes ctl one overdue id X; three Stops must produce one BLOCK, then one more on escalation
+rm -rf "$FOLLOWUP_STATE_DIR"; echo '[]' >"$FU_ASKS"
+SFLOG="$base/sf-log"; rm -rf "$SFLOG"; X="d-20261108-022034-ctl-8aff"
+fakewd() { printf '%s\n' '#!/usr/bin/env bash' "echo '{\"owed\":1,\"overdue\":1,\"escalated\":0,\"ids\":[{\"id\":\"$X\",\"owner\":\"ctl\",\"age_h\":5.5,\"state\":\"$1\"}]}'" >"$base/wm-decide"; chmod +x "$base/wm-decide"; }
+sfstop() { printf '{"stop_hook_active":false}' | SEAT_FOLLOWUPS_LOG_DIR="$SFLOG" FOLLOWUP_EVAL="$EV" bash "$SF" stop 2>/dev/null; }
+fakewd overdue
+o1="$(sfstop)"; o2="$(sfstop)"; o3="$(sfstop)"
+grep -q "$X" <<<"$o1" && grep -q correction-owed <<<"$o1"; chk "12: first Stop blocks naming X with the correction-owed next action" $?
+[ -z "$o2" ] && [ -z "$o3" ]; chk "12: Stops 2 and 3 on the unchanged id are silent (before the delta: three BLOCK lines)" $?
+[ "$(grep -c "BLOCK-NEW $X" "$SFLOG/fires.log")" = 1 ] && ! grep -qE ' BLOCK d-' "$SFLOG/fires.log"; chk "12: fires.log holds exactly one BLOCK-NEW for X and no cite-or-clear BLOCK" $?
+fakewd escalated; o4="$(sfstop)"; o5="$(sfstop)"
+grep -q "$X" <<<"$o4" && [ -z "$o5" ]; chk "12: escalated state is one more block, then silent" $?
+[ "$(grep -c "BLOCK-NEW $X" "$SFLOG/fires.log")" = 2 ]; chk "12: two BLOCK-NEW lines in total" $?
+# 13. emit: the consumer contract (PR 327 calls `followup-eval.py emit`) through the SAME fingerprint file, flock and outbox as new
+rm -rf "$FOLLOWUP_STATE_DIR"; echo '[]' >"$FU_ASKS"
+emit() { python3 -I "${EVX:-$EV}" emit --seat ctl --id E1 --rev 1 --kind probe --fp "${1:-E1|1|probe}" --detail "d" "${@:2}"; }
+contract() { python3 -I "${EVX:-$EV}" emit --seat ctl --id E1 --rev 1 --kind probe --fp "C|$1" --detail d 2>/dev/null | jq -e '.emitted==true and .deduped==false' >/dev/null; }
+emit | jq -e '.emitted==true and .deduped==false' >/dev/null; chk "13: first emit persists and reports emitted" $?
+[ "$(wc -l <"$FOLLOWUP_OUTBOX")" = 1 ] && jq -e '.id=="E1" and .delivered==false' "$FOLLOWUP_OUTBOX" >/dev/null && grep -q 'E1|1|probe' "$FOLLOWUP_STATE_DIR/fingerprints.json"; chk "13: one outbox line and the fingerprint file holds the fp" $?
+emit | jq -e '.emitted==false and .deduped==true' >/dev/null; chk "13: repeat fp is deduped" $?
+[ "$(wc -l <"$FOLLOWUP_OUTBOX")" = 1 ]; chk "13: deduped emit adds no outbox line" $?
+for i in 1 2 3 4 5 6; do emit "E2|1|conc" >"$base/e$i.out" 2>/dev/null & done; wait
+[ "$(grep -c 'E2|1|conc' "$FOLLOWUP_OUTBOX")" = 1 ] && [ "$(cat "$base"/e?.out | jq -r 'select(.emitted==true)|1' | wc -l)" = 1 ]; chk "13: six concurrent emits of one fp give one outbox line" $?
+python3 -I "$EV" new --seat ctl >/dev/null 2>&1; [ "$(grep -c 'E1|1|probe' "$FOLLOWUP_OUTBOX")" = 1 ]; chk "13: new shares the store (no second evaluator)" $?
+python3 -I "$EV" emit --seat ctl --id E3 2>"$base/err" >/dev/null; rc=$?
+[ "$rc" = 2 ] && jq -e '.error' "$base/err" >/dev/null; chk "13: missing args exit 2 with a JSON error on stderr (rc $rc)" $?
+FOLLOWUP_STATE_DIR=/proc/nope/state python3 -I "$EV" emit --seat ctl --id E4 --rev 1 --kind k --fp F4 --detail d 2>"$base/err" >"$base/out"; rc=$?
+[ "$rc" = 3 ] && jq -e '.error' "$base/err" >/dev/null && ! grep -q emitted "$base/out"; chk "13: unwritable state exits 3 with a visible error (rc $rc)" $?
+# known-bad: an evaluator copy with the emit subcommand removed must fail the consumer-contract check
+sed 's/"new", "emit", "replay"/"new", "replay"/' "$EV" >"$base/ev-noemit.py"
+EVX="$base/ev-noemit.py" contract bad; bad=$?
+contract good; good=$?
+[ "$good" = 0 ] && [ "$bad" != 0 ]; chk "13: known-bad evaluator without emit fails the contract check (good $good, bad $bad)" $?
+# 14: live-schema contract against the REAL wm-asks when present (skipped on hosts without it): the call the evaluator makes returns a list of dicts with ask_id
+if command -v wm-asks >/dev/null 2>&1; then
+  wm-asks asks query --status open --json 2>/dev/null | python3 -c 'import json,sys;r=json.load(sys.stdin);assert isinstance(r,list) and all(isinstance(x.get("ask_id"),str) for x in r)'; chk "14: real wm-asks asks query --status open --json matches the evaluator contract" $?
+  FOLLOWUP_STATE_DIR="$base/real-state" python3 "$EV" new --seat ctl 2>/dev/null | grep -q ledger-unreadable; [ $? != 0 ]; chk "14: real evaluator run reports no ledger-unreadable" $?
+fi
+# 15: flat canonical acceptance shape (accept_result/accept_current/verdict_row), scoped disposition
+{ row F1 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":"d-1"}'
+  row F2 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1"}'
+  row F3 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null}'
+  row F4 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":false,"verdict_row":"d-1","verifier_required":true,"ending":true}'
+  row F5 1 2026-11-07T10:00 "" "[]" '{"accept_result":"PASS","accept_current":true,"verdict_row":null,"verifier_required":true,"ending":true}'; } | asks
+[ "$(disp F1)" = verified ]; chk "15: current flat PASS with a verdict row is verified" $?
+[ "$(disp F2)" != verified ]; chk "15: stale accept_current=false is never verified" $?
+[ "$(disp F3)" != verified ]; chk "15: file-only flat PASS (no verdict_row) is not verified" $?
+[ "$(disp F4)" = blocked ] && [ "$(disp F5)" = blocked ]; chk "15: verifier-required ending rows stay blocked on stale or file-only PASS" $?
+# 16: real claim shape. The @stamp is the claim time, so a live worker with a past stamp is claimed, never lease-expired; seat:token handles resolve through the bare token
+row L1 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" | asks; [ "$(disp L1)" = claimed ]; chk "16: a live claim stamped in the past is claimed (stamp is claim time, not a lease)" $?
+row L2 1 2026-11-07T10:00 "w-live@2026-11-08T11:00" "[]" '{"claim_lease":"2026-11-08T11:30"}' | asks; [ "$(disp L2)" = stale-worker ]; chk "16: an explicit claim_lease in the past is still lease-expired" $?
+tag="fu-live-$$-$RANDOM"; bash -c 'sleep 60; :' "$tag" & lp=$!
+al() { (export HANDLE="$1"; unset FOLLOWUP_WORKER_ALIVE_CMD; python3 -I -c 'import importlib.util,sys;s=importlib.util.spec_from_file_location("fe",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);sys.exit(0 if m.alive(__import__("os").environ["HANDLE"]) else 1)' "$EV"); }
+al "ctl:$tag"; chk "16: seat:token handle is live while a process carries the token" $?
+al "ctl:nobody-$RANDOM-zz"; [ $? != 0 ]; chk "16: seat:token handle with no tmux session or process is dead" $?
+kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+grep -q 'wm-asks asks claim' "$EV"; chk "16: the dead-worker recipe names the real verb wm-asks asks claim" $?
+echo "followup-eval: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

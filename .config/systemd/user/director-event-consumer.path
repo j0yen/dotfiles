@@ -1,0 +1,10 @@
+[Unit]
+Description=Director event consumer: run when hermes-events.log changes (A1299)
+ConditionHost=carbon
+
+[Path]
+PathChanged=%h/.cache/fleet-dash/hermes-events.log
+Unit=director-event-consumer.service
+
+[Install]
+WantedBy=default.target
