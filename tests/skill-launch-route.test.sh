@@ -12,6 +12,7 @@ echo "spy acct=$a seat=${WM_SEAT:-} amodel=${ANTHROPIC_MODEL:-} task=${SKILL_ROU
 S
 chmod +x "$T/claude"
 export FABLE_RR_DIR="$T/rr" FABLE_LAUNCH_TEST=1 FABLE_TOKEN_STORE="$T/store" FABLE_CLAUDE_BIN="$T/claude" SPYLOG="$T/spy.log"
+export ACCOUNT_LANE_STATE="$T/lanes" ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}" ACCOUNT_LANE_TEST=1 ACCOUNT_LANE_NOW=1800000000
 export SKILL_ROUTE_POLICY="$D/.config/skill-routing/policy.json" SKILL_ROUTING_DECISIONS="$T/dec.jsonl" SKILL_ROUTE_LEDGER_IDS="$T/ids.txt"
 printf 'A1300\n' >"$SKILL_ROUTE_LEDGER_IDS"; echo e >"$T/ev.md"
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
