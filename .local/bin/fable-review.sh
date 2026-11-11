@@ -3,13 +3,15 @@
 # One-turn `claude -p` unit: Fable, high, the page inline, no tools. The last `VERDICT:` line of the
 # reply is parsed and written as one wm-decide row (kind design, tag fable-review). Unparseable reply:
 # exit 3, no row, reply kept in $FABLE_REVIEW_OUT. Exit 0 = row written, 2 = usage/page error, 4 = row refused.
-# Env: FABLE_REVIEW_CLAUDE (~/.local/bin/fable-launch.sh), FABLE_REVIEW_MODEL (claude-fable-5-1), FABLE_REVIEW_EFFORT (high),
+# Env: FABLE_REVIEW_CLAUDE (~/.local/bin/fable-launch.sh when installed there, else fable-launch.sh next to this script), FABLE_REVIEW_MODEL (claude-fable-5-1), FABLE_REVIEW_EFFORT (high),
 #      FABLE_REVIEW_LAUNCH (default systemd-run --user transient unit; tests set `env`),
 #      WM_DECIDE_BIN (wm-decide), FABLE_REVIEW_AGENT (aide), FABLE_REVIEW_OUT, FABLE_REVIEW_TIMEOUT (3600 s).
 set -u
 page="${1:-}"
 [ -n "$page" ] && [ -f "$page" ] || { echo "usage: fable-review.sh <page>" >&2; exit 2; }
-claude_bin="${FABLE_REVIEW_CLAUDE:-$HOME/.local/bin/fable-launch.sh}"   # f8fe: Fable runs on jyen.pm via the router
+# Default goes through fable-launch.sh (A1300): account/lane policy, credential scrub and exhaustion recording apply; FABLE_REVIEW_CLAUDE is the test seam.
+claude_bin="${FABLE_REVIEW_CLAUDE:-$HOME/.local/bin/fable-launch.sh}"   # f8fe (installed): Fable runs on jyen.pm via the router
+[ -n "${FABLE_REVIEW_CLAUDE:-}" ] || [ -x "$claude_bin" ] || claude_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/fable-launch.sh"
 model="${FABLE_REVIEW_MODEL:-claude-fable-5-1}"
 effort="${FABLE_REVIEW_EFFORT:-high}"
 decide="${WM_DECIDE_BIN:-wm-decide}"

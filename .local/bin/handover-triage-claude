@@ -1,0 +1,27 @@
+#!/bin/bash
+# A1300: monitor triage binds the account the managed lane selects (non-Fable: jyen.pm primary, mcphost.dev only on actual exhaustion).
+# Credential comes from the fleet token store into the child env only; inherited tokens are dropped; fail closed when select refuses.
+LANE=${HTP_LANE:-$HOME/.local/lib/account-lane.py}
+STORE=${HTP_STORE:-$HOME/.config/fleet-token/store}
+CLAUDE_BIN=${HTP_CLAUDE_BIN:-claude}
+sel=$(python3 -I "$LANE" select --lane nonfable --model haiku 2>/dev/null) || { echo "handover-triage-claude: lane select failed" >&2; exit 75; }
+acct=$(printf '%s' "$sel" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(d["account"] if d.get("ok") is True and d.get("lane")=="nonfable" and d.get("account") in ("jyen.pm","mcphost.dev") else "")' 2>/dev/null)
+[ -n "$acct" ] || { echo "handover-triage-claude: lane select not ok" >&2; exit 75; }
+[ -s "$STORE/$acct" ] || { echo "handover-triage-claude: no stored credential for $acct" >&2; exit 75; }
+tok=$(tr -d '\n' < "$STORE/$acct")
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+export CLAUDE_CODE_OAUTH_TOKEN="$tok"
+# The CLI's own --output-format (the caller's argv) is the trusted parsing mode for lane run; stdout content never decides it. Duplicate/unknown = refuse.
+OUTFMT=text; seen=0; args=("$@"); i=0
+while [ $i -lt ${#args[@]} ]; do
+  a=${args[$i]}
+  case "$a" in
+    --output-format) [ $seen = 0 ] || { echo "handover-triage-claude: duplicate --output-format refused" >&2; exit 64; }; seen=1; OUTFMT=${args[$((i+1))]:-}; i=$((i+2)); continue ;;
+    --output-format=*) [ $seen = 0 ] || { echo "handover-triage-claude: duplicate --output-format refused" >&2; exit 64; }; seen=1; OUTFMT=${a#--output-format=} ;;
+  esac
+  i=$((i+1))
+done
+case "$OUTFMT" in text|json|stream-json) ;; *) echo "handover-triage-claude: unsupported --output-format '$OUTFMT' (text|json|stream-json)" >&2; exit 64 ;; esac
+exec python3 -I "$LANE" run --output-format "$OUTFMT" --account "$acct" --lane nonfable --session "handover-triage-$(date +%s)-$$" -- "$CLAUDE_BIN" "$@"

@@ -30,7 +30,24 @@ aide_lane_valid "$LANE" || { echo "ctl-launch: bad lane name '$LANE' ($AIDE_LANE
 if [ -n "$ACCT" ]; then
   f="${XDG_CONFIG_HOME:-$HOME/.config}/fleet-token/store/$ACCT"
   [ -r "$f" ] || { echo "ctl-launch: no store entry '$ACCT' (fleet-token-store.sh add $ACCT)" >&2; exit 64; }
+  # A1300 lane policy: ctl runs the policy model; an account that may not serve its lane, or whose lane is exhausted, is refused before the token is read.
+  # Installed tool + missing/unreadable policy = refuse (F3); only a genuinely legacy tree (no tool, no policy) skips the check.
+  _gate="$(dirname "$_self")/../lib/account-lane-gate.sh"; [ -r "$_gate" ] || _gate="$HOME/.local/lib/account-lane-gate.sh"
+  if [ -r "$_gate" ]; then . "$_gate"; else al_gate_state() { if [ -e "${ACCOUNT_LANE_PY:-$HOME/.local/lib/account-lane.py}" ] || [ -n "${ACCOUNT_LANE_POLICY:-}" ]; then echo broken; else echo legacy; fi; }; al_gate_why() { echo "account lane gate library missing while the lane tool is installed"; }; fi
+  case "$(al_gate_state)" in
+    broken) echo "ctl-launch: WARNING: $(al_gate_why)" >&2; exit 75 ;;
+    enforced)
+      _al="$(dirname "$_self")/../lib/account-lane.py"; [ -r "$_al" ] || _al="$HOME/.local/lib/account-lane.py"
+      [ -r "$_al" ] || { echo "ctl-launch: account lane policy present but account-lane.py missing; refusing" >&2; exit 75; }
+      # model from the args (both --model X and --model=X; a duplicate or conflicting pair is refused)
+      _m=""; _p=("$@"); for _i in "${!_p[@]}"; do
+        case "${_p[$_i]}" in --model) _v="${_p[$((_i+1))]:-}" ;; --model=*) _v="${_p[$_i]#--model=}" ;; *) continue ;; esac
+        [ -z "$_m" ] || { echo "ctl-launch: duplicate --model refused" >&2; exit 64; }; _m="$_v"
+      done
+      python3 -I "$_al" check --account "$ACCT" --model "$_m" || { echo "ctl-launch: account lane policy refuses $ACCT for model '$_m'" >&2; exit 75; } ;;
+  esac
   CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '\n' < "$f")"; export CLAUDE_CODE_OAUTH_TOKEN
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
   echo "ctl-launch: token from store/$ACCT" >&2
 else
   set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a

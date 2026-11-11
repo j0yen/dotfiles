@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "lanes": {
+    "fable": {"order": ["jyen.pm", "mcphost.dev"]},
+    "nonfable": {"primaries": ["josephsyen", "jyen.tech"], "reserve": ["jyen.pm"]}
+  }
+}
