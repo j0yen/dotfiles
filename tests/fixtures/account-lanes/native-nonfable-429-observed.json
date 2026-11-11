@@ -1,0 +1,9 @@
+{
+ "type": "result",
+ "subtype": "success",
+ "is_error": true,
+ "terminal_reason": "api_error",
+ "api_error_status": 429,
+ "result": "You've hit your weekly limit \u00b7 resets Nov 12, 10am (America/Los_Angeles)",
+ "total_cost_usd": 0
+}

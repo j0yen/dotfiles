@@ -1,0 +1,13 @@
+{
+ "OBSERVED": true,
+ "source": "/home/jsy/isolated/account-exhaustion/stream.jsonl (this task's own claude stream-json run, 2026-11-08)",
+ "event": {
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "terminal_reason": "completed",
+  "api_error_status": null,
+  "stop_reason": "end_turn",
+  "result": "<redacted>"
+ }
+}
