@@ -15,13 +15,14 @@
 #     `push-verify-mismatch` and exit 3.
 #   --check: run checks 0-4 plus `git ls-remote origin refs/heads/<branch>` (remote in --host mode), print `CHECK-OK sha=<8> host=<h|local>` or the refusal; NEVER pushes, never logs.
 # Checks, in order (reason in brackets):
+#   Controller seat = the set {controller, ctl} (CONTROLLER_AGENTS below, the one place): swarm-decide schema x-agent-compare-aliases {"ctl":"controller"} compares the two names as one seat; no other agent counts.
 #   0 branch is not main/master [branch-protected] and does not start with `-` / has only [A-Za-z0-9._/-] [bad-branch]; the d-id is well formed [bad-confirm-id]; the db opens read-only [db-unreadable];
 #     HEAD resolves [not-a-repo]; ssh answers [ssh-failed rc=N]
-#   1 row <d-id> exists [no-row], agent = controller [wrong-agent], kind = verdict [kind-not-verdict], `what` starts with CONFIRM, case-sensitive [not-confirm]
+#   1 row <d-id> exists [no-row], agent in the controller set {controller, ctl} [wrong-agent], kind = verdict [kind-not-verdict], `what` starts with CONFIRM, case-sensitive [not-confirm]
 #   2 `what` names HEAD: an 8-to-40 hex prefix of the COMMIT or TREE sha as a whole token [sha-not-named] (git am changes the commit sha; the tree is the stable name)
 #   2b row-to-branch binding: <branch> == `symbolic-ref --short HEAD` of the repo, unless `what` names <branch> as a whole word; a detached HEAD must be named too [branch-mismatch]
-#   3 not withdrawn/overridden: a LATER controller row naming the d-id (full, or its 4-hex suffix as a whole token) with WITHDRAWN|CORRECT|"Do NOT push" [withdrawn];
-#     a later controller "Do NOT push" naming an 8-to-40 hex prefix of HEAD [do-not-push]; a later controller verdict CONFIRM naming <branch> but no such prefix of HEAD [superseded];
+#   3 not withdrawn/overridden: a LATER controller-set row naming the d-id (full, or its 4-hex suffix as a whole token) with WITHDRAWN|CORRECT|"Do NOT push" [withdrawn];
+#     a later controller-set "Do NOT push" naming an 8-to-40 hex prefix of HEAD [do-not-push]; a later controller-set verdict CONFIRM naming <branch> but no such prefix of HEAD [superseded];
 #     the row's own `regrade` JSON verdict CORRECT or DISAGREE [regrade-correct|regrade-disagree]
 #   4 fast-forward only: `git fetch origin refs/heads/<branch>` then origin tip is an ancestor of the sha captured once at the top [fetch-failed|non-ff]
 # Success: log `pushing` BEFORE the push, plain `git push origin <sha>:refs/heads/<branch>` (the sha captured once; never HEAD, never --force, never another refspec), then log `pushed` | `push-failed rc=N`.
@@ -29,6 +30,10 @@
 set -uo pipefail
 DB="${WM_DECISIONS_DB:-$HOME/.local/state/swarm-decide/decisions.sqlite}"
 LOG="${RB_LAND_PUSH_LOG:-$HOME/.local/state/rb-seat/land-push.log}"
+# the controller seat: swarm-decide schema/decision.schema.json x-agent-compare-aliases {"ctl": "controller"} (PR69) compares ctl and controller as one seat; rows keep their recorded agent
+CONTROLLER_AGENTS="controller ctl"
+agent_sql_in() { local a out=""; for a in $CONTROLLER_AGENTS; do out="$out${out:+,}'$a'"; done; printf '%s' "$out"; }
+is_controller_agent() { case " $CONTROLLER_AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
 refuse() { echo "REFUSED $*"; exit 2; }
 sq() { sqlite3 -readonly -batch -noheader "$DB" "$1"; }   # read-only; the only interpolated values are the regex-validated d-id and a ts read from the db (quote-doubled)
 sqs() { printf '%s' "${1//\'/\'\'}"; }
@@ -120,7 +125,7 @@ if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >
   [ "$n" = 1 ] || refuse no-row "$id"
   agent=$(sq "select agent from decisions where id='$id'"); kind=$(sq "select kind from decisions where id='$id'")
   what=$(sq "select what from decisions where id='$id'"); cts=$(sq "select ts from decisions where id='$id'")
-  [ "$agent" = controller ] || refuse wrong-agent "$id agent=$agent"
+  is_controller_agent "$agent" || refuse wrong-agent "$id agent=$agent"
   [ "$kind" = verdict ] || refuse kind-not-verdict "$id kind=$kind"
   case "$what" in CONFIRM*) ;; *) refuse not-confirm "$id" ;; esac
   # 2. the row names what is pushed
@@ -129,7 +134,7 @@ if [ "$ok" = 1 ] && [ "$inc" = 0 ] && @G@ fetch -q origin "refs/heads/$branch" >
   [ "$sbr" = "$branch" ] || word "$what" "$branch" || refuse branch-mismatch "$id HEAD is on '${sbr:-detached}', not $branch, and the row does not name $branch"
   # 3. not withdrawn / overridden
   local suffix=${id##*-} q lid lwhat
-  q="agent='controller' and (julianday(ts) > julianday('$(sqs "$cts")') or (julianday(ts) is null and ts > '$(sqs "$cts")')) and id<>'$id'"
+  q="agent in ($(agent_sql_in)) and (julianday(ts) > julianday('$(sqs "$cts")') or (julianday(ts) is null and ts > '$(sqs "$cts")')) and id<>'$id'"
   while IFS= read -r lid; do
     [ -n "$lid" ] || continue
     lwhat=$(sq "select what from decisions where id='$(sqs "$lid")'")
@@ -230,6 +235,22 @@ EOS
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8" "'{\"verdict\":\"CORRECT\"}'"; case_ regrade-correct regrade-correct "$ok"; clear
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8";                     case_ branch-main branch-protected "$ok" main
   case_ bad-id bad-confirm-id "d-1"
+  # --- controller set {controller, ctl} (swarm-decide x-agent-compare-aliases)
+  row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8";                               case_ ctl-confirm-pushed PUSHED "$ok"; clear
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
+  row "$ok" 2026-10-24T10:00:00-07:00 aide verdict "CONFIRM tree $t8";                              case_ aide-confirm-wrong-agent wrong-agent "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8"
+  row d-20261024-101000-ctl-1111 2026-10-24T10:10:00-07:00 ctl verdict "WITHDRAWN: $ok";            case_ ctl-withdrawn-of-ctl withdrawn "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8"
+  row d-20261024-101000-ctl-1111 2026-10-24T10:10:00-07:00 ctl verdict "WITHDRAWN: $ok";            case_ ctl-withdrawn-of-controller withdrawn "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8"
+  row d-20261024-101000-ctl-1111 2026-10-24T10:10:00-07:00 ctl verdict "Do NOT push $t8";           case_ ctl-do-not-push do-not-push "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8"
+  row d-20261024-101000-ctl-1111 2026-10-24T10:10:00-07:00 ctl verdict "CONFIRM $B tree 0badc0de";  case_ ctl-superseded superseded "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8"
+  row d-20261024-101000-rb-1111 2026-10-24T10:10:00-07:00 rb verdict "WITHDRAWN: $ok";             case_ rb-withdraw-ignored PUSHED "$ok"; clear
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
+  row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8"   # the row the non-ff / pushed-by-tree cases below read
   # non-ff: origin gets a commit HEAD does not have
   ( cd "$T" && git clone -q origin.git other 2>/dev/null && cd other && git checkout -q wm-build/x 2>/dev/null; echo z > z && "${g[@]}" add z && "${g[@]}" commit -qm z && git push -q origin HEAD:refs/heads/wm-build/x )
   case_ non-ff non-ff "$ok"

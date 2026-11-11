@@ -9,7 +9,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wrap="${RB_LAND_PUSH_UNDER_TEST:-$here/.local/bin/rb-land-push.sh}"   # a mutation proof points this at a throwaway copy
 T="$(mktemp -d "${TMPDIR:-/tmp}/rblp.XXXXXX")"; trap 'rm -rf "$T"' EXIT
-fail=0; n=0
+fail=0; n=0; HOME_REAL="$HOME"
 ok()  { n=$((n+1)); echo "ok - rb-land-push: $1"; }
 bad() { n=$((n+1)); echo "NOT OK - rb-land-push: $1"; fail=1; }
 export HOME="$T/home" WM_DECISIONS_DB="$T/d.sqlite" RB_LAND_PUSH_LOG="$T/home/.local/state/rb-seat/land-push.log" WM_SEAT=rb-test RB_LAND_PUSH_TEST_ORIGIN=1 RB_LAND_PUSH_REPO_PREFIXES="$T/"; unset CLAUDE_AGENT_ID
@@ -217,6 +217,47 @@ reset_tip; XA=(); bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" >/de
 git -C "$T/wt" config --unset core.hooksPath; reset_tip; clear
 # no force anywhere in the push path
 grep -nE -- '--force|--force-with-lease|push .*\+' "$wrap" | grep -vE '^[0-9]+:\s*#' | grep -q . && bad "wrapper source contains a force push" || ok "no --force / --force-with-lease / + refspec in the push path"
+# controller set {controller, ctl} (swarm-decide schema x-agent-compare-aliases {"ctl":"controller"}); no other agent is accepted
+CT=d-20261110-040000-ctl-c7c7; LATER_CT=d-20261110-041000-ctl-2222; LATER_CT_TS=2026-11-10T04:10:00-07:00; CT_TS=2026-11-10T04:00:00-07:00
+clear; reset_tip; row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; XA=()
+out=$(bash "$wrap" --confirm "$CT" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && grep -q " pushed $CT " "$RB_LAND_PUSH_LOG" && ok "ctl (a) agent=ctl CONFIRM naming the tree -> pushed to the fixture remote" || bad "ctl (a) rc=$rc out=$out"
+reset_tip; clear
+for a in rb aide r7 hermes verifier; do row "$CT" $CT_TS $a verdict "CONFIRM tree $T8"; refused "ctl (b) agent=$a CONFIRM" wrong-agent "$CT"; clear; done
+row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "WITHDRAWN: $CT";    refused "ctl (c) later agent=ctl WITHDRAWN of an agent=ctl CONFIRM" withdrawn "$CT"; clear
+row "$ID" $TS controller verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "WITHDRAWN: $ID";  refused "ctl (c) later agent=ctl WITHDRAWN of an agent=controller CONFIRM" withdrawn "$ID"; clear
+row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "Do NOT push $T8";    refused "ctl (d) later agent=ctl Do NOT push" do-not-push "$CT"; clear
+row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "CONFIRM $B tree 0badc0de"; refused "ctl (e) later agent=ctl CONFIRM of another sha for the branch" superseded "$CT"; clear
+row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS rb verdict "WITHDRAWN: $CT"
+out=$(bash "$wrap" --confirm "$CT" --repo "$T/wt" --branch "$B" --check 2>&1); [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "ctl: a later agent=rb WITHDRAWN row is not a controller row" || bad "ctl: later rb row: $out"
+clear; reset_tip
+# (f) no-drift: the controller set in the script == controller + the names the live swarm-decide schema aliases to controller
+SCHEMA="${SWARM_DECIDE_SCHEMA:-$HOME_REAL/.local/share/swarm-decide/live/current/schema/decision.schema.json}"
+if [ -r "$SCHEMA" ]; then
+  want=$(python3 -I -c 'import json,sys
+def find(o):
+    if isinstance(o,dict):
+        if "x-agent-compare-aliases" in o: return o["x-agent-compare-aliases"]
+        for v in o.values():
+            r=find(v)
+            if r is not None: return r
+    elif isinstance(o,list):
+        for v in o:
+            r=find(v)
+            if r is not None: return r
+d=find(json.load(open(sys.argv[1])))
+if d is None: print("NOKEY"); sys.exit(0)
+print(" ".join(sorted({"controller"}|{k for k,v in d.items() if v=="controller"})))' "$SCHEMA")
+  have=$(sed -n 's/^CONTROLLER_AGENTS="\(.*\)"$/\1/p' "$wrap" | tr ' ' '\n' | sort | paste -sd' ')
+  if [ "$want" = NOKEY ]; then
+    # the installed swarm-decide predates x-agent-compare-aliases (PR69, d1c5d2c): no alias set to compare against on this host
+    echo "SKIP - rb-land-push: ctl (f) no-drift check, $SCHEMA has no x-agent-compare-aliases (installed swarm-decide predates PR69)"
+  else
+  [ -n "$want" ] && [ "$want" = "$have" ] && ok "ctl (f) no drift: script controller set '$have' == schema x-agent-compare-aliases set '$want'" || bad "ctl (f) drift: script='$have' schema='$want'"
+  fi
+else
+  echo "SKIP - rb-land-push: ctl (f) no-drift check, swarm-decide schema not found at $SCHEMA"
+fi
 # selftest
 st=$(bash "$wrap" --selftest 2>&1); src=$?; echo "$st" | tail -1
 [ $src = 0 ] && echo "$st" | tail -1 | grep -Eq '^selftest ok ([0-9]+)/\1$' && ok "--selftest passes (selftest ok N/N)" || bad "--selftest failed (rc=$src): $(echo "$st" | tail -3)"
