@@ -315,6 +315,14 @@ jq -c 'if .reconcile_confirmed==true then .ref="1999-01-01T00:00:00,000000000+00
 jsetup; SYNC_FAIL_RE='"reconcile_confirmed"' "$DEL" --reconcile summary resend --key "$K" </dev/null >/dev/null 2>&1
 [ "$(ls "$FOLLOWUP_OUTBOX".* 2>/dev/null | wc -l)" = 0 ]; st=$?; chk "k4: failed confirm leaves no temp file" "$st"
 
+# m: A1570 sent_part records name the ask (.task // .id) and a delivering-process actor fixed from the kernel uid, never from the input
+reset; "$DEL" <<<"$(ev R1 T-m1 | jq -c '. + {actor:"owner-claimed",ask_id:"forged"}')" >/dev/null 2>&1
+jq -e -s --arg who "followup-deliver:uid=$(id -u)" '[.[]|select(.sent_part==true)] | length>=1 and all(.[]; .ask_id=="T-m1" and .actor==$who)' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "m1: every sent_part record carries ask_id=task and the fixed delivering actor; an input-claimed actor/ask_id is ignored" "$st"
+reset; "$DEL" <<<"$(ev R1 T-m2 | jq -c 'del(.task) | . + {id:"ev-only-id"}')" >/dev/null 2>&1
+jq -e -s '[.[]|select(.sent_part==true)] | length>=1 and all(.[]; .ask_id=="ev-only-id")' "$FOLLOWUP_OUTBOX" >/dev/null; st=$?; chk "m2: with no task the ask_id falls back to the event id" "$st"
+reset; "$DEL" <<<"$(ev R1 T-m3 | jq -c 'del(.id)')" >/dev/null 2>&1; rc=$?
+[ "$rc" = 1 ] && [ "$(jq -s '[.[]|select(.sent_part==true)]|length' "$FOLLOWUP_OUTBOX")" = 0 ]; st=$?; chk "m3: an event with no id is refused before any send, so no sent_part record lacks an ask reference (rc $rc)" "$st"
+
 # no chk call may take its status from $? after a $(...) in its own message (that status is the substitution's, always 0)
 ! grep -nE '^[^#]*chk ".*\$\(.*" \$\?$' "$0"; st=$?; chk "meta: no chk call reads \$? after a command substitution in its message" "$st"
 echo "followup-delivery: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
