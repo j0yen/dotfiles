@@ -57,7 +57,7 @@ case "$pf" in /*) ;; */*) echo "r7-run-coder.sh: prompt path must be absolute or
 [ -s "$pf" ] || { echo "r7-run-coder.sh: prompt file missing or empty: $pf" >&2; rc=2; exit 2; }
 [ -x "$HOOKS/commit-msg" ] && [ -x "$HOOKS/pre-push" ] || { echo "r7-run-coder.sh: git hooks missing under $HOOKS" >&2; rc=2; exit 2; }
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
-. "$HOME/.local/lib/coder-oauth-bind.sh" && { coder_oauth_bind || { rc=3; exit 3; }; }   # A1300: optional per-run account binding (CODER_ACCOUNT + CODER_OAUTH_ENV); unset = host-global token, unchanged
+. "$HOME/.local/lib/coder-oauth-bind.sh" || { echo "r7-run-coder.sh: coder-oauth-bind.sh missing or unreadable" >&2; rc=3; exit 3; }; coder_oauth_bind || { rc=3; exit 3; }   # A1300: optional per-run account binding (CODER_ACCOUNT + CODER_OAUTH_ENV); unset = host-global token; a missing helper refuses before the child
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=r7-coder CLAUDE_SESSION_NAME="r7-coder-$n"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$HOOKS" R7_GIT_HOOK_LOG="$HOME/.local/state/r7-git-hooks-strip.log"
 cd "$HOME"

@@ -28,7 +28,7 @@ hold_bin="${RB_SPAWN_HOLD_BIN:-$HOME/.local/bin/rb-spawn-hold.sh}"; hold_extra="
 h="$(hostname -s 2>/dev/null)"; case "$h" in redbaron|ryzen7) ;; *) echo "REFUSED host=${h:-unknown} (rb-run-coder.sh runs on redbaron or ryzen7 only)" >&2; exit 79 ;; esac
 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" rb-run-coder || exit 1   # hold gate (hermes-handover 2.4): after the host gate, before the credential source and any spawn step
 set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
-. "$HOME/.local/lib/coder-oauth-bind.sh" && { coder_oauth_bind || exit 3; }   # A1300: optional per-run account binding (CODER_ACCOUNT + CODER_OAUTH_ENV); unset = host-global token, unchanged
+. "$HOME/.local/lib/coder-oauth-bind.sh" || { echo "rb-run-coder.sh: coder-oauth-bind.sh missing or unreadable" >&2; exit 3; }; coder_oauth_bind || exit 3   # A1300: optional per-run account binding (CODER_ACCOUNT + CODER_OAUTH_ENV); unset = host-global token; a missing helper refuses before the child
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=rb-coder CLAUDE_SESSION_NAME="rb-coder-$n" RB_CODER_ID="$n"   # RB_CODER_ID = the rb marker .claude/hooks/land-push-gate.sh keys on (a coder may not `git push` a wm-build/* branch; rb-land-push.sh only)
 cd "$HOME"
 # empty-prompt gate (rb 10-23 12:5x AM: a failed sed left clp2.prompt at 0 bytes and the unit started anyway).
