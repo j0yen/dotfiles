@@ -159,6 +159,47 @@ ft_status_write() {
   return 0
 }
 
+# ---- account lane policy (A1300/A1301; .local/lib/account-lane.py) --------------------------------------------------
+# The fleet token serves the default NON-Fable seats, so every rotation target and ring candidate must be allowed in the nonfable lane
+# (mcphost.dev never is) and not exhausted there. Enforced only once the policy is installed (~/.config/account-lanes/policy.json) or
+# ACCOUNT_LANE_POLICY is set; a genuinely legacy tree (no tool, no policy) behaves as before. An installed tool with a missing/unreadable policy,
+# or an enforced tree with a missing/broken tool, REFUSES (fail closed, F3) with an actionable warning.
+# shellcheck source=account-lane-gate.sh
+_ftl_here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+if [ -r "$_ftl_here/account-lane-gate.sh" ]; then . "$_ftl_here/account-lane-gate.sh"
+elif [ -r "$HOME/.local/lib/account-lane-gate.sh" ]; then . "$HOME/.local/lib/account-lane-gate.sh"
+else al_gate_state() { if [ -e "${ACCOUNT_LANE_PY:-$HOME/.local/lib/account-lane.py}" ] || [ -n "${ACCOUNT_LANE_POLICY:-}" ]; then echo broken; else echo legacy; fi; }
+  al_gate_why() { echo "account lane gate library missing while the lane tool is installed: refusing (fail closed)"; }; fi
+ft_lane_enforced() { [ "$(al_gate_state)" != legacy ]; }
+ft_lane_py() {
+  local c
+  for c in "${ACCOUNT_LANE_PY:-}" "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/account-lane.py" "$HOME/.local/lib/account-lane.py"; do
+    [ -n "$c" ] && [ -r "$c" ] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+# ft_lane_check <account> [trigger]: 0 = allowed (or not enforced); 1 = refused, reason on stderr. A joe-* trigger may lift an EXHAUSTED lane
+# (Joe's word, like a block) but never the permission rule.
+ft_lane_check() {
+  local acct="$1" trig="${2:-}" py out rc=0 code
+  case "$(al_gate_state)" in
+    legacy) return 0 ;;
+    broken) echo "WARNING: $(al_gate_why)" >&2; return 1 ;;
+  esac
+  py="$(ft_lane_py)" || { echo "account lane policy enforced but account-lane.py is missing: refusing (fail closed)" >&2; return 1; }
+  out="$(python3 -I "$py" check --account "$acct" --lane nonfable 2>/dev/null)" || rc=$?
+  [ "$rc" = 0 ] && return 0
+  code="$(printf '%s' "$out" | jq -r '.code // empty' 2>/dev/null || true)"
+  if [ "$code" = lane_exhausted ] && [[ "$trig" == joe-* ]]; then return 0; fi
+  echo "account lane policy: '$acct' refused for the non-Fable fleet token (${code:-rc=$rc})" >&2; return 1
+}
+# ft_lane_record <account> <reset-epoch-or-empty>: structured seat-tick evidence -> nonfable lane exhaustion (no free text). Best effort, loud.
+ft_lane_record() {
+  local py; [ "$(al_gate_state)" = enforced ] || { ft_lane_enforced && echo "WARNING: $(al_gate_why)" >&2 && return 1; return 0; }
+  py="$(ft_lane_py)" || return 1
+  python3 -I "$py" record-structured --account "$1" --lane nonfable --source seat-tick-quota-wait ${2:+--reset-epoch "$2"} >/dev/null
+}
+
 # ---- selftest helpers (used by every script's --selftest) --------------------------------------------------------
 FT_CANARY='canary-tok-7f3e9a'   # tokens in a selftest are this value plus an optional -suffix; the scan below looks for the prefix
 
@@ -168,7 +209,7 @@ ft_st_env() {
   export FLEET_TOKEN_SELFTEST=1 HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" XDG_RUNTIME_DIR="$T/run" \
          FLEET_DASH_DIR="$T/home/.cache/fleet-dash" FLEET_TOKEN_STATE_DIR="$T/home/.local/state/fleet-token"
   mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$FLEET_DASH_DIR" "$T/fakes"; chmod 700 "$XDG_RUNTIME_DIR"
-  unset CLAUDE_CODE_OAUTH_TOKEN
+  unset CLAUDE_CODE_OAUTH_TOKEN ACCOUNT_LANE_POLICY ACCOUNT_LANE_PY ACCOUNT_LANE_STATE ACCOUNT_LANE_TEST ACCOUNT_LANE_NOW
   ft_paths
   local F="$T/fakes"
   # verify: the token arrives in the environment of THIS call only; "-bad" tokens fail, "-limit" tokens fail with a limit message

@@ -8,10 +8,12 @@
 # Under jyen.pm an omitted model and a Fable model without explicit effort xhigh|max are denied, and unreadable input/no jq fail closed; elsewhere unreadable input fails open (declared residual).
 set -uo pipefail
 ACCT="${FABLE_LAUNCH_ACCOUNT:-}"
-JQ=$(command -v jq) || { [ "$ACCT" = jyen.pm ] && { echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"fable-native-agent-guard: jq missing under jyen.pm, failing closed"}}'; }; exit 0; }
+# Fable-lane accounts (A1300): jyen.pm, and mcphost.dev once Fable has moved there. A native child inherits the parent token, so a non-Fable child on either would silently spend a Fable-lane account (mcphost.dev must never serve non-Fable).
+FA=0; case "$ACCT" in jyen.pm|mcphost.dev) FA=1 ;; esac
+JQ=$(command -v jq) || { [ "$FA" = 1 ] && { echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"fable-native-agent-guard: jq missing under jyen.pm, failing closed"}}'; }; exit 0; }
 IN=$(cat) || IN=""
 if ! printf '%s' "$IN" | "$JQ" -e . >/dev/null 2>&1; then
-  [ "$ACCT" = jyen.pm ] && "$JQ" -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"fable-native-agent-guard: unreadable tool input under jyen.pm, failing closed"}}'
+  [ "$FA" = 1 ] && "$JQ" -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"fable-native-agent-guard: unreadable tool input under jyen.pm, failing closed"}}'
   exit 0
 fi
 [ "$(printf '%s' "$IN" | "$JQ" -r '.tool_name // empty' 2>/dev/null)" = Agent ] || exit 0
@@ -19,7 +21,7 @@ M=$(printf '%s' "$IN" | "$JQ" -r '.tool_input.model // empty' 2>/dev/null | tr '
 E=$(printf '%s' "$IN" | "$JQ" -r '.tool_input.effort // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
 deny(){ "$JQ" -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 isf(){ case "$1" in fable|claude-fable-*) return 0;; *) return 1;; esac; }
-if [ "$ACCT" = jyen.pm ]; then
+if [ "$FA" = 1 ]; then
   [ -z "$M" ] && deny "fable-native-agent-guard: under jyen.pm a native Agent needs an explicit Fable model; an omitted model lets a named agent (coder, triage, ...) pin a non-Fable model on the jyen.pm token. Run non-Fable helpers via fable-launch.sh --helper --model <m> -p \"<prompt>\" (A1169)."
   if isf "$M"; then
     [ "$E" = high ] && exit 0

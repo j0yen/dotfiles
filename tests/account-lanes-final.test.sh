@@ -3,6 +3,7 @@
 # AL_ROOT=<tree> replays on other bytes (RED on 2e03528). Fixture provenance: tests/fixtures/account-lanes/README.md.
 set -u
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
+export ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}"  # source-policy fixture; the live policy is host config, not in this repo
 FX="${AL_FIXTURES:-$(cd "$(dirname "$0")" && pwd)/fixtures/account-lanes}"
 T="$(mktemp -d)"; trap 'pkill -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT
 REALSTATE="$HOME/.local/state/account-lanes"; before_real="$(ls -la "$REALSTATE" 2>&1 | md5sum)"; REALHOME="$HOME"
@@ -125,7 +126,7 @@ cl "$CLB" --account mcphost.dev -p x; ck "ctl-launch legacy tree (no tool, no po
 cp "$D/.local/lib/account-lane.py" "$CH/.local/lib/"
 cl "$CLB" --account mcphost.dev -p x; ck "ctl-launch: tool installed, policy missing -> refused 75 + warning, nothing started" '[ "$(rc)" = 75 ] && [ ! -s $SPYLOG ] && grep -q "WARNING.*NOT in force" $T/err'
 cl "$CLB" --account josephsyen -p x; ck "ctl-launch: tool installed, policy missing -> even josephsyen refused (fail closed)" '[ "$(rc)" = 75 ] && [ ! -s $SPYLOG ]'
-mkdir -p "$CH/.config/account-lanes"; cp "$D/tests/fixtures/account-lanes/policy.test.json" "$CH/.config/account-lanes/"
+mkdir -p "$CH/.config/account-lanes"; cp "$D/tests/fixtures/account-lanes/policy.test.json" "$CH/.config/account-lanes/policy.json"
 cl "$CLB" --account josephsyen -p x; ck "ctl-launch: policy restored -> allowed" '[ "$(rc)" = 0 ] && grep -q "acct=josephsyen" $SPYLOG'
 rm -f "$CH/.config/account-lanes/policy.json"
 # ctl-account-follow with tool installed + no policy: logs the warning and does not follow
@@ -140,7 +141,7 @@ run --model=claude-fable-5-1; ck "fable-launch --model=fable selects the Fable l
 run --model=claude-sonnet-5-5 --model claude-fable-5-1; ck "conflicting --model=X --model Y refused 64" '[ "$(rc)" = 64 ] && [ ! -s $SPYLOG ]'
 run --model claude-sonnet-5-5 --model=claude-fable-5-1; ck "conflicting --model X --model=Y refused 64" '[ "$(rc)" = 64 ] && [ ! -s $SPYLOG ]'
 run --model=claude-sonnet-5-5 --model=claude-sonnet-5-5; ck "duplicate --model=X --model=X refused 64" '[ "$(rc)" = 64 ]'
-mkdir -p "$CH/.config/account-lanes"; cp "$D/tests/fixtures/account-lanes/policy.test.json" "$CH/.config/account-lanes/"
+mkdir -p "$CH/.config/account-lanes"; cp "$D/tests/fixtures/account-lanes/policy.test.json" "$CH/.config/account-lanes/policy.json"
 cl env ACCOUNT_LANE_POLICY="$CH/.config/account-lanes/policy.json" "$CLB" --account mcphost.dev --model=claude-sonnet-5-5 -p x; ck "ctl-launch --model=X form is lane-checked (mcphost.dev non-Fable refused 75)" '[ "$(rc)" = 75 ] && [ ! -s $SPYLOG ]'
 cl env ACCOUNT_LANE_POLICY="$CH/.config/account-lanes/policy.json" "$CLB" --account josephsyen --model=claude-sonnet-5-5 -p x; ck "ctl-launch --model=X allowed on josephsyen" '[ "$(rc)" = 0 ]'
 cl env ACCOUNT_LANE_POLICY="$CH/.config/account-lanes/policy.json" "$CLB" --account mcphost.dev --model=claude-fable-5-1 -p x; ck "ctl-launch --model=fable conflicts with ctl policy: refused 64 before any token" '[ "$(rc)" = 64 ] && [ ! -s $SPYLOG ]'

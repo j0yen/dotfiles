@@ -13,6 +13,19 @@ fleet="$(jq -r '.account // empty' "$TOK" 2>/dev/null)"
 [ -n "$fleet" ] || { echo "$(date +%FT%T%z) no fleet account in $TOK" >> "$LOG"; exit 0; }
 store="$HOME/.config/fleet-token/store/$fleet"
 [ -r "$store" ] || { echo "$(date +%FT%T%z) fleet=$fleet has no store entry: nothing to follow" >> "$LOG"; exit 0; }
+# A1300: the fleet account may be a Fable-lane account (mcphost.dev) that ctl's non-Fable model must not use; follow only an account the lane policy permits and has
+# not exhausted. Installed tool + missing/unreadable policy = do not follow (fail closed, F3); a genuinely legacy tree (no tool, no policy) follows as before.
+_here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+_gate="$_here/../lib/account-lane-gate.sh"; [ -r "$_gate" ] || _gate="$HOME/.local/lib/account-lane-gate.sh"
+if [ -r "$_gate" ]; then . "$_gate"; else al_gate_state() { if [ -e "${ACCOUNT_LANE_PY:-$HOME/.local/lib/account-lane.py}" ] || [ -n "${ACCOUNT_LANE_POLICY:-}" ]; then echo broken; else echo legacy; fi; }; al_gate_why() { echo "account lane gate library missing while the lane tool is installed"; }; fi
+case "$(al_gate_state)" in
+  broken) echo "$(date +%FT%T%z) WARNING: $(al_gate_why) -- not following fleet=$fleet" >> "$LOG"; exit 0 ;;
+  enforced)
+    _al="$_here/../lib/account-lane.py"; [ -r "$_al" ] || _al="$HOME/.local/lib/account-lane.py"
+    if [ ! -r "$_al" ] || ! python3 -I "$_al" check --account "$fleet" --model claude-sonnet-5-5 >/dev/null; then
+      echo "$(date +%FT%T%z) fleet=$fleet is not usable by ctl's lane (policy/exhaustion): not following, ctl stays on its account" >> "$LOG"; exit 0
+    fi ;;
+esac
 want="$(tr -d '\n' < "$store" | sha256sum | cut -c1-16)"
 desc(){ local p; for p in $(pgrep -P "$1" 2>/dev/null); do echo "$p"; desc "$p"; done; }
 seen=0; ok=0

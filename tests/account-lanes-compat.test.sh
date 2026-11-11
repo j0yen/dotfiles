@@ -5,6 +5,7 @@
 # output-provenance and drain protections. SYNTHETIC; temp HOME/state, dummy credentials, fake CLI; no real call. AL_ROOT=<tree> replays other bytes.
 set -u
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
+export ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}"  # source-policy fixture; the live policy is host config, not in this repo
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 REALSTATE="$HOME/.local/state/account-lanes"; before_real="$(ls -la "$REALSTATE" 2>&1 | md5sum)"
 mkdir -p "$T/store" "$T/home" "$T/rr"; for a in josephsyen:JOSEPH jyen.tech:TECH jyen.pm:PM mcphost.dev:MCP; do printf 'TOKEN-%s-dummy0000' "${a#*:}" > "$T/store/${a%%:*}"; done
