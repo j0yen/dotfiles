@@ -47,4 +47,15 @@ echo "$(date +%FT%T%z) aide ($seen pid) not on fleet account $fleet: aide accoun
 [ "${AAF_DRY:-0}" = 1 ] && { echo "DRY: ctl-relaunch.sh $fleet"; exit 0; }
 echo "$now" > "$STAMP"
 seat-event.sh aide "aide-account-follow $(date +%I:%M%p): fleet account is $fleet, the aide was not on it: aide account switch running (ctl-relaunch.sh $fleet); check ctl-relaunch-check.sh $fleet" >/dev/null 2>&1 || true
+# A1577 wiring (candidate, uninstalled): when WM_SUCC_ASK names the canonical task, mint the planned invocation and bind it; a producer refusal
+# (no applied effect row, UNKNOWN prior, spent id) leaves the relaunch UNVERIFIED and unbound, never blocked and never claimed equivalent.
+if [ -n "${WM_SUCC_ASK:-}" ] && [ -r "$HOME/.local/lib/a1577_produce.py" ]; then
+  _inv="${WM_SUCC_INV:-rl-$(date +%Y%m%d-%H%M%S)-$(python3 -I -c 'import secrets;print(secrets.token_hex(8))')}"   # W1: an effect owner plans WM_SUCC_INV and records the effect against it first; without one the id is random and the producer refuses (UNVERIFIED)
+  _out="$HOME/.local/state/aide/succ-bind"; mkdir -p "$_out"
+  if _env="$(python3 -I "$HOME/.local/lib/a1577_produce.py" --ask="$WM_SUCC_ASK" --outdir "$_out" --inv="$_inv" 2>>"$LOG")"; then
+    export WM_SUCC_INV="$(printf '%s\n' "$_env" | sed -n 's/^WM_SUCC_INV=//p')" WM_SUCC_BINDING="$(printf '%s\n' "$_env" | sed -n 's/^WM_SUCC_BINDING=//p')"
+    echo "$(date +%FT%T%z) A1577 binding $WM_SUCC_BINDING for inv $WM_SUCC_INV" >> "$LOG"
+  else echo "$(date +%FT%T%z) A1577 producer refused for $WM_SUCC_ASK: relaunch proceeds UNVERIFIED, no equivalence claimed" >> "$LOG"; unset WM_SUCC_INV WM_SUCC_BINDING; fi
+else echo "$(date +%FT%T%z) A1577 wiring skipped (WM_SUCC_ASK unset or producer not installed): relaunch UNVERIFIED" >> "$LOG"
+fi
 exec "$(dirname "$(readlink -f "$0")")/ctl-relaunch.sh" "$fleet" "follow the fleet account switch (Joe 11-01 1:5x PM, approvals #207)"
