@@ -43,7 +43,7 @@ case_() {
 
 case_ a redbaron 'You are a coder on RedBaron for j0yen/synthorg.' ok
 if [ $rc = 0 ] && [ ! -e "$H/claude.ran" ] && grep -q 'scp .*ryzen7:.cache/rb-seat/coders/t.prompt' "$H/remote.log" \
-  && grep -q 'ssh .*ryzen7 systemd-run --user --unit rb-coder-t --collect -p IOWeight=50 --setenv=RB_CODER_HOST=ryzen7 .*rb-run-coder.sh t .*t.prompt' "$H/remote.log" && [[ $out == *'report=ryzen7:'* ]]; then
+  && grep -q 'ssh .*ryzen7 systemd-run --user --unit rb-coder-t --collect -p TasksMax=infinity -p IOWeight=50 --setenv=RB_CODER_HOST=ryzen7 .*rb-run-coder.sh t .*t.prompt' "$H/remote.log" && [[ $out == *'report=ryzen7:'* ]]; then
   pass "(a) synthorg on redbaron -> scp + ssh systemd-run on ryzen7, RB_CODER_HOST pinned, no local claude, $out"; else bad "(a) rc=$rc out=$out log=$(cat "$H/remote.log" 2>&1)"; fi
 case_ a2 redbaron 'You are a coder on RedBaron for j0yen/wm-build.' ok
 [ $rc = 0 ] && grep -q 'ryzen7 systemd-run' "$H/remote.log" && [ ! -e "$H/claude.ran" ] && pass "(a2) wm-build -> ryzen7" || bad "(a2) rc=$rc out=$out"
