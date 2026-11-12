@@ -119,7 +119,7 @@ C104	box.roles.coder.max_leases_per_box	rb 7 ; r7 7 ; orch 5	redbaron,ryzen7,orc
 C105	box.roles.gate.max_leases_per_box	rb 4 ; r7 4 ; orch 2	redbaron,ryzen7,orch	config.toml:146/140/114	leased-box	none found	DROP	rb A296 ; r7 A299 ; rb A295	-			
 C106	box.roles.gate.max_boxes	rb 4 ; r7 4	redbaron,ryzen7	config.toml:147 (rb) ; :141 (r7)	leased-box	Joe 10-11 "4 gate boxes"	DROP	rb A296 ; r7 A299	-			
 C107	box.max_concurrent	8	redbaron,ryzen7,orch	config.toml:221/200/135	memory	Joe 10-05 "go 6"	CHECK	rb	if it counts leased-box coders → DROP with C103; if host-mode coders → KEEP as a memory cap			
-C108	cargo_jobs.mem_budget_gb	rb 26 ; r7 22	redbaron,ryzen7	config.toml:326 (rb) ; :315 (r7)	memory	MemGate 26 G RB / 22 G r7	KEEP	rb ; r7	-			
+C108	cargo_jobs.mem_budget_gb	rb 26 ; r7 30	redbaron,ryzen7	config.toml:326 (rb) ; :316 (r7)	memory	MemGate 26 G RB; r7 22 -> 30 = MemTotal 30.2 GiB floor 11-11 5:10 PM (ctl A1570 delta2 + Joe #195 no discretionary caps; row d-20261111-171218-r7-900c)	KEEP	rb ; r7	mem_budget is not hot-reloaded: a change needs a precheck-gated daemon restart; real gates kept (headroom, avail x peak, PSI, pressure guard)			
 C109	cargo_jobs.mem_headroom_gb	4	redbaron,ryzen7	config.toml:329 (rb) ; :316 (r7)	memory	none found	KEEP	rb ; r7	-			
 C110	cargo_jobs.max_compiling_units	3	redbaron,ryzen7	config.toml:330 (rb) ; :317 (r7)	memory	none found	KEEP	rb ; r7	-			
 C111	mem_caps_gb.land (rb)	12.5	redbaron	config.toml:335	memory	none found	KEEP	rb	-			
@@ -149,6 +149,7 @@ C133	max_members	6	ryzen7	config.toml:284	memory	none found	CHECK	r7	name what i
 C134	mem_caps_gb.mcphost.inner (r7)	12.5	ryzen7	config.toml:335	memory	repriced 10-20	KEEP	r7	-			
 C135	mem_caps_gb.synthorg (r7)	6 (interim)	ryzen7	config.toml:331	memory	10-19 comment	CHECK	r7	value line not read; confirm and drop "interim"			
 C136	mem_caps_gb.pytest (r7)	2	ryzen7	config.toml:328	memory	priced, peak 0.38 GiB	CHECK	r7	value line not read			
+C188	mem_caps_gb.swarm-decide.inner (r7)	3	ryzen7	config.toml:339	memory	priced 11-11 5:10 PM on measured inner peak_rss max 2.16 G (ctl A1570; row d-20261111-171218-r7-900c)	KEEP	r7	reverse: any swarm-decide step peak_rss > 3 G			
 C137	land-red-hold cadence	60 s	ryzen7,orch	land-red-hold*.timer:6	cadence	none found	KEEP	r7	-			
 C138	land-red-hold MemoryMax / RuntimeMaxSec	512M / 600 s	ryzen7,orch	land-red-hold*.service:6-8	memory	none found	KEEP	r7	-			
 C139	ryzen7-disk-guard cadence	20 min	ryzen7	ryzen7-disk-guard.timer:5	cadence	none found	KEEP	r7	-			
