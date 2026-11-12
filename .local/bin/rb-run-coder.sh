@@ -163,7 +163,7 @@ if [ "$th" != "$h" ]; then
   refuse_launch() { echo "REFUSED remote-launch host=$th: $1" > "$D/$n.report.md"; EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n REFUSED remote-launch host=$th" || true; echo "REFUSED remote-launch host=$th: $1" >&2; exit 79; }
   ssh "${sopt[@]}" "$th" "mkdir -p ~/$rd" >/dev/null 2>&1 || refuse_launch "ssh mkdir failed"
   scp -q "${sopt[@]}" "$pf" "$th:$rd/$n.prompt" >/dev/null 2>&1 || refuse_launch "scp prompt failed"
-  ssh "${sopt[@]}" "$th" "systemd-run --user --unit $unit --collect -p IOWeight=50 --setenv=RB_CODER_HOST=$th --setenv=RB_CODER_MODEL=$model ~/.local/bin/rb-run-coder.sh $n ~/$rd/$n.prompt$nc_arg" >/dev/null 2>&1 || refuse_launch "systemd-run failed"
+  ssh "${sopt[@]}" "$th" "systemd-run --user --unit $unit --collect -p TasksMax=infinity -p IOWeight=50 --setenv=RB_CODER_HOST=$th --setenv=RB_CODER_MODEL=$model ~/.local/bin/rb-run-coder.sh $n ~/$rd/$n.prompt$nc_arg" >/dev/null 2>&1 || refuse_launch "systemd-run failed"
   EVENT_SOURCE="rb-coder-$n" timeout 30 "$HOME/.local/bin/seat-event.sh" rb "RB-CODER $n LAUNCHED remote host=$th unit=$unit report=$th:~/$rd/$n.report.md" || true
   echo "report=$th:~/$rd/$n.report.md"; exit 0
 fi
