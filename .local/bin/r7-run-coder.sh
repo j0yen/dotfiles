@@ -9,6 +9,8 @@
 # v4 10-23 (ctl 1:34 PM fdc8): the reap runs from an EXIT trap for EVERY rc (a failed or killed coder leaked /tmp, d392/h2b class);
 #   TERM/INT/HUP exit through the same trap; the no-live-process guard stays. Versioned in dotfiles (unversioned = drift).
 #   `r7-run-coder.sh --selftest` tests the reaper, the trap on rc!=0 and on SIGTERM, and both hooks, all on mktemp roots.
+# v5 11-12 (ctl 9:27 AM ask for actual model/effort): passes --effort medium (coder policy = sonnet medium); without it the
+#   cwd-$HOME project settings.local.json effortLevel high applied to every coder.
 set -uo pipefail
 self="$(readlink -f "${BASH_SOURCE[0]}")"; HOOKS="$(cd "$(dirname "$self")/../share/r7-git-hooks" 2>/dev/null && pwd)"
 reap() { # $1 root (/tmp in prod), $2 name; prints what it removed or kept
@@ -60,5 +62,5 @@ set -a; . "$HOME/.config/environment.d/90-claude-oauth.conf"; set +a
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH" WM_SEAT=r7-coder CLAUDE_SESSION_NAME="r7-coder-$n"
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$HOOKS" R7_GIT_HOOK_LOG="$HOME/.local/state/r7-git-hooks-strip.log"
 cd "$HOME"
-claude -p --dangerously-skip-permissions --model sonnet "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err" & cp=$!
+claude -p --dangerously-skip-permissions --model sonnet --effort medium "$(cat "$pf")" > "$D/$n.out" 2> "$D/$n.err" & cp=$!
 wait $cp; rc=$?
