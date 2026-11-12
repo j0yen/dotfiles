@@ -164,7 +164,7 @@ Voided class (approvals #195, 11-01): 10 rows kept as history, no live value.
 | C096 | builder slots | 3 | redbaron,ryzen7 | ~/.config/wm-build/config.toml:102 (rb) ; :95 (r7) |  |  | rb ; r7 | KEEP |
 | C097 | cargo_jobs | 3 | redbaron,ryzen7 | ~/.config/wm-build/config.toml:105 (rb) ; :99 (r7) |  |  | rb ; r7 | KEEP |
 | C107 | box.max_concurrent | 8 | redbaron,ryzen7,orch | config.toml:221/200/135 |  |  | rb | CHECK |
-| C108 | cargo_jobs.mem_budget_gb | rb 26 ; r7 30 | redbaron,ryzen7 | config.toml:326 (rb) ; :316 (r7) |  |  | rb ; r7 | KEEP |
+| C108 | cargo_jobs.mem_budget_gb | rb 26 ; r7 absent (no Sigma gate) | redbaron,ryzen7 | config.toml:326 (rb) ; :316 (r7) |  |  | rb ; r7 | KEEP |
 | C109 | cargo_jobs.mem_headroom_gb | 4 | redbaron,ryzen7 | config.toml:329 (rb) ; :316 (r7) |  |  | rb ; r7 | KEEP |
 | C110 | cargo_jobs.max_compiling_units | 3 | redbaron,ryzen7 | config.toml:330 (rb) ; :317 (r7) |  |  | rb ; r7 | KEEP |
 | C111 | mem_caps_gb.land (rb) | 12.5 | redbaron | config.toml:335 |  |  | rb | KEEP |

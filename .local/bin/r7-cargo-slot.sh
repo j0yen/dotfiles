@@ -62,7 +62,7 @@ if own is None and not isinstance(caps.get(cls),dict): own=caps.get(cls)
 if own is None: own=11.5 if cls=="inner" else 5.0   # hardcoded fallback: config key cargo_jobs.mem_caps_gb.<prefix>.<class> not found
 own=float(own)
 if mode=="cap": print(own); sys.exit(0)
-budget=float(os.environ.get("R7_SLOT_FAKE_BUDGET") or c.get("mem_budget_gb") or 22)
+budget=float(os.environ.get("R7_SLOT_FAKE_BUDGET") or c.get("mem_budget_gb") or "inf")  # r7 11-11 A1570rev27 Joe #195: absent mem_budget_gb = no Sigma gate, as wm-build reads it; was: or 22
 fake=os.environ.get("R7_SLOT_FAKE_PARTS")
 if fake is not None: parts=json.loads(fake)
 else:
