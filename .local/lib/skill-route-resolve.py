@@ -3,7 +3,8 @@
 
 Input JSON (stdin, or `--file PATH`; never shell-interpolated):
   {task_id, skill, decision_class?, evidence_refs?, escalation?:{reason,evidence:[ref..]},
-   requested?:{model,effort}, review?:{reason,evidence:[ref..]}}
+   requested?:{model,effort}, review?:{reason,evidence:[ref..]}, permission_mode?}
+A skill whose policy has `require_permission_mode` (non-empty string) is denied unless the request's permission_mode equals it.
 Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], review?}
 Exit 0 = route resolved (or skill ungoverned); exit 2 = denied (fail closed, {ok:false,error,reasons}).
 Policy: --policy PATH | $SKILL_ROUTE_POLICY | <repo>/.config/skill-routing/policy.json | ~/.config/skill-routing/policy.json.
@@ -22,7 +23,11 @@ class Deny(Exception):
 
 def find_policy(arg):
     here = os.path.dirname(os.path.realpath(__file__))
-    for c in (arg, os.environ.get("SKILL_ROUTE_POLICY"),
+    if not arg and os.environ.get("SKILL_ROUTE_POLICY"):  # an explicitly named policy is the only candidate: no fall-through
+        if os.path.isfile(os.environ["SKILL_ROUTE_POLICY"]):
+            return os.environ["SKILL_ROUTE_POLICY"]
+        raise Deny("policy-missing: SKILL_ROUTE_POLICY names no readable file")
+    for c in (arg,
               os.path.join(here, "..", "..", ".config", "skill-routing", "policy.json"),
               os.path.join(HOME, ".config", "skill-routing", "policy.json")):
         if c and os.path.isfile(c):
@@ -89,6 +94,13 @@ def resolve(pol, req):
     if spol is None:
         return {"ok": True, "governed": False, "model_id": None, "effort": None, "route": None,
                 "reasons": ["skill %s is not governed by skill-routing policy" % skill]}
+    if "require_permission_mode" in spol:  # checked first, before route and class
+        want = spol["require_permission_mode"]
+        if not isinstance(want, str) or not want:
+            raise Deny("%s: policy require_permission_mode must be a non-empty string (fail closed)" % skill)
+        have = req.get("permission_mode")
+        if not isinstance(have, str) or have != want:
+            raise Deny("%s requires permission_mode %r (policy require_permission_mode); request carried %r" % (skill, want, have))
     tid = req.get("task_id")
     if not isinstance(tid, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$", tid):
         raise Deny("task_id is required (^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$)")
