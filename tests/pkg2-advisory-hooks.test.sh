@@ -317,6 +317,9 @@ hc f41-private_key-colon 'my_private_key: FAKEF41A9\n' FAKEF41A9
 hc f41-X-Api-Key 'X-Api-Key: FAKEF41B1\n' FAKEF41B1
 hc f41-refresh_token 'refresh_token=FAKEF41B2\n' FAKEF41B2
 hc f41-DB-PASSWORD 'DB-PASSWORD=FAKEF41B3\n' FAKEF41B3
+hc f41-suffix-token_value 'x token_value=FAKEF41C1\n' FAKEF41C1
+hc f41-suffix-passwordhash 'x passwordhash: FAKEF41C2\n' FAKEF41C2
+hc f41-suffix-keyid-json '{"keyid":"FAKEF41C3"}\n' FAKEF41C3
 # F4-2 JSON-embedded keys (quoted key, spacing variants)
 hc f42-json-password '{"password":"FAKEF42A1","u":1}\n' FAKEF42A1
 hc f42-json-token-space '{"token": "FAKEF42A2"}\n' FAKEF42A2
