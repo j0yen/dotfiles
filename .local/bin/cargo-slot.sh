@@ -2,7 +2,7 @@
 # cargo-slot.sh (rb 10-17 2:4x pm, controller ruling): product hand-coder cargo.
 # usage: cargo-slot.sh <cargo args...>   (e.g. cargo-slot.sh test --test suite_core_07)
 # 10-18 1:58 AM controller (third hard freeze 10-17 11:36 PM, compile set admitted by COUNT): ONE slot only
-#   (/mnt/data/hand/cargo.lock, -j 4; the scope carries no Memory* property, the bound above it is app.slice + systemd-oomd), granted only while MemAvailable >= 12G + the admission count (12G) = 24G;
+#   (/mnt/data/hand/cargo.lock, -j 4; the scope carries no Memory* property and carries TasksMax=infinity, the bound above it is app.slice + systemd-oomd), granted only while MemAvailable >= 12G + the admission count (12G) = 24G;
 #   below that it waits in 30 s polls up to CARGO_SLOT_MEM_MAXWAIT s (default 3600), then REFUSES (exit 76) — never runs anyway.
 #   Slot 2 (cargo2.lock) is retired until the .59 MG memory-admission gate ships.
 # -j goes BEFORE a "--" separator (after it, args belong to the test binary)
@@ -233,6 +233,7 @@ FEOF
   ok a "lock held during compile" has log '^C_LOCK held$'; ok a "lock FREE during run" has log '^R_LOCK free$'
   ok a "2 scopes" cnt log '^SR ' 2; ok a "CPUWeight=50 only on run scope" cnt log '^SR .*CPUWeight=50' 1
   ok a "acquires keep class/producer" cnt log '^ACQ .*--class land --producer cargo-slot .*--wait-minutes 60 --' 2
+  ok a "TasksMax=infinity on every scope" cnt log '^SR .*-p TasksMax=infinity' "$(grep -cE '^SR ' "$T/log")"
   ok a "phase logs" has err 'phase=compile'; ok a "phase=run log" has err 'phase=run \(lock released after compile [0-9]+s\)'
   ok a "no WARN" nohas err 'WARN phase-run'; ok a "run stdout intact" has out '^R_STDOUT_LINE$'; ok a "run stderr intact" has err '^R_STDERR_LINE$'
   echo "case (b) test -- foo --nocapture: runner args only in the run phase"
@@ -241,6 +242,7 @@ FEOF
   echo "case (c) check --all-targets: single phase"
   tc c -- check --all-targets; ok c "rc 0" rcis 0; ok c "1 acquire" cnt log '^ACQ ' 1; ok c "1 cargo" cnt log '^CARGO ' 1; ok c "no --no-run" nohas log '--no-run'
   ok c "no phase log" nohas err '^\[cargo-slot\] phase='; ok c "no CPUWeight" nohas log 'CPUWeight'; ok c "1 cargo.lock flock" cnt log '^FLOCK \S*cargo\.lock ' 1
+  ok c "TasksMax=infinity on every scope" cnt log '^SR .*-p TasksMax=infinity' "$(grep -cE '^SR ' "$T/log")"
   echo "case (d) CARGO_SLOT_SPLIT=0 with test: single phase"
   tc d CARGO_SLOT_SPLIT=0 -- test --locked -- foo; ok d "rc 0" rcis 0; ok d "1 acquire" cnt log '^ACQ ' 1; ok d "no --no-run" nohas log '--no-run'; ok d "args intact" lhas 1 'test --locked -j 4 -- foo$'; ok d "no phase log" nohas err '^\[cargo-slot\] phase='
   echo "case (e) compile fails 101: rc 101, no run acquire"
@@ -561,7 +563,7 @@ if [ "$split" = 1 ]; then # phase=compile: args before the first cargo-level "--
   echo "[cargo-slot] phase=compile" >&2; cargs=("${pre[@]}" --no-run); cpost=(); t0=$SECONDS
 else cargs=("${pre[@]}"); cpost=("${post[@]}"); fi
 # CSL begin: single-phase and compile hold the target's phase lock exclusive for the whole cargo (taken OUTSIDE cargo.lock)
-run flock -x "$PL" flock "$LK" "${WRAP[@]}" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" "$CARGO_BIN" "${cargs[@]}" "${JFLAG[@]}" "${cpost[@]}"
+run flock -x "$PL" flock "$LK" "${WRAP[@]}" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p TasksMax=infinity nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" "$CARGO_BIN" "${cargs[@]}" "${JFLAG[@]}" "${cpost[@]}"
 # CSL end
 rc=$?; [ "$rc" = 75 ] && { lg_decision refused "$(availg)" "$io"; echo "[cargo-slot] REFUSED: no memory-admission slot (acquire exit 75)" >&2; rc=76; }; echo "[cargo-slot] slot avail=$(availg)G io60=${io} rc=$rc" >&2; lg_end "$rc"
 { [ "$split" != 1 ] || [ "$rc" != 0 ]; } && exit $rc
@@ -584,7 +586,7 @@ guard "$gd" < "$gd/o" & po=$!
 guard "$gd" < "$gd/e" >&2 & pe=$!
 # $mk is touched only by the wrapper that execs cargo, i.e. after the acquire granted and the scope started
 # CSL begin: the run phase holds the phase lock SHARED around its cargo (waits for a same-target compile/check, taken before the acquire)
-run flock -s "$PL" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p CPUWeight=50 nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" bash -c 'touch "$0"; exec "$@"' "$mk" "$CARGO_BIN" "${pre[@]}" -j 4 "${post[@]}" > "$gd/o" 2> "$gd/e"
+run flock -s "$PL" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p TasksMax=infinity -p CPUWeight=50 nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" bash -c 'touch "$0"; exec "$@"' "$mk" "$CARGO_BIN" "${pre[@]}" -j 4 "${post[@]}" > "$gd/o" 2> "$gd/e"
 # CSL end
 rc=$?
 # the filters end at EOF; a daemonized grandchild holding the fifo must not hang the call, so give them 10 s then stop our own two pids
