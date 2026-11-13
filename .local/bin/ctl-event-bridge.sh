@@ -4,7 +4,8 @@
 # on disk, and re-delivers every unacked event to the ctl pane every RETRY_SEC until `ack`.
 #   run                 loop (BR_CYCLES=0 forever; SIGTERM ends it)
 #   pending             print each unacked queue/*.json, one per line
-#   ack <id>|--all      move to done/ (unknown id -> exit 1)
+#   ack <id>|--all      move to done/ (unknown id -> exit 1; an already-acked id -> exit 0, no second ack). --all acks only ids with consumer
+#                       evidence (deterministic/haiku: result + routed cache), prints the skipped ids and exits 1; pane-delivered ids need `ack <id>`
 #   status              print status.json
 #   --selftest          small fixture check in a temp HOME (stub tmux + stub waiter)
 # Pre-Fable routing (A1148): before delivery every queued id goes through ctl-event-route.sh (deterministic | haiku | fable).
@@ -62,9 +63,11 @@ deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or r
 evidence_ok() { # consumer success: results/<id>.json has an exit field and, when the route made a row, the row marker is in the canonical ledger
   local id="$1" r="$RTD/results/$1.json" c="$RTD/routed/$1.json" row
   [ -f "$r" ] && [ -n "$(jget "$r" exit)" ] || return 1
+  [ "$(jget "$r" result)" = UNKNOWN ] && return 1   # an UNKNOWN effect is never consumer success
   row="$(jget "$c" row)"
   [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id"
 }
+handled_by_router() { local rt; rt="$(cached_route "$1")"; { [ "$rt" = deterministic ] || [ "$rt" = haiku ]; } && evidence_ok "$1"; }
 held_err() { # one route.err line per held id per HELD_LOG_SEC (default 900) naming the router exit code; stamp $RTD/held-log/<id>.rc
   local s="$RTD/held-log/$1.rc" w="${HELD_LOG_SEC:-900}" m
   m="$(stat -c %Y "$s" 2>/dev/null || echo 0)"
@@ -123,7 +126,7 @@ deliver() { # one line for every pending id
   p="$(pane)"
   if ! pane_ok; then echo "$(iso) no-pane$ids" >> "$BR/deliveries.log"; PANE_OK=false; return 0; fi
   PANE_OK=true
-  "$TMUXB" send-keys -t "$p" -l "ctl-event $n pending: $summary ; read: ctl-event-bridge.sh pending ; ack: ctl-event-bridge.sh ack --all"; rc=$?
+  "$TMUXB" send-keys -t "$p" -l "ctl-event $n pending: $summary ; read: ctl-event-bridge.sh pending ; ack: ctl-event-bridge.sh ack <id>"; rc=$?
   "$TMUXB" send-keys -t "$p" Enter || rc=$?
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
@@ -183,11 +186,19 @@ ack() {
   local f id n=0 want="${1:-}"
   [ -n "$want" ] || { echo "usage: ack <id>|--all" >&2; return 2; }
   mkdir -p "$BR/queue" "$BR/done"
-  if [ "$want" = "--all" ]; then
+  if [ "$want" = "--all" ]; then   # acks only ids with consumer evidence (deterministic/haiku: result + routed cache); pane-delivered, unseen and held ids stay queued
+    local skipped=""
     sweep_held
-    for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && ackone "$f" && n=$((n+1)); done
-    echo "acked $n"; return 0
+    for f in "$BR"/queue/*.json; do
+      [ -f "$f" ] || continue
+      id="$(basename "$f" .json)"
+      if ! held "$id" && handled_by_router "$id" && ackone "$f"; then n=$((n+1)); else skipped="$skipped $id"; fi
+    done
+    echo "acked $n"
+    [ -z "$skipped" ] || { echo "skipped (no consumer evidence; ack each by id):$skipped" >&2; return 1; }
+    return 0
   fi
+  if [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] && [ ! -f "$BR/queue/$want.json" ] && [ -f "$BR/done/$want.json" ]; then echo "already acked: $want"; return 0; fi
   [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$BR/queue/$want.json" ] || { echo "unknown id: $want" >&2; return 1; }
   ackone "$BR/queue/$want.json" && echo "acked 1"
 }
@@ -210,7 +221,8 @@ selftest() {
   chmod +x "$T/tmux" "$T/ew"; echo '{"event":"inbox","detail":{}}' > "$T/ev"
   env -i HOME="$T" PATH="$PATH" BR_DIR="$T/br" EW_BIN="$T/ew" TMUX_BIN="$T/tmux" CTL_PANE=t:0.0 BR_CYCLES=2 bash "$SELF" run
   [ "$(count "$T/br/queue")" = 1 ] && grep -q 'send-keys' "$T/tmux.log"; [ $? = 0 ] || f=1
-  env -i HOME="$T" PATH="$PATH" BR_DIR="$T/br" bash "$SELF" ack --all >/dev/null
+  env -i HOME="$T" PATH="$PATH" BR_DIR="$T/br" bash "$SELF" ack --all >/dev/null 2>&1; [ "$(count "$T/br/queue")" = 1 ] || f=1   # pane-delivered: --all leaves it queued
+  env -i HOME="$T" PATH="$PATH" BR_DIR="$T/br" bash "$SELF" ack "$(basename "$(ls "$T"/br/queue/*.json | head -1)" .json)" >/dev/null
   [ "$(count "$T/br/queue")" = 0 ] && [ "$(count "$T/br/done")" = 1 ] || f=1
   rm -rf "$T"; echo "ctl-event-bridge selftest: $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"; return $f
 }
