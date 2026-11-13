@@ -10,11 +10,12 @@
 #   --account NAME = that entry of ~/.config/fleet-token/store instead (runs the aide on a different account than the fleet)
 # Never prints the token. /login inside the session still works and overrides for that session only.
 set -u
-ACCT=""; LANE=main
+ACCT=""; LANE=main; SEAT=ctl
 while :; do   # --account and --lane, either order, before the claude args
   case "${1:-}" in
     --account) ACCT="${2:?--account needs a store name}"; shift 2 ;;
     --lane) LANE="${2:?--lane needs a name}"; shift 2 ;;
+    --seat) SEAT="${2:?--seat needs ctl|ops|bld|rls}"; shift 2 ;;
     *) break ;;
   esac
 done
@@ -55,11 +56,17 @@ else
   echo "ctl-launch: fleet token (token.json says $acct, conf $(stat -c %y "$HOME/.config/environment.d/90-claude-oauth.conf" | cut -c1-16))" >&2
 fi
 [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || { echo "ctl-launch: no token found" >&2; exit 1; }
+case "$SEAT" in ctl|ops|bld|rls) ;; *) echo "ctl-launch: --seat must be ctl|ops|bld|rls (got '$SEAT')" >&2; exit 64 ;; esac
 cd "$HOME" || exit 70
 # Model and effort were validated and explicitly pinned before authentication.
 # agentns-claude is a compiled wrapper with an unverified argument contract: opt in with AIDE_USE_AGENTNS=1
 # The ONLY place the carbon executor identity is set (Joe 2026-10-23; renamed ctl 2026-11-06): hooks exempt/card/inbox/ledger key on WM_SEAT=ctl (WM_SEAT=aide still accepted); a plain `claude` on carbon is Joe's own session.
-export WM_SEAT=ctl
+# --seat ops is the renamed ctl (same executor, same WM_SEAT=ctl, same state and tmux session `aide`); bld and rls are distinct seats with their own
+# WM_SEAT, wake dir (~/.cache/<seat>) and tmux session (<seat>). Default = today's launch path.
+case "$SEAT" in
+  ctl|ops) export WM_SEAT=ctl; SEAT_TMUX=aide; SEAT_ARGS=() ;;
+  *) export WM_SEAT="$SEAT"; SEAT_TMUX="$SEAT"; SEAT_ARGS=(--seat "$SEAT"); export AIDE_WAKE_DIR="${AIDE_WAKE_DIR:-$HOME/.cache/$SEAT}" ;;
+esac
 export WM_AIDE_LANE="$LANE"
 if [ "$LANE" != main ]; then
   hook="${AIDE_INBOX_HOOK:-$HOME/.claude/hooks/aide-inbox.sh}"
@@ -89,7 +96,7 @@ wd="${AIDE_WAKE_DIR:-$HOME/.cache/aide}"
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   mkdir -p "$wd" && printf '%s\n' "$TMUX_PANE" > "$wd/pane"
 elif [ "${AIDE_TMUX:-0}" = 1 ] && command -v "${AIDE_TMUX_BIN:-tmux}" >/dev/null 2>&1; then
-  exec "${AIDE_TMUX_BIN:-tmux}" new-session -s aide "$(readlink -f "$0")" "$@"
+  exec "${AIDE_TMUX_BIN:-tmux}" new-session -s "$SEAT_TMUX" "$(readlink -f "$0")" "${SEAT_ARGS[@]}" "$@"
 fi
 if [ "${AIDE_USE_AGENTNS:-0}" = 1 ] && command -v agentns-claude >/dev/null 2>&1; then exec agentns-claude --dangerously-skip-permissions "$@"; fi
 exec ${AIDE_CLAUDE_BIN:-"$HOME/.npm-global/bin/claude"} --dangerously-skip-permissions "$@"
