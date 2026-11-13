@@ -54,7 +54,7 @@ req '{"task_id":"A1300","skill":"5whysandrhyme"}'; run --resume "$SID" -p again;
 ck "resume row flagged resume=true" '[ "$(jq -rs "last|.resume" $SKILL_ROUTING_DECISIONS)" = true ]'
 req '{"task_id":"A1300","skill":"5whysandrhyme","escalation":{"reason":"recurring_failure","evidence":'"$EVJ"'}}'; run --resume "$SID" -p again; ck "resume with a changed route refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
 # duplicate dispatch: a live worker for the same task+skill blocks a second launch
-DS=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+DS=$(cat /proc/sys/kernel/random/uuid)   # unique per run: the duplicate guard greps the global process table, so a fixed id matched the 20 s sleep of a concurrent copy of this test
 jq -nc --arg s "$DS" '{decision:"launch",task_id:"G1",skill:"wwhtbt",session:$s}' >>"$SKILL_ROUTING_DECISIONS"
 bash -c "exec -a 'claude --resume $DS' sleep 20" & dp=$!; sleep 0.3
 req '{"task_id":"G1","skill":"wwhtbt"}'; run -p x; ck "duplicate dispatch while worker live refused (73)" '[ "$(cat $T/rc)" = 73 ] && [ ! -s $SPYLOG ]'
