@@ -76,7 +76,7 @@ try:
     trace("transcript-read")
     PH = re.compile(r"separate check|not investigated|unrelated to|informational|still open|has not been done|flagged|worth a look|\blater\b", re.I)
     DONE = re.compile(r"(?<!not )(?<!n.t )\b(checked|fixed|done|resolved|found normal)\b|rowed as A\d+", re.I)
-    TOK = re.compile(r"""(~?/[\w.@-]+(?:/[\w.@-]+)+|[\w@.-]+\.(?:service|timer)\b|[\w.-]+#\d+|\b[AP]\d+\b|\bd-2026[\w-]*|"[^"\n]{3,}")""")
+    TOK = re.compile(r"""(~?/[\w.@-]+(?:/[\w.@-]+)+|[\w@.-]+\.(?:service|timer)\b|[\w.-]+#\d+|(?<![\w-])[AP]\d+\b(?!-\w)|\bd-2026[\w-]*|"[^"\n]{3,}")""")
     # Canonical OPEN ledger only (the retired open-asks.tsv is never read). A failed, non-JSON or malformed read is UNKNOWN:
     # nothing matches, nothing is suppressed, and the block text says so. Rows are scoped to the seat that owns them.
     import subprocess

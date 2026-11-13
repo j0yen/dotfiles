@@ -21,7 +21,7 @@
 #       Stop             -> blocks up to OWED_NOW_STOP_MAX (3) times per turn (counter reset at UserPromptSubmit), not once.
 #   owed-now.sh --selftest                    run the cases in a throwaway dir
 #   owed-now.sh refresh --seat S             the background producer: runs the lint (canonical ledger, live) and writes the seat's prompt-context cache
-#                                             ($OWED_NOW_STATE/<seat>.ups-cache.json, atomic rename, one refresher per seat via a lock dir)
+#                                             ($OWED_NOW_STATE/<seat>.ups-cache.json, atomic rename, one refresher per seat via an exclusive lock file)
 # Critical path (A1296 hook critical-path reduction, Joe 11-13): in canonical (asks) mode the UserPromptSubmit hook NEVER reads the ledger: it prints the seat's cached
 #   rows (from `refresh`, started detached by the hook itself when the cache is older than OWED_CACHE_REFRESH_S and by the outbox-replay timer), marked STALE past
 #   OWED_CACHE_MAX_AGE_S, or a truthful "UNKNOWN: cache absent/malformed, NOT none owed" marker once per session. The Stop hook stays a synchronous required guard
@@ -53,9 +53,13 @@ waits_plausible() {   # waits_plausible <detail> <due-epoch> <now-epoch>
   return 0
 }
 
+# THE seat alias table (rv6 F6-1): reader (hook), producer (refresh) and lint all map through it, so the cache key, the ledger query and the UNKNOWN state share one name.
+# ops = preferred name of ctl (A1296 rev181). followup-eval.py main() and aside-followup-stop.sh map ops->ctl in their own language; no other seat is aliased anywhere.
+seat_alias() { case "$1" in ops) printf ctl ;; *) printf '%s' "$1" ;; esac; }
+
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f
-  [ "$seat" != ops ] || seat=ctl   # ops = preferred name of ctl (A1296 rev181): one alias, same ledger query
+  seat="$(seat_alias "$seat")"
   if [ "$(src)" = asks ] && [ "$seat" != - ]; then
     FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tLEDGER-UNREADABLE: canonical ledger unreadable (%s); this is NOT "none owed"\n' "$FU_REASON"; return 1; }
     [ "$FU_EVAL" != "[]" ] || return 0
@@ -137,25 +141,40 @@ spawn_refresh() {
   return 0
 }
 
-# refresh <seat>: the producer. One refresher per seat (lock dir, a stale lock older than 300 s is replaced); writes the cache atomically.
+# suggest_detached <evaluator> <message> <suggestion args...>: the blocking write of an unowned-suggestion record, started detached when the store lock was busy (F6-3)
+suggest_detached() {
+  local sev="$1" msg="$2" f; shift 2
+  f="$(mktemp "$(state_dir)/sug.XXXXXX" 2>/dev/null)" || return 0; printf '%s' "$msg" >"$f"
+  if command -v setsid >/dev/null 2>&1; then setsid -f bash -c 'python3 -I "$1" "${@:3}" <"$2" >/dev/null 2>&1; rm -f "$2"' _ "$sev" "$f" "$@" </dev/null >/dev/null 2>&1
+  else ( nohup bash -c 'python3 -I "$1" "${@:3}" <"$2" >/dev/null 2>&1; rm -f "$2"' _ "$sev" "$f" "$@" </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1; fi
+  return 0
+}
+
+# lock_take <path>: exclusive create through bash noclobber (open O_EXCL), never `mkdir`: uutils coreutils mkdir (ryzen7) can report success for both of two racing
+# callers (measured, 119 of 300 races), which let two producers run at once (rv6 F6-4). A lock older than 5 min is stale and replaced (best effort).
+lock_take() {
+  local l="$1"
+  ( set -C; : >"$l" ) 2>/dev/null && return 0
+  [ -n "$(find "$l" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 1
+  rm -f "$l"; ( set -C; : >"$l" ) 2>/dev/null
+}
+
+# refresh <seat>: the producer. One refresher per seat (exclusive lock file, see lock_take); writes the cache atomically.
 refresh() {
-  local seat="$1" st lock f tmp rows rc now
-  [ "$seat" != ops ] || seat=ctl
+  local seat st lock f tmp rows rc now
+  seat="$(seat_alias "$1")"
   [[ "$seat" =~ ^[a-z0-9]+$ ]] || return 2
   [ "$(src)" = asks ] || return 0
   st="$(state_dir)"; mkdir -p "$st" 2>/dev/null || return 0
   lock="$st/$seat.refresh.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
-    rm -rf "$lock"; mkdir "$lock" 2>/dev/null || return 0
-  fi
-  trap 'rm -rf "$lock"' RETURN
+  lock_take "$lock" || return 0
   now="$(date +%s)"
   rows="$(lint "$seat" "$now")"; rc=$?
-  f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
+  f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || { rm -f "$lock"; return 0; }
   if jq -cn --arg s "$seat" --argjson ts "$now" --argjson clean "$([ "$rc" = 0 ] && echo true || echo false)" --arg rows "$rows" '{v:1,seat:$s,ts:$ts,clean:$clean,rows:$rows}' >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
   else rm -f "$tmp"; fi
+  rm -f "$lock"   # explicit, not a RETURN trap: a RETURN trap is inherited by the $(lint) subshell and released the lock early
   return 0
 }
 
@@ -167,6 +186,7 @@ hook() {
   [ -z "$aid" ] || return 0
   case "$ev" in UserPromptSubmit|Stop) ;; *) return 0 ;; esac
   seat="$(seat_of "$in")"; [ -n "$seat" ] || return 0
+  seat="$(seat_alias "$seat")"   # once, before cache_read / spawn_refresh / the UNKNOWN state key: reader and producer share one key (rv6 F6-1)
   if [ "$(src)" = asks ] && [ "$ev" = Stop ]; then   # canonical mode: a Stop blocks only on a NEW fingerprint, never on a recital of unchanged ids
     cache_read "$seat"; { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"   # keep the next prompt's cache warm, detached
     if ! fu_eval_bin >/dev/null 2>&1; then   # missing evaluator = visible owned state, once per session (no recital loop)
@@ -190,33 +210,50 @@ hook() {
         "systemctl --user is-active "*) sact="$(jq -cn --arg u "${schk##* }" '{verb:"service-state",unit:$u}')" ;;
         "bash tests/"*.test.sh) sact="$(jq -cn --arg n "$(basename "${schk##* }" .test.sh)" '{verb:"named-test",name:$n}')" ;;
       esac
-      printf '%s' "$smsg" | python3 -I "$sev" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"} >/dev/null 2>&1 || true
+      printf '%s' "$smsg" | python3 -I "$sev" suggestion --nowait --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"} >/dev/null 2>&1
+      [ $? -ne 75 ] || suggest_detached "$sev" "$smsg" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"}   # store busy: the same write, blocking, off the Stop path; nothing lost, fp dedupe keeps it once
     fi
-    local new; new="$(fu_new_obligations "$seat")"; fu_outbox_replay >/dev/null 2>&1 || true
+    # F6-3 (option a): the Stop path never waits on the fingerprint-store lock. The check + fingerprint write is tried once; when another process holds the lock the Stop
+    # passes with a marker the next prompt prints (the fingerprint stays unrecorded, so the next Stop escalates it); the outbox delivery is left to the durable replay consumer.
+    local evb nraw new="" ksid kf; evb="$(fu_eval_bin)"
+    ksid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$ksid" =~ ^[A-Za-z0-9._-]+$ ]] || ksid=nosid
+    kf="$(state_dir)/$ksid.stoplock"
+    nraw="$(python3 -I "$evb" new --nowait --seat "$seat" 2>/dev/null)"
+    if [ "$(jq -r '.locked // false' <<<"$nraw" 2>/dev/null)" = true ]; then mkdir -p "$(state_dir)" 2>/dev/null; date +%s >"$kf" 2>/dev/null
+    else rm -f "$kf" 2>/dev/null; new="$(jq -c '.new[]?' <<<"$nraw" 2>/dev/null)"; fi
+    python3 -I "$evb" replay --nowait >/dev/null 2>&1 || true
     [ -n "$new" ] || return 0
     body="$(fu_block_reason "$new")"
     if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$body"; else jq -cn --arg r "$body" '{decision:"block", reason:$r}'; fi
     return 0
   fi
-  local stale_note=""
+  local stale_note="" LOCKNOTE=""
+  ups_ctx() { jq -cn --arg r "$1${LOCKNOTE:+ $LOCKNOTE}" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'; }
   if [ "$(src)" = asks ] && [ "$ev" = UserPromptSubmit ]; then   # critical path: cached rows or a truthful UNKNOWN, never a ledger call
     cache_read "$seat"
     { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"
     local usid ust uk; usid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$usid" =~ ^[A-Za-z0-9._-]+$ ]] || usid=nosid
     ust="$(state_dir)"; mkdir -p "$ust" 2>/dev/null
+    [ ! -e "$ust/$usid.stoplock" ] || LOCKNOTE="FOLLOW-UP STOP CHECK SKIPPED: the follow-up store was locked at this session's last Stop, so new obligations were NOT checked then; this is NOT \"none owed\"."
     case "$C_STATE" in
-      absent|malformed)
-        uk="$ust/$usid.unk"; [ "$(cat "$uk" 2>/dev/null)" != "$C_STATE" ] || return 0   # once per session and state, never a recital loop
+      absent|malformed)   # F6-2: every prompt while the cache is unknown carries a marker: the full text once per session and state, a short line after (no recital loop, no silence)
+        uk="$ust/$usid.unk"
+        if [ "$(cat "$uk" 2>/dev/null)" = "$C_STATE" ]; then
+          ups_ctx "OWED NOW UNKNOWN (seat $seat): the owed-rows cache is still $C_STATE; this is NOT \"none owed\"."
+          return 0
+        fi
         echo "$C_STATE" >"$uk"
-        jq -cn --arg r "OWED NOW UNKNOWN (seat $seat): the owed-rows cache is $C_STATE, so what this seat owes is not known yet; a background refresh was started. This is NOT \"none owed\"; run ~/.claude/hooks/owed-now.sh lint --seat $seat to read the ledger now." '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+        ups_ctx "OWED NOW UNKNOWN (seat $seat): the owed-rows cache is $C_STATE, so what this seat owes is not known yet; a background refresh was started. This is NOT \"none owed\"; run ~/.claude/hooks/owed-now.sh lint --seat $seat to read the ledger now."
         return 0 ;;
       stale) stale_note=" [cache STALE: read $((C_AGE / 60)) min ago; a refresh was started]" ;;
     esac
     if [ "$C_CLEAN" = true ] && [ -z "$C_ROWS" ]; then   # the last read found nothing owed
-      [ -n "$stale_note" ] || { rm -f "$ust/$usid.unk" 2>/dev/null; return 0; }
-      uk="$ust/$usid.unk"; [ "$(cat "$uk" 2>/dev/null)" != stale ] || return 0
-      echo stale >"$uk"
-      jq -cn --arg r "OWED NOW (seat $seat): the last ledger read ($((C_AGE / 60)) min ago) found nothing owed, and the cache is STALE; a background refresh was started." '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+      if [ -z "$stale_note" ]; then
+        rm -f "$ust/$usid.unk" 2>/dev/null
+        [ -z "$LOCKNOTE" ] || ups_ctx "OWED NOW (seat $seat): the last ledger read found nothing owed."
+        return 0
+      fi
+      ups_ctx "OWED NOW (seat $seat): the last ledger read ($((C_AGE / 60)) min ago) found nothing owed, and the cache is STALE; a background refresh was started."   # every prompt while stale (F6-2)
       return 0
     fi
     rm -f "$ust/$usid.unk" 2>/dev/null
@@ -226,7 +263,7 @@ hook() {
   fi
   if [ "$(printf '%s\n' "$rows" | head -1 | cut -f1)" = LEDGER ]; then   # unreadable ledger: say so loudly as context, exit 0, never block or exit 2
     body="$(printf '%s\n' "$rows" | head -1 | cut -f4)"
-    if [ "$ev" = UserPromptSubmit ]; then jq -cn --arg r "$body (seat $seat)$stale_note" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'; else printf '%s (seat %s)\n' "$body" "$seat"; fi
+    if [ "$ev" = UserPromptSubmit ]; then ups_ctx "$body (seat $seat)$stale_note"; else printf '%s (seat %s)\n' "$body" "$seat"; fi
     return 0
   fi
   n="$(printf '%s\n' "$rows" | grep -c .)"
@@ -246,10 +283,14 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
     echo 0 >"$cf"
     if [ "$(src)" = asks ]; then   # canonical mode: a prompt recites the owed rows only when their fingerprint changed since this session's last prompt
       local ufp uf; ufp="$(printf '%s\n' "$rows" | sha256sum | cut -c1-16)"; uf="$st/$sid.upfp"
-      [ "$(cat "$uf" 2>/dev/null)" != "$ufp" ] || return 0
+      if [ "$(cat "$uf" 2>/dev/null)" = "$ufp" ]; then   # unchanged rows are not recited again, but a stale cache or a skipped Stop check still says so on every prompt (F6-2)
+        [ -z "$stale_note" ] || { ups_ctx "OWED NOW (seat $seat): $n row(s) still owed as last recited; cache STALE ($((C_AGE / 60)) min old), a background refresh was started."; return 0; }
+        [ -z "$LOCKNOTE" ] || ups_ctx "OWED NOW (seat $seat): $n row(s) still owed as last recited."
+        return 0
+      fi
       echo "$ufp" >"$uf"
     fi
-    jq -cn --arg r "$body$stale_note" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+    ups_ctx "$body$stale_note"
   fi
 }
 

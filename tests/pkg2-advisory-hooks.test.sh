@@ -409,6 +409,24 @@ hc f51-own-u-bearer 'Authorization:\\u0020Bearer\\u0020FAKEF51E3\n' FAKEF51E3
 # benign encoded text stays readable and bounded
 e="$(printf 'wm-asks: path%%2Fto%%2Ffile not found (100%% sure)\n' >"$W/err.bin"; hint)"
 ck "F5-1 benign percent text: still a readable hint" "$(case "$e" in *"path/to/file not found"*) echo ok;; esac)" ok
+# F6-5 (rv6): the six encoding classes the review named as residuals are closed with bounded, linear decoding; canaries are assembled at run time, never literals
+K65="FAKE""F65""K9z"
+hc f65-json-in-json 'wm-asks: bad reply {"e":"{\\"password\\":\\"'"$K65"'\\"}"}\n' "$K65"
+hc f65-json-in-json-token 'wm-asks: {"e":"{\\"token\\": \\"'"$K65"'\\"}"}\n' "$K65"
+hc f65-html-entity-numeric "wm-asks: auth failed token&#61;$K65\n" "$K65"
+hc f65-html-entity-hex "wm-asks: auth failed token&#x3d;$K65\n" "$K65"
+hc f65-html-entity-named "wm-asks: auth failed password&equals;$K65\n" "$K65"
+B65="$(printf 'token=%s' "$K65" | base64 -w0)"; B65b="$(printf 'password: %s' "$K65" | base64 -w0 | tr '+/' '-_')"
+hc f65-base64-name "wm-asks: payload $B65 rejected\n" "$K65" "$B65"
+hc f65-base64-urlsafe "wm-asks: payload $B65b rejected\n" "$K65" "$B65b"
+hc f65-fullwidth 'wm-asks: failed ｔｏｋｅｎ＝'"$K65"'\n' "$K65"
+hc f65-fullwidth-colon 'wm-asks: failed ｐａｓｓｗｏｒｄ：'"$K65"'\n' "$K65"
+hc f65-curl-u "wm-asks: curl -u admin:$K65 https://ledger.invalid/q failed\n" "$K65"
+hc f65-curl-user "wm-asks: curl --user=admin:$K65 https://ledger.invalid/q failed\n" "$K65"
+hc f65-plus-space "wm-asks: failed token+$K65\n" "$K65"
+hc f65-plus-space-pass "wm-asks: failed password+$K65 retry\n" "$K65"
+e="$(printf 'wm-asks: connection refused (a+b) &amp; retry, ls -u flag, ledger is busy\n' >"$W/err.bin"; hint)"
+ck "F6-5 benign text with + & -u and plain words stays readable" "$(case "$e" in *"connection refused (a+b)"*"ls -u flag"*"ledger is busy"*) echo ok;; esac)" ok
 # F5-2: cost is bound by the patterns. Same host, in-process: each adversarial 20 KB line within 2x a normal 20 KB line (min of 3 runs each)
 cat >"$W/patho.py" <<'PYEOF'
 import importlib.util, sys, time
@@ -449,7 +467,28 @@ for k, v in shapes.items():
     t, tn, r = ratio(v[:20000], normal); worst = max(worst, r)
     print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, r))
 print("WORST %.2f" % worst)
+shapes2 = {
+    "&#61;*": "&#61;" * 3900,
+    "&#x3d;*": "&#x3d;" * 3300,
+    "&amp;*": "&amp;" * 4000,
+    "&equals;*": "&equals;" * 2500,
+    "b64 run": "dG9rZW49" * 2500,
+    "b64 words": "dG9rZW49 " * 2200,
+    "fullwidth": "\uff54\uff4f\uff4b\uff45\uff4e" * 4000,
+    "nfkc-expand": "\ufdfa" * 4000,
+    "-u *": "-u a:" * 5000,
+    "--user=": "--user=" * 2800,
+    "token+*": "token+" * 3300,
+    "esc quotes": '\\"' * 6600,
+    "esc password": '\\"password\\":' * 1300,
+}
+worstb = 0
+for k, v in shapes2.items():
+    t, tn, r = ratio(v[:20000], normal); worstb = max(worstb, r)
+    print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, r))
+print("BWORST %.2f" % worstb)
 PYEOF
 python3 -I "$W/patho.py" "$R" >"$W/patho.out" 2>&1; cat "$W/patho.out" | sed 's/^/  /' >>"${PATHO_LOG:-/dev/null}"
+ck "F6-5 the decoder/encoding shapes (entities, base64 runs, full-width, -u, plus, escaped quotes) each finish within 2x the normal-line time" "$(awk '/^BWORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
 ck "F5-2 the 15 adversarial 20 KB shapes each finish within 2x the normal-line time" "$(awk '/^WORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

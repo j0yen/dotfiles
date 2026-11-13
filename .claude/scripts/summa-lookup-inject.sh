@@ -29,7 +29,7 @@
 # still used and refreshed by a detached `--refresh-index` child; the hook never waits on it. No index yet (first prompt on a host): one linear scan builds it
 # (find -type f + one awk, no per-file forks, FIFOs and other non-regular files are never opened). The lookup-ledger append is cosmetic: a non-regular ledger
 # target (FIFO, directory) is skipped, never opened.
-# Modes: no argument = the hook (stdin JSON); --refresh-index = rebuild the index (atomic rename, one builder via a lock dir).
+# Modes: no argument = the hook (stdin JSON); --refresh-index = rebuild the index (atomic rename, one builder via an exclusive lock file).
 
 set -uo pipefail
 
@@ -61,15 +61,16 @@ build_index() {
     } >"$dest"
 }
 
-# refresh_index: one builder at a time (lock dir, a stale lock older than 5 min is replaced); atomic rename into place.
+# refresh_index: one builder at a time (exclusive lock file, a stale lock older than 5 min is replaced); atomic rename into place.
 refresh_index() {
     local lock="$SUMMA_CACHE_DIR/index.lock" tmp
     mkdir -p "$SUMMA_CACHE_DIR" 2>/dev/null || return 0
-    if ! mkdir "$lock" 2>/dev/null; then
+    # exclusive create through bash noclobber (O_EXCL), not `mkdir`: uutils coreutils mkdir can succeed for both of two racing callers (rv6 F6-4)
+    if ! ( set -C; : >"$lock" ) 2>/dev/null; then
         [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
-        rm -rf "$lock"; mkdir "$lock" 2>/dev/null || return 0
+        rm -f "$lock"; ( set -C; : >"$lock" ) 2>/dev/null || return 0
     fi
-    trap 'rm -rf "$lock"' RETURN
+    trap 'rm -f "$lock"' RETURN
     tmp="$(mktemp "$IDX.XXXXXX" 2>/dev/null)" || return 0
     if build_index "$tmp" && [ -s "$tmp" ]; then mv -f "$tmp" "$IDX" 2>/dev/null || rm -f "$tmp"; else rm -f "$tmp"; fi
     return 0
