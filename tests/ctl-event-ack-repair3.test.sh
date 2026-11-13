@@ -77,6 +77,28 @@ ls "$RTD/attempts/e1" 2>/dev/null | grep -q A1; chk "R3-1 real router: the previ
 fresh; mkqa e1 $NOW A1 timeout; RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1; cp "$RTD/routed/e1.json" "$T/c1"; mkqa e1 $NOW A1 timeout
 RT_DIR="$RTD" "$RTR" route "$BRD/queue/e1.json" > "$T/replay" 2>/dev/null; [ "$(cat "$T/replay")" = "$(cat "$T/c1")" ]; chk "R3-1 real router: the same attempt replays its cache byte for byte (replay stays idempotent)" $?
 
+# legacy requeue (queue file and evidence without attempt_id, done/ entry present): never accepted on the explicit/--all paths (mutant AT5)
+for how in explicit all; do
+  fresh; echo '{"id":"e1","acked":1}' > "$BRD/done/e1.json"; echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"
+  echo '{"id":"e1","route":"deterministic","reason":"t","row":""}' > "$RTD/routed/e1.json"; echo '{"id":"e1","route":"deterministic","result":"executed","exit":0}' > "$RTD/results/e1.json"
+  o="$(runmode $how e1)"; [ "$(q)" = 1 ] && [ "$(d)" = 1 ] && [ "$(nrec)" = 0 ]; chk "R3-1 legacy requeue (no attempt_id anywhere, done/ entry present), $how: refused, evidence cannot be bound" $?
+done
+# the same legacy requeue through run + REAL router: the bridge stamps a new attempt_id, the router archives the legacy artifacts and re-routes, acked as its own delivery (mutant AT3)
+fresh; echo '{"id":"e1","acked":1}' > "$BRD/done/e1.json"; echo "{\"id\":\"e1\",\"event\":{\"event\":\"timeout\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"
+echo '{"id":"e1","kind":"timeout","route":"deterministic","reason":"old","result":"unchanged","exit":0,"row":""}' > "$RTD/routed/e1.json"; echo '{"id":"e1","route":"deterministic","result":"unchanged","exit":0}' > "$RTD/results/e1.json"
+RTBIN="$RTR" BR_CYCLES=2 br run >/dev/null 2>&1
+[ "$(d)" = 2 ] && [ "$(q)" = 0 ] && [ -e "$BRD/done/e1.r1.json" ] && grep -q '"attempt_id"' "$BRD/done/e1.r1.json" && grep -q '"attempt_id"' "$RTD/routed/e1.json" && ls "$RTD/attempts/e1" >/dev/null 2>&1; chk "R3-1 legacy requeue through run + real router: stamped with an attempt_id, legacy cache/result archived, re-routed, acked as e1.r1" $?
+# an invalid attempt_id is refused (mutant AT6)
+for bad in 'bad attempt!' "$(printf 'a%.0s' $(seq 1 70))"; do
+  fresh; mkqa e1 $NOW "$bad"; routea e1 "$bad"; gooda e1 "$bad"; o="$(br ack e1 2>&1)"; [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && printf '%s' "$o" | grep -q 'invalid-attempt\|attempt-mismatch'; chk "R3-1 invalid attempt_id (${#bad} chars) in the queue file: refused" $?
+done
+# a fable-routed cache of ANOTHER attempt does not authorise the consumer's ack of this delivery (mutant AT7)
+fresh; mkqa e1 $NOW A2; routea e1 A1 fable; o="$(br ack e1 2>&1)"; rc=$?; [ "$rc" != 0 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ]; chk "R3-1 fable cache of attempt A1 + delivery A2: explicit ack refused until the router routes A2" $?
+# a stale cache is not this delivery's route: with a failing (non-hold) router the id is unrouted and delivered fail-safe, never silently dropped (mutant AT8)
+printf '#!/bin/sh\nexit 1\n' > "$T/rt-fail"; chmod +x "$T/rt-fail"
+fresh; mkqa e1 $NOW A2; routea e1 A1 deterministic; gooda e1 A1; RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(sends)" = 1 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ]; chk "R3-1 stale deterministic cache + router failure: the delivery is unrouted, delivered to the pane once, still queued, not acked" $?
+fresh; mkqa e1 $NOW A1; routea e1 A1 deterministic; gooda e1 A1; RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(sends)" = 0 ] && [ "$(d)" = 1 ]; chk "R3-1 control: a current deterministic cache is acked and never delivered" $?
+
 # --- R3-2: crash-idempotent ack/receipt recovery (state-based: done + queue of the same attempt; and SIGKILL at every step boundary)
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1
 echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0,\"attempt_id\":\"A1\",\"acked\":$NOW}" > "$BRD/done/e1.json"
