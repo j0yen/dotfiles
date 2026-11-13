@@ -6,6 +6,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 W="$HERE/.local/bin/worker-route.py"
+WE="$HERE/tests/lib/worker-route-seamed.py"   # review 4: the route runs as a program only through the test harness (the production script has no seams); WR_SRC names the copy under test
 . "$HERE/tests/scratch.sh"; T="$(wr_scratch)" || exit 64; trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"
 fails=0
@@ -128,14 +129,14 @@ fresh(){ # new stub + state world; A1 (spec) -> B1 (waits_on A1)
 J
   export WM_ASKS_CMD="$T/bin/wm-asks" WR_HOST=h1 WR_LAUNCHERS="fake-coder" WR_LAUNCHER_DIR="$T/bin" WR_START_CMD="$T/bin/fake-start" HOLD_GATE="$T/bin/hold"
   export WR_UNIT_PROBE="$T/bin/unitprobe" WR_ASKS_TIMEOUT=120
-  export WR_TEST_SEAMS=1      # R3-3: env seams (state root, host, ask executable, ...) are honoured only with this explicit test switch
+  export WR_TEST_SEAMS=1 WR_SELF="$WE" WR_SRC="$W"      # R3-3: env seams (state root, host, ask executable, ...) are honoured only with this explicit test switch
   export PATH="$T/forbid:$PATH"
   bindit
 }
 # the owner's binding of the ask entrypoint (canonical executable path + host + store), verified on every call (review R2-6)
-bindit(){ python3 -I "$W" bind --executable "$(readlink -f "$WM_ASKS_CMD")" --store "$STUB/db.json" --by test-owner >"$T/bind.out" 2>&1; }
+bindit(){ python3 -I "$WE" bind --executable "$(readlink -f "$WM_ASKS_CMD")" --store "$STUB/db.json" --by test-owner >"$T/bind.out" 2>&1; }
 real(){ export WM_ASKS_CMD="$T/bin/wm-asks-real"; bindit; }
-run(){ python3 -I "$W" "$@" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"; }
+run(){ python3 -I "$WE" "$@" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"; }
 rcis(){ [ "$(cat "$T/rc.txt")" = "$1" ]; }
 ran(){ [ -x "$W" ] && [ -f "$T/rc.txt" ] && ! grep -q "No such file" "$T/out.txt"; }   # the unit under test existed and was invoked: a negative never passes vacuously
 calls(){ grep -c -- "$1" "$STUB/calls.log" 2>/dev/null || true; }
@@ -222,7 +223,7 @@ chk "duplicate failed terminal is processed once: one worker-failed decision, on
 
 # ---- 6. duplicate terminal
 fresh 6; run launch A1; IA="$(inv_of A1)"
-python3 -I "$W" supervise "$IA" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
+python3 -I "$WE" supervise "$IA" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
 chk "second supervise of the same invocation does not overwrite the terminal; decision duplicate-terminal; child not rerun" '[ "$(jget "$WR_STATE/terminals/$IA.json" rc)" = 0 ] && [ "$(dec duplicate-terminal)" -ge 1 ] && [ "$(grep -c . "$STUB/child.log")" = 1 ]'
 run consume; run consume; run consume
 chk "consume x3 over one terminal: A consumed once, B claimed once, B launched once" '[ "$(calls "asks claim B1 --worker wr-")" = 1 ] && [ "$(grep -c "^b1 " "$STUB/child.log")" = 1 ]'
@@ -281,7 +282,7 @@ run launch A1; IT="$(inv_of A1)"
 T_EVIL="$T/evil" python3 -I - <<PYEOF
 import json,os;p=os.environ["WR_STATE"]+"/launches/$IT.json";d=json.load(open(p));d["launcher"]=os.environ["T_EVIL"];json.dump(d,open(p,"w"))
 PYEOF
-python3 -I "$W" supervise "$IT" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
+python3 -I "$WE" supervise "$IT" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
 chk "tampered launch record (launcher outside the allowlist): supervise refuses, the planted program never runs" 'ran && [ ! -e "$T/evil.ran" ] && [ "$(jget "$WR_STATE/terminals/$IT.json" status)" = refused ] && [ "$(jget "$WR_STATE/terminals/$IT.json" rc)" = 78 ] && [ "$(dec launcher-not-allowed)" = 1 ]'
 run consume
 chk "the refusal flows to a worker-refused receipt, no successor" '[ "$(jget "$WR_STATE/consumed/$IT.json" state)" = worker-refused ] && [ "$(calls "asks claim B1")" = 0 ]'
@@ -333,7 +334,7 @@ chk "start client not executable (OSError, the client never ran) with the unit a
 fresh 14e; real; touch "$STUB/markeronly"; run launch A1; IK="$(inv_of A1 2>/dev/null || echo none)"
 chk "client error after ONLY the supervisor marker exists (no terminal, effect or provenance yet; unit already collected = absent): started evidence, not FINAL, no second worker" 'ran && rcis 0 && [ "$(lstate $IK)" = launched ] && [ ! -e "$WR_STATE/consumed/$IK.json" ] && [ "$(dec start-failed)" = 0 ]'
 fresh 14f; real; touch "$STUB/startfail"; run launch A1; IL="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
-python3 -I "$W" supervise "$IL" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
+python3 -I "$WE" supervise "$IL" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
 chk "a supervisor that starts late for an invocation already FINAL start-failed runs NO child and writes no terminal or marker (supervise-after-final)" 'ran && rcis 0 && nochild && [ ! -e "$WR_STATE/terminals/$IL.json" ] && [ ! -e "$WR_STATE/started/$IL.json" ] && [ "$(dec supervise-after-final)" = 1 ]'
 fresh 14d; real; printf "#!/bin/sh\n" > "$T/not-exec"; chmod 644 "$T/not-exec"; export WR_START_CMD="$T/not-exec"; touch "$STUB/probe-down"; run launch A1; IM="$(inv_of A1 2>/dev/null || echo none)"
 chk "start client not executable AND unit not inspectable: UNKNOWN, not FINAL" 'ran && rcis 7 && [ "$(lstate $IM)" = start-unknown ] && [ ! -e "$WR_STATE/consumed/$IM.json" ]'
@@ -412,9 +413,9 @@ fresh 18h; B0="$(sha256sum "$WR_STATE/asks-binding.json" 2>/dev/null)"; run bind
 chk "bind refuses an executable that is not the one WM_ASKS_CMD resolves to (non-zero), and a missing store (non-zero); the binding file is unchanged" 'ran && [ "$R1" != 0 ] && [ "$R2" != 0 ] && [ -n "$B0" ] && [ "$B0" = "$(sha256sum "$WR_STATE/asks-binding.json")" ]'
 
 # ---- 19. R2-7 the nonce can contain a1/b1: counts anchor on the child name, so the suite is deterministic. Run the happy path against a copy whose nonce always starts a1b1
-sed 's/os.urandom(8).hex()/"a1b1" + os.urandom(6).hex()/' "$W" > "$T/wr-nonce.py"; chmod 755 "$T/wr-nonce.py"; W0="$W"; W="$T/wr-nonce.py"
+sed 's/os.urandom(8).hex()/"a1b1" + os.urandom(6).hex()/' "$W" > "$T/wr-nonce.py"; chmod 755 "$T/wr-nonce.py"; W0="$W"; W="$T/wr-nonce.py"; export WR_SRC="$W"
 fresh 19; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; run consume; run consume
-W="$W0"
+W="$W0"; export WR_SRC="$W"
 chk "forced a1b1 nonces: invocation ids really contain a1b1 and the chain still counts exactly (A once, B once, each claimed once)" 'case "$IA" in wr-A1-4-a1b1*) true;; *) false;; esac && [ "$(grep -c "^a1 " "$STUB/child.log")" = 1 ] && [ "$(grep -c "^b1 " "$STUB/child.log")" = 1 ] && [ "$(calls "asks claim B1 --worker wr-")" = 1 ] && [ "$(calls "asks claim A1 --worker wr-")" = 1 ]'
 
 # ---- 20. R2-8 only the claim holder's OWN start-failed invocation of THIS ask may be adopted
@@ -501,7 +502,7 @@ import importlib.util,sys
 sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
 print(m.BINDING)" "$W")" = /x/state/asks-binding.json ]'
 fresh 23a; mkdir -p "$T/xreal"; sed 's|^open(S + "/calls.log", "a")|open(S + "/argv0.log", "a").write(sys.argv[0] + "\\n"); open(S + "/calls.log", "a")|' "$T/bin/wm-asks-real" > "$T/xreal/wm-asks-x"; chmod 755 "$T/xreal/wm-asks-x"; ln -s "$T/xreal/wm-asks-x" "$T/xlink"
-export WM_ASKS_CMD="$T/xlink"; python3 -I "$W" bind --executable "$(readlink -f "$T/xlink")" --store "$STUB/db.json" --by test-owner >"$T/bind.out" 2>&1; run launch A1
+export WM_ASKS_CMD="$T/xlink"; python3 -I "$WE" bind --executable "$(readlink -f "$T/xlink")" --store "$STUB/db.json" --by test-owner >"$T/bind.out" 2>&1; run launch A1
 chk "R3-3c: calls exec the verified realpath, not the PATH/symlink name that was checked (argv[0] of every ask call is the bound realpath)" 'ran && rcis 0 && [ "$(sort -u "$STUB/argv0.log")" = "$(readlink -f "$T/xlink")" ] && [ "$(wc -l < "$STUB/argv0.log")" -ge 3 ]'
 fresh 23b; chmod 666 "$STUB/db.json"; run bind --executable "$(readlink -f "$WM_ASKS_CMD")" --store "$STUB/db.json" --by o; R1=$(cat "$T/rc.txt"); chmod 644 "$STUB/db.json"
 cp "$T/bin/wm-asks" "$T/bin/asks-gw"; chmod 777 "$T/bin/asks-gw"; export WM_ASKS_CMD="$T/bin/asks-gw"; run bind --executable "$T/bin/asks-gw" --store "$STUB/db.json" --by o; R2=$(cat "$T/rc.txt")
@@ -531,7 +532,7 @@ chk "R3-4b: unit not inspectable at adoption time: UNKNOWN, refused 7, no child,
 rm "$STUB/probe-down"; run launch A1
 chk "R3-4c: once the unit is inspected absent again, adoption proceeds (exit 0, one child, one claim call)" 'ran && rcis 0 && [ "$(nchild)" = 1 ] && [ "$(calls "asks claim A1")" = 1 ]'
 fresh 24d; real; touch "$STUB/startfail"; run launch A1; IL="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
-python3 -I - "$WR_STATE" "$IL" "$W" "$STUB" "$T/bin/fake-start" <<'P'
+python3 -I - "$WR_STATE" "$IL" "$WE" "$STUB" "$T/bin/fake-start" <<'P'
 import fcntl, os, subprocess, sys, time, json
 st, inv, w, stub, _ = sys.argv[1:6]
 lk = open(st + "/locks/start-" + inv + ".lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)     # a finish_start decision is in progress for this invocation
@@ -542,7 +543,7 @@ open(os.environ["T"] + "/r3-4d.txt", "w").write("blocked=%s rc=%s child=%s marke
 P
 chk "R3-4d: a supervisor and a start-failed finalization are serialized on one per-invocation lock: the supervisor waits for the in-progress decision (no marker while it is held), then sees the FINAL receipt and runs no child" 'grep -q "blocked=True rc=0 child=False marker=False" "$T/r3-4d.txt"'
 fresh 24e; real; touch "$STUB/gone" "$STUB/probe-down"; run launch A1; IG="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/gone" "$STUB/probe-down"
-python3 -I - "$WR_STATE" "$IG" "$W" <<'P'
+python3 -I - "$WR_STATE" "$IG" "$WE" <<'P'
 import fcntl, os, subprocess, sys, time, json
 st, inv, w = sys.argv[1:4]
 lk = open(st + "/locks/start-" + inv + ".lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)     # a supervisor is between its start marker and its child

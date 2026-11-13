@@ -1,0 +1,18 @@
+{"r": {"adopt_ok": [0, 4], "after": [5, ["claim-conflict"]], "children": 1, "claims": 1, "rcpt": ["consumed", "start-failed"]}, "row": "p01_chain4"}
+{"r": {"children": 1, "claims": 1, "d": ["claim-conflict"], "rc": 5}, "row": "p02_after_consumed"}
+{"r": {"children": 1, "d": ["claim-conflict"], "rc": 5}, "row": "p03_after_failed"}
+{"r": {"children": 0, "d": ["claim-conflict"], "late": true, "rc": 5}, "row": "p04_late_terminal"}
+{"r": {"children": 1, "claims": 1, "clear": [0, ["adopt-failed-start-claim", "launched"]], "down": [7, ["adopt-blocked"]], "present": [5, ["adopt-blocked"]]}, "row": "p05_unit_appears_before_adoption"}
+{"r": {"children": 0, "launch": [1, ["start-failed"]], "rcpt": {"INV": "start-failed"}, "started_marker": false, "supervise": [0, ["supervise-after-final"], true]}, "row": "p06_supervise_vs_finish_race"}
+{"r": {"children": 1, "claims": 1, "consume": ["consumed"], "d": ["start-reconciled"], "rc": 0, "rcpt": ["consumed"], "relaunch": [5, ["claim-conflict"]]}, "row": "p07_partial_start"}
+{"r": {"children": 0, "claims": 1, "d": ["start-reconciled"], "rc": 0, "relaunch": [6, ["refused"]]}, "row": "p07b_queued_unit"}
+{"r": {"children": 0, "first": [7, ["start-unknown"]], "relaunch_blocked": [6, ["refused"]], "resume_down": [7, ["start-unknown", "resumed"]], "resume_up": [1, ["start-failed", "resumed"], "start-failed"], "retry": [1, ["adopt-failed-start-claim", "start-failed"]]}, "row": "p07c_start_unknown_blocks"}
+{"r": {"down": {"again": [6, ["refused"]], "children": 1, "claims": 1, "first": [4, ["claim-unknown"]], "relaunch": [4, ["canonical-unavailable"]], "resume_down": [4, ["resume-pending"]], "resume_up": [0, ["claim-resumed", "launched"]]}, "up": [0, ["launched"], 1, 1]}, "row": "p08_after_commit_rc"}
+{"r": {"children": 1, "d": ["claim-failed"], "rc": 5, "retry": [0, ["launched"]]}, "row": "p08c_claim_refused"}
+{"r": {"children": 1, "claims": 1, "first": [1, ["start-failed"]], "rcpt": ["consumed", "start-failed"], "retry": [0, ["adopt-failed-start-claim", "launched"]]}, "row": "p09_positive_retry"}
+{"r": {"noclaim": [4, ["canonical-shape-unverified", "canonical-unavailable"], 0, 0], "nowaits": [0, ["consumed", "waits-on-unverified", "waits-on-unverified"], []], "waits_ok": [0, ["launched"], ["a1", "b1"]]}, "row": "p10_missing_keys"}
+{"r": {"claimant_missing": [5, ["claim-conflict"], 0], "open_adopter": [6, ["refused"], 0], "other_host": [5, ["claim-conflict"], 0], "planted_effect": [5, ["claim-conflict"], 0], "planted_marker": [5, ["claim-conflict"], 0], "planted_prov": [5, ["claim-conflict"], 0]}, "row": "p11_chain_member_hosts_and_shape"}
+{"r": {"foreign": [5, ["claim-conflict"], 0, 0], "resume_other_host": [3, ["resume-refused"], 0]}, "row": "p12_foreign_claim_and_resume_host"}
+{"r": {"bind_name_not_path": 3, "bind_symlink_resolves": [0, true], "decoy_path": [77, false, 0], "env_binding_override_ignored": [77, 0], "hash": [77, 0], "missing": [77, ["asks-unbound"], 0], "other_exe_same_content": [77, 0], "other_host": [77, 0], "store_replaced": [77, 0], "worldwritable_exe": [77, 0], "worldwritable_store": [77, 0]}, "row": "p13_binding"}
+{"r": {"children": 0, "d": ["claim-conflict"], "rc": 5}, "row": "p14_adopt_readback_flip"}
+{"r": {"bind_decoy": 0, "decoy_ran": false, "launch": [0, ["launched"]]}, "row": "p15_switch_settable_by_caller"}

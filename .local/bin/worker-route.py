@@ -16,10 +16,12 @@ launchers; adds no task store, scheduler, coordinator or signing authority. rb a
                ask whose waits_on tokens are all consumed asks and that carries its own worker-route spec is launched the same way.
   reconcile  = the owner's readback of an UNKNOWN effect: `present` (END) or `absent` (ABSENT); never inferred.
 State: $WR_STATE (default ~/.local/state/worker-route): launches/ terminals/ consumed/ effects/ prov/ started/ decisions.jsonl locks/ asks-binding.json.
-Env seams (honoured ONLY with WR_TEST_SEAMS=1; without it the state root, host, ask executable, launcher dir, hold gate and start client are fixed: state under the
-passwd home (never $HOME), host = the machine's hostname, the ask executable = the BOUND one): WM_ASKS_CMD (one executable) HOLD_GATE WR_HOST WR_STATE WR_LAUNCHERS
-WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>; default systemd-run --user) WR_UNIT_PROBE (<unit> -> `LoadState=`/`ActiveState=` lines; default systemctl --user
-show) WR_ASKS_TIMEOUT (seconds, default 120). There is no env override for the binding file: it is always <state>/asks-binding.json.
+Test seams (review 4): the production script has no seams. Run as a program (`__main__`: the shebang, `python3 worker-route.py`, the systemd unit that supervises) the state root is under
+the passwd home (never $HOME), the host is the machine's hostname, the ask executable is the BOUND one, the launcher dir, allowlist and hold gate are fixed, the start client is systemd-run
+and the unit probe is `systemctl --user show`: no env var, argument or file changes any of it, WR_TEST_SEAMS included. The seams exist only when this file is IMPORTED as a module (not
+`__main__`) AND WR_TEST_SEAMS=1, and the one importer is the test-only entrypoint tests/lib/worker-route-seamed.py: WM_ASKS_CMD (one executable) HOLD_GATE WR_HOST WR_STATE WR_LAUNCHERS
+WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>) WR_UNIT_PROBE (<unit> -> `LoadState=`/`ActiveState=` lines) WR_ASKS_TIMEOUT (seconds, default 120) WR_SELF (the supervisor program
+the start client is given). There is no override for the binding file: it is always <state>/asks-binding.json.
 Exit: 0 ok | 3 resume/reconcile refused | 4 canonical ask store unavailable or claim UNKNOWN (retryable, no cap) | 5 ask claimed by another worker or claim
 not held | 6 invocation still open for this ask | 7 start UNKNOWN (blocks) | 64 usage | 76 hold gate closed | 77 ask entrypoint not bound | 78 no/invalid spec |
 79 wrong host | 1 start failed (no start PROVEN).
@@ -39,7 +41,8 @@ adopter after it; a claim is adopted only while EVERY invocation that ever carri
 effect ledger, provenance, late terminal) AND every one of their units is re-inspected absent at adoption time (an absence read once is never reused: present -> refused 5,
 not inspectable -> refused 7 UNKNOWN). After an adopter ran, failed or left a late terminal the claim stays with the owner (claim-conflict 5). finish_start and the
 supervisor's marker are serialized on one per-invocation lock, so a supervisor either records its marker before the FINAL decision (-> started) or sees the FINAL receipt
-and runs no child. supervise re-checks the launcher allowlist at execution time
+and runs no child. At fixture level a unit admitted late therefore cannot run a child after a FINAL start-failed receipt (decision supervise-after-final). NOT PROVEN, installed behaviour only: real
+systemd admission timing and units queued by an older supervisor build. supervise re-checks the launcher allowlist at execution time
 (launcher-not-allowed -> terminal rc 78 refused, nothing executed) and refuses to start a child for an invocation that already has a FINAL start-failed receipt.
 Binding: `bind` records the resolved executable path + sha256, the host and the store file identity (owner attestation; the executable and the store must be regular files owned by
 this user or root and not world-writable and not writable by a foreign group); launch, consume and resume verify all four on every call and refuse (77) on any mismatch; no binding = refused. Every ask call
@@ -47,9 +50,12 @@ then executes the VERIFIED REALPATH (sha256 re-read immediately before the exec)
 executable opens (the supplied source gives decisions.sqlite via paths.p only) and the sha-check-to-exec window is not zero.
 Ask API binding (source: S/in/api/claim-api-source.json, deployed carbon asks.py/cli.py): query = cli.py:289-296 (`asks query --json [--ids csv] [--status s]`; a row carries ask_id status
 owner due rev what, cli.py:296); claim = cli.py:280-282 + asks.py:211-232 (`--worker --by --expect-rev`; Conflict rc 66 cli.py:302-304, Refused rc 2 cli.py:253-257, committed-but-
-unpublished rc 75 cli.py:250-252); update = cli.py:278-279 (`--append`). NOT in the supplied source: the row keys `claim` and `waits_on` of `asks query --json` and the `--status`
-value domain. So a row without ask_id/rev/status/claim makes the whole read UNKNOWN (canonical-shape-unverified, nothing claimed, nothing started) and a row without `waits_on`
-never starts a successor (waits-on-unverified).
+unpublished rc 75 cli.py:250-252); update = cli.py:278-279 (`--append`). Row shape: the supplied read-only carbon snapshot in/wm-asks-open-rb-r7.json (2026-11-13 2:24 AM, 253 rows) shows
+every row with ask_id check claim due key owner ready rev row_id status waits_on what (waits_on a list; claim null or a holder-token string), so the `claim` and `waits_on` keys are checked
+against that snapshot, not assumed. NOT proven, a TRUE LIMIT of the supplied inputs (the asks.query source is not supplied): the `--status` value domain; `--status all` is used to read a
+terminal's ask, and if `all` is refused the consume path reads canonical-unavailable (exit 4) forever, loud and fail-closed, with no wrong action. A row without ask_id/rev/status/claim still
+makes the whole read UNKNOWN (canonical-shape-unverified, nothing claimed, nothing started) and a row without `waits_on` never starts a successor (waits-on-unverified): both kept as guards
+against an API change. The real claim tokens in that snapshot look like `host:carbon:unit:<unit>@<ts>`, not a route invocation id: such a claim is never adopted (token-not-an-invocation, exit 5).
 Provenance: model/effort/account are what the launcher recorded; absent = "unrecorded". This file reads no credential and infers no account.
 """
 import fcntl
@@ -67,7 +73,7 @@ import sys
 import tempfile
 import time
 
-SEAMS = os.environ.get("WR_TEST_SEAMS") == "1"          # the ONLY switch that lets env name the state root, host, ask executable, launchers or start client (tests)
+SEAMS = __name__ != "__main__" and os.environ.get("WR_TEST_SEAMS") == "1"     # seams: an IMPORTED module plus the switch (tests/lib/worker-route-seamed.py); the program run as `__main__` never has them
 HOME = pwd.getpwuid(os.getuid()).pw_dir                  # the passwd home: $HOME is not consulted
 
 
@@ -81,7 +87,7 @@ ASKS_CMD = shlex.split(_seam("WM_ASKS_CMD") or "wm-asks") if SEAMS else None    
 HOLD_GATE = _seam("HOLD_GATE") or os.path.join(HOME, ".local/bin/hold-gate.sh")
 LAUNCHERS = (_seam("WR_LAUNCHERS") or "rb-coder-launch.sh r7-run-coder.sh rb-run-coder.sh").replace(":", " ").split()
 LAUNCHER_DIR = _seam("WR_LAUNCHER_DIR") or os.path.join(HOME, ".local/bin")
-SELF = os.path.realpath(__file__)
+SELF = _seam("WR_SELF") or os.path.realpath(__file__)     # the supervisor program the start client runs (a seam only for the test entrypoint)
 SPEC_RE = re.compile(r"worker-route:\s*([^\n]*)")
 INV_RE = re.compile(r"^wr-[A-Za-z0-9]+-[0-9]+-[0-9a-f]{8}$")
 ASK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
@@ -433,7 +439,7 @@ def begin_start(rec):
     inv, ask = rec["invocation"], rec["ask"]
     desc = ("PREMISE worker-route %s ask %s host %s: one task-bound worker; EXPIRY none: no runtime/turn/retry cap, "
             "ends when the worker exits and its terminal is consumed" % (inv, ask, HOST))
-    sc = os.environ.get("WR_START_CMD")
+    sc = _seam("WR_START_CMD")
     if sc:
         argv = shlex.split(sc) + [rec["unit"], desc, SELF, "supervise", inv]
     else:

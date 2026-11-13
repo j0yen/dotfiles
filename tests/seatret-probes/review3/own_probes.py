@@ -10,6 +10,7 @@ import json, os, shutil, subprocess, sys, hashlib
 HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.realpath(HERE + "/../../..")
 R = os.environ["WR_PROBE_BASE"]; os.makedirs(R + "/tmp", exist_ok=True); os.makedirs(R + "/probes", exist_ok=True)
 W = sys.argv[1] if len(sys.argv) > 1 else REPO + "/.local/bin/worker-route.py"
+ENTRY = os.path.join(REPO, "tests", "lib", "worker-route-seamed.py")     # review 4: programs run through the test harness (no seams in the production script)
 ONLY = set(sys.argv[2:])
 BASE = R + "/tmp/own-worlds"
 TAG = os.environ.get("PROBE_TAG", "head")
@@ -71,14 +72,14 @@ class World:
               "B1": {"ask_id": "B1", "rev": 2, "owner": "r7", "status": "open", "claim": None, "waits_on": ["A1"],
                      "what": "t. worker-route: host=h1 launcher=fake-coder arg=b1"}}
         json.dump(db, open(w + "/stub/db.json", "w"))
-        self.env = dict(WR_TEST_SEAMS="1", PATH="/usr/bin:/bin", HOME=w + "/home", STUB=w + "/stub", WR_STATE=w + "/state", WM_ASKS_CMD=w + "/bin/wm-asks", WR_HOST="h1",
+        self.env = dict(WR_TEST_SEAMS="1", WR_SELF=ENTRY, WR_SRC=W, PATH="/usr/bin:/bin", HOME=w + "/home", STUB=w + "/stub", WR_STATE=w + "/state", WM_ASKS_CMD=w + "/bin/wm-asks", WR_HOST="h1",
                         WR_LAUNCHERS="fake-coder", WR_LAUNCHER_DIR=w + "/bin", WR_START_CMD=w + "/bin/fake-start", HOLD_GATE=w + "/bin/hold",
                         WR_UNIT_PROBE=w + "/bin/unitprobe", WR_ASKS_TIMEOUT="3", TMPDIR=R + "/tmp")
         self.flag_names = []
 
     def run(self, *args, env=None):
         e = dict(self.env); e.update(env or {})
-        p = subprocess.run(["python3", "-I", W] + list(args), capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=120)
+        p = subprocess.run(["python3", "-I", ENTRY] + list(args), capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=120)
         return p.returncode, [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")], p.stderr
 
     def bind(self, env=None):
