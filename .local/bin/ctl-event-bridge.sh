@@ -6,6 +6,8 @@
 #   pending             print each unacked queue/*.json, one per line
 #   ack <id>|--all      move to done/ (unknown id -> exit 1; an already-acked id with no queued file -> exit 0, no second ack; a re-queued id is a new delivery: own evidence, own done/<id>.rN.json + receipt). --all acks only ids with consumer
 #                       evidence (deterministic/haiku: result + routed cache), prints the skipped ids and exits 1; pane-delivered ids need `ack <id>`
+#   resolve <id> --disposition <class> --reason <text> [--by <who>]   operator exit for a failure-held id (typed failure, UNKNOWN, held-unreadable): writes dispositions/<id>.json (success=false) and moves the
+#                       queue file to resolved/ (kept); no done/ entry, no handled receipt, never replayed; refuses an id ack would accept
 #   status              print status.json
 #   --selftest          small fixture check in a temp HOME (stub tmux + stub waiter)
 # Pre-Fable routing (A1148): before delivery every queued id goes through ctl-event-route.sh (deterministic | haiku | fable).
@@ -13,6 +15,9 @@
 # mechanical result and the routed cache ($RT_DIR/routed/<id>.json). An id with a cache but no ack is acked from the cache
 # (no second model call). A missing router or a router failure leaves the id queued and delivered (never dropped).
 # BR_ROUTE=0 disables routing (the legacy deliver-everything path).
+# Attempt identity (A1296 R3-1): every queue file instance (a delivery) carries `attempt_id`; the router copies it into its cache/result/stage files and archives an earlier attempt's artifacts, the bridge
+# accepts evidence only when both files carry the delivery's attempt_id (file mtimes are not consulted). Ack/resolve recovery after a crash is keyed on the same id (done/<id>*.json, dispositions/<id>*.json).
+# Test seams (default unset): BR_CRASH_AT=<pre|tmp|done|rm|clear|receipt|disp>, BR_PAUSE_AFTER_SETTLE=<sec>. Ship the bridge and the router together (an attempt-unaware router leaves every cache non-current).
 # Env: BR_DIR EW_BIN TMUX_BIN CTL_PANE RETRY_SEC WAIT_MAX_SEC BR_CYCLES BR_ROUTE RT_BIN RT_DIR
 set -u
 export LC_ALL=C
@@ -296,6 +301,7 @@ ack() {
   if [ "$want" = "--all" ]; then   # acks only ids with consumer evidence (deterministic/haiku: result + routed cache); pane-delivered, unseen and held ids stay queued
     local skipped=""
     ( flock 9; settle_leftovers ) 9>"$BR/.ack.lock"
+    [ -z "${BR_PAUSE_AFTER_SETTLE:-}" ] || sleep "$BR_PAUSE_AFTER_SETTLE"   # test seam (default unset): widens the window between the settle pass and the per-id ack so a test can leave a crash leftover inside it
     sweep_held
     for f in "$BR"/queue/*.json; do
       [ -f "$f" ] || continue

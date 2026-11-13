@@ -14,11 +14,11 @@ printf '#!/bin/sh\necho "$@" >> %s/tmux.log\n[ "$1" = list-panes ] && echo claud
 printf '#!/bin/sh\necho "{\\"event\\":\\"timeout\\"}"\n' > "$T/ew"
 printf '#!/bin/sh\necho "$@" >> %s/router.log\nexit 75\n' "$T" > "$T/rt-stub"
 printf '#!/bin/sh\ncat %s/asks-view.out 2>/dev/null\nexit 0\n' "$T" > "$T/asks-view"
-chmod +x "$T/bin/tmux" "$T/ew" "$T/rt-stub" "$T/asks-view"
+printf '#!/bin/sh\necho "$@" >> %s/feb.log\nexit 0\n' "$T" > "$T/feb"; chmod +x "$T/feb" "$T/bin/tmux" "$T/ew" "$T/rt-stub" "$T/asks-view"
 BRD="$T/br"; RTD="$T/rt"
 case "$BRD" in "$T"/*) ;; *) echo "queue root outside temp dir"; exit 1;; esac
 case "$RTD" in "$T"/*) ;; *) echo "route root outside temp dir"; exit 1;; esac
-br() { env -i HOME="$T/home" PATH="$T/bin:$PATH" BR_DIR="$BRD" RT_DIR="$RTD" EW_BIN="$T/ew" TMUX_BIN="$T/bin/tmux" RT_BIN="${RTBIN:-$T/rt-stub}" ASKS_VIEW_BIN="$T/asks-view" CTL_PANE=t:0.0 RETRY_SEC=600 WAIT_MAX_SEC=1 BR_FABLE=0 BR_CYCLES="${BR_CYCLES:-1}" BR_CRASH_AT="${BR_CRASH_AT:-}" bash "$B" "$@"; }
+br() { env -i HOME="$T/home" PATH="$T/bin:$PATH" BR_DIR="$BRD" RT_DIR="$RTD" EW_BIN="$T/ew" TMUX_BIN="$T/bin/tmux" RT_BIN="${RTBIN:-$T/rt-stub}" ASKS_VIEW_BIN="$T/asks-view" CTL_PANE=t:0.0 RETRY_SEC=600 WAIT_MAX_SEC=1 BR_FABLE="${BRF:-0}" BR_FABLE_BIN="$T/feb" BR_PAUSE_AFTER_SETTLE="${BR_PAUSE_AFTER_SETTLE:-}" BR_CYCLES="${BR_CYCLES:-1}" BR_CRASH_AT="${BR_CRASH_AT:-}" bash "$B" "$@"; }
 fresh() { rm -rf "$BRD" "$RTD"; mkdir -p "$BRD/queue" "$BRD/done" "$RTD/routed" "$RTD/results"; : > "$T/tmux.log"; : > "$T/router.log"; : > "$T/asks-view.out"; }
 NOW=$(date +%s)
 # queue file instance: id, created, attempt_id [, event kind]
@@ -122,6 +122,16 @@ done
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1; BR_CRASH_AT=done BR_CYCLES=1 br run >/dev/null 2>&1; crc=$?
 [ "$crc" != 0 ] && [ "$(d)" = 1 ] && [ "$(q)" = 1 ]; chk "R3-2 crash seam inside run (step done): run is killed with done + queue present" $?
 BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && receipt e1 && [ "$(nrec)" = 1 ]; chk "R3-2 run restart after that crash completes the original ack (no second done)" $?
+
+# a stale (other-attempt) fable cache is not escalated again while the router is failing (mutant AT9)
+fresh; : > "$T/feb.log"; mkqa e1 $NOW A2; routea e1 A1 fable; BRF=1 RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; sleep 1; [ ! -s "$T/feb.log" ]; chk "R3-1 stale fable cache + failing router: no Fable escalation is spawned for the old attempt's verdict" $?
+fresh; : > "$T/feb.log"; mkqa e1 $NOW A1; routea e1 A1 fable; BRF=1 RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; sleep 1; [ -s "$T/feb.log" ]; chk "R3-1 control: a current fable cache does escalate once" $?
+# a crash leftover (done + queue, same attempt) that appears AFTER the --all settle pass is completed inside ackone_locked, not acked twice (mutants CR2, CR6)
+fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1
+( BR_PAUSE_AFTER_SETTLE=4 br ack --all >/dev/null 2>&1 ) & sleep 1
+echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0,\"attempt_id\":\"A1\",\"acked\":$NOW}" > "$BRD/done/e1.json"
+wait
+[ "$(d)" = 1 ] && [ ! -e "$BRD/done/e1.r1.json" ] && [ "$(q)" = 0 ] && receipt e1 && [ "$(nrec)" = 1 ]; chk "R3-2 leftover appearing after the settle pass (concurrent process crashed): ack --all completes the original ack, original receipt e1, no e1.r1" $?
 
 # --- R3-3: operator disposition for failure-held ids
 mk_fail() { fresh; mkqa e1 $NOW A1; routea e1 A1 haiku; rraw e1 "{\"id\":\"e1\",\"route\":\"haiku\",\"result\":\"$1\",\"exit\":$2,\"attempt_id\":\"A1\"}"; }
