@@ -62,6 +62,8 @@ RTBIN="$T/rv/ctl-event-route.sh" br ack e1 >/dev/null 2>&1; [ "$(d)" = 1 ] && re
 fresh; mkqa e1 $NOW A1 timeout; br ack e1 >/dev/null 2>&1; [ "$(d)" = 1 ] && receipt e1; chk "F1 control: a stub router outside the handshake does not pause acks" $?
 grep -v '^# ctl-event-proto:' "$RTR" > "$T/rv/ctl-event-route.sh"
 fresh; mkqa e1 $NOW A1 timeout; BRX="BR_ROUTE=0" RTBIN="$T/rv/ctl-event-route.sh" br ack e1 >/dev/null 2>&1; [ "$(d)" = 1 ] && receipt e1; chk "F1 control: BR_ROUTE=0 (routing disabled, router never consulted) does not pause acks" $?
+chmod -x "$T/rv/ctl-event-route.sh"; fresh; mkqa e1 $NOW A1 timeout; RTBIN="$T/rv/ctl-event-route.sh" br ack e1 >/dev/null 2>&1; [ "$(d)" = 1 ] && receipt e1; chk "F1 control: a non-executable router is not routing (route_pending returns before the handshake), so it does not pause acks either" $?
+chmod +x "$T/rv/ctl-event-route.sh"
 fresh; mkqa e1 $NOW A1 timeout; RTBIN="$T/rv/ctl-event-route.sh" br ack e1 >/dev/null 2>&1
 cp "$RTR" "$T/rv/ctl-event-route.sh"; br ack e1 >/dev/null 2>&1; RTBIN="$T/rv/ctl-event-route.sh" br ack e1 >/dev/null 2>&1; [ "$(d)" = 1 ]; chk "F1 control: after the router is fixed the held id is acked normally" $?
 
@@ -93,5 +95,14 @@ toctou explicit; h=$?
 [ $h = 0 ]; chk "F2 harness (explicit): the gated asks-view window opened" $?
 A2=$(qatt e1)
 [ "$(d)" = 1 ] && receipt e1 && [ "$(nrec)" = 1 ] && [ "$(q)" = 1 ] && [ -n "$A2" ] && [ "$A2" != A1 ] && [ "$(cat "$T/p1.rc" 2>/dev/null)" = 0 ]; chk "F2 explicit ack <id>: evidence check and ack share one lock hold (A acked, the racing requeue waits and then queues B unacked)" $?
+
+# F2: the queue file replaced in the window by a hand copy-back with NO attempt_id (legacy payload) is not the delivery the evidence was judged for either
+fresh; echo "event:e1" > "$T/asks-view.out"; mkqa e1 $NOW A1; routea e1 A1 deterministic R1; gooda e1 A1
+( AVBIN="$T/asks-gated" runmode all e1 > "$T/p1.out"; echo $? > "$T/p1.rc" ) &
+pid=$!; i=0; while [ ! -e "$T/av.entered" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+AVBIN="$T/asks-view" br ack e1 >/dev/null 2>&1
+echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$((NOW+9)),\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"
+: > "$T/av.release"; wait $pid
+[ "$(d)" = 1 ] && [ ! -e "$BRD/done/e1.r1.json" ] && [ "$(nrec)" = 1 ] && [ "$(q)" = 1 ] && [ "$(cat "$T/p1.rc")" = 1 ]; chk "F2 ack --all: a queue file with no attempt_id swapped in during the window (judged for A1) is skipped, not acked" $?
 
 echo "ctl-event-ack-repair5 test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"; exit $f
