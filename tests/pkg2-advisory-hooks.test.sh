@@ -303,4 +303,68 @@ printf '\n   \nwm-asks: database is locked\nsecond line\n' >"$W/err.bin"
 ck "H1 leading blank lines skipped: first NON-EMPTY line is the hint" "$(hint)" "ledger query exit 2: wm-asks: database is locked"
 python3 -c 'print("wm-asks: " + "word " * 200)' >"$W/err.bin"
 e="$(hint)"; ck "H1 long benign line: truncated to 160 chars after the prefix" "$([ ${#e} -eq 181 ] && echo ok)" ok
+# --- rv4 repair 4 (F4-1..F4-6): the hint redacts every class the installed helper does (no leading \b), JSON keys, credential-like URL query names by pattern, every Cookie pair, and pins redact-then-truncate
+# F4-1 prefixed / compound credential names (installed helper redacted all of these)
+hc f41-db_password 'x db_password=FAKEF41A1\n' FAKEF41A1
+hc f41-GITHUB_TOKEN 'x GITHUB_TOKEN=FAKEF41A2\n' FAKEF41A2
+hc f41-x_api_key 'x x_api_key=FAKEF41A3\n' FAKEF41A3
+hc f41-apikey-colon 'x apikey: FAKEF41A4\n' FAKEF41A4
+hc f41-authToken 'x authToken=FAKEF41A5\n' FAKEF41A5
+hc f41-secret_key 'x secret_key=FAKEF41A6\n' FAKEF41A6
+hc f41-AWS_SECRET_ACCESS_KEY 'AWS_SECRET_ACCESS_KEY=FAKEF41A7\n' FAKEF41A7
+hc f41-client_secret 'client_secret=FAKEF41A8\n' FAKEF41A8
+hc f41-private_key-colon 'my_private_key: FAKEF41A9\n' FAKEF41A9
+hc f41-X-Api-Key 'X-Api-Key: FAKEF41B1\n' FAKEF41B1
+hc f41-refresh_token 'refresh_token=FAKEF41B2\n' FAKEF41B2
+hc f41-DB-PASSWORD 'DB-PASSWORD=FAKEF41B3\n' FAKEF41B3
+# F4-2 JSON-embedded keys (quoted key, spacing variants)
+hc f42-json-password '{"password":"FAKEF42A1","u":1}\n' FAKEF42A1
+hc f42-json-token-space '{"token": "FAKEF42A2"}\n' FAKEF42A2
+hc f42-json-api_key '{"api_key":"FAKEF42A3"}\n' FAKEF42A3
+hc f42-json-client_secret '{ "client_secret" : "FAKEF42A4" }\n' FAKEF42A4
+hc f42-json-single "{'secret': 'FAKEF42A5'}\n" FAKEF42A5
+hc f42-json-nested '{"a":{"authorization":"FAKEF42A6"},"b":2}\n' FAKEF42A6
+hc f42-json-multiword '{"password":"FAKEF42A7 two words"}\n' FAKEF42A7 'two words'
+hc f42-json-numeric '{"pin_token":FAKEF42A8}\n' FAKEF42A8
+# F4-3 URL query credential-like names by pattern + userinfo
+for nm in code session sid jwt otp ticket access_token id_token X-Amz-Signature refresh_token client_secret apikey signature X-Amz-Credential nonce sessionid csrf_token; do
+  hc "f43-query-$nm" "GET https://h/p?a=1&$nm=FAKEF43V1&b=2\n" FAKEF43V1
+  hc "f43-query-first-$nm" "GET https://h/p?$nm=FAKEF43V2\n" FAKEF43V2
+done
+hc f43-userinfo-user-only 'GET https://FAKEF43U1@h/p\n' FAKEF43U1
+hc f43-userinfo-pass 'GET http://usr:FAKEF43U2@h:8080/p\n' FAKEF43U2
+hc f43-query-then-text 'GET https://h/p?a=1&code=FAKEF43V3 failed\n' FAKEF43V3
+printf 'GET https://h/p?page=2&limit=5 refused\n' >"$W/err.bin"
+ck "F4-3 benign query names (page, limit) stay visible" "$(hint | grep -c 'page=2&limit=5')" 1
+# F4-4 Cookie: every pair; residual survivors outside the brief list
+hc f44-cookie-pairs 'Cookie: sid=FAKEF44A1; other=FAKEF44A2; third=FAKEF44A3\n' FAKEF44A1 FAKEF44A2 FAKEF44A3
+hc f44-set-cookie 'Set-Cookie: sid=FAKEF44B1; Path=/; HttpOnly\n' FAKEF44B1
+hc f44-cookie-three-lower 'cookie: a=FAKEF44B2; b=FAKEF44B3\n' FAKEF44B2 FAKEF44B3
+hc f44-pwd 'pwd=FAKEF44C1\n' FAKEF44C1
+hc f44-passwd-colon 'passwd: FAKEF44C2\n' FAKEF44C2
+hc f44-pass-eq 'pass=FAKEF44C3\n' FAKEF44C3
+hc f44-passphrase 'passphrase=FAKEF44C4\n' FAKEF44C4
+hc f44-minus-p 'mysql -pFAKEF44C5 db\n' FAKEF44C5
+hc f44-password-flag 'cmd --password FAKEF44C6\n' FAKEF44C6
+hc f44-token-flag 'cmd --token=FAKEF44C7\n' FAKEF44C7
+hc f44-pem 'x -----BEGIN PRIVATE KEY----- FAKEF44D1\n' FAKEF44D1
+hc f44-pem-rsa 'x -----BEGIN RSA PRIVATE KEY----- FAKEF44D2\n' FAKEF44D2
+hc f44-ssh-rsa 'ssh-rsa AAAAB3NzaC1yc2EFAKEF44D3 user\n' FAKEF44D3
+hc f44-ssh-ed25519 'ssh-ed25519 AAAAC3NzaFAKEF44D4 user\n' FAKEF44D4
+hc f44-control-in-label 'tok\033en=FAKEF44E1\n' FAKEF44E1
+hc f44-nul-in-label 'pass\001word=FAKEF44E2\n' FAKEF44E2
+# F4-5 redact BEFORE truncate: a 32+ char blob starting before char 160 and straddling it must not leak its head
+python3 -c 'print("w " * 68 + "A" * 10 + "FAKEF45STRADDLEBLOBCANARY" + "B" * 30)' >"$W/err.bin"
+ck "F4-5 blob straddling char 160: head not visible (redact before truncate)" "$(hint | grep -c 'FAKEF45\|AAAAAAAAAA')" 0
+python3 -c 'print("v " * 70 + "token=FAKEF45B" + "C" * 40)' >"$W/err.bin"
+ck "F4-5 kv straddling char 160: value head not visible" "$(hint | grep -c 'FAKEF45B')" 0
+python3 -c 'print("u " * 75 + "x" * 40)' >"$W/err.bin"
+e="$(hint)"; ck "F4-5 straddling blob: output still bounded (<= 181)" "$([ ${#e} -le 181 ] && echo ok)" ok
+# F4-6 INTENDED narrowing (R3-3 typed binding, ctl ruling 11-13 6:06 AM): an open row whose unit appears ONLY in free what/check text no longer rows an aside
+echo '[{"ask_id":"A77","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"restart zzz-unit.service","check":"systemctl is-active zzz-unit.service"}]' >"$W/rows.json"
+mk $'The zzz-unit.service item is a separate check, not investigated.\n'
+ck "F4-6 narrowing (intended): unit only in what/check text, no key/scope, does NOT row the aside" "$(decision "$(asideenv ctl)")" block
+echo '[{"ask_id":"A77","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"restart zzz-unit.service","check":"systemctl is-active zzz-unit.service","key":"zzz-unit.service"}]' >"$W/rows.json"
+ck "F4-6 same row with the typed key rows the aside" "$(decision "$(asideenv ctl)")" allow
+echo "$ROW" >"$W/rows.json"
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

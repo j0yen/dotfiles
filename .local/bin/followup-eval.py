@@ -88,12 +88,17 @@ def _ancestors():
 def stderr_hint(text):
     """Advisory first stderr line of a failed ledger query: control chars dropped, secret-shaped runs redacted, 160 chars max. Text only: never changes the fail-closed verdict."""
     for line in (text or "").splitlines():
-        line = "".join(c if c.isprintable() else " " for c in line).strip()[:20000]
+        line = "".join(c if c.isprintable() else (" " if c == "\t" else "") for c in line).strip()[:20000]
         if not line:
             continue
         line = re.sub(r"://[^/@\s]+@", "://<redacted>@", line)
-        line = re.sub(r"(?i)([?&][\w.-]*(?:token|key|secret|passw|pwd|sig|auth|cred)[\w.-]*=)[^&\s]*", r"\1<redacted>", line)
-        line = re.sub(r"(?i)\b(bearer|basic|authorization|cookie|token|key|password|passwd|secret)\b(\s*[=:]\s*|\s+)(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
+        line = re.sub(r"(?i)([?&][\w.-]*(?:token|key|secret|pass|pwd|sig|auth|cred|code|session|sid|jwt|otp|ticket|nonce|bearer)[\w.-]*=)[^&\s]*", r"\1<redacted>", line)
+        line = re.sub(r"(?i)\b(set-cookie|cookie)\s*[=:].*$", r"\1=<redacted>", line)
+        line = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*$", "-----BEGIN PRIVATE KEY-----<redacted>", line)
+        line = re.sub(r"\b(ssh-[a-z0-9]+|ecdsa-sha2-\S+)\s+\S+", r"\1 <redacted>", line)
+        line = re.sub(r"(?i)(bearer|basic|authorization|token|key|password|passwd|secret)(?:\w*[\"']?\s*[=:]\s*|\s+)(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
+        line = re.sub(r"(?i)(pass|pwd|cred|auth|session|jwt)\w*[\"']?\s*[=:]\s*(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
+        line = re.sub(r"(?<!\S)-p(?=\S)\S+", "-p<redacted>", line)
         line = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<redacted-email>", line)
         line = re.sub(r"\b(sk-|ghp_|gho_|xox)[A-Za-z0-9_-]+|\b[A-Za-z0-9+/_=-]{32,}", "<redacted>", line)
         return line[:160]
