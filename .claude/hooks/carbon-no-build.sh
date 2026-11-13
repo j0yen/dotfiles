@@ -10,5 +10,10 @@ set -u
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 verdict=$(python3 -I "$here/carbon-no-build.py" 2>/dev/null)
 case "$verdict" in deny\ *) ;; *) exit 0 ;; esac
-echo "carbon-no-build: ${verdict#deny } denied on carbon; run on redbaron/ryzen7 over ssh (CLAUDE.md § Hosts)" >&2
+rule=${verdict#deny }
+if [ "$rule" = "test-suite" ]; then
+  echo "carbon-no-build: $rule denied on carbon; allowed here: bash <one literal tests/x.test.sh> (no \$VAR, no glob, one file); else run on redbaron/ryzen7 over ssh (CLAUDE.md § Hosts)" >&2
+else
+  echo "carbon-no-build: $rule denied on carbon; run on redbaron/ryzen7 over ssh (CLAUDE.md § Hosts)" >&2
+fi
 exit 2
