@@ -7,6 +7,8 @@ fail=0; ok() { echo "PASS $1"; }; bad() { echo "FAIL $1"; fail=1; }
 t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
 export AIDE_WAKE_DIR="$t/state" EVENTS_DIR="$t/ev" OWED_NOW_BIN="$t/none" AIDE_WAKE_NOW=100000 AIDE_WAKE_BIN="$W"
 mkdir -p "$t/ev" "$t/state"
+# G1: turn end needs the bridge unit active + fresh status.json; stubbed here (inactive by default)
+printf '#!/bin/sh\ncat %s/unit 2>/dev/null || echo inactive\n' "$t" > "$t/systemctl"; chmod +x "$t/systemctl"; export AIDE_SYSTEMCTL_BIN="$t/systemctl" AIDE_BRIDGE_STATUS="$t/bridge.json"
 printf '#!/bin/sh\necho "$@" >> %s/tmux.log\nexit 0\n' "$t" > "$t/tmux"; chmod +x "$t/tmux"; export AIDE_TMUX_BIN="$t/tmux"
 bash -n "$W" && bash -n "$H" && ok "bash -n" || bad "bash -n"
 "$W" pending >/dev/null && bad "pending with empty inbox" || ok "no pending work with empty inbox"
@@ -25,7 +27,9 @@ jq -e '.decision=="block"' <<<"$out" >/dev/null 2>&1 && ok "WM_SEAT=ctl blocks w
 out="$(echo '{"stop_hook_active":true}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "stop_hook_active allows" || bad "stop_hook_active allows"
 out="$(echo '{"agent_id":"x"}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "subagent allowed" || bad "subagent allowed"
 echo $(( $(date +%s) + 600 )) > "$t/state/wake-armed"
-out="$(echo '{}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "armed wake allows" || bad "armed wake allows"
+out="$(echo '{}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; jq -e '.decision=="block"' <<<"$out" >/dev/null 2>&1 && ok "armed wake alone no longer allows (G1)" || bad "armed wake alone no longer allows"
+echo active > "$t/unit"; printf '{"ts": "%s"}' "$(date -Iseconds)" > "$t/bridge.json"
+out="$(echo '{}' | env -u AIDE_WAKE_NOW WM_SEAT=aide "$H")"; [ -z "$out" ] && ok "active bridge unit + fresh status allows" || bad "active bridge unit + fresh status allows"; rm -f "$t/unit"
 # arm
 rm -f "$t/state/wake-armed"; "$W" arm 20; [ "$(cat "$t/state/wake-armed")" = 101200 ] && ok "arm writes now+20m" || bad "arm writes now+20m"
 "$W" arm 0 2>/dev/null && bad "arm 0 refused" || ok "arm 0 refused"
