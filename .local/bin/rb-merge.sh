@@ -63,7 +63,7 @@ chain_guard() {
   fi
   for r in "${CHAIN_REPOS[@]}"; do [ "$r" = "$NREPO" ] && in_chain=1; done
   [ "$in_chain" = 1 ] || return 0
-  case "${WM_SEAT:-}" in aide|ctl) return 0 ;; esac
+  case "${WM_SEAT:-}" in aide|ctl|ops) return 0 ;; esac
   if [ -n "$handoff" ]; then
     local rows
     if rows="$("$WM_DECIDE" list --since 30d --json 2>/dev/null)" && printf '%s' "$rows" | python3 -I -c '

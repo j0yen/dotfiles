@@ -32,7 +32,7 @@ seen=0; ok=0
 for p in $({ cat "$HOME/.config/aide/channel-pid" 2>/dev/null; for pp in $(tmux list-panes -a -F '#{session_name} #{pane_pid}' 2>/dev/null | awk '$1=="aide"{print $2}'); do echo "$pp"; desc "$pp"; done; } | sort -u); do
   grep -qa claude "/proc/$p/cmdline" 2>/dev/null || continue
   env="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
-  grep -qxE 'WM_SEAT=(ctl|aide)' <<<"$env" || continue
+  grep -qxE 'WM_SEAT=(ctl|aide|ops)' <<<"$env" || continue
   seen=$((seen+1))
   have="$(grep -m1 '^CLAUDE_CODE_OAUTH_TOKEN=' <<<"$env" | cut -d= -f2- | tr -d '\n' | sha256sum | cut -c1-16)"
   [ "$have" = "$want" ] && ok=$((ok+1))

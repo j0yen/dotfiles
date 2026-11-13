@@ -10,7 +10,7 @@ aide_card() {  # <= 8 lines; every source optional; never fails
   local fd="$HOME/.cache/fleet-dash" tmr=disabled lt=none last fs fsl age tick ts tt
   [ "$(timeout 5 systemctl --user is-enabled seat-tick@ctl.timer 2>/dev/null)" = enabled ] && tmr=enabled
   lt=$(timeout 5 jq -r '.last_tick.epoch // empty' "$fd/ctl-tick.json" 2>/dev/null); [ -n "$lt" ] && lt=$(date -d "@$lt" '+%-I:%M %p' 2>/dev/null); [ -n "$lt" ] || lt=none
-  local card=AIDE role=aide; [ "${WM_SEAT:-}" = ctl ] && { card=CTL; role=ctl; }
+  local card=AIDE role=aide; case "${WM_SEAT:-}" in ctl|ops) card=CTL; role=ctl ;; esac   # ops = preferred name of ctl (A1296 rev181)
   echo "=== $card CARD (carbon, this session is Joe's channel) ==="
   [ "${WM_AIDE_LANE:-main}" = main ] || echo "lane: $WM_AIDE_LANE"   # aide-lanes: non-main lanes only, main's card stays byte-for-byte
   echo "role: $role · controller: unit seat-tick@ctl (timer: $tmr, last tick: $lt) · approvals: ~/.claude/state/approvals.log (writer: approve.sh \"<quote>\" \"<re>\")"

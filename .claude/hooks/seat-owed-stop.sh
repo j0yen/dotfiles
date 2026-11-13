@@ -9,7 +9,7 @@
 # Env: SEAT_OWED_BIN (default: seat-owed.sh on PATH, else ~/.local/bin/seat-owed.sh).
 set -u
 seat="${WM_SEAT:-}"
-case "$seat" in rb|r7|ctl|aide) ;; *) exit 0 ;; esac
+case "$seat" in rb|r7|ctl|aide|ops) ;; *) exit 0 ;; esac
 in="$(cat 2>/dev/null)"
 command -v jq >/dev/null 2>&1 || { echo "seat-owed-stop: jq missing, allowing" >&2; exit 0; }
 [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0

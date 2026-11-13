@@ -3,7 +3,7 @@
 # PreToolUse on the carbon executor seat (WM_SEAT=aide or ctl): when the newest Joe message in the transcript contains a question mark and no assistant
 # text has been emitted after it (12:1x AM: any Joe message, not only a question), the tool call is denied with the reason "answer first". Sweep prompts and seat lines never count.
 set -u
-case "${WM_SEAT:-}" in aide|ctl) ;; *) [ "${ANSWERS_FIRST_FORCE:-}" = 1 ] || exit 0 ;; esac
+case "${WM_SEAT:-}" in aide|ctl|ops) ;; *) [ "${ANSWERS_FIRST_FORCE:-}" = 1 ] || exit 0 ;; esac
 if [ "${1:-}" = --selftest ]; then
   d=$(mktemp -d); t="$d/t.jsonl"
   printf '%s\n' '{"type":"user","message":{"role":"user","content":"why is the dash wrong?"}}' > "$t"

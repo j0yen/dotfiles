@@ -37,7 +37,7 @@ print(g(paths.get(f,[])))' "$1" 2>/dev/null
 
 detect_role() {
   if [ -n "${MRC_FORCE_ROLE:-}" ]; then printf '%s' "$MRC_FORCE_ROLE"; return; fi
-  case "${WM_SEAT:-}" in rb|r7|aide|ctl) printf '%s' "$WM_SEAT"; return ;; esac
+  case "${WM_SEAT:-}" in rb|r7|aide|ctl) printf "%s" "$WM_SEAT"; return ;; ops) printf ctl; return ;; esac   # ops = preferred name of ctl (A1296 rev181), same role row
   if [ -n "${TMUX:-}" ]; then
     local s
     if [ -n "${TMUX_PANE:-}" ]; then s=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)

@@ -91,7 +91,7 @@ fi
 # own `claude`) exempt since 2026-11-01 (approvals #195 "stop using rationing
 # limits"; the gate saved tokens only, and a gated plain session wrote script
 # files around it, adding steps). Only fleet seats (WM_SEAT=rb/r7/...) stay gated.
-case "${WM_SEAT:-}" in ""|aide|ctl) exit 0 ;; esac
+case "${WM_SEAT:-}" in ""|aide|ctl|ops) exit 0 ;; esac
 
 # --- 2. One-shot override -------------------------------------------------
 if [ -f "$OVERRIDE_FLAG" ]; then
