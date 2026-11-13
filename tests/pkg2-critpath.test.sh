@@ -317,6 +317,18 @@ for i in $(seq 100); do [ -e "$W/sc7/index.lock" ] && break; sleep 0.02; done; h
 pkill -TERM -f "$SUMMA --refresh-index" 2>/dev/null; sleep 0.5
 ck "F7-4 Summa builder: it held index.lock mid-build, and no lock is left after the SIGTERM" "$had7/$(find "$W/sc7" -name 'index.lock' | wc -l | tr -d ' ')" "1/0"
 
+# F7-8: the whole-refresher race above is not RED against a mkdir lock on this host (process start-up spreads the racers by milliseconds, so the uutils mkdir race rarely overlaps); the primitive itself is raced
+# tightly: 16 racers spin on a go file, are released together, and take the lock; exactly one may win, in every round (a mkdir-based take fails about 6 of 100 rounds here; mutant N28)
+dbl=0; LOCKLIB="$R/.claude/hooks/exlock.sh"
+for r in $(seq 100); do
+  d="$W/race$r"; mkdir -p "$d"
+  for i in $(seq 16); do ( . "$LOCKLIB"; while [ ! -e "$d/go" ]; do :; done; exlock_take "$d/l" && echo "$i" >>"$d/won" ) & done
+  sleep 0.15; : >"$d/go"; wait
+  [ "$(cat "$d/won" 2>/dev/null | wc -l | tr -d ' ')" = 1 ] || dbl=$((dbl+1))
+  rm -rf "$d"
+done
+ck "F7-8 lock primitive: 16 racers released together take exlock_take exclusively in 100 of 100 rounds (exactly one winner per round)" "$dbl" 0
+
 # --- F7-5 scale: 1,000 owed rows must still produce a cache (one jq argument is capped at 128 KiB: the old write failed and every prompt stayed UNKNOWN), and one Stop run must not rewrite the fingerprint file per obligation
 fresh; python3 - "$W/rows.json" 1000 <<'PY'
 import json,sys
