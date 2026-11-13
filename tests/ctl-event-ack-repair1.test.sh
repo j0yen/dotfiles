@@ -96,7 +96,7 @@ fresh; mkq e1; echo '{"id":"OTHER","route":"deterministic","reason":"t","row":""
 br ack e1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(d)" = 0 ]; chk "F3 routed cache id differs from the acked event id: refused" $?
 fresh; mkq e1; route e1 deterministic; good e1; touch -d '2001-01-01' "$RTD/results/e1.json" "$RTD/routed/e1.json"
 br ack e1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ]; chk "F3 no age cap: a 2001-dated result for the right id still counts (replay reuses old results)" $?
-fresh; mkq p1; route p1 fable; BR_CYCLES=1 br run; br ack p1 >/dev/null 2>&1; mkq p1; : > "$T/tmux.log"; BR_CYCLES=1 br run
+fresh; mkq p1; route p1 fable; BR_CYCLES=1 br run; br ack p1 >/dev/null 2>&1; mkq p1; : > "$T/tmux.log"; sed -i 's/"last_delivery":0}/"last_delivery":0,"attempt_id":"A2"}/' "$BRD/queue/p1.json"; sed -i 's/}$/,"attempt_id":"A2"}/' "$RTD/routed/p1.json"; BR_CYCLES=1 br run   # repair 3: the requeue is a new delivery (attempt A2) and the router has routed it (cache carries A2)
 [ "$(sends)" = 1 ] && [ "$(q)" = 1 ]; chk "F3 deliberate re-delivery: a re-queued acked fable id is delivered again" $?
 
 # --- F4: same-event acks idempotent under a lock

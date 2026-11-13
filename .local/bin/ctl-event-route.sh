@@ -57,7 +57,20 @@ eid = str(q.get("id") or os.path.basename(qf)[:-5])
 if not re.fullmatch(r"[A-Za-z0-9._-]+", eid): sys.exit("bad id")
 cache = os.path.join(RT, "routed", eid + ".json")
 resf = os.path.join(RT, "results", eid + ".json")
-if os.path.isfile(cache):               # replay: cached route, no second model call
+stagef = os.path.join(RT, "stage", eid + ".classify.json")
+# attempt identity (A1296 R3-1): the bridge stamps every queue file instance (a delivery) with `attempt_id`; this router copies it into the cache, the result and the stage
+# file. Artifacts of an EARLIER attempt of the same event id are archived under $RT/attempts/<id>/<old attempt>/ (never served as this attempt's result, never deleted);
+# a requeue is therefore routed fresh. Queue files without attempt_id (legacy) keep the id-keyed behaviour.
+att = q.get("attempt_id")
+if not (isinstance(att, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", att)): att = None
+AF = {"attempt_id": att} if att else {}
+for _p in (cache, resf, stagef):
+    _d = rjson(_p) if os.path.isfile(_p) else None
+    if isinstance(_d, dict) and _d.get("attempt_id") != att:
+        _dst = os.path.join(RT, "attempts", eid, str(_d.get("attempt_id") or "none")); _k = 0
+        while os.path.exists(os.path.join(_dst, os.path.basename(_p))) and _k < 1000: _k += 1; _dst = os.path.join(RT, "attempts", eid, "%s.%d" % (str(_d.get("attempt_id") or "none"), _k))
+        os.makedirs(_dst, exist_ok=True); os.replace(_p, os.path.join(_dst, os.path.basename(_p)))
+if os.path.isfile(cache):               # replay: cached route of THIS attempt, no second model call
     print(open(cache).read().strip()); sys.exit(0)
 
 ev = q.get("event") or {}
@@ -158,7 +171,7 @@ def parse_verdict(text):
     return None
 
 def classify():
-    st = os.path.join(RT, "stage", eid + ".classify.json")
+    st = stagef
     c = rjson(st)
     if c is not None: return c.get("verdict"), c.get("calls") or []
     prompt = CLS + event_text()
@@ -166,8 +179,8 @@ def classify():
         text, rec = run_claude(role, model, prompt, TMO)
         v = parse_verdict(text); rec["parsed"] = v is not None
         if v is not None:
-            wjson(st, {"verdict": v, "calls": calls}); return v, calls
-    wjson(st, {"verdict": None, "calls": calls}); return None, calls
+            wjson(st, {"verdict": v, "calls": calls, **AF}); return v, calls
+    wjson(st, {"verdict": None, "calls": calls, **AF}); return None, calls
 
 TERM = re.compile(r"\b(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b")
 VLINE = re.compile(r"^[\s>*_`#-]*VERDICT\s*:?[\s*_`]*(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b", re.I)
@@ -196,9 +209,10 @@ def finish(route, model, reason, result, exit_, extra=None, row=None, cont=None)
     out = {"id": eid, "kind": kind, "route": route, "model": model, "reason": reason, "result": result, "exit": exit_,
            "ts": now(), "model_calls": calls, "row": row or ""}
     if extra: out.update(extra)
+    out.update(AF)
     if not os.path.isfile(resf) or rjson(resf) is None or "exit" not in rjson(resf):
         wjson(resf, {"id": eid, "kind": kind, "route": route, "result": result, "exit": exit_, "ts": out["ts"], "row": row or "",
-                     "model_calls": calls, **(cont or {})})
+                     "model_calls": calls, **(cont or {}), **AF})
     if route not in ("fable", "error"): pass
     append("model-calls.log", out)
     wjson(cache, out)
@@ -444,12 +458,12 @@ text, rec = run_claude("execute", "claude-haiku-5-5", EXE + event_text(), XTMO)
 m = re.findall(r"(?m)^OUTCOME:\s*(DONE|BLOCKED)\b(.*)$", text or "")
 if m and m[-1][0] == "DONE":
     outcome = m[-1][1].strip()[:300]
-    wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "executed", "exit": 0, "outcome": outcome, "ts": now(), "row": "", "model_calls": calls})
+    wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "executed", "exit": 0, "outcome": outcome, "ts": now(), "row": "", "model_calls": calls, **AF})
     mech({"result": "executed", "summary": str(verdict.get("summary", ""))[:200], "outcome": outcome})
     finish("haiku", "haiku", "classifier:" + str(verdict.get("reason", ""))[:200], "executed", 0, extra={"outcome": outcome})
 why = (m[-1][1].strip() if m else ("executor-failed rc=%s" % rec.get("rc")))[:300]
 rid = open_row("continuation not completed (%s); task: %s" % (why, str(verdict.get("summary", ""))[:200]), "ctl-completes-or-redates")
 if rid is None: sys.exit("row-write-failed")
-wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "blocked-row", "exit": 2, "reason": why, "ts": now(), "row": rid, "model_calls": calls})
+wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "blocked-row", "exit": 2, "reason": why, "ts": now(), "row": rid, "model_calls": calls, **AF})
 finish("haiku", "haiku", "classifier:" + str(verdict.get("reason", ""))[:200], "blocked-row", 2, row=rid)
 PY

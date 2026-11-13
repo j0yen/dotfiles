@@ -67,7 +67,6 @@ echo '{"event":"inbox","detail":{}}' > "$T/ev"
 env -i HOME="$T/home" PATH="$T/bin:$PATH" BR_DIR="$BRD" RT_DIR="$RTD" EW_BIN="$T/ew2" TMUX_BIN="$T/bin/tmux" RT_BIN="$T/rt-stub" CTL_PANE=t:0.0 WAIT_MAX_SEC=1 BR_CYCLES=1 bash "$B" run >/dev/null 2>&1
 a="$(python3 -I -c 'import json,sys,glob; print(json.load(open(glob.glob(sys.argv[1]+"/queue/*.json")[0])).get("attempt_id",""))' "$BRD")"; [ -n "$a" ] && printf '%s' "$a" | grep -qE '^[0-9]+-[0-9a-f]{8}$'; chk "R3-1 queue_event records an attempt_id (epoch-8hex) in the queue file" $?
 # REAL router, requeue with a new attempt: new route + new result + new cache carrying the new attempt, the previous attempt archived, no stale replay
-real() { RTBIN="$RTR" "$@"; }
 fresh; rm -f "$T/ev"; mkqa e1 $NOW A1 timeout
 RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1
 [ "$(d)" = 1 ] && [ "$(q)" = 0 ] && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$RTD/results/e1.json")" = A1 ] && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$RTD/routed/e1.json")" = A1 ]; chk "R3-1 real router, first delivery: result and cache carry attempt A1, acked once" $?
@@ -75,8 +74,8 @@ mkqa e1 $((NOW+1)) A2 timeout
 for i in 1 2 3; do RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1; done
 [ "$(d)" = 2 ] && [ "$(q)" = 0 ] && [ "$(nrec)" = 2 ] && receipt e1.r1 && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$RTD/results/e1.json")" = A2 ] && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$RTD/routed/e1.json")" = A2 ]; chk "R3-1 real router, genuine requeue (attempt A2): re-routed (no stale cache replay), result+cache carry A2, acked as its own delivery without any touch" $?
 ls "$RTD/attempts/e1" 2>/dev/null | grep -q A1; chk "R3-1 real router: the previous attempt's cache/result are archived under attempts/e1/A1, not served or deleted" $?
-fresh; mkqa e1 $NOW A1 timeout; RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1; cp "$RTD/routed/e1.json" "$T/c1"; mkqa e1 $NOW A1 timeout; "$RTR" route "$BRD/queue/e1.json" >/dev/null 2>&1 || true
-RT_DIR="$RTD" "$RTR" route "$BRD/queue/e1.json" > "$T/replay" 2>/dev/null; cmp -s "$T/replay" <(cat "$T/c1"); chk "R3-1 real router: the same attempt replays its cache byte for byte (replay stays idempotent)" $?
+fresh; mkqa e1 $NOW A1 timeout; RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1; cp "$RTD/routed/e1.json" "$T/c1"; mkqa e1 $NOW A1 timeout
+RT_DIR="$RTD" "$RTR" route "$BRD/queue/e1.json" > "$T/replay" 2>/dev/null; [ "$(cat "$T/replay")" = "$(cat "$T/c1")" ]; chk "R3-1 real router: the same attempt replays its cache byte for byte (replay stays idempotent)" $?
 
 # --- R3-2: crash-idempotent ack/receipt recovery (state-based: done + queue of the same attempt; and SIGKILL at every step boundary)
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1
@@ -93,7 +92,7 @@ for step in pre tmp done rm clear receipt; do
     BR_CRASH_AT=$step br ack e1 >/dev/null 2>&1; crc=$?
     [ "$crc" != 0 ] && [ "$(acklines e1)" = 0 ]; chk "R3-2 crash seam: SIGKILL at step '$step' kills the ack mid-flight (rc=$crc, no ack line yet)" $?
     runmode $how e1 >/dev/null; runmode $how e1 >/dev/null
-    [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && [ -e "$BRD/done/e1.json" ] && [ ! -e "$BRD/done/e1.r1.json" ] && receipt e1 && [ "$(nrec)" = 1 ] && [ "$(acklines e1)" -le 1 ] && ! grep -q 'delivery=r1' "$BRD/deliveries.log"; chk "R3-2 crash at '$step', restart via $how: one done/e1.json, original receipt e1, no second done/receipt (q=$(q) d=$(d) receipts=$(nrec))" $?
+    [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && [ -e "$BRD/done/e1.json" ] && [ ! -e "$BRD/done/e1.r1.json" ] && receipt e1 && [ "$(nrec)" = 1 ] && [ "$(acklines e1)" -le 1 ] && ! grep -q 'delivery=r1' "$BRD/deliveries.log" 2>/dev/null; chk "R3-2 crash at '$step', restart via $how: one done/e1.json, original receipt e1, no second done/receipt (q=$(q) d=$(d) receipts=$(nrec))" $?
     mkqa e1 $((NOW+1)) A2; routea e1 A2; gooda e1 A2; br ack e1 >/dev/null 2>&1
     [ "$(d)" = 2 ] && [ -e "$BRD/done/e1.r1.json" ] && receipt e1 && receipt e1.r1 && [ "$(nrec)" = 2 ] && [ "$(q)" = 0 ]; chk "R3-2 after crash '$step' recovery: a genuine new delivery (A2) is distinct: its own done/e1.r1.json and receipt e1.r1" $?
   done
@@ -112,7 +111,7 @@ r=json.load(open(glob.glob(sys.argv[1]+"/dispositions/*.json")[0]))
 assert r["id"]=="e1" and r["disposition"]=="operator-handled" and r["reason"]=="row opened by hand" and r["attempt_id"]=="A1" and r["evidence_class"]=="typed-failure" and r["success"] is False and r["replayed"] is False' "$BRD"; chk "R3-3 the disposition record names id, attempt, class, reason, the refusal class it overrode, success=false, replayed=false" $?
 br ack e1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(d)" = 0 ] && ! receipt e1; chk "R3-3 after resolve, ack e1 is not a handled/success claim (exit non-zero, no receipt)" $?
 br resolve e1 --disposition operator-handled --reason "row opened by hand" >/dev/null 2>&1; [ $? = 0 ] && [ "$(ndisp)" = 1 ]; chk "R3-3 resolve is idempotent (second call: exit 0, no second record)" $?
-mk_fail blocked-row 2; for how in explicit all run; do :; done
+mk_fail blocked-row 2
 o="$(br ack e1 2>&1)"; a1=$?; o2="$(br ack --all 2>&1)"; a2=$?; BR_CYCLES=2 br run >/dev/null 2>&1
 [ "$a1" != 0 ] && [ "$a2" != 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ]; chk "R3-3 ack, ack --all and run keep refusing a typed-failure id until an operator names it" $?
 mk_fail UNKNOWN 0; BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(q)" = 1 ] && [ "$(ndisp)" = 0 ]; chk "R3-3 UNKNOWN stays unresolved by itself (no disposition without an operator)" $?

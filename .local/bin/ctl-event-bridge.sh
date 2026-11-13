@@ -46,14 +46,19 @@ queue_event() { # waiter-json -> prints id
   kind="$(printf '%s' "$1" | python3 -I -c 'import json,sys,re; print(re.sub(r"[^a-z0-9]","",str(json.load(sys.stdin).get("event","x")).lower()) or "x")' 2>/dev/null)" || return 1
   [ -n "$kind" ] || return 1
   id="$(epoch)-$kind-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  # attempt_id = the identity of this delivery (queue file instance): the router copies it into its result, cache and stage files, the bridge accepts evidence only when it matches
   printf '%s' "$1" | python3 -I -c 'import json,sys
 ev=json.load(sys.stdin)
-json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"last_delivery":0},open(sys.argv[3]+".tmp","w"))' "$id" "$(epoch)" "$BR/queue/$id.json" || return 1
+json.dump({"id":sys.argv[1],"event":ev,"created":int(sys.argv[2]),"attempts":0,"last_delivery":0,"attempt_id":sys.argv[4]},open(sys.argv[3]+".tmp","w"))' "$id" "$(epoch)" "$BR/queue/$id.json" "$(epoch)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')" || return 1
   mv "$BR/queue/$id.json.tmp" "$BR/queue/$id.json"; printf '%s' "$id"
 }
 
 # A1255: the row marker is looked up in the canonical ledger (asks-view); no TSV file is read or passed on.
-cached_route() { local c="$RTD/routed/$1.json"; [ -f "$c" ] && jget "$c" route; }
+cache_current() { # the routed cache exists and belongs to THIS delivery (same attempt_id as the queue file; both absent = legacy)
+  local c="$RTD/routed/$1.json"
+  [ -f "$c" ] && [ "$(jget "$BR/queue/$1.json" attempt_id)" = "$(jget "$c" attempt_id)" ]
+}
+cached_route() { cache_current "$1" && jget "$RTD/routed/$1.json" route; }
 held() { [ -e "$RTD/held/$1" ]; } # the router held this id (exit 75, an unreadable file): queued, but nothing acts on it until it routes
 deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or route=fable; error/other routes and held ids never reach the pane
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
@@ -61,7 +66,8 @@ deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or r
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
 evidence_ok() { # typed fail-closed check for a deterministic/haiku id: results/<id>.json and routed/<id>.json must match the schema exactly; success = exit 0 and no typed failure
-  # a requeued id (done/<id>.json exists) is a new delivery: its evidence must be at least as new as the queued payload's `created`. Sets EV_WHY to the refusal class.
+  # evidence belongs to ONE delivery: both files must carry the queue file's attempt_id (a requeue is a new delivery with a new attempt_id; file mtimes are not consulted).
+  # Sets EV_WHY to the refusal class.
   local id="$1" row out
   EV_WHY=""
   out="$(python3 -I -c 'import json,os,re,sys
@@ -87,10 +93,14 @@ if not isinstance(e,int) or isinstance(e,bool): no("invalid-exit")
 if e!=0 or re.search(r"blocked|error|fail|refused",r["result"]): no("typed-failure")   # router typed failures: blocked-row exit 2, error-row exit 4, any nonzero exit
 rw=c.get("row","")
 if not isinstance(rw,str): no("invalid-cache")
-if os.path.isfile(df):   # requeued: evidence older than this delivery belongs to the earlier delivery
-    q=load(qf); cr=q.get("created") if q else None
-    if not isinstance(cr,int) or isinstance(cr,bool): no("stale-requeue")
-    if min(os.path.getmtime(rf),os.path.getmtime(cf))<cr: no("stale-requeue")
+q=load(qf); qa=q.get("attempt_id") if q else None
+if qa is not None and not (isinstance(qa,str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}",qa)): no("invalid-attempt")
+rq=os.path.isfile(df)   # a done/<id>.json beside this queue file: this is a requeue, a new delivery of an acked id
+if rq:
+    cr=q.get("created") if q else None
+    if not isinstance(cr,int) or isinstance(cr,bool): no("invalid-created")
+    if qa is None: no("stale-requeue")   # a requeued delivery with no attempt identity cannot be bound to any evidence
+if r.get("attempt_id")!=qa or c.get("attempt_id")!=qa: no("stale-requeue" if rq else "attempt-mismatch")
 print("OK\t"+rw)' "$RTD" "$RTD" "$id" "$BR/queue/$id.json" "$BR/done/$id.json")" || { EV_WHY=invalid; return 1; }
   if [ "${out%%$'\t'*}" != OK ]; then EV_WHY="${out#*$'\t'}"; return 1; fi
   row="${out#*$'\t'}"
@@ -98,17 +108,20 @@ print("OK\t"+rw)' "$RTD" "$RTD" "$id" "$BR/queue/$id.json" "$BR/done/$id.json")"
 }
 ack_ok() { # explicit `ack <id>`: a held id is refused (held-unreadable without a cache, inconsistent with one); deterministic/haiku ids need evidence_ok; fable-routed and unrouted (pane-delivered) ids are acked by the consumer's word; any other cache is refused
   local id="$1" c="$RTD/routed/$1.json" rt
+  EV_WHY=""
   if held "$id"; then
+    EV_WHY=held-unreadable
     if [ -e "$c" ]; then echo "refused $id: held marker beside a routed cache (inconsistent state; nothing acts until the router re-routes it)" >&2
     else echo "refused $id: held-unreadable (the router held it, exit 75; not success, it stays queued until the router routes it)" >&2; fi
     return 1
   fi
   [ -e "$c" ] || return 0   # no cache and not held: pane-delivered/legacy id, the consumer's explicit ack is the evidence
+  if ! cache_current "$id"; then EV_WHY=attempt-mismatch; [ ! -f "$BR/done/$id.json" ] || EV_WHY=stale-requeue; echo "refused $id: the routed cache belongs to another delivery of this id (attempt_id differs); the router has to route this delivery first (reason class: $EV_WHY)" >&2; return 1; fi
   rt="$(jget "$c" route)"
   case "$rt" in
-    deterministic|haiku) evidence_ok "$id" || { echo "refused $id: route=$rt needs the typed success result (exit 0, id bound, never UNKNOWN or a typed failure, newer than a requeued payload) and the routed cache; reason class: $EV_WHY" >&2; return 1; } ;;
+    deterministic|haiku) evidence_ok "$id" || { echo "refused $id: route=$rt needs the typed success result (exit 0, id bound, never UNKNOWN or a typed failure, the same attempt_id as this delivery) and the routed cache; reason class: $EV_WHY" >&2; return 1; } ;;
     fable) ;;
-    *) echo "refused $id: routed cache is missing/malformed or names route '${rt:-none}'" >&2; return 1 ;;
+    *) EV_WHY=invalid-cache; echo "refused $id: routed cache is missing/malformed or names route '${rt:-none}'" >&2; return 1 ;;
   esac
 }
 handled_by_router() { local rt; rt="$(cached_route "$1")"; { [ "$rt" = deterministic ] || [ "$rt" = haiku ]; } && evidence_ok "$1"; }
@@ -133,11 +146,13 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
   sweep_held
   [ -x "$RTB" ] || return 0
   local f id c rt rc
+  ( flock 9; settle_leftovers ) 9>"$BR/.ack.lock"   # crash recovery first: a queue file whose delivery is already acked/resolved is finished, never re-routed
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
     id="$(jget "$f" id)"; [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    stamp_requeue "$f" "$id"
     c="$RTD/routed/$id.json"
-    if [ ! -f "$c" ]; then
+    if ! cache_current "$id"; then   # no cache, or the cache belongs to an earlier delivery of this id (the router archives it and routes this attempt fresh)
       RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err"
       rc=$?
       if [ $rc -eq 75 ]; then
@@ -145,7 +160,7 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
         mkdir -p "$RTD/held" && : > "$RTD/held/$id"; echo "ack-refused $id: held-unreadable (router exit 75; queued, not acked)" >&2
       elif [ $rc -ne 0 ] && held "$id"; then held_err "$id" "$rc"; fi   # a previously held id stays held and queued (no fail-open to the pane), but a router failure is logged
     fi
-    [ -f "$c" ] || continue
+    cache_current "$id" || continue
     rm -f "$RTD/held/$id"
     rt="$(jget "$c" route)"
     if [ "$rt" = fable ] && [ "${BR_FABLE:-1}" != 0 ] && [ -x "$FEB" ]; then   # real escalation (A1148 defect 11-07): separate Fable process, once per id
@@ -228,12 +243,59 @@ run() {
   done
 }
 
+crash_at() { # test seam (default unset = no effect): BR_CRASH_AT=<step> SIGKILLs this process at that step boundary of ackone_locked/resolve, leaving the on-disk state a crash would
+  [ "${BR_CRASH_AT:-}" = "$1" ] || return 0
+  kill -9 "$$" 2>/dev/null; kill -9 "$BASHPID"
+}
+rec_key() { # <dir> <id> <attempt_id>: print the key (<id> or <id>.rN) of a record in <dir> that is this delivery's (same attempt_id)
+  python3 -I -c 'import json,os,re,sys
+d,i,a=sys.argv[1:4]
+for n in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
+    if re.fullmatch(re.escape(i)+r"(\.r[0-9]+)?\.json",n):
+        try: j=json.load(open(d+"/"+n))
+        except Exception: continue
+        if isinstance(j,dict) and j.get("attempt_id")==a: print(n[:-5]); break' "$1" "$2" "$3"
+}
+stamp_requeue() { # a legacy queue file (no attempt_id) beside a done/ entry is a requeued delivery: give it its own attempt identity (atomic rewrite under the lock)
+  local f="$1" id="$2"
+  [ -f "$BR/done/$id.json" ] && [ -z "$(jget "$f" attempt_id)" ] || return 0
+  ( flock 9
+    [ -f "$f" ] && [ -z "$(jget "$f" attempt_id)" ] || exit 0
+    python3 -I -c 'import json,sys
+d=json.load(open(sys.argv[1])); d["attempt_id"]=sys.argv[2]; json.dump(d,open(sys.argv[1]+".tmp","w"))' "$f" "$(epoch)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')" && mv "$f.tmp" "$f"
+  ) 9>"$BR/.ack.lock"
+}
+settle_one() { # caller holds the lock. A queue file whose attempt_id already has a done/ record (crash after the done write) or a disposition record (crash after the record) is the SAME delivery: finish what the crash cut off, never a second record
+  local f="$1" id att k
+  [ -f "$f" ] || return 1
+  id="$(basename "$f" .json)"; att="$(jget "$f" attempt_id)"; [ -n "$att" ] || return 1
+  if k="$(rec_key "$BR/done" "$id" "$att")" && [ -n "$k" ]; then
+    rm -f "$f"; clear_held "$id"; [ -e "$RTD/handled/$k" ] || handled_receipt "$k"
+    echo "$(iso) ack-recovered $id key=$k (queue file removed, original receipt kept)" >> "$BR/deliveries.log"; return 0
+  fi
+  if k="$(rec_key "$BR/dispositions" "$id" "$att")" && [ -n "$k" ]; then
+    mkdir -p "$BR/resolved"; mv -f "$f" "$BR/resolved/$k.json"; clear_held "$id"
+    echo "$(iso) resolve-recovered $id key=$k" >> "$BR/deliveries.log"; return 0
+  fi
+  return 1
+}
+settle_leftovers() { # caller holds the lock: finish every cut-off ack/resolve, then write the receipt of every attempt-bearing done/ entry that lost it (crash after the queue removal)
+  local f x k
+  for f in "$BR"/queue/*.json; do settle_one "$f" || true; done
+  for x in "$BR"/done/*.json; do
+    [ -f "$x" ] || continue
+    k="$(basename "$x" .json)"
+    [ -e "$RTD/handled/$k" ] || [ -z "$(jget "$x" attempt_id)" ] || handled_receipt "$k"
+  done
+}
+
 ack() {
   local f id n=0 want="${1:-}"
   [ -n "$want" ] || { echo "usage: ack <id>|--all" >&2; return 2; }
   mkdir -p "$BR/queue" "$BR/done"
   if [ "$want" = "--all" ]; then   # acks only ids with consumer evidence (deterministic/haiku: result + routed cache); pane-delivered, unseen and held ids stay queued
     local skipped=""
+    ( flock 9; settle_leftovers ) 9>"$BR/.ack.lock"
     sweep_held
     for f in "$BR"/queue/*.json; do
       [ -f "$f" ] || continue
@@ -246,21 +308,35 @@ ack() {
   fi
   [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "unknown id: $want" >&2; return 1; }
   ( flock 9
+    settle_leftovers
     if [ ! -f "$BR/queue/$want.json" ]; then   # no queued delivery: done/ is the record of an already-acked one
       if [ -f "$BR/done/$want.json" ]; then echo "already acked: $want"; exit 0; fi
+      if [ -f "$BR/dispositions/$want.json" ]; then echo "resolved by an operator disposition, not acked: $want (no handled receipt)" >&2; exit 1; fi
       echo "unknown id: $want" >&2; exit 1
     fi
     ack_ok "$want" || exit 1   # a queued file beside a done/ entry is a new delivery of the id: it needs its own evidence
     ackone_locked "$BR/queue/$want.json" && echo "acked 1"
   ) 9>"$BR/.ack.lock"
 }
-ackone_locked() { # caller holds the queue lock (fd 9); the first delivery of an id is done/<id>.json + receipt <id>, a later delivery of the same id gets done/<id>.rN.json + receipt <id>.rN (never overwrites, never deleted unrecorded)
+ackone_locked() { # caller holds the queue lock (fd 9); the first delivery of an id is done/<id>.json + receipt <id>, a later delivery of the same id gets done/<id>.rN.json + receipt <id>.rN (never overwrites, never deleted unrecorded).
+  # Crash-idempotent: the done record carries the queue file's attempt_id, so a restart that finds the queue file beside a done record of the same attempt finishes the original ack (settle_one), never a second one.
   local f="$1" id key n=0 extra=""; id="$(basename "$f" .json)"; key="$id"
   [ -f "$f" ] || return 0
+  settle_one "$f" && return 0
   while [ -e "$BR/done/$key.json" ]; do n=$((n+1)); key="$id.r$n"; extra=" delivery=r$n"; done
+  crash_at pre
   python3 -I -c 'import json,sys
-d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3]+".tmp","w"))' "$f" "$(epoch)" "$BR/done/$key.json" && mv "$BR/done/$key.json.tmp" "$BR/done/$key.json" && rm -f "$f" \
-    && clear_held "$id" && handled_receipt "$key" && echo "$(iso) ack $id$extra" >> "$BR/deliveries.log"
+d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3]+".tmp","w"))' "$f" "$(epoch)" "$BR/done/$key.json" || return 1
+  crash_at tmp
+  mv "$BR/done/$key.json.tmp" "$BR/done/$key.json" || return 1
+  crash_at done
+  rm -f "$f" || return 1
+  crash_at rm
+  clear_held "$id"
+  crash_at clear
+  handled_receipt "$key" || return 1
+  crash_at receipt
+  echo "$(iso) ack $id$extra" >> "$BR/deliveries.log"
 }
 ackone() { # serialized per queue root (flock): a concurrent ack of the same delivery finds the queue file gone and is a no-op
   ( flock 9; ackone_locked "$1" ) 9>"$BR/.ack.lock"
@@ -269,6 +345,51 @@ ackone() { # serialized per queue root (flock): a concurrent ack of the same del
 handled_receipt() {
   local id="$1" h="$RTD/handled"
   mkdir -p "$h" && : > "$h/.$id.tmp.$$" && mv -f "$h/.$id.tmp.$$" "$h/$id"
+}
+
+# resolve <id> --disposition <class> --reason <text> [--by <who>]: the operator's exit for a failure-held id (typed failure, UNKNOWN, held-unreadable, any id `ack` refuses).
+# Writes a typed disposition record dispositions/<id>[.rN].json (success=false, replayed=false) and moves the queue file to resolved/ (kept, never deleted). No done/ entry, no handled receipt,
+# no router call, no pane send: it is a disposition, not a success. An id `ack` would accept is refused (ack it); UNKNOWN is only resolved when an operator names it.
+DISPOSITIONS="operator-handled abandoned superseded duplicate not-actionable"
+resolve() {
+  local id="${1:-}" cls="" reason="" by="operator" bad=""
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --disposition|--reason|--by) [ $# -ge 2 ] || { bad="$1 needs a value"; break; }
+        case "$1" in --disposition) cls="$2";; --reason) reason="$2";; --by) by="$2";; esac; shift 2 ;;
+      *) bad="unknown argument $1"; break ;;
+    esac
+  done
+  [ -z "$bad" ] || { echo "resolve: $bad" >&2; return 2; }
+  [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "usage: resolve <id> --disposition <$(echo $DISPOSITIONS | tr ' ' '|')> --reason <text> [--by <who>]" >&2; return 2; }
+  case " $DISPOSITIONS " in *" $cls "*) ;; *) echo "resolve: --disposition must be one of: $DISPOSITIONS" >&2; return 2 ;; esac
+  python3 -I -c 'import re,sys
+r=sys.argv[1]
+sys.exit(0 if r.strip() and len(r)<=300 and not re.search(r"[\x00-\x1f\x7f]",r) and sys.argv[2].strip() and len(sys.argv[2])<=60 and not re.search(r"[\x00-\x1f\x7f]",sys.argv[2]) else 1)' "$reason" "$by" || { echo "resolve: --reason is required (1-300 printable characters), --by 1-60" >&2; return 2; }
+  mkdir -p "$BR/queue" "$BR/done" "$BR/dispositions" "$BR/resolved"
+  ( flock 9
+    settle_leftovers
+    local f="$BR/queue/$id.json" key="$id" n=0 att why
+    if [ ! -f "$f" ]; then
+      if [ -f "$BR/dispositions/$id.json" ]; then echo "already resolved: $id"; exit 0; fi
+      if [ -f "$BR/done/$id.json" ]; then echo "already acked: $id (nothing to resolve)" >&2; exit 1; fi
+      echo "unknown id: $id" >&2; exit 1
+    fi
+    if ack_ok "$id" 2>/dev/null; then echo "refused resolve $id: not failure-held, ack would accept it; use ack" >&2; exit 1; fi
+    why="${EV_WHY:-refused}"
+    att="$(jget "$f" attempt_id)"
+    while [ -e "$BR/dispositions/$key.json" ]; do n=$((n+1)); key="$id.r$n"; done
+    python3 -I -c 'import json,sys
+q=json.load(open(sys.argv[1]))
+json.dump({"kind":"disposition","id":sys.argv[2],"attempt_id":sys.argv[3] or None,"disposition":sys.argv[4],"reason":sys.argv[5],"evidence_class":sys.argv[6],"by":sys.argv[7],"resolved":int(sys.argv[8]),"success":False,"replayed":False,"queue":q},open(sys.argv[9]+".tmp","w"))' "$f" "$id" "$att" "$cls" "$reason" "$why" "$by" "$(epoch)" "$BR/dispositions/$key.json" || exit 1
+    mv "$BR/dispositions/$key.json.tmp" "$BR/dispositions/$key.json" || exit 1
+    crash_at disp
+    mv -f "$f" "$BR/resolved/$key.json" || exit 1
+    clear_held "$id"
+    echo "$(iso) resolve $id disposition=$cls class=$why key=$key" >> "$BR/deliveries.log"
+    echo "resolved $id disposition=$cls (not acked: no done/ entry, no handled receipt; never replayed; queue file kept at resolved/$key.json)"
+  ) 9>"$BR/.ack.lock"
 }
 
 selftest() {
@@ -288,7 +409,8 @@ case "${1:-}" in
   run) run ;;
   pending) for f in "$BR"/queue/*.json; do [ -f "$f" ] && ! held "$(basename "$f" .json)" && { cat "$f"; echo; }; done; exit 0 ;;
   ack) shift; ack "${1:-}" ;;
+  resolve) shift; resolve "$@" ;;
   status) cat "$BR/status.json" 2>/dev/null || echo '{"status":"no status yet"}' ;;
   --selftest) selftest ;;
-  *) echo "usage: ctl-event-bridge.sh run|pending|ack <id>|--all|status|--selftest" >&2; exit 2 ;;
+  *) echo "usage: ctl-event-bridge.sh run|pending|ack <id>|--all|resolve <id> --disposition <class> --reason <text>|status|--selftest" >&2; exit 2 ;;
 esac

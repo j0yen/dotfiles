@@ -91,7 +91,8 @@ cat > "$T/stub-router" <<'STUB'
 #!/bin/sh
 id=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[2]))["id"])' "$1" "$2")
 mkdir -p "$RT_DIR/routed"; echo "{\"id\":\"$id\",\"summary\":\"handled\"}" >> "$RT_DIR/mechanical.log"
-echo "{\"id\":\"$id\",\"route\":\"haiku\",\"model\":\"haiku\",\"reason\":\"x\",\"result\":\"handled\",\"row\":\"\"}" > "$RT_DIR/routed/$id.json"
+att=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[2])).get("attempt_id",""))' "$1" "$2")   # repair 3: an attempt-aware router copies the delivery's attempt_id into its cache
+echo "{\"id\":\"$id\",\"route\":\"haiku\",\"model\":\"haiku\",\"reason\":\"x\",\"result\":\"handled\",\"row\":\"\",\"attempt_id\":\"$att\"}" > "$RT_DIR/routed/$id.json"
 STUB
 chmod +x "$T/stub-router"; XRT_BIN="$T/stub-router" br run
 [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && [ "$(sends)" = 0 ] && grep -q 'ack-refused' "$T/br/deliveries.log"; chk "RED: summary-only mechanical.log handling is refused ack (stays queued, not sent to the pane)" $?

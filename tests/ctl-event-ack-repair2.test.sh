@@ -30,9 +30,9 @@ acklines() { local c; c=$(grep -c " ack $1\$" "$BRD/deliveries.log" 2>/dev/null)
 receipt() { [ -e "$RTD/handled/$1" ]; }
 
 
-mkq2() { echo "{\"id\":\"$1\",\"event\":{\"event\":\"inbox\",\"detail\":{\"gen\":\"$3\"}},\"created\":$2,\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/$1.json"; }
+mkq2() { echo "{\"id\":\"$1\",\"event\":{\"event\":\"inbox\",\"detail\":{\"gen\":\"$3\"}},\"created\":$2,\"attempts\":0,\"last_delivery\":0${4:+,\"attempt_id\":\"$4\"}}" > "$BRD/queue/$1.json"; }
 nrec() { ls "$RTD/handled" 2>/dev/null | grep -vc '^\.'; }
-old_done() { echo '{"id":"e1","event":{"event":"inbox","detail":{"gen":"old"}},"created":1,"attempts":0,"last_delivery":0,"acked":5}' > "$BRD/done/e1.json"; mkdir -p "$RTD/handled"; : > "$RTD/handled/e1"; }
+old_done() { echo '{"id":"e1","event":{"event":"inbox","detail":{"gen":"old"}},"created":1,"attempts":0,"last_delivery":0,"attempt_id":"A0","acked":5}' > "$BRD/done/e1.json"; mkdir -p "$RTD/handled"; : > "$RTD/handled/e1"; }
 
 # --- N1: only the typed success shape (exit 0, no typed-failure result) is evidence; 4 exits x 2 results x explicit / --all / run
 for ex in 2 1 75 -1; do for res in executed blocked-row; do
@@ -55,16 +55,16 @@ done
 fresh; old_done; mkq2 e1 100 new
 br ack e1 >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && [ "$(q)" = 0 ] && [ "$(d)" = 2 ] && [ "$(nrec)" = 2 ] && grep -q '"old"' "$BRD/done/e1.json" && grep -qh '"new"' "$BRD"/done/*.json && ! grep -q '"new"' "$BRD/done/e1.json"; chk "N2/Q1 requeued id, explicit ack (pane class): new payload gets its own done entry + receipt, old entry untouched" $?
-fresh; old_done; mkq2 e1 100 new; : > "$RTD/handled/e1"; rm -f "$RTD/handled/e1"
+fresh; old_done; sed -i 's/"attempt_id":"A0",//' "$BRD/done/e1.json"; mkq2 e1 100 new; : > "$RTD/handled/e1"; rm -f "$RTD/handled/e1"   # legacy done entry (no attempt_id): repair 3 restores the receipt of an attempt-bearing done entry, so this fixture stays legacy
 br ack e1 >/dev/null 2>&1; [ "$(q)" = 0 ] && [ "$(d)" = 2 ] && [ "$(nrec)" = 1 ]; chk "N2/Q4 done/ entry with no receipt + unseen requeue: the new queue file is acked on its own, not deleted unrecorded (d=2, 1 receipt)" $?
-# stale det evidence on a requeue (results/cache older than the new payload)
-stale() { fresh; old_done; mkq2 e1 "$(date +%s)" new; route e1 deterministic; good e1; touch -d '2001-01-01' "$RTD/results/e1.json" "$RTD/routed/e1.json"; }
+# stale det evidence on a requeue (repair 3: the evidence belongs to the previous attempt A0, the requeued delivery is attempt A2; evidence is bound by attempt_id, not mtime)
+stale() { fresh; old_done; mkq2 e1 "$(date +%s)" new A2; route e1 deterministic; good e1; sed -i 's/}$/,"attempt_id":"A0"}/' "$RTD/results/e1.json" "$RTD/routed/e1.json"; touch -d '2001-01-01' "$RTD/results/e1.json" "$RTD/routed/e1.json"; }
 stale; err="$(br ack e1 2>&1 >/dev/null)"; rc=$?
 [ "$rc" != 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 1 ] && grep -q '"new"' "$BRD/queue/e1.json" && [ -n "$err" ]; chk "N2/Q1 requeued det id with stale (pre-payload) evidence: explicit ack refused, new payload kept queued" $?
 stale; err="$(br ack --all 2>&1 >/dev/null)"; rc=$?
 [ "$rc" != 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 1 ] && grep -q '"new"' "$BRD/queue/e1.json"; chk "N2/Q2 requeued det id with stale evidence: ack --all skips it (not counted on the old entry), exit 1" $?
 stale; BR_CYCLES=2 br run >/dev/null 2>&1; [ "$(q)" = 1 ] && [ "$(d)" = 1 ]; chk "N2 requeued det id with stale evidence: run leaves it queued" $?
-fresh_ev() { touch "$RTD/results/e1.json" "$RTD/routed/e1.json"; }
+fresh_ev() { sed -i 's/"attempt_id":"A0"/"attempt_id":"A2"/' "$RTD/results/e1.json" "$RTD/routed/e1.json"; }
 stale; fresh_ev; br ack --all >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && [ "$(q)" = 0 ] && [ "$(d)" = 2 ] && [ "$(nrec)" = 2 ] && grep -q '"old"' "$BRD/done/e1.json" && grep -qh '"new"' "$BRD"/done/*.json; chk "N2/Q-lock requeued id with fresh evidence, --all: second done entry + second receipt, old entry content preserved" $?
 stale; fresh_ev; BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(q)" = 0 ] && [ "$(d)" = 2 ] && [ "$(nrec)" = 2 ]; chk "N2 requeued id with fresh evidence, run: acked as its own delivery (d=2, 2 receipts)" $?
