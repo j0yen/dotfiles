@@ -132,7 +132,7 @@ if [ "$ROUTED" = 1 ]; then
   if [ -r "$DEC_LOG" ]; then
     for psid in $(jq -r --arg t "$R_TASK" --arg k "$R_SKILL" 'select(.task_id==$t and .skill==$k and .decision=="launch" and .session!="")|.session' "$DEC_LOG" 2>/dev/null | sort -u); do
       [ "$psid" = "$sid" ] && continue
-      if ps -eo args= | grep -F -- "$psid" | grep -vq grep; then R_WHY="task $R_TASK/$R_SKILL already has a live worker (session $psid)"; dec_row denied; echo "fable-launch: $R_WHY; not dispatching a duplicate" >&2; exit 73; fi
+      if ps -eo comm=,args= | awk -v s="$psid" '$1 ~ /^(claude|node)$/ && index($0, s) { f = 1 } END { exit !f }'; then R_WHY="task $R_TASK/$R_SKILL already has a live worker (session $psid)"; dec_row denied; echo "fable-launch: $R_WHY; not dispatching a duplicate" >&2; exit 73; fi
     done
   fi
   if [ -z "$sid" ]; then sid="$(cat /proc/sys/kernel/random/uuid)"; out+=(--session-id "$sid"); fi
