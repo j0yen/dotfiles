@@ -15,3 +15,4 @@ Not covered by the guard (recorded gaps): CLAUDE_CODE_EFFORT_LEVEL env (top prec
 
 ## Inheritance premise (ASSUMPTION, not captured)
 The guard treats top-level effort.level as the subagent's effort when no parameter or definition effort exists. Docs say that holds only when the subagent runs on the main conversation's model; on another model the session level does not apply and the docs name no default. Falsifier: run a session at effort low, spawn general-purpose with no effort parameter (and once with a model different from the session's), and capture the subagent's own PreToolUse Bash hook payload; its effort.level (or absence) confirms or refutes the premise. Not yet run.
+A1300 cont6: the premise stays unproven. The guard now relies on it only in the no-model branch: top-level effort.level is read only when tool_input.model is empty; a spawn that names a model must also name tool_input.effort, otherwise the resolver denies "model/effort not explicit".

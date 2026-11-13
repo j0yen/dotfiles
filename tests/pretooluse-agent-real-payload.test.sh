@@ -22,14 +22,17 @@ H="$T/home"; mkdir -p "$H/.config/skill-routing"; cp "$R/.config/skill-routing/p
 MS='Invoke the maxspeed skill (Skill tool, skill: maxspeed, args: plan). Return the page.'
 g(){ # json -> rc, stdout/stderr in $T/o $T/e
   printf '%s' "$1" | env -i PATH="$PATH" HOME="$H" "$R/.claude/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; }
-v(){ jq -c --arg m "$2" --arg p "$MS" '.tool_input.model=$m|.tool_input.prompt=$p|.tool_input.subagent_type="general-purpose"' "$1"; }
+# a spawn that names a model must name tool_input.effort too (cont6): v copies the captured top-level level into tool_input.effort;
+# vn is the real client shape (no tool_input.effort)
+v(){ jq -c --arg m "$2" --arg p "$MS" '.tool_input.model=$m|.tool_input.prompt=$p|.tool_input.subagent_type="general-purpose"|.tool_input.effort=.effort.level' "$1"; }
+vn(){ v "$@" | jq -c 'del(.tool_input.effort)'; }
 
 # captured effort (low) = wrong-effort control
 g "$(v "$PLAN" fable)"; rc=$?
 ck "plan + fable + captured effort low -> deny naming the forbidden effort" '[ $rc = 2 ] && grep -q "forbidden effort .low." "$T/e"'
 g "$(v "$PLAN" sonnet)"; rc=$?
 ck "plan + sonnet + captured low -> deny naming given sonnet/low and forbidden effort" '[ $rc = 2 ] && grep -q "forbidden effort .low." "$T/e" && grep -q "given model=.sonnet. effort=.low." "$T/e"'
-g "$(v "$PLAN" sonnet | jq -c '.effort.level="high"')"; rc=$?
+g "$(v "$PLAN" sonnet | jq -c '.effort.level="high"|.tool_input.effort="high"')"; rc=$?
 ck "derived-high plan + sonnet -> deny naming the resolved fable route" '[ $rc = 2 ] && grep -q "resolved route claude-fable-5-1/high" "$T/e"'
 g "$(v "$DEF" fable)"; rc=$?
 ck "default + fable -> deny naming require_permission_mode" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
@@ -37,16 +40,16 @@ g "$(v "$DEF" sonnet)"; rc=$?
 ck "default + sonnet -> deny naming require_permission_mode and given sonnet" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e" && grep -q "given model=.sonnet." "$T/e"'
 
 # DERIVED variants: only the VALUE of top-level effort.level changes (shape kept)
-dv(){ v "$PLAN" fable | jq -c --arg e "$1" '.effort.level=$e'; }
+dv(){ v "$PLAN" fable | jq -c --arg e "$1" '.effort.level=$e|.tool_input.effort=$e'; }
 g "$(dv high)"; rc=$?
 ck "derived-high plan + fable + effort.level high -> allow" '[ $rc = 0 ]'
-g "$(v "$DEF" fable | jq -c '.effort.level="high"')"; rc=$?
+g "$(v "$DEF" fable | jq -c '.effort.level="high"|.tool_input.effort="high"')"; rc=$?
 ck "derived-high default + fable + effort.level high -> deny naming require_permission_mode" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
 g "$(dv xhigh)"; rc=$?
 ck "derived-xhigh plan + fable -> deny naming fable-launch.sh --route-request" '[ $rc = 2 ] && grep -q "fable-launch.sh --route-request" "$T/e"'
 
 # fail closed
-g "$(v "$PLAN" fable | jq -c 'del(.effort)')"; rc=$?
+g "$(vn "$PLAN" fable | jq -c 'del(.effort)')"; rc=$?
 ck "no effort anywhere -> deny (not explicit)" '[ $rc = 2 ] && grep -q "not explicit" "$T/e"'
 g "$(dv xhigh | jq -c '.tool_input.effort="low"')"; rc=$?
 ck "tool_input.effort low + top-level xhigh -> deny (tool_input wins, stderr names low)" '[ $rc = 2 ] && grep -q "effort=.low." "$T/e"'
@@ -54,7 +57,7 @@ g "$(dv low | jq -c '.tool_input.effort="high"')"; rc=$?
 ck "tool_input.effort high + top-level low -> allow (tool_input wins)" '[ $rc = 0 ]'
 
 # E1: wrong-shape effort (string, not object) must fail closed, not allow
-g "$(v "$PLAN" fable | jq -c '.effort="high"')"; rc=$?
+g "$(vn "$PLAN" fable | jq -c '.effort="high"')"; rc=$?
 ck "E1 effort is a string -> deny (not explicit)" '[ $rc = 2 ] && grep -q "not explicit" "$T/e"'
 
 # E4: the unmodified captured fixtures (haiku, no governed skill) pass as-is
@@ -66,7 +69,7 @@ done
 # E3: agent-definition effort (tool_input.effort > project agent file > user agent file > top-level effort.level); fake files in the temp HOME/project only
 PRJ="$T/proj"; mkdir -p "$H/.claude/agents" "$PRJ/.claude/agents"
 af(){ printf -- '---\nname: %s\nmodel: sonnet\n%s\n---\nbody\n' "$2" "$3" >"$1"; }
-av(){ v "$PLAN" fable | jq -c --arg s "$1" --arg c "$PRJ" --arg e "$2" '.tool_input.subagent_type=$s|.cwd=$c|.effort.level=$e'; }
+av(){ vn "$PLAN" fable | jq -c --arg s "$1" --arg c "$PRJ" --arg e "$2" '.tool_input.subagent_type=$s|.cwd=$c|.effort.level=$e'; }
 rmaf(){ chmod 644 "$H"/.claude/agents/* "$PRJ"/.claude/agents/* 2>/dev/null; rm -f "$H"/.claude/agents/* "$PRJ"/.claude/agents/*; }
 rmaf; af "$H/.claude/agents/coder.md" coder "effort: medium"
 g "$(av coder high)"; rc=$?
@@ -93,7 +96,7 @@ ck "E3g tool_input.effort high beats agent file medium -> allow" '[ $rc = 0 ]'
 rmaf; g "$(av 'bad/../x' high)"; rc=$?
 ck "E3h subagent_type with path chars -> deny subagent_type unresolved" '[ $rc = 2 ] && grep -q "subagent_type unresolved" "$T/e"'
 rmaf; g "$(av general-purpose high)"; rc=$?
-ck "E3i built-in (no definition file) falls through to effort.level -> allow" '[ $rc = 0 ]'
+ck "E3i built-in (no definition file), model named, no tool_input.effort -> deny not explicit (session level not used with a model, cont6)" '[ $rc = 2 ] && grep -q "not explicit" "$T/e"'
 rmaf
 
 # E8: policy lib missing -> the fallback still denies a maxspeed spawn (guard copied alone, no lib reachable, SKILL_POLICY_LIB unset)
@@ -103,6 +106,25 @@ gn "$(v "$PLAN" fable)"; rc=$?
 ck "E8 lib missing + maxspeed prompt -> deny 'skill-model-policy.sh not found'" '[ $rc = 2 ] && grep -q "skill-model-policy.sh not found" "$T/e"'
 gn "$(jq -c '.tool_input.prompt="reply ok"' "$PLAN")"; rc=$?
 ck "E8 lib missing + plain prompt -> allow" '[ $rc = 0 ]'
+
+# cont6 edit 1: top-level effort.level counts only when tool_input.model is empty; a named model needs tool_input.effort
+g "$(dv high | jq -c 'del(.tool_input.effort)')"; rc=$?
+ck "AC1 plan + fable + effort.level high + no tool_input.effort -> deny 'model/effort not explicit'" '[ $rc = 2 ] && grep -q "model/effort not explicit" "$T/e"'
+g "$(dv high | jq -c 'del(.tool_input.effort)|.tool_input.model=""')"; rc=$?
+ck "AC1 same payload with empty model -> deny 'model/effort not explicit' (unchanged from 5b3bb8f)" '[ $rc = 2 ] && grep -q "model/effort not explicit" "$T/e"'
+
+# cont6 edit 2: unreadable tool_input fails closed (jq shim on a temp PATH; real jq path captured first)
+RJQ="$(command -v jq)"; SH="$T/shim"; mkdir -p "$SH"
+printf '#!/bin/bash\ncase "$*" in *tool_input.model*|*tool_input.effort*) exit 1;; esac\nexec "%s" "$@"\n' "$RJQ" >"$SH/jq"; chmod +x "$SH/jq"
+printf '%s' "$(dv high | jq -c 'del(.tool_input.effort)')" | env -i PATH="$SH:$PATH" HOME="$H" "$R/.claude/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; rc=$?
+ck "AC2 jq cannot read tool_input.model/effort -> rc 2 'cannot read tool_input'" '[ $rc = 2 ] && grep -q "cannot read tool_input" "$T/e"'
+printf 'not json' | env -i PATH="$PATH" HOME="$H" "$R/.claude/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; rc=$?
+ck "AC2 non-JSON stdin -> rc 2 'empty or malformed hook input'" '[ $rc = 2 ] && grep -q "empty or malformed hook input" "$T/e"'
+
+# cont6 edit 7: model-only failure (explicit baseline effort, wrong model); expected model read from the policy file
+PB=$(jq -r .skills.maxspeed.baseline "$H/.config/skill-routing/policy.json"); PM=$(jq -r --arg b "$PB" '.skills.maxspeed.routes[$b].model' "$H/.config/skill-routing/policy.json")
+g "$(v "$PLAN" sonnet | jq -c --arg e "${PB##*-}" '.tool_input.effort=$e')"; rc=$?
+ck "AC3 plan + sonnet + explicit baseline effort -> deny naming the policy's required model" '[ -n "$PM" ] && [ $rc = 2 ] && grep -q "resolved route $PM/${PB##*-}" "$T/e"'
 
 # finding record: at f396753 the guard read only tool_input.effort, so the real plan fixture + fable resolved E to empty
 # ("model/effort not explicit" deny); now E=low from effort.level and the resolver denies on the effort value.

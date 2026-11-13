@@ -25,11 +25,12 @@ for _l in "${SKILL_POLICY_LIB:-}" "$HERE/../../.local/lib/skill-model-policy.sh"
 if [ -z "${SKILL_POLICY_SKILLS:-}" ]; then echo "skill-agent-effort-guard: skill-model-policy.sh not found; refusing skill spawn (fail closed for the covered skills only)" >&2
   TEXT=$(printf '%s' "$INPUT" | "$JQ" -r '[.tool_input.prompt, .tool_input.description] | map(. // "") | join("\n")' 2>/dev/null) || exit 0
   printf '%s' "$TEXT" | grep -qiE '5whysandrhyme|wwhtbt|maxspeed' && exit 2; exit 0; fi
-MODEL=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.model // empty' 2>/dev/null) || exit 0
-EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.effort // empty' 2>/dev/null) || exit 0
-# The real client payload carries effort only at top-level effort.level; tool_input.effort (when present) wins.
-[ -n "$EFFORT" ] || EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.effort.level? // empty' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read effort.level; refusing (fail closed)" >&2; exit 2; }
-TEXT=$(printf '%s' "$INPUT" | "$JQ" -r '[.tool_input.prompt, .tool_input.description] | map(. // "") | join("\n")' 2>/dev/null) || exit 0
+MODEL=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.model // empty' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read tool_input; refusing (fail closed)" >&2; exit 2; }
+EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.effort // empty' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read tool_input; refusing (fail closed)" >&2; exit 2; }
+# The real client payload carries effort only at top-level effort.level; tool_input.effort (when present) wins. The session level is
+# used only when no model is named (docs: on another model the session level does not apply; see PROVENANCE inheritance premise).
+[ -n "$EFFORT" ] || [ -n "$MODEL" ] || EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.effort.level? // empty' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read effort.level; refusing (fail closed)" >&2; exit 2; }
+TEXT=$(printf '%s' "$INPUT" | "$JQ" -r '[.tool_input.prompt, .tool_input.description] | map(. // "") | join("\n")' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read tool_input; refusing (fail closed)" >&2; exit 2; }
 M=$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]'); E=$(printf '%s' "$EFFORT" | tr '[:upper:]' '[:lower:]')
 hit=""
 for s in $SKILL_POLICY_SKILLS; do
