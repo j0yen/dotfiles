@@ -393,6 +393,13 @@ hc f51-short-jwt 'bad eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxFAKEF51C1.sig\n' FAKEF51C
 hc f51-short-jwt-nosig 'eyJhbGciOi.eyJzdWIiOiFAKEF51C2.\n' FAKEF51C2
 hc f51-jwt-after-colon 'jwt:eyJhbGciOi.eyJzdWIiOiFAKEF51C3.xyz\n' FAKEF51C3
 hc f51-pct-url-userinfo 'postgres://u:FAKEF51D1%%40x@h/db\n' FAKEF51D1
+# decoding depth pins: two and three encoding levels are decoded and redacted in place (line stays readable); four levels are withheld, never guessed
+printf 'x token%%253DFAKEF51F1\n' >"$W/err.bin"; e="$(hint)"
+ck "F5-1 double-encoded name is decoded and redacted in place (not withheld)" "$(case "$e" in *"token=<redacted>"*) case "$e" in *FAKEF51F1*|*withheld*) echo bad;; *) echo ok;; esac;; esac)" ok
+printf 'x password%%25253DFAKEF51F2\n' >"$W/err.bin"; e="$(hint)"
+ck "F5-1 triple-encoded name is decoded and redacted in place (not withheld)" "$(case "$e" in *"password=<redacted>"*) case "$e" in *FAKEF51F2*|*withheld*) echo bad;; *) echo ok;; esac;; esac)" ok
+printf 'x password%%252525253DFAKEF51F3\n' >"$W/err.bin"; e="$(hint)"
+ck "F5-1 four-level encoding is withheld with a marker, nothing guessed" "$(case "$e" in *"<encoded text withheld>"*) case "$e" in *FAKEF51F3*) echo bad;; *) echo ok;; esac;; esac)" ok
 # own negatives, beyond the reviewer's list: encoded cookie pair, encoded Authorization header, hex-escaped bearer
 hc f51-own-pct-cookie 'Set%%2DCookie: sid=FAKEF51E1\n' FAKEF51E1
 hc f51-own-pct-bearer 'authorization%%3A%%20bearer%%20FAKEF51E2\n' FAKEF51E2
