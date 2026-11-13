@@ -27,7 +27,7 @@
 #   OWED_CACHE_MAX_AGE_S, or a truthful "UNKNOWN: cache absent/malformed, NOT none owed" marker on EVERY prompt while the cache is unknown (the full text once per session and state, a short
 #   line after; stale: a STALE line every prompt; rv6 F6-2, silence read as none owed). The Stop hook stays a synchronous required guard for the ledger READ (it persists
 #   fingerprints and blocks on a NEW one) but never waits on the store lock and never delivers (F7-1: followup-stop-nowait.sh; delivery = followup-outbox-replay.timer); on a ledger failure it already fails open. Fingerprint, dedupe, claim and outbox semantics are untouched.
-# Env: OWED_CACHE_REFRESH_S (default 20) OWED_CACHE_MAX_AGE_S (default 900) OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
+# Env: OWED_CACHE_REFRESH_S (default 20) OWED_CACHE_MAX_AGE_S (default 900) OWED_CACHE_MAX_ROWS (default 200) OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
 set -u
 GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
 MAXR="${OWED_NOW_MAX_ROWS:-15}"; [[ "$MAXR" =~ ^[0-9]{1,3}$ ]] || MAXR=15
@@ -116,6 +116,7 @@ seat_of() {   # seat_of <hook json>
 
 # --- UserPromptSubmit prompt-context cache (canonical mode only). No ledger call on the prompt path.
 CACHE_REFRESH_S="${OWED_CACHE_REFRESH_S:-20}"; [[ "$CACHE_REFRESH_S" =~ ^[0-9]{1,5}$ ]] || CACHE_REFRESH_S=20
+CACHE_MAX_ROWS="${OWED_CACHE_MAX_ROWS:-200}"; [[ "$CACHE_MAX_ROWS" =~ ^[0-9]{1,5}$ ]] && [ "$CACHE_MAX_ROWS" -ge 1 ] || CACHE_MAX_ROWS=200
 CACHE_MAX_AGE_S="${OWED_CACHE_MAX_AGE_S:-900}"; [[ "$CACHE_MAX_AGE_S" =~ ^[0-9]{1,6}$ ]] || CACHE_MAX_AGE_S=900
 self_path() { readlink -f "${BASH_SOURCE[0]}"; }
 cache_file() { printf '%s/%s.ups-cache.json' "$(state_dir)" "$1"; }
@@ -195,6 +196,10 @@ refresh() {
   now="$(date +%s)"
   rows="$(lint "$seat" "$now")"; rc=$?
   f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || { exlock_release; return 0; }
+  # the cache is bounded: the prompt lists MAXR rows and a count, and cache_read rejects a file above 1 MiB (about 4,000 rows would read back as "malformed"); keep the first CACHE_MAX_ROWS rows and say how many were left out
+  if [ "$(printf '%s\n' "$rows" | grep -c .)" -gt "$CACHE_MAX_ROWS" ]; then
+    rows="$(printf '%s\n' "$rows" | head -n "$CACHE_MAX_ROWS")"$'\n'"$(printf 'MORE\t-\t\t%s further owed rows are not listed in this cache; run ~/.claude/hooks/owed-now.sh lint --seat %s' "$(( $(printf '%s\n' "$rows" | grep -c .) - CACHE_MAX_ROWS ))" "$seat")"
+  fi
   # rows go in on stdin, never as a command-line argument: one argument is capped at 128 KiB (MAX_ARG_STRLEN), so 1,000 owed rows made the old `jq --arg rows` fail and the cache never appeared (F7-5)
   if printf '%s' "$rows" | jq -Rsc --arg s "$seat" --argjson ts "$now" --argjson clean "$([ "$rc" = 0 ] && echo true || echo false)" '{v:1,seat:$s,ts:$ts,clean:$clean,rows:.}' >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"

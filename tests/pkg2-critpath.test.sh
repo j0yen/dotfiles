@@ -348,6 +348,7 @@ import json,sys
 json.dump([{"ask_id":"A%d"%i,"rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing %d with some text to make it realistic"%i} for i in range(int(sys.argv[2]))],open(sys.argv[1],"w"))
 PY
 WM_SEAT=ctl timeout 300 bash "$OWED" refresh --seat ctl >/dev/null 2>&1
+ck "F7-5 the cache is bounded: 1,000 owed rows keep 200 rows plus one MORE line naming the 800 left out (a cache above 1 MiB would read back as malformed, about 4,000 rows)" "$(jq -r '.rows' "$W/owed/ctl.ups-cache.json" | grep -c .)/$(jq -r '.rows' "$W/owed/ctl.ups-cache.json" | grep -c '^MORE.*800 further')/$([ "$(stat -c %s "$W/owed/ctl.ups-cache.json")" -lt 1048576 ] && echo small)" "201/1/small"
 o="$(UPS sc1)"
 ck "F7-5 1,000 owed rows: the refresh wrote a valid cache and the prompt lists rows (not UNKNOWN)" "$([ -s "$W/owed/ctl.ups-cache.json" ] && jq -e '.v==1 and .clean==false' "$W/owed/ctl.ups-cache.json" >/dev/null 2>&1 && echo cache)/$(grep -c 'UNKNOWN' <<<"$o")/$(grep -c 'A1' <<<"$o")" "cache/0/1"
 # one `new` run with 1,000 new obligations syncs the fingerprint file once, not once per obligation (the fsync count is filesystem independent; 18 s on this host's SSD under load, rv7 F7-5)
