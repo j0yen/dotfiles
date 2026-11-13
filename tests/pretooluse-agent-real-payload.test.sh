@@ -63,6 +63,39 @@ for fx in "$PLAN" "$DEF"; do
   ck "E4 unmodified $(basename "$fx") -> allow" '[ $rc = 0 ]'
 done
 
+# E3: agent-definition effort (tool_input.effort > project agent file > user agent file > top-level effort.level); fake files in the temp HOME/project only
+PRJ="$T/proj"; mkdir -p "$H/.claude/agents" "$PRJ/.claude/agents"
+af(){ printf -- '---\nname: %s\nmodel: sonnet\n%s\n---\nbody\n' "$2" "$3" >"$1"; }
+av(){ v "$PLAN" fable | jq -c --arg s "$1" --arg c "$PRJ" --arg e "$2" '.tool_input.subagent_type=$s|.cwd=$c|.effort.level=$e'; }
+rmaf(){ chmod 644 "$H"/.claude/agents/* "$PRJ"/.claude/agents/* 2>/dev/null; rm -f "$H"/.claude/agents/* "$PRJ"/.claude/agents/*; }
+rmaf; af "$H/.claude/agents/coder.md" coder "effort: medium"
+g "$(av coder high)"; rc=$?
+ck "E3a user agent effort medium + session high + fable + plan -> deny naming medium" '[ $rc = 2 ] && grep -q "effort=.medium." "$T/e"'
+rmaf; af "$H/.claude/agents/coder.md" coder "effort: high"
+g "$(av coder low)"; rc=$?
+ck "E3b agent effort high beats session low -> allow" '[ $rc = 0 ]'
+rmaf; af "$PRJ/.claude/agents/x.md" x "effort: medium"; af "$H/.claude/agents/x.md" x "effort: high"
+g "$(av x high)"; rc=$?
+ck "E3c project agent (medium) wins over user agent (high) -> deny" '[ $rc = 2 ] && grep -q "effort=.medium." "$T/e"'
+rmaf; af "$H/.claude/agents/coder.md" coder "effort: high"; chmod 000 "$H/.claude/agents/coder.md"
+if [ "$(id -u)" = 0 ] || [ -r "$H/.claude/agents/coder.md" ]; then echo "SKIP E3d unreadable agent file (root or chmod ineffective)"
+else g "$(av coder high)"; rc=$?
+  ck "E3d unreadable agent file -> deny unresolved" '[ $rc = 2 ] && grep -q "unresolved" "$T/e"'; fi
+rmaf; printf 'name: coder\neffort: high\n---\n' >"$H/.claude/agents/coder.md"
+g "$(av coder high)"; rc=$?
+ck "E3e first line not --- -> deny unresolved" '[ $rc = 2 ] && grep -q "unresolved" "$T/e"'
+rmaf; af "$H/.claude/agents/coder.md" coder "effort: bogus"
+g "$(av coder high)"; rc=$?
+ck "E3f effort bogus -> deny unresolved" '[ $rc = 2 ] && grep -q "unresolved" "$T/e"'
+rmaf; af "$H/.claude/agents/coder.md" coder "effort: medium"
+g "$(av coder low | jq -c '.tool_input.effort="high"')"; rc=$?
+ck "E3g tool_input.effort high beats agent file medium -> allow" '[ $rc = 0 ]'
+rmaf; g "$(av 'bad/../x' high)"; rc=$?
+ck "E3h subagent_type with path chars -> deny subagent_type unresolved" '[ $rc = 2 ] && grep -q "subagent_type unresolved" "$T/e"'
+rmaf; g "$(av general-purpose high)"; rc=$?
+ck "E3i built-in (no definition file) falls through to effort.level -> allow" '[ $rc = 0 ]'
+rmaf
+
 # finding record: at f396753 the guard read only tool_input.effort, so the real plan fixture + fable resolved E to empty
 # ("model/effort not explicit" deny); now E=low from effort.level and the resolver denies on the effort value.
 

@@ -41,7 +41,32 @@ command -v sr_resolve >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit}
 command -v sr_governed >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit} skill-route.sh is too old (sr_governed missing: guard/lib install skew, install guard, lib and policy.json as one set); refusing governed skill spawn (fail closed)" >&2; exit 2; }
 M=$(sr_alias_model "$M")
 bad=""
+# Agent-definition effort (Claude Code docs: tool_input.effort > project .claude/agents > user ~/.claude/agents > session effort.level).
+# Only for governed spawns with no tool_input.effort; built-ins without a definition file fall through to effort.level.
+TIEFF=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.effort? // empty' 2>/dev/null) || TIEFF=""
+SUB=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.subagent_type? // empty' 2>/dev/null) || SUB=""
+DEFBAD=""
+if [ -z "$TIEFF" ] && [ -n "$SUB" ]; then
+  if ! printf '%s' "$SUB" | grep -qE '^[A-Za-z0-9._-]+$'; then DEFBAD="subagent_type unresolved"
+  else
+    PCWD=$(printf '%s' "$INPUT" | "$JQ" -r '.cwd? // empty' 2>/dev/null) || PCWD=""
+    DEF=""
+    for _c in "${PCWD:+$PCWD/.claude/agents/$SUB.md}" "$HOME/.claude/agents/$SUB.md"; do
+      [ -n "$_c" ] && { [ -e "$_c" ] || [ -L "$_c" ]; } && { DEF="$_c"; break; }; done
+    if [ -n "$DEF" ]; then
+      FM=$({ IFS= read -r _l1 && [ "${_l1%$'\r'}" = --- ] && awk 'NR>0{ if ($0 ~ /^---[ \t\r]*$/) {c=1; exit} print } END{ exit !c }'; } <"$DEF" 2>/dev/null) || FM="<malformed>"
+      if [ "$FM" = "<malformed>" ]; then DEFBAD="agent definition $DEF unresolved"
+      else
+        AE=$(printf '%s\n' "$FM" | sed -n 's/^effort:[[:space:]]*//p' | head -1 | tr -d ' \t\r"'"'")
+        if printf '%s\n' "$FM" | grep -q '^effort:'; then
+          case "$AE" in low|medium|high|xhigh|max) EFFORT="$AE"; E="$AE";; *) DEFBAD="agent definition $DEF unresolved";; esac
+        fi
+      fi
+    fi
+  fi
+fi
 for s in $hit; do
+  [ -n "$DEFBAD" ] && { bad="$bad $s($DEFBAD)"; continue; }
   sr_governed "$s"; _g=$?
   if [ "$_g" != 0 ]; then bad="$bad $s(policy-missing: no .skills.$s entry or unreadable policy file)"; continue; fi
   if [ -z "$M" ] || [ -z "$E" ]; then bad="$bad $s(model/effort not explicit)"; continue; fi
