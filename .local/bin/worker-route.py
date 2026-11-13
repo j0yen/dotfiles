@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""worker-route.py launch <ask> | supervise <invocation> | consume | reconcile <invocation> --verdict present|absent --by <who>
+"""worker-route.py bind --executable <path> --store <path> --by <who> | launch <ask> | resume <invocation> --by <who> | supervise <invocation> | consume | reconcile <invocation> --verdict present|absent --by <who>
 
 Direct route (rb/r7 seat retirement, step 2): task -> authorized host worker -> durable exact-invocation terminal ->
 named consumer -> next action, with no seat model turn in the loop. Reuses the canonical ask store (wm-asks) and the existing
@@ -15,22 +15,37 @@ launchers; adds no task store, scheduler, coordinator or signing authority. rb a
                (BEGIN without END = UNKNOWN, held) -> receipt (never closes, resolves or accepts the ask) -> successor: an open, unclaimed
                ask whose waits_on tokens are all consumed asks and that carries its own worker-route spec is launched the same way.
   reconcile  = the owner's readback of an UNKNOWN effect: `present` (END) or `absent` (ABSENT); never inferred.
-State: $WR_STATE (default ~/.local/state/worker-route): launches/ terminals/ consumed/ effects/ prov/ decisions.jsonl locks/.
-Env seams: WM_ASKS_CMD HOLD_GATE WR_HOST WR_LAUNCHERS WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>; default systemd-run --user).
-Exit: 0 ok | 4 canonical ask store unavailable (nothing launched; retryable, no cap) | 5 ask claimed by another worker | 6 invocation still
-open for this ask | 64 usage | 76 hold gate closed | 78 no/invalid spec | 79 wrong host | 1 start failed.
-Failed before start: a claim-failed (claim not held) or start-failed (unit refused) launch writes a FINAL receipt of its own with the failure
-decision; the ask is then relaunchable under a NEW invocation id (a start-failed claim is re-claimed by worker-route). A claim whose result AND readback
-are both unreadable is claim-unknown: it blocks (exit 6), is reported UNKNOWN and is never retried. supervise re-checks the launcher allowlist at execution
-time (launcher-not-allowed -> terminal rc 78 refused, nothing executed).
+State: $WR_STATE (default ~/.local/state/worker-route): launches/ terminals/ consumed/ effects/ prov/ started/ decisions.jsonl locks/ asks-binding.json.
+Env seams: WM_ASKS_CMD (one executable) HOLD_GATE WR_HOST WR_LAUNCHERS WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>; default systemd-run --user)
+WR_UNIT_PROBE (<unit> -> `LoadState=`/`ActiveState=` lines; default systemctl --user show) WR_ASKS_TIMEOUT (seconds, default 120) WR_ASKS_BINDING.
+Exit: 0 ok | 3 resume/reconcile refused | 4 canonical ask store unavailable or claim UNKNOWN (retryable, no cap) | 5 ask claimed by another worker or claim
+not held | 6 invocation still open for this ask | 7 start UNKNOWN (blocks) | 64 usage | 76 hold gate closed | 77 ask entrypoint not bound | 78 no/invalid spec |
+79 wrong host | 1 start failed (no start PROVEN).
+Real claim semantics (asks.claim, cli.py do_asks): ANY existing claim, the same worker's included, is Conflict (rc 66, nothing changed), Refused is rc 2,
+and the claim COMMITS before the client prints, so rc 75, rc 1, a kill or a timeout can follow a committed claim. There is no release or resume verb, so this
+route never re-claims, never releases and never clears a claim; only the READBACK of the claim decides (this invocation holds it, nobody does, someone else does).
+Failed before start: claim-failed = the readback was READABLE and shows this invocation does not hold the claim (FINAL, relaunchable with a fresh claim).
+A claim whose result AND readback are unreadable (timeout, exit 127 and rc 75 included) is claim-unknown: blocks (exit 6), reported UNKNOWN, never retried; `resume`
+reads the canonical store back: claim = this invocation -> the SAME invocation starts (no second claim); claim absent or another worker's -> FINAL claim-failed;
+unreadable -> stays UNKNOWN. A nonzero start-client return NEVER proves nothing started: the route reconciles host, unit, invocation and child evidence (the
+started/ marker the supervisor writes first, a terminal, the effect ledger, the provenance file, the unit as `WR_UNIT_PROBE` reports it). Any of it present = started
+(the unit may still be running; its terminal is consumed normally); none present AND the unit inspected absent = no-start PROVEN: FINAL start-failed (recorded with the
+proof); anything else = start-unknown (UNKNOWN, blocks, exit 7; `resume` reconciles again). A launch after a PROVEN no-start ADOPTS the held claim of its own
+start-failed invocation of the same ask (a new invocation id, the claim holder token carried as `worker`, no claim call); a terminal that arrives after a
+start-failed FINAL is preserved and surfaced as UNKNOWN late-terminal, and blocks adoption. supervise re-checks the launcher allowlist at execution time
+(launcher-not-allowed -> terminal rc 78 refused, nothing executed) and refuses to start a child for an invocation that already has a FINAL start-failed receipt.
+Binding: `bind` records the resolved executable path + sha256 of WM_ASKS_CMD, the host and the store file identity (owner attestation, checked at bind against the resolved
+command); launch, consume and resume verify all four on every call and refuse (77) on any mismatch; no binding = refused. A PATH name is never trusted.
 Provenance: model/effort/account are what the launcher recorded; absent = "unrecorded". This file reads no credential and infers no account.
 """
 import fcntl
 import glob
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -50,8 +65,10 @@ INV_RE = re.compile(r"^wr-[A-Za-z0-9]+-[0-9]+-[0-9a-f]{8}$")
 ASK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
 REFUSED_RC = (70, 72, 73, 74, 76, 77, 78, 79, 80)     # the launchers' refusal exits (rb-run-coder.sh header)
 PROV_KEYS = ("model", "effort", "account", "session")
+ASKS_TIMEOUT = float(os.environ.get("WR_ASKS_TIMEOUT") or 120)
+BINDING = os.environ.get("WR_ASKS_BINDING") or os.path.join(STATE, "asks-binding.json")
 FINAL = ("consumed", "refused", "worker-failed", "worker-refused", "provider-outage", "absent-effect", "claim-failed", "start-failed")
-FAILED_BEFORE_START = ("claim-failed", "start-failed")      # no child, no live claim: final, and the ask is relaunchable under a NEW invocation
+FAILED_BEFORE_START = ("claim-failed", "start-failed")      # claim-failed: claim not held (readback). start-failed: no start PROVEN; the claim stays held and is adopted by the next launch
 
 
 def now():
@@ -63,7 +80,7 @@ def d(*p):
 
 
 def ensure():
-    for s in ("launches", "terminals", "consumed", "effects", "prov", "locks"):
+    for s in ("launches", "terminals", "consumed", "effects", "prov", "started", "locks"):
         os.makedirs(d(s), exist_ok=True)
 
 
@@ -125,9 +142,75 @@ def sh(argv, timeout=120, env=None):
         return 127, "", str(e)
 
 
+def asks_call(*args):
+    return sh(ASKS + list(args), timeout=ASKS_TIMEOUT)
+
+
+def file_sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(65536), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def asks_identity():
+    """(realpath, sha256) of the ONE executable WM_ASKS_CMD names; None when it is not a single resolvable file."""
+    if len(ASKS) != 1:
+        return None
+    exe = shutil.which(ASKS[0])
+    if not exe:
+        return None
+    rp = os.path.realpath(exe)
+    try:
+        return rp, file_sha(rp)
+    except OSError:
+        return None
+
+
+def store_identity(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return {"path": os.path.realpath(path), "dev": st.st_dev, "ino": st.st_ino}
+
+
+def cmd_bind(exe, store, by):
+    ensure()
+    ident = asks_identity()
+    si = store_identity(store) if store else None
+    if not by or not exe or ident is None or si is None or os.path.realpath(exe) != ident[0]:
+        decide(decision="bind-refused", reason="executable-or-store-not-verifiable", executable=exe[:120])
+        return 3
+    atomic_write(BINDING, json.dumps({"executable": ident[0], "sha256": ident[1], "host": HOST, "store": si, "by": by, "ts": now()},
+                                     sort_keys=True, indent=1) + "\n")
+    decide(decision="bound", executable=ident[0], sha256=ident[1], store=si["path"], by=by)
+    return 0
+
+
+def bound_ok():
+    """The ask entrypoint is the bound one: executable path + sha256, host, store identity. Nothing is taken from a default or a PATH name."""
+    b = load(BINDING)
+    ident = asks_identity()
+    if not b or ident is None:
+        return False
+    si = store_identity((b.get("store") or {}).get("path", ""))
+    return (b.get("executable") == ident[0] and b.get("sha256") == ident[1] and b.get("host") == HOST
+            and si is not None and si == b.get("store"))
+
+
+def require_bound(op):
+    if bound_ok():
+        clear_once("asks-unbound:" + op)
+        return True
+    decide_once("asks-unbound:" + op, decision="asks-unbound", op=op, note="ask entrypoint is not the bound executable/host/store; nothing was read or written")
+    return False
+
+
 def asks_query(*args):
     """Canonical read. List of rows, or None when the store is unavailable or malformed (no fallback)."""
-    rc, out, _ = sh(ASKS + ["asks", "query", "--json"] + list(args))
+    rc, out, _ = asks_call("asks", "query", "--json", *args)
     if rc != 0:
         return None
     try:
@@ -212,16 +295,94 @@ def launch_open_for(ask):
 
 
 def fail_before_start(rec, state, **kw):
-    """A launch that failed before any child could exist: the record becomes a FINAL terminal of its own (receipt + decision), the
-    failure stays in history, and the ask is relaunchable under a new invocation id."""
+    """A launch that failed before any child could exist (claim-failed: the readback shows the claim is not held; start-failed: no start PROVEN):
+    the record becomes a FINAL terminal of its own (receipt + decision), the failure stays in history, and the ask is relaunchable under a new invocation id."""
     rec["state"] = state
-    atomic_write(d("launches", rec["invocation"] + ".json"), json.dumps(rec, sort_keys=True, indent=1) + "\n")
+    save_rec(rec)
     write_receipt(rec["invocation"], state, ask=rec["ask"], **kw)
     decide(decision=state, ask=rec["ask"], invocation=rec["invocation"], **kw)
 
 
+def save_rec(rec):
+    atomic_write(d("launches", rec["invocation"] + ".json"), json.dumps(rec, sort_keys=True, indent=1) + "\n")
+
+
+def unit_probe(unit):
+    """The unit as the host reports it: 'present' | 'absent' | 'unknown' (probe unreachable, malformed or not a clean answer)."""
+    pc = os.environ.get("WR_UNIT_PROBE")
+    argv = (shlex.split(pc) + [unit]) if pc else ["systemctl", "--user", "show", "--property=LoadState,ActiveState", unit]
+    rc, out, _ = sh(argv, timeout=20)
+    if rc != 0:
+        return "unknown"
+    kv = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    if kv.get("LoadState") == "not-found":
+        return "absent"
+    if kv.get("LoadState") in ("loaded", "masked", "error") or kv.get("ActiveState") in ("active", "activating", "deactivating", "failed", "reloading"):
+        return "present"
+    return "unknown"
+
+
+def start_evidence(rec):
+    """Exact host/unit/invocation/child/effect reconciliation for one invocation: 'started' | 'none' | 'unknown'.
+    started = the supervisor marker, a terminal, an effect ledger, a provenance file or the unit exists. none = ALL absent AND the unit was inspected on this
+    host and is absent. Anything else (other host, probe unreachable) is unknown."""
+    inv = rec["invocation"]
+    if any(os.path.exists(d(sub, inv + ext)) for sub, ext in (("started", ".json"), ("terminals", ".json"), ("effects", ".effect"), ("prov", ".json"))):
+        return "started"
+    if rec.get("host") != HOST:
+        return "unknown"
+    u = unit_probe(rec["unit"])
+    return {"present": "started", "absent": "none"}.get(u, "unknown")
+
+
+def finish_start(rec, rc, err=""):
+    """The start client returned nonzero (or a resume re-reads a start that was never settled): decide only on the reconciled evidence."""
+    ev = start_evidence(rec)
+    ask, inv = rec["ask"], rec["invocation"]
+    if ev == "started":
+        rec["state"] = "launched"
+        save_rec(rec)
+        decide(decision="start-reconciled", ask=ask, invocation=inv, unit=rec["unit"], client_rc=rc, verdict="started",
+               note="start client returned nonzero but the unit/child exists; its terminal is consumed normally, no second worker")
+        return 0
+    if ev == "none":
+        fail_before_start(rec, "start-failed", rc=rc, error=err.strip()[:200], proof="no-start-proven")
+        return 1
+    rec["state"] = "start-unknown"
+    save_rec(rec)
+    decide(decision="start-unknown", ask=ask, invocation=inv, unit=rec["unit"], client_rc=rc,
+           note="UNKNOWN: a unit or child may exist; blocks, reconcile with `resume`; never retried or finalized by a client exit code")
+    return 7
+
+
+def begin_start(rec):
+    """Start the supervisor unit for an invocation whose claim is HELD (proved by readback). Returns an exit code (0 = started)."""
+    inv, ask = rec["invocation"], rec["ask"]
+    desc = ("PREMISE worker-route %s ask %s host %s: one task-bound worker; EXPIRY none: no runtime/turn/retry cap, "
+            "ends when the worker exits and its terminal is consumed" % (inv, ask, HOST))
+    sc = os.environ.get("WR_START_CMD")
+    if sc:
+        argv = shlex.split(sc) + [rec["unit"], desc, SELF, "supervise", inv]
+    else:
+        argv = ["systemd-run", "--user", "--collect", "--unit", rec["unit"], "--description", desc, "-p", "TasksMax=infinity",
+                "--setenv=WR_STATE=" + STATE, "--setenv=WR_HOST=" + HOST, SELF, "supervise", inv]
+    rec["state"] = "launched"
+    save_rec(rec)
+    rc, _, err = sh(argv, timeout=None)
+    if rc != 0:
+        return finish_start(rec, rc, err)
+    decide(decision="launched", ask=ask, invocation=inv, unit=rec["unit"], requested=rec["requested"])
+    return 0
+
+
+def evidence_of_run(inv):
+    """Anything showing the dead invocation's unit or child ran: blocks adoption of its claim."""
+    return any(os.path.exists(p) for p in (d("started", inv + ".json"), d("terminals", inv + ".json"), d("effects", inv + ".effect"),
+                                           d("prov", inv + ".json"), d("consumed", inv + ".late-terminal.json")))
+
+
 def start(row, successor=False):
-    """Claim + record + start one invocation for an open ask row. Returns an exit code (0 = started)."""
+    """Claim (or adopt) + record + start one invocation for an open ask row. Returns an exit code (0 = started)."""
     ask = str(row.get("ask_id", ""))
     spec = parse_spec(row)
     if not ASK_RE.match(ask) or spec is None:
@@ -238,59 +399,86 @@ def start(row, successor=False):
         decide_once("held:" + ask, decision="held", ask=ask)
         return 76
     cur = row.get("claim")
+    adopt = None
     if cur:
         mine = launch_open_for(ask)
         if mine and claim_worker(cur) == mine:
             decide(decision="refused", reason="invocation-in-use", ask=ask, invocation=mine)
             return 6
         dead = load(d("consumed", claim_worker(cur) + ".json")) if INV_RE.match(claim_worker(cur)) else None
-        if not (dead and dead.get("state") == "start-failed" and dead.get("ask") == ask):
+        deadrec = load(d("launches", claim_worker(cur) + ".json")) if dead else None
+        if not (dead and dead.get("state") == "start-failed" and dead.get("ask") == ask) or not deadrec or deadrec.get("host") != HOST \
+                or evidence_of_run(claim_worker(cur)):
             decide(decision="claim-conflict", ask=ask, claim=cur)
             return 5
-        decide(decision="reclaim-failed-start", ask=ask, dead_invocation=claim_worker(cur))   # its own start-failed invocation: no child exists
+        adopt = claim_worker(cur)          # its own PROVEN no-start invocation of this ask: the claim is held, a new claim is impossible (rc 66), so it is adopted
     if launch_open_for(ask):
         decide(decision="refused", reason="invocation-in-use", ask=ask)
         return 6
     nonce = os.urandom(8).hex()
     inv = "wr-%s-%s-%s" % (ask, row.get("rev", 0), nonce[:8])
-    rec = {"invocation": inv, "ask": ask, "rev": row.get("rev"), "nonce": nonce, "host": HOST, "worker": inv, "launcher": lp,
+    rec = {"invocation": inv, "ask": ask, "rev": row.get("rev"), "nonce": nonce, "host": HOST, "worker": adopt or inv, "launcher": lp,
            "args": spec["args"], "requested": {k: spec[k] for k in ("model", "effort") if k in spec},
            "unit": "worker-route-" + inv, "state": "intent", "created": now(), "successor": successor}
-    atomic_write(d("launches", inv + ".json"), json.dumps(rec, sort_keys=True, indent=1) + "\n")     # durable intent BEFORE any effect
-    rc, _, _ = sh(ASKS + ["asks", "claim", ask, "--worker", inv, "--by", "worker-route", "--expect-rev", str(row.get("rev"))])
+    if adopt:
+        back = asks_query("--ids", ask)
+        if back is None:
+            decide(decision="canonical-unavailable", ask=ask, op="adopt")
+            return 4
+        if not back or claim_worker(back[0].get("claim")) != adopt:
+            decide(decision="claim-conflict", ask=ask, claim=(back[0].get("claim") if back else None))
+            return 5
+        rec["adopts"] = adopt
+        save_rec(rec)
+        decide(decision="adopt-failed-start-claim", ask=ask, dead_invocation=adopt, invocation=inv)
+        return begin_start(rec)
+    save_rec(rec)                                            # durable intent BEFORE any effect
+    rc, _, _ = asks_call("asks", "claim", ask, "--worker", inv, "--by", "worker-route", "--expect-rev", str(row.get("rev")))
     back = asks_query("--ids", ask)
     if back and claim_worker(back[0].get("claim")) == inv:
-        pass
-    elif back is not None or rc == 127:
-        # the store was read (or the claim command never ran) and we do not hold the claim: nothing was started, a final of its own
+        return begin_start(rec)
+    if back is not None:
+        # the store was READ and this invocation does not hold the claim (rc 66/2 refusals leave nothing; a timeout or 127 is settled by the readback too)
         fail_before_start(rec, "claim-failed", rc=rc)
         return 5 if rc != 0 else 4
-    else:
-        # claim command result unreadable AND the readback unavailable: the claim may have landed. UNKNOWN, still blocks, never retried.
-        rec["state"] = "claim-unknown"
-        atomic_write(d("launches", inv + ".json"), json.dumps(rec, sort_keys=True, indent=1) + "\n")
-        decide(decision="claim-unknown", ask=ask, invocation=inv, rc=rc, note="UNKNOWN: claim may be held by this invocation; reconcile by owner readback")
-        return 4
-    desc = ("PREMISE worker-route %s ask %s host %s: one task-bound worker; EXPIRY none: no runtime/turn/retry cap, "
-            "ends when the worker exits and its terminal is consumed" % (inv, ask, HOST))
-    sc = os.environ.get("WR_START_CMD")
-    if sc:
-        argv = shlex.split(sc) + [rec["unit"], desc, SELF, "supervise", inv]
-    else:
-        argv = ["systemd-run", "--user", "--collect", "--unit", rec["unit"], "--description", desc, "-p", "TasksMax=infinity",
-                "--setenv=WR_STATE=" + STATE, "--setenv=WR_HOST=" + HOST, SELF, "supervise", inv]
-    rec["state"] = "launched"
-    atomic_write(d("launches", inv + ".json"), json.dumps(rec, sort_keys=True, indent=1) + "\n")
-    rc, _, err = sh(argv, timeout=None)
-    if rc != 0:
-        fail_before_start(rec, "start-failed", rc=rc, error=err.strip()[:200])
-        return 1
-    decide(decision="launched", ask=ask, invocation=inv, unit=rec["unit"], requested=rec["requested"])
-    return 0
+    # claim result unreadable AND the readback unavailable (a timeout or exit 127 included): the claim may have landed. UNKNOWN, still blocks, never retried.
+    rec["state"] = "claim-unknown"
+    save_rec(rec)
+    decide(decision="claim-unknown", ask=ask, invocation=inv, rc=rc, note="UNKNOWN: claim may be held by this invocation; `resume` reads the canonical store back")
+    return 4
+
+
+def cmd_resume(inv, by):
+    """The supported same-owner resume of an UNSETTLED invocation: decided only by reading the canonical store / host evidence back. Never claims again,
+    never releases a claim."""
+    ensure()
+    if not require_bound("resume"):
+        return 77
+    rec = load(d("launches", inv + ".json")) if INV_RE.match(inv) else None
+    c = load(d("consumed", inv + ".json")) if rec else None
+    if rec is None or not by or rec.get("host") != HOST or (c is not None and c.get("state") in FINAL) or rec.get("state") not in ("intent", "claim-unknown", "start-unknown", "launched"):
+        decide(decision="resume-refused", invocation=inv[:80], reason="not-resumable")
+        return 3
+    ask = rec["ask"]
+    if rec["state"] in ("intent", "claim-unknown"):
+        back = asks_query("--ids", ask)
+        if back is None:
+            decide(decision="resume-pending", invocation=inv, ask=ask, note="UNKNOWN: the canonical store is still unreadable; nothing changed")
+            return 4
+        if back and claim_worker(back[0].get("claim")) == rec["worker"]:
+            decide(decision="claim-resumed", invocation=inv, ask=ask, by=by, note="readback proves this invocation holds the claim; no second claim")
+            return begin_start(rec)
+        fail_before_start(rec, "claim-failed", rc=None, note="readback: the claim is not held by this invocation", claim=(back[0].get("claim") if back else None))
+        return 5
+    rc = finish_start(rec, None)
+    decide(decision="resumed", invocation=inv, ask=ask, by=by, verdict=rec["state"])
+    return rc
 
 
 def cmd_launch(ask):
     ensure()
+    if not require_bound("launch"):
+        return 77
     rows = asks_query("--ids", ask)
     if rows is None:
         decide(decision="canonical-unavailable", ask=ask[:40], op="launch")
@@ -311,6 +499,20 @@ def cmd_supervise(inv):
     if os.path.exists(tpath):
         decide(decision="duplicate-terminal", invocation=inv, ask=rec["ask"])
         return 0
+    fin = load(d("consumed", inv + ".json"))
+    if fin is not None and fin.get("state") in FAILED_BEFORE_START:
+        decide(decision="supervise-after-final", invocation=inv, ask=rec["ask"], final=fin.get("state"), note="a FINAL failed-before-start invocation never starts a child")
+        return 0
+    try:                                                      # the first supervisor wins: the marker is the child-began evidence the start reconciliation reads
+        fd = os.open(d("started", inv + ".json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        decide(decision="duplicate-supervisor", invocation=inv, ask=rec["ask"])
+        return 0
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({"invocation": inv, "host": HOST, "pid": os.getpid(), "unit": rec.get("unit"), "systemd_invocation_id": os.environ.get("INVOCATION_ID", ""),
+                            "started": now()}, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
     env = dict(os.environ)
     prov_path = d("prov", inv + ".json")
     env.update(WR_INVOCATION=inv, WR_NONCE=rec["nonce"], WR_EFFECT_FILE=d("effects", inv + ".effect"), WR_PROVENANCE_FILE=prov_path)
@@ -349,6 +551,19 @@ def write_receipt(inv, state, **kw):
     atomic_write(d("consumed", inv + ".json"), json.dumps(r, sort_keys=True, indent=1) + "\n")
 
 
+def late_terminal(inv, t, prev):
+    """A terminal for an invocation that was finalized failed-before-start: the unit/child DID run. The terminal file stays untouched, the FINAL receipt is not
+    rewritten; the contradiction is recorded once as UNKNOWN and blocks any adoption of the claim."""
+    path = d("consumed", inv + ".late-terminal.json")
+    if os.path.exists(path):
+        return
+    write_late = {"invocation": inv, "state": "late-terminal", "ask": t.get("ask"), "prior_state": prev.get("state"), "terminal_rc": t.get("rc"),
+                  "terminal_status": t.get("status"), "unknown_steps": unknown_steps(inv), "consumer": "worker-route", "ts": now(),
+                  "note": "UNKNOWN: a terminal arrived after the invocation was finalized failed-before-start; the unit ran; owner reconciles, nothing is retried"}
+    atomic_write(path, json.dumps(write_late, sort_keys=True, indent=1) + "\n")
+    decide(decision="late-terminal", invocation=inv, ask=t.get("ask"), prior_state=prev.get("state"), terminal_rc=t.get("rc"), steps=write_late["unknown_steps"])
+
+
 def process_terminal(path, flags):
     t = load(path)
     if t is None:
@@ -359,6 +574,8 @@ def process_terminal(path, flags):
         return
     prev = load(d("consumed", inv + ".json"))
     if prev is not None and prev.get("state") in FINAL:
+        if prev.get("state") in FAILED_BEFORE_START:
+            late_terminal(inv, t, prev)
         return
     lk = FileLock("inv-" + inv)
     if not lk.try_acquire():
@@ -389,7 +606,7 @@ def process_terminal(path, flags):
         if t.get("status") != "ok":
             state = {"refused": "worker-refused", "provider-outage": "provider-outage"}.get(t.get("status"), "worker-failed")
             write_receipt(inv, state, **common)
-            sh(ASKS + ["asks", "update", rec["ask"], "--append", "worker-route %s %s rc=%s (ask stays open; no successor)" % (inv, state, t.get("rc"))])
+            asks_call("asks", "update", rec["ask"], "--append", "worker-route %s %s rc=%s (ask stays open; no successor)" % (inv, state, t.get("rc")))
             decide(decision=state, invocation=inv, ask=rec["ask"], rc=t.get("rc"))
             return
         steps = unknown_steps(inv)
@@ -439,6 +656,8 @@ def run_successors(flags):
 
 def cmd_consume():
     ensure()
+    if not require_bound("consume"):
+        return 77
     flags = {}
     for p in sorted(glob.glob(d("terminals", "wr-*.json"))):
         process_terminal(p, flags)
@@ -472,6 +691,10 @@ def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     a = argv[2:]
     opt = lambda n: a[a.index(n) + 1] if n in a and a.index(n) + 1 < len(a) else ""
+    if cmd == "bind":
+        return cmd_bind(opt("--executable"), opt("--store"), opt("--by"))
+    if cmd == "resume" and a:
+        return cmd_resume(a[0], opt("--by"))
     if cmd == "launch" and len(a) == 1:
         return cmd_launch(a[0])
     if cmd == "supervise" and len(a) == 1:
