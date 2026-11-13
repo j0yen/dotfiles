@@ -39,8 +39,10 @@ run() {
     [ -n "$ev" ] || ev="$(printf '%s' "$in" | jq -r '.hook_event_name // empty' 2>/dev/null)" || ev=""
   fi
   case "$ev" in ""|UserPromptSubmit|SessionStart) ;; *) return 0 ;; esac
-  case "${WM_SEAT:-}" in aide|ctl|ops) ;; *) return 0 ;; esac
+  case "${WM_SEAT:-}" in aide|ctl|ops|bld|rls) ;; *) return 0 ;; esac
   local dir="${EVENTS_DIR:-${FLEET_DASH_DIR:-$HOME/.cache/fleet-dash}}"
+  # bld and rls (A1572 stage 3) read their own inbox in ~/.cache/<seat> (the stage-2 wake dir); EVENTS_DIR still overrides
+  case "$WM_SEAT" in bld|rls) dir="${EVENTS_DIR:-$HOME/.cache/$WM_SEAT}" ;; esac
   local log="$dir/aide-events.log" cur="$dir/aide-events.cursor" sids="$dir/aide-sids" sid
   # lanes (aide-lanes 10-27): WM_AIDE_LANE unset/main = the paths above, byte-for-byte; a lane L reads its own addressed log + cursor
   # (seat-event.sh aide:L) and never opens the main cursor.
