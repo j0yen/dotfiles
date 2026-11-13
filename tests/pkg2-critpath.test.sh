@@ -266,8 +266,11 @@ ck "F7-3 control: a writable marker dir stays quiet at the Stop (the marker is t
 MSG='I recommend moving the cache to a new store.'
 fresh; echo '[]' >"$W/rows.json"; mkdir -p "$W/st" "$W/owed"
 ( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 9 ) & lk=$!; sleep 0.4
-for i in 1 2 3 4 5 6; do STOPAS ctl sS "$MSG" >/dev/null; done; sleep 0.5
-nspool="$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')"; nwriter="$(ps -eo sid=,comm=,args= | awk -v k="$W/owed/sug" '$2!="awk" && $2!="ps" && index($0,k){print $1}' | sort -u | wc -l | tr -d ' ')"   # one detached writer = one session (setsid), however many helper processes it forks
+for i in 1 2 3 4 5 6; do STOPAS ctl sS "$MSG" >/dev/null; done
+writers(){ ps -eo sid=,comm=,args= | awk -v k="$W/owed/sug" '$2!="awk" && $2!="ps" && index($0,k){print $1}' | sort -u | wc -l | tr -d ' '; }
+for i in $(seq 100); do [ "$(writers)" -ge 1 ] && break; sleep 0.1; done   # the detached writer starts late on a loaded host
+sleep 0.3
+nspool="$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')"; nwriter="$(writers)"   # one detached writer = one session (setsid), however many helper processes it forks
 ck "F7-2 six busy Stops with the same suggestion: at most one spool file and one detached writer (no unbounded stacking)" "$([ "$nspool" -le 1 ] && [ "$nwriter" -le 1 ] && echo ok || echo "files=$nspool writers=$nwriter")" ok
 for pp in $(pgrep -f "$W/owed/sug"); do g=$(ps -o pgid= -p "$pp" | tr -d ' '); kill -- -"$g" 2>/dev/null; done
 kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null; sleep 0.5
@@ -282,7 +285,8 @@ ck "F7-2 no new store: the spool lives in the owed-now state dir only" "$(find "
 MSG2='I recommend adding a second regression test for the shared hook.'
 fresh; echo '[]' >"$W/rows.json"; mkdir -p "$W/st" "$W/owed"
 ( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 5 ) & lk=$!; sleep 0.4
-STOPAS ctl sS2 "$MSG2" >/dev/null; sleep 0.3
+STOPAS ctl sS2 "$MSG2" >/dev/null
+for i in $(seq 100); do [ "$(writers)" -ge 1 ] && break; sleep 0.1; done; sleep 0.3
 for pp in $(pgrep -f "$W/owed/sug"); do g=$(ps -o pgid= -p "$pp" | tr -d ' '); kill -- -"$g" 2>/dev/null; done
 kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null; sleep 0.3
 find "$W/owed" -name 'sug.*' -exec touch -d '5 minutes ago' {} +; rm -f "$W/st/fingerprints.json" "$W/st/outbox.jsonl"; chmod 555 "$W/st"
@@ -304,17 +308,20 @@ for r in 1 2 3 4 5 6 7 8; do rm -rf "$W/owed"; mkdir -p "$W/owed"; : >"$W/owed/c
   [ "$(wc -l <"$W/calls.log" | tr -d ' ')" -le 1 ] || bad=$((bad+1)); done
 ck "F7-4 20 parallel refreshers on a 10-minute-old lock x 8 rounds: never more than one producer (the stale check/rm/create race is closed)" "$bad" 0
 fresh; echo 6 >"$W/delay"; : >"$W/calls.log"
-WM_SEAT=ctl setsid bash "$OWED" refresh --seat ctl >/dev/null 2>&1 & sleep 0.9
+WM_SEAT=ctl setsid bash "$OWED" refresh --seat ctl >/dev/null 2>&1 &
+for i in $(seq 150); do [ -n "$(find "$W/owed" -name '*refresh.lock' 2>/dev/null)" ] && [ "$(wc -l <"$W/calls.log" | tr -d ' ')" -ge 1 ] && break; sleep 0.1; done   # the producer holds the lock and is inside the ledger read
 pg="$(pgrep -f "$OWED refresh --seat ctl" | head -1)"; had="$(find "$W/owed" -name '*refresh.lock' | wc -l | tr -d ' ')"
-kill -TERM -- -"$(ps -o pgid= -p "$pg" | tr -d ' ')" 2>/dev/null; sleep 0.6
+kill -TERM -- -"$(ps -o pgid= -p "$pg" | tr -d ' ')" 2>/dev/null
+for i in $(seq 30); do [ -z "$(find "$W/owed" -name '*refresh.lock' 2>/dev/null)" ] && break; sleep 0.1; done
 left="$(find "$W/owed" -name '*refresh.lock' | wc -l | tr -d ' ')"
 ck "F7-4 SIGTERM to a running producer: it held the lock, and the lock is gone afterwards (released on signal)" "$had/$left" "1/0"
 : >"$W/calls.log"; : >"$W/delay"; WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1
 ck "F7-4 the next refresh after a killed producer runs at once (it is not blocked until the 5-minute staleness)" "$(wc -l <"$W/calls.log" | tr -d ' ')" 1
 # the Summa builder uses the same protocol: a SIGTERM'd builder (mid-build, 8000-page vault) leaves no lock behind
 rm -rf "$W/sc7"; mkdir -p "$W/sc7"; ( SUMMA_VAULT="$W/v8000" SUMMA_CACHE_DIR="$W/sc7" SUMMA_LEDGER="$W/lk7.jsonl" exec setsid bash "$SUMMA" --refresh-index ) >/dev/null 2>&1 &
-for i in $(seq 100); do [ -e "$W/sc7/index.lock" ] && break; sleep 0.02; done; had7="$([ -e "$W/sc7/index.lock" ] && echo 1 || echo 0)"
-pkill -TERM -f "$SUMMA --refresh-index" 2>/dev/null; sleep 0.5
+for i in $(seq 300); do [ -e "$W/sc7/index.lock" ] && break; sleep 0.02; done; had7="$([ -e "$W/sc7/index.lock" ] && echo 1 || echo 0)"
+pkill -TERM -f "$SUMMA --refresh-index" 2>/dev/null
+for i in $(seq 30); do [ ! -e "$W/sc7/index.lock" ] && break; sleep 0.1; done
 ck "F7-4 Summa builder: it held index.lock mid-build, and no lock is left after the SIGTERM" "$had7/$(find "$W/sc7" -name 'index.lock' | wc -l | tr -d ' ')" "1/0"
 
 # F7-8: the whole-refresher race above is not RED against a mkdir lock on this host (process start-up spreads the racers by milliseconds, so the uutils mkdir race rarely overlaps); the primitive itself is raced
