@@ -84,7 +84,9 @@ u "exit float" '{"id":"e1","route":"deterministic","result":"executed","exit":0.
 u "result not a string" '{"id":"e1","route":"deterministic","result":3,"exit":0}'
 u "top-level array" '[{"id":"e1","result":"executed","exit":0}]'
 fresh; mkq e1; route e1 deterministic; rraw e1 '{"id":"e1","route":"deterministic","result":"blocked-row","exit":2,"reason":"why","row":"","ts":"t","model_calls":1,"outcome":["ok"],"kind":"inbox"}'
-br ack e1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ]; chk "F2 router-shaped result (nonzero exit recorded, extra router keys) is still valid evidence" $?
+br ack e1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ]; chk "F2/N1 router-shaped blocked-row exit 2 (extra router keys) is a typed failure: not evidence" $?
+fresh; mkq e1; route e1 deterministic; rraw e1 '{"id":"e1","route":"deterministic","result":"record","exit":0,"reason":"why","row":"","ts":"t","model_calls":1,"outcome":["ok"],"kind":"inbox"}'
+br ack e1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ]; chk "F2 router-shaped success result (exit 0, extra router keys) is valid evidence" $?
 
 # --- F3: result id bound to the event id; replay of an old result and re-delivery stay possible
 fresh; mkq e1; route e1 deterministic; rraw e1 '{"id":"OTHER","route":"deterministic","result":"executed","exit":0}'
@@ -98,9 +100,9 @@ fresh; mkq p1; route p1 fable; BR_CYCLES=1 br run; br ack p1 >/dev/null 2>&1; mk
 [ "$(sends)" = 1 ] && [ "$(q)" = 1 ]; chk "F3 deliberate re-delivery: a re-queued acked fable id is delivered again" $?
 
 # --- F4: same-event acks idempotent under a lock
-fresh; mkq e1; route e1 deterministic; good e1; br ack e1 >/dev/null 2>&1; mkq e1; l0="$(acklines e1)"
+fresh; mkq e1; route e1 deterministic; good e1; br ack e1 >/dev/null 2>&1; l0="$(acklines e1)"
 out="$(br ack e1 2>&1)"; rc=$?
-[ "$rc" = 0 ] && [ "$(acklines e1)" = "$l0" ] && [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && printf '%s' "$out" | grep -q 'already acked'; chk "F4 ack of an id re-queued after done/: exit 0, no second ack line, queue cleared" $?
+[ "$rc" = 0 ] && [ "$(acklines e1)" = "$l0" ] && [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && printf '%s' "$out" | grep -q 'already acked'; chk "F4 second ack of the same delivery (no queued file): exit 0, no second ack line, no new done/ entry" $?
 dups=0; trials=30; bad=0
 for i in $(seq 1 $trials); do
   fresh; mkq e1; route e1 deterministic; good e1

@@ -4,7 +4,7 @@
 # on disk, and re-delivers every unacked event to the ctl pane every RETRY_SEC until `ack`.
 #   run                 loop (BR_CYCLES=0 forever; SIGTERM ends it)
 #   pending             print each unacked queue/*.json, one per line
-#   ack <id>|--all      move to done/ (unknown id -> exit 1; an already-acked id -> exit 0, no second ack). --all acks only ids with consumer
+#   ack <id>|--all      move to done/ (unknown id -> exit 1; an already-acked id with no queued file -> exit 0, no second ack; a re-queued id is a new delivery: own evidence, own done/<id>.rN.json + receipt). --all acks only ids with consumer
 #                       evidence (deterministic/haiku: result + routed cache), prints the skipped ids and exits 1; pane-delivered ids need `ack <id>`
 #   status              print status.json
 #   --selftest          small fixture check in a temp HOME (stub tmux + stub waiter)
@@ -60,10 +60,13 @@ deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or r
   held "$1" && return 1
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
-evidence_ok() { # typed fail-closed check for a deterministic/haiku id: results/<id>.json and routed/<id>.json must match the schema exactly
-  local id="$1" row
-  row="$(python3 -I -c 'import json,re,sys
-rd,cd,eid=sys.argv[1:4]
+evidence_ok() { # typed fail-closed check for a deterministic/haiku id: results/<id>.json and routed/<id>.json must match the schema exactly; success = exit 0 and no typed failure
+  # a requeued id (done/<id>.json exists) is a new delivery: its evidence must be at least as new as the queued payload's `created`. Sets EV_WHY to the refusal class.
+  local id="$1" row out
+  EV_WHY=""
+  out="$(python3 -I -c 'import json,os,re,sys
+rd,cd,eid,qf,df=sys.argv[1:6]
+def no(w): print("NO\t"+w); sys.exit(0)
 def load(p):
     try: d=json.load(open(p))
     except Exception: return None
@@ -72,26 +75,38 @@ def unk(v):   # UNKNOWN in any casing, anywhere in the document (keys, nested va
     if isinstance(v,dict): return any(str(k).strip().lower() in ("status","unknown") or unk(k) or unk(x) for k,x in v.items())
     if isinstance(v,list): return any(unk(x) for x in v)
     return isinstance(v,str) and v.strip().lower()=="unknown"
-r=load(rd+"/results/"+eid+".json"); c=load(cd+"/routed/"+eid+".json")
-if r is None or c is None: sys.exit(1)
-if c.get("id")!=eid or c.get("route") not in ("deterministic","haiku"): sys.exit(1)
-if r.get("id")!=eid or r.get("route",c["route"])!=c["route"]: sys.exit(1)
-if not isinstance(r.get("result"),str) or not re.fullmatch(r"[a-z][a-z0-9-]*",r["result"]): sys.exit(1)
+rf=rd+"/results/"+eid+".json"; cf=cd+"/routed/"+eid+".json"
+r=load(rf); c=load(cf)
+if r is None or c is None: no("missing")
+if unk(r) or unk(c): no("UNKNOWN")
+if c.get("id")!=eid or c.get("route") not in ("deterministic","haiku"): no("invalid-cache")
+if r.get("id")!=eid or r.get("route",c["route"])!=c["route"]: no("invalid-result-id")
+if not isinstance(r.get("result"),str) or not re.fullmatch(r"[a-z][a-z0-9-]*",r["result"]): no("invalid-result")
 e=r.get("exit")
-if not isinstance(e,int) or isinstance(e,bool): sys.exit(1)
-if unk(r) or unk(c): sys.exit(1)
+if not isinstance(e,int) or isinstance(e,bool): no("invalid-exit")
+if e!=0 or re.search(r"blocked|error|fail|refused",r["result"]): no("typed-failure")   # router typed failures: blocked-row exit 2, error-row exit 4, any nonzero exit
 rw=c.get("row","")
-if not isinstance(rw,str): sys.exit(1)
-print(rw)' "$RTD" "$RTD" "$id")" || return 1
-  [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id"
+if not isinstance(rw,str): no("invalid-cache")
+if os.path.isfile(df):   # requeued: evidence older than this delivery belongs to the earlier delivery
+    q=load(qf); cr=q.get("created") if q else None
+    if not isinstance(cr,int) or isinstance(cr,bool): no("stale-requeue")
+    if min(os.path.getmtime(rf),os.path.getmtime(cf))<cr: no("stale-requeue")
+print("OK\t"+rw)' "$RTD" "$RTD" "$id" "$BR/queue/$id.json" "$BR/done/$id.json")" || { EV_WHY=invalid; return 1; }
+  if [ "${out%%$'\t'*}" != OK ]; then EV_WHY="${out#*$'\t'}"; return 1; fi
+  row="${out#*$'\t'}"
+  [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id" || { EV_WHY=row-marker; return 1; }
 }
-ack_ok() { # explicit `ack <id>`: a held id that also has a routed cache is refused; deterministic/haiku ids need evidence_ok; fable-routed and unrouted (pane-delivered) ids are acked by the consumer's word; any other cache is refused
+ack_ok() { # explicit `ack <id>`: a held id is refused (held-unreadable without a cache, inconsistent with one); deterministic/haiku ids need evidence_ok; fable-routed and unrouted (pane-delivered) ids are acked by the consumer's word; any other cache is refused
   local id="$1" c="$RTD/routed/$1.json" rt
-  [ -e "$c" ] || return 0   # no cache: pane-delivered/legacy, or held-unreadable (exit 75, no route): an operator's explicit ack (base-green w20 item10 keeps working)
-  held "$id" && { echo "refused $id: held marker beside a routed cache (inconsistent state; nothing acts until the router re-routes it)" >&2; return 1; }
+  if held "$id"; then
+    if [ -e "$c" ]; then echo "refused $id: held marker beside a routed cache (inconsistent state; nothing acts until the router re-routes it)" >&2
+    else echo "refused $id: held-unreadable (the router held it, exit 75; not success, it stays queued until the router routes it)" >&2; fi
+    return 1
+  fi
+  [ -e "$c" ] || return 0   # no cache and not held: pane-delivered/legacy id, the consumer's explicit ack is the evidence
   rt="$(jget "$c" route)"
   case "$rt" in
-    deterministic|haiku) evidence_ok "$id" || { echo "refused $id: route=$rt needs a valid result (typed schema, id bound, exit recorded, never UNKNOWN) and the routed cache" >&2; return 1; } ;;
+    deterministic|haiku) evidence_ok "$id" || { echo "refused $id: route=$rt needs the typed success result (exit 0, id bound, never UNKNOWN or a typed failure, newer than a requeued payload) and the routed cache; reason class: $EV_WHY" >&2; return 1; } ;;
     fable) ;;
     *) echo "refused $id: routed cache is missing/malformed or names route '${rt:-none}'" >&2; return 1 ;;
   esac
@@ -125,7 +140,9 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
     if [ ! -f "$c" ]; then
       RT_DIR="$RTD" "$RTB" route "$f" >/dev/null 2>>"$BR/route.err"
       rc=$?
-      if [ $rc -eq 75 ]; then mkdir -p "$RTD/held" && : > "$RTD/held/$id"
+      if [ $rc -eq 75 ]; then
+        if ! held "$id"; then echo "$(iso) held id $id: router exit 75 (first hold; queued, not delivered, not acked)" >> "$BR/route.err"; fi   # first-time hold: its own line, outside the HELD_LOG_SEC stamp
+        mkdir -p "$RTD/held" && : > "$RTD/held/$id"; echo "ack-refused $id: held-unreadable (router exit 75; queued, not acked)" >&2
       elif [ $rc -ne 0 ] && held "$id"; then held_err "$id" "$rc"; fi   # a previously held id stays held and queued (no fail-open to the pane), but a router failure is logged
     fi
     [ -f "$c" ] || continue
@@ -135,7 +152,7 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
       ( setsid "$FEB" "$f" >> "$BR/fable-esc.log" 2>&1 & ) 
     fi
     if [ "$rt" = deterministic ] || [ "$rt" = haiku ]; then
-      if evidence_ok "$id"; then ackone "$f"; else echo "$(iso) ack-refused $id no-consumer-evidence" >> "$BR/deliveries.log"; fi
+      if evidence_ok "$id"; then ackone "$f"; else echo "$(iso) ack-refused $id no-consumer-evidence reason=$EV_WHY" >> "$BR/deliveries.log"; echo "ack-refused $id: $EV_WHY (route=$rt; queued, not acked)" >&2; fi
     fi
   done
 }
@@ -229,21 +246,23 @@ ack() {
   fi
   [[ "$want" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "unknown id: $want" >&2; return 1; }
   ( flock 9
-    if [ -f "$BR/done/$want.json" ]; then rm -f "$BR/queue/$want.json"; echo "already acked: $want"; exit 0; fi   # done/ is the record: a re-queued acked id is cleared, no second ack/receipt
-    [ -f "$BR/queue/$want.json" ] || { echo "unknown id: $want" >&2; exit 1; }
-    ack_ok "$want" || exit 1
+    if [ ! -f "$BR/queue/$want.json" ]; then   # no queued delivery: done/ is the record of an already-acked one
+      if [ -f "$BR/done/$want.json" ]; then echo "already acked: $want"; exit 0; fi
+      echo "unknown id: $want" >&2; exit 1
+    fi
+    ack_ok "$want" || exit 1   # a queued file beside a done/ entry is a new delivery of the id: it needs its own evidence
     ackone_locked "$BR/queue/$want.json" && echo "acked 1"
   ) 9>"$BR/.ack.lock"
 }
-ackone_locked() { # caller holds the queue lock (fd 9); a re-queued done id is cleared with no second ack line or receipt
-  local f="$1" id; id="$(basename "$f" .json)"
+ackone_locked() { # caller holds the queue lock (fd 9); the first delivery of an id is done/<id>.json + receipt <id>, a later delivery of the same id gets done/<id>.rN.json + receipt <id>.rN (never overwrites, never deleted unrecorded)
+  local f="$1" id key n=0 extra=""; id="$(basename "$f" .json)"; key="$id"
   [ -f "$f" ] || return 0
-  if [ -f "$BR/done/$id.json" ]; then rm -f "$f"; return 0; fi
+  while [ -e "$BR/done/$key.json" ]; do n=$((n+1)); key="$id.r$n"; extra=" delivery=r$n"; done
   python3 -I -c 'import json,sys
-d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3],"w"))' "$f" "$(epoch)" "$BR/done/$id.json" && rm -f "$f" \
-    && clear_held "$id" && handled_receipt "$id" && echo "$(iso) ack $id" >> "$BR/deliveries.log"
+d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sys.argv[3]+".tmp","w"))' "$f" "$(epoch)" "$BR/done/$key.json" && mv "$BR/done/$key.json.tmp" "$BR/done/$key.json" && rm -f "$f" \
+    && clear_held "$id" && handled_receipt "$key" && echo "$(iso) ack $id$extra" >> "$BR/deliveries.log"
 }
-ackone() { # serialized per queue root (flock): a concurrent or re-queued-done ack of the same event is a no-op
+ackone() { # serialized per queue root (flock): a concurrent ack of the same delivery finds the queue file gone and is a no-op
   ( flock 9; ackone_locked "$1" ) 9>"$BR/.ack.lock"
 }
 # The ledger done-check for an event row is `test -e $RTD/handled/<id>`; the ack is the handler's completion, so it writes the receipt (atomic: tmp + mv).
