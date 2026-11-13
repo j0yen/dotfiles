@@ -5,7 +5,7 @@ Input JSON (stdin, or `--file PATH`; never shell-interpolated):
   {task_id, skill, decision_class?, evidence_refs?, escalation?:{reason,evidence:[ref..]},
    requested?:{model,effort}, review?:{reason,evidence:[ref..]}, permission_mode?}
 A skill whose policy has `require_permission_mode` (non-empty string) is denied unless the request's permission_mode equals it.
-Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], review?}
+Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], review?, permission_mode? (echoed when the policy requires one)}
 Exit 0 = route resolved (or skill ungoverned); exit 2 = denied (fail closed, {ok:false,error,reasons}).
 Policy: --policy PATH | $SKILL_ROUTE_POLICY | <repo>/.config/skill-routing/policy.json | ~/.config/skill-routing/policy.json.
 Skills and phases are data in the policy; adding one needs no code change.
@@ -98,6 +98,7 @@ def resolve(pol, req):
     if spol is None:
         return {"ok": True, "governed": False, "model_id": None, "effort": None, "route": None,
                 "reasons": ["skill %s is not governed by skill-routing policy" % skill]}
+    pmode = None
     if "require_permission_mode" in spol:  # checked first, before route and class
         want = spol["require_permission_mode"]
         if not isinstance(want, str) or not want:
@@ -105,6 +106,7 @@ def resolve(pol, req):
         have = req.get("permission_mode")
         if not isinstance(have, str) or have != want:
             raise Deny("%s requires permission_mode %r (policy require_permission_mode); request carried %r" % (skill, want, have))
+        pmode = have
     tid = req.get("task_id")
     if not isinstance(tid, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$", tid):
         raise Deny("task_id is required (^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$)")
@@ -173,6 +175,8 @@ def resolve(pol, req):
                        (reqd.get("model", "-"), reqd.get("effort", "-"), r["model"], r["effort"]))
     out = {"ok": True, "governed": True, "model_id": r["model"], "effort": r["effort"],
            "route": route, "task_id": tid, "skill": skill, "reasons": reasons}
+    if pmode is not None:  # the one permission_mode source: the launcher passes exactly this value as --permission-mode
+        out["permission_mode"] = pmode
     if exc:
         out["exception"] = True
     rev = req.get("review")

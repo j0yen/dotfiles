@@ -89,6 +89,17 @@ if [ -n "$ROUTE_REQ" ]; then
   rm -f "$RQ"; trap - EXIT
   nout=(); j=0; while [ $j -lt ${#out[@]} ]; do case "${out[$j]}" in --model) j=$((j+2)); continue ;; --model=*) ;; *) nout+=("${out[$j]}") ;; esac; j=$((j+1)); done
   out=("${nout[@]}" --model "$model")
+  # One permission_mode source: the resolver's echo (validated against the policy) is the only value passed to claude.
+  PMODE="$(printf '%s' "$RES" | jq -r '.permission_mode // empty')"
+  if [ -n "$PMODE" ]; then
+    nout=(); j=0; while [ $j -lt ${#out[@]} ]; do
+      case "${out[$j]}" in
+        --permission-mode) [ "${out[$((j+1))]:-}" = "$PMODE" ] || { echo "fable-launch: --permission-mode '${out[$((j+1))]:-}' conflicts with the resolved permission_mode '$PMODE'; refusing" >&2; exit 64; }; j=$((j+2)); continue ;;
+        --permission-mode=*) [ "${out[$j]#--permission-mode=}" = "$PMODE" ] || { echo "fable-launch: ${out[$j]} conflicts with the resolved permission_mode '$PMODE'; refusing" >&2; exit 64; } ;;
+        *) nout+=("${out[$j]}") ;;
+      esac; j=$((j+1)); done
+    out=("${nout[@]}" --permission-mode "$PMODE")
+  fi
 fi
 [ -n "$model" ] || { echo "fable-launch: --model is required (explicit model, no default)" >&2; exit 64; }
 case "$model" in
