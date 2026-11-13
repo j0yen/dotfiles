@@ -96,6 +96,14 @@ rmaf; g "$(av general-purpose high)"; rc=$?
 ck "E3i built-in (no definition file) falls through to effort.level -> allow" '[ $rc = 0 ]'
 rmaf
 
+# E8: policy lib missing -> the fallback still denies a maxspeed spawn (guard copied alone, no lib reachable, SKILL_POLICY_LIB unset)
+NL="$T/nolib"; mkdir -p "$NL/a/b/hooks" "$NL/home"; cp "$R/.claude/hooks/skill-agent-effort-guard.sh" "$NL/a/b/hooks/"
+gn(){ printf '%s' "$1" | env -i PATH="$PATH" HOME="$NL/home" "$NL/a/b/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; }
+gn "$(v "$PLAN" fable)"; rc=$?
+ck "E8 lib missing + maxspeed prompt -> deny 'skill-model-policy.sh not found'" '[ $rc = 2 ] && grep -q "skill-model-policy.sh not found" "$T/e"'
+gn "$(jq -c '.tool_input.prompt="reply ok"' "$PLAN")"; rc=$?
+ck "E8 lib missing + plain prompt -> allow" '[ $rc = 0 ]'
+
 # finding record: at f396753 the guard read only tool_input.effort, so the real plan fixture + fable resolved E to empty
 # ("model/effort not explicit" deny); now E=low from effort.level and the resolver denies on the effort value.
 
