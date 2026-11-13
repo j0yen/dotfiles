@@ -7,6 +7,8 @@
 set -u
 # Scoped to WM_SEAT sessions (handover 2.7): a plain/director session is never gated.
 [ -n "${WM_SEAT:-}" ] || exit 0
+# A1300 E4: a Fable/helper child of a ctl session (fable-launch.sh --helper, WM_HELPER=1) carries no Stop-obligation of its own; every other gate stays enforced.
+[ -z "${WM_HELPER:-}" ] || { cat >/dev/null 2>&1; exit 0; }
 export ASIDE_OPEN_ASKS="${ASIDE_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
 export ASIDE_STOP_LOG="${ASIDE_STOP_LOG:-$HOME/.local/state/aside-stop/fires.log}"
 python3 -I -c '

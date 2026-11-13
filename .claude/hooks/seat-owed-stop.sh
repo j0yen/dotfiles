@@ -10,6 +10,8 @@
 set -u
 seat="${WM_SEAT:-}"
 case "$seat" in rb|r7|ctl|aide|ops) ;; *) exit 0 ;; esac
+# A1300 E4: a Fable/helper child of a ctl session (fable-launch.sh --helper, WM_HELPER=1) carries no Stop-obligation of its own; every other gate stays enforced.
+[ -z "${WM_HELPER:-}" ] || { cat >/dev/null 2>&1; exit 0; }
 in="$(cat 2>/dev/null)"
 command -v jq >/dev/null 2>&1 || { echo "seat-owed-stop: jq missing, allowing" >&2; exit 0; }
 [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0

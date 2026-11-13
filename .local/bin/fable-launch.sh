@@ -7,6 +7,7 @@
 #   Headless (-p/--print) launches run supervised so a usage-limit failure is classified and recorded; interactive launches still exec.
 # Process-local only: exports CLAUDE_CODE_OAUTH_TOKEN for the exec'd claude. No rotation, no shared default edits, no token output.
 # A Fable parent's native child agents inherit this env (mcphost.dev); use `fable-launch.sh --helper --model sonnet ...` for separate-process helpers on the nonfable lane.
+# A1300 E4: --helper also exports WM_HELPER=1 + WM_PARENT_SID + WM_TASK (WM_SEAT is kept); see the four Stop-obligation hooks.
 # A1300 managed skill route: `--route-request FILE` (JSON {task_id,skill,decision_class?,evidence_refs?,escalation?,review?}; task text is
 # data, never interpolated) is resolved by skill-route-resolve.py against .config/skill-routing/policy.json. A denied or ungoverned
 # route exits 64 before anything starts; an allowed route supplies --model/--effort (a conflicting --model/--effort is refused), a
@@ -172,6 +173,9 @@ for _v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_
 done
 export CLAUDE_CODE_OAUTH_TOKEN="$tok"; unset tok
 export FABLE_LAUNCH_ACCOUNT="$ACCT" FABLE_LAUNCH_MODEL="$model"
+# A1300 E4: a --helper child keeps its parent seat marker (every gate stays enforced) and adds its own WM_HELPER marker with parent + task provenance;
+# only the four Stop-obligation hooks read WM_HELPER. A non-helper launch carries no helper marker.
+if [ "$HELPER" = 1 ]; then export WM_HELPER=1 WM_PARENT_SID="${WM_PARENT_SID:-${CLAUDE_SESSION_ID:-unknown}}" WM_TASK="${WM_TASK:-${R_TASK:-}}"; else unset WM_HELPER WM_PARENT_SID WM_TASK; fi
 echo "fable-launch: account=$ACCT model=$model${effort:+ effort=$effort}" >&2
 cmd=("$CLAUDE_BIN" "${out[@]}"); [ -z "$effort" ] || cmd+=(--effort "$effort")
 [ ${#tail[@]} -eq 0 ] || cmd+=("${tail[@]}")   # caller payload from its first `--` on, after every injected option

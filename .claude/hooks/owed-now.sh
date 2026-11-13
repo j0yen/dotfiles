@@ -101,6 +101,7 @@ seat_of() {   # seat_of <hook json>
 }
 
 hook() {
+  [ -z "${WM_HELPER:-}" ] || { cat >/dev/null 2>&1; return 0; }   # A1300 E4: helper child owes nothing; the guard mode is untouched
   local in ev aid seat rows n body sid cf
   in="$(cat)"; command -v jq >/dev/null 2>&1 || return 0
   ev="$(jq -r '.hook_event_name // empty' <<<"$in" 2>/dev/null)"; aid="$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)"
