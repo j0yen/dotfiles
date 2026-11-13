@@ -2,7 +2,7 @@
 # cargo-slot.sh (rb 10-17 2:4x pm, controller ruling): product hand-coder cargo.
 # usage: cargo-slot.sh <cargo args...>   (e.g. cargo-slot.sh test --test suite_core_07)
 # 10-18 1:58 AM controller (third hard freeze 10-17 11:36 PM, compile set admitted by COUNT): ONE slot only
-#   (/mnt/data/hand/cargo.lock, MemoryMax 12G, -j 4), granted only while MemAvailable >= 12G + the scope cap (12G) = 24G;
+#   (/mnt/data/hand/cargo.lock, -j 4; the scope carries no Memory* property, the bound above it is app.slice + systemd-oomd), granted only while MemAvailable >= 12G + the admission count (12G) = 24G;
 #   below that it waits in 30 s polls up to CARGO_SLOT_MEM_MAXWAIT s (default 3600), then REFUSES (exit 76) — never runs anyway.
 #   Slot 2 (cargo2.lock) is retired until the .59 MG memory-admission gate ships.
 # -j goes BEFORE a "--" separator (after it, args belong to the test binary)
@@ -260,22 +260,23 @@ FEOF
   tc i CARGO_SLOT_DRYRUN=1 -- test; ok i "rc 0" rcis 0; ok i "no fake calls" cnt log '^(ACQ|CARGO|FLOCK|SR) ' 0; ok i "2 DRY lines" cnt err 'DRY would run' 2; ok i "no acquire-timeout" nohas err 'acquire-timeout'
   echo "case (j) mcphost clone: class hand (cap 9); a --release build stays class land"
   mkdir -p "$T/mcphost-j"; git init -q "$T/mcphost-j"
-  TCWD="$T/mcphost-j" tc j -- check; ok j "rc 0" rcis 0; ok j "acquires class hand" cnt log '^ACQ .*--class hand ' 1; ok j "MemoryMax 9G" has log '^SR .*MemoryMax=9G'
+  TCWD="$T/mcphost-j" tc j -- check; ok j "rc 0" rcis 0; ok j "acquires class hand" cnt log '^ACQ .*--class hand ' 1; ok j "no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='
   TCWD="$T/mcphost-j" tc j2 -- build --release; ok j2 "release acquires class land" cnt log '^ACQ .*--class land ' 1
   tc j3 -- check; ok j3 "other repo stays class land" cnt log '^ACQ .*--class land ' 1
   echo "case (k) wm-build clone: class hand priced by --prefix wm-build ([cargo_jobs.mem_caps_gb.wm-build] first); --release drops the prefix"
   mkdir -p "$T/wm-build-k"; git init -q "$T/wm-build-k"
   printf '[cargo_jobs.mem_caps_gb.wm-build]\nhand = 5  # c\n\n[cargo_jobs.mem_caps_gb]\nhand = 9\nland = 12.5\n' > "$T/cfgk"  # prefix table FIRST: a last-table-wins read would give 9
-  TCWD="$T/wm-build-k" tc k CARGO_SLOT_CONFIG="$T/cfgk" -- check; ok k "rc 0" rcis 0; ok k "acquires class hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok k "MemoryMax 5G from the prefix table (not class 9)" has log '^SR .*MemoryMax=5G'
-  TCWD="$T/wm-build-k" tc k2 -- check; ok k2 "no config: literal 5G" has log '^SR .*MemoryMax=5G'; ok k2 "still --prefix wm-build" cnt log '^ACQ .*--prefix wm-build ' 1
-  TCWD="$T/wm-build-k" tc k3 CARGO_SLOT_CONFIG="$T/cfgk" -- build --release; ok k3 "release: class land, no prefix" cnt log '^ACQ .*--class land --producer' 1; ok k3 "release MemoryMax 12G" has log '^SR .*MemoryMax=12G'
-  TCWD="$T/mcphost-j" tc k4 CARGO_SLOT_CONFIG="$T/cfgk" -- check; ok k4 "mcphost reads the class table (9G)" has log '^SR .*MemoryMax=9G'; ok k4 "mcphost passes no --prefix" nohas log '--prefix'
+  TCWD="$T/wm-build-k" tc k CARGO_SLOT_CONFIG="$T/cfgk" -- check; ok k "rc 0" rcis 0; ok k "acquires class hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok k "no Memory* on the scope; prefix table count unchanged" nohas log '^SR .*Memory(High|Max)='
+  TCWD="$T/wm-build-k" tc k2 -- check; ok k2 "no config: no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='; ok k2 "still --prefix wm-build" cnt log '^ACQ .*--prefix wm-build ' 1
+  TCWD="$T/wm-build-k" tc k3 CARGO_SLOT_CONFIG="$T/cfgk" -- build --release; ok k3 "release: class land, no prefix" cnt log '^ACQ .*--class land --producer' 1; ok k3 "release: no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='
+  TCWD="$T/mcphost-j" tc k4 CARGO_SLOT_CONFIG="$T/cfgk" -- check; ok k4 "mcphost: no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='; ok k4 "mcphost passes no --prefix" nohas log '--prefix'
+  printf '[cargo_jobs.mem_caps_gb.wm-build]\nhand = 7\n\n[cargo_jobs.mem_caps_gb]\nhand = 9\nland = 12.5\n' > "$T/cfgk5"; TCWD="$T/wm-build-k" tc k5 CARGO_SLOT_CONFIG="$T/cfgk5" -- check; ok k5 "prefix table 7 overrides literal 5: admission count line" has err '^\[cargo-slot\] admission count 5G -> 7G = floor\(prefix wm-build class hand cap\)$'; ok k5 "no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='; ok k5 "acquires class hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1
   echo "case (w4) class by WHAT THE TREE IS (origin remote), not its dir name; no origin -> Cargo.toml name -> basename arm"
   mkcl() { mkdir -p "$1"; git init -q "$1"; [ -z "${2:-}" ] || git -C "$1" remote add origin "$2"; }
   mkcl "$T/qfix" https://github.com/j0yen/wm-build
-  TCWD="$T/qfix" tc w1 -- check; ok w1 "rc 0" rcis 0; ok w1 "dir qfix + origin j0yen/wm-build: class hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok w1 "MemoryMax 5G" has log '^SR .*MemoryMax=5G'; ok w1 "class line via=remote" has err '^\[cargo-slot\] class=hand prefix=wm-build via=remote kind=wm-build$'
+  TCWD="$T/qfix" tc w1 -- check; ok w1 "rc 0" rcis 0; ok w1 "dir qfix + origin j0yen/wm-build: class hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok w1 "no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='; ok w1 "class line via=remote" has err '^\[cargo-slot\] class=hand prefix=wm-build via=remote kind=wm-build$'
   mkcl "$T/x" https://github.com/j0yen/mcphost.git
-  TCWD="$T/x" tc w2 -- check; ok w2 "dir x + origin j0yen/mcphost.git: class hand, MemoryMax 9G" has log '^SR .*MemoryMax=9G'; ok w2 "class hand, no --prefix" cnt log '^ACQ .*--class hand --producer' 1
+  TCWD="$T/x" tc w2 -- check; ok w2 "dir x + origin j0yen/mcphost.git: class hand, no Memory*" nohas log '^SR .*Memory(High|Max)='; ok w2 "class hand, no --prefix" cnt log '^ACQ .*--class hand --producer' 1
   mkcl "$T/y" https://github.com/j0yen/other-repo
   TCWD="$T/y" tc w3 -- check; ok w3 "unrelated origin: class land" cnt log '^ACQ .*--class land --producer' 1; ok w3 "unrelated origin, no Cargo.toml, dir y: land via=basename" has err 'class=land via=basename$'
   mkcl "$T/wm-build-z" https://github.com/j0yen/some-fork
@@ -285,20 +286,20 @@ FEOF
   mkcl "$T/lp" /home/jsy/wintermute/wm-build
   TCWD="$T/lp" tc w4 -- check; ok w4 "local-path origin /home/jsy/wintermute/wm-build: hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1
   mkcl "$T/ssh1" git@github.com:j0yen/WM-Build.git; TCWD="$T/ssh1" tc w4b -- check; ok w4b "scp-style ssh origin, mixed case: hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1
-  mkcl "$T/ssh2" ssh://git@github.com/j0yen/mcphost/; TCWD="$T/ssh2" tc w4c -- check; ok w4c "ssh:// origin with a trailing slash: mcphost -> hand, MemoryMax 9G" has log '^SR .*MemoryMax=9G'
-  mkcl "$T/qrel" https://github.com/j0yen/wm-build; TCWD="$T/qrel" tc w5 -- build --release; ok w5 "--release on a remote-matched wm-build clone: class land, no prefix" cnt log '^ACQ .*--class land --producer' 1; ok w5 "release MemoryMax 12G" has log '^SR .*MemoryMax=12G'
+  mkcl "$T/ssh2" ssh://git@github.com/j0yen/mcphost/; TCWD="$T/ssh2" tc w4c -- check; ok w4c "ssh:// origin with a trailing slash: mcphost -> hand, no Memory*" nohas log '^SR .*Memory(High|Max)='
+  mkcl "$T/qrel" https://github.com/j0yen/wm-build; TCWD="$T/qrel" tc w5 -- build --release; ok w5 "--release on a remote-matched wm-build clone: class land, no prefix" cnt log '^ACQ .*--class land --producer' 1; ok w5 "release: no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='
   mkcl "$T/lq" /mnt/data/hand/wm-build-qfix-base; printf '[package]\nname = "wm-build"\n' > "$T/lq/Cargo.toml"
-  TCWD="$T/lq" tc n1 -- check; ok n1 "origin /mnt/data/hand/wm-build-qfix-base (a local clone of a clone) + Cargo.toml wm-build: hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok n1 "MemoryMax 5G" has log '^SR .*MemoryMax=5G'; ok n1 "via=cargo-toml" has err 'class=hand prefix=wm-build via=cargo-toml kind=wm-build$'
+  TCWD="$T/lq" tc n1 -- check; ok n1 "origin /mnt/data/hand/wm-build-qfix-base (a local clone of a clone) + Cargo.toml wm-build: hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok n1 "no Memory* on the scope" nohas log '^SR .*Memory(High|Max)='; ok n1 "via=cargo-toml" has err 'class=hand prefix=wm-build via=cargo-toml kind=wm-build$'
   mkcl "$T/x2" https://github.com/j0yen/other-repo; printf '[package]\nname = "other"\n' > "$T/x2/Cargo.toml"
   TCWD="$T/x2" tc n2 -- check; ok n2 "unrelated GitHub origin + Cargo.toml other + basename x2: land" cnt log '^ACQ .*--class land --producer' 1; ok n2 "via=basename, no kind" has err 'class=land via=basename$'
   mkcl "$T/y2" https://github.com/j0yen/other-repo; printf '[package]\nname = "mcphost"\n' > "$T/y2/Cargo.toml"
-  TCWD="$T/y2" tc n3 -- check; ok n3 "unrelated origin + Cargo.toml mcphost: hand, MemoryMax 9G" has log '^SR .*MemoryMax=9G'
+  TCWD="$T/y2" tc n3 -- check; ok n3 "unrelated origin + Cargo.toml mcphost: hand, no Memory*" nohas log '^SR .*Memory(High|Max)='
   mkcl "$T/x3" https://github.com/j0yen/wm-build; printf '[package]\nname = "other"\n' > "$T/x3/Cargo.toml"
   TCWD="$T/x3" tc n4 -- check; ok n4 "a matching origin still wins over Cargo.toml (origin wm-build, name other): hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1
   mkcl "$T/tmp.XyZ"; printf '[package]\nname = "wm-build"\nversion = "0.1.0"\n' > "$T/tmp.XyZ/Cargo.toml"
   TCWD="$T/tmp.XyZ" tc w6 -- check; ok w6 "no remote, Cargo.toml package wm-build under dir tmp.XyZ: hand --prefix wm-build" cnt log '^ACQ .*--class hand --prefix wm-build --producer' 1; ok w6 "via=cargo-toml" has err 'via=cargo-toml kind=wm-build$'
   mkcl "$T/tmp.Mh1"; printf '[workspace]\nmembers = []\n\n[package]\nname = "mcphost"\n' > "$T/tmp.Mh1/Cargo.toml"
-  TCWD="$T/tmp.Mh1" tc w6b -- check; ok w6b "no remote, Cargo.toml package mcphost: hand, MemoryMax 9G" has log '^SR .*MemoryMax=9G'
+  TCWD="$T/tmp.Mh1" tc w6b -- check; ok w6b "no remote, Cargo.toml package mcphost: hand, no Memory*" nohas log '^SR .*Memory(High|Max)='
   mkcl "$T/tmp.Ws1"; printf '[workspace]\nmembers = []\n\n[[bin]]\nname = "wm-build"\n' > "$T/tmp.Ws1/Cargo.toml"
   TCWD="$T/tmp.Ws1" tc w6c -- check; ok w6c "no remote, Cargo.toml without [package] (a [[bin]] named wm-build is not the package): land" cnt log '^ACQ .*--class land --producer' 1
   mkcl "$T/wm-build-nr"; printf '[package]\nname = "other"\n' > "$T/wm-build-nr/Cargo.toml"
@@ -452,12 +453,12 @@ elif [ -L "$ch/registry/src" ] || [ -L "$ch/registry" ]; then
   echo "[cargo-slot] REFUSED: CARGO_HOME=$ch shares registry/src by symlink; build it with /mnt/data/hand/mk-cargo-home.sh" >&2; exit 76
 fi
 export CARGO_HOME="$ch"
-CAP_G=12; FLOOR_G=12; HIGH_G=10
+CAP_G=12; FLOOR_G=12
 # rb 10-19 11:2x PM (CTRL 11:17, Fable 1008 ruling): a wm-build clone holds a MEASURED cap (6 MIG scopes, max memory.peak 2.8 G):
-#   --prefix wm-build -> [cargo_jobs.mem_caps_gb.wm-build] hand = 5; MemoryMax = the same 5 G, so the scope can never exceed its count.
+#   --prefix wm-build -> [cargo_jobs.mem_caps_gb.wm-build] hand = 5; CAP_G is the admission count only (the scope carries no Memory* property; the bound above it is app.slice + systemd-oomd).
 #   Physical floor = the daemon headroom_gb (4) instead of 12. Reverse: a wm-build scope peak > 5 G (run-peak.log hand.wm-build-*) -> cap = peak + 1.
 # 11:2x PM correction: the binary stores no prefix on a hand row, so the Σ reads the CLASS cap. hand class default = 5 (config);
-#   any non-wm-build hand cargo (mcphost, 12 G scope) acquires as --class land (12.5 >= its 12 G MemoryMax) so it is never undercounted.
+#   any non-wm-build hand cargo (mcphost) acquires as --class land (12.5 G count) so it is never undercounted.
 CLS=land; PFX=
 # rb 10-22 12:3x PM (Fable 12:28 + CTRL 12:33 on d-4acd): mcphost hand cargo MEASURED ws max 7.6 / anon 7.1 (run-peak.log, newest 10 hand mcphost)
 #   -> class hand, [cargo_jobs.mem_caps_gb] hand = 9 (was class land 12.5). Reverse: any hand mcphost ws row > 9 -> drop the mcphost*) arm (back to land 12.5).
@@ -483,18 +484,18 @@ if [ -z "$cls_kind" ]; then   # no origin, or an origin that is neither repo (e.
     case "$(basename "${cls_top:-$(pwd)}")" in wm-build*) cls_kind=wm-build;; mcphost*) cls_kind=mcphost;; esac
   fi
 fi
-case "$cls_kind" in wm-build) CAP_G=5; FLOOR_G=4; HIGH_G=4; CLS=hand; PFX=wm-build;; mcphost) CAP_G=9; HIGH_G=8; CLS=hand;; esac
-# CTRL 11:23 PM rider (D28): a wm-build RELEASE build has no measured peak yet -> class land 12.5 / MemoryMax 12G.
+case "$cls_kind" in wm-build) CAP_G=5; FLOOR_G=4; CLS=hand; PFX=wm-build;; mcphost) CAP_G=9; CLS=hand;; esac
+# CTRL 11:23 PM rider (D28): a wm-build RELEASE build has no measured peak yet -> class land 12.5 admission count.
 #   Reverse: one release scope measured with memory.peak sampled to the end <= 4 G -> release may use class hand.
-case " $* " in *" --release "*|*" -r "*) [ "$CLS" = hand ] && { CAP_G=12; FLOOR_G=12; HIGH_G=10; CLS=land; PFX=; };; esac
+case " $* " in *" --release "*|*" -r "*) [ "$CLS" = hand ] && { CAP_G=12; FLOOR_G=12; CLS=land; PFX=; };; esac
 echo "[cargo-slot] class=$CLS${PFX:+ prefix=$PFX} via=$cls_via${cls_kind:+ kind=$cls_kind}" >&2   # W4: the decision, once per call (a verifier reads this line)
-# rb 10-20 12:4x AM (CTRL caps-drift ask): MemoryMax is DERIVED from the class cap the Σ counts (floor of [cargo_jobs.mem_caps_gb].<class>),
-#   so a scope can never exceed its count and a cap change needs no edit here. Unreadable config = the literals above.
+# rb 10-20 12:4x AM (CTRL caps-drift ask): CAP_G is the admission count only, DERIVED from the class cap the Σ counts (floor of [cargo_jobs.mem_caps_gb].<class>); the scope carries no Memory* property (bound above it = app.slice + systemd-oomd),
+#   and a cap change needs no edit here. Unreadable config = the literals above.
 # rb 10-22 1:0x PM (CTRL seat note 1): a wm-build clone acquires with --prefix wm-build (the binary prices a hand row by the prefix recorded on
-#   the row since 0.77.59, run_prefix), so MemoryMax = floor([cargo_jobs.mem_caps_gb.wm-build].<class>) first, the class table second.
+#   the row since 0.77.59, run_prefix), so the admission count CAP_G = floor([cargo_jobs.mem_caps_gb.wm-build].<class>) first, the class table second.
 CFG_CAP=$(awk -v c="$CLS" -v pt="${PFX:+[cargo_jobs.mem_caps_gb.$PFX]}" '/^\[/{s=$0; next} s=="[cargo_jobs.mem_caps_gb]" || (pt!="" && s==pt){sub(/#.*/,""); n=split($0,kv,"="); gsub(/ /,"",kv[1]); gsub(/ /,"",kv[2]); if(n==2 && kv[1]==c){ if(s==pt) p=int(kv[2]); else b=int(kv[2]) }} END{if(p!="") print p; else if(b!="") print b}' "${CARGO_SLOT_CONFIG:-$HOME/.config/wm-build/config.toml}" 2>/dev/null)
 if [ -n "$CFG_CAP" ] && [ "$CFG_CAP" -gt 0 ] 2>/dev/null && [ "$CFG_CAP" != "$CAP_G" ]; then
-  echo "[cargo-slot] MemoryMax ${CAP_G}G -> ${CFG_CAP}G = floor(${PFX:+prefix $PFX }class $CLS cap)" >&2; CAP_G=$CFG_CAP; [ "$HIGH_G" -ge "$CAP_G" ] && HIGH_G=$((CAP_G - 1))
+  echo "[cargo-slot] admission count ${CAP_G}G -> ${CFG_CAP}G = floor(${PFX:+prefix $PFX }class $CLS cap)" >&2; CAP_G=$CFG_CAP
 fi
 NEED_G=$((CAP_G + FLOOR_G))
 iopsi60() { awk '/^some/{for(i=1;i<=NF;i++) if($i ~ /^avg60=/){split($i,a,"="); print int(a[2]); exit}}' "${CARGO_SLOT_IO_FILE:-/proc/pressure/io}"; }
@@ -533,7 +534,7 @@ if [ "$split" = 1 ]; then csl_line compile; else csl_line single; fi
 if [ "$split" = 1 ]; then lphase=compile; else lphase=single; fi
 wait_gates
 # 10-19 9:3x PM CTRL (MGC, true Σ 36 > 26 on an MGA grant: this scope was invisible to the gate): the slot registers a `hand`
-#   cargo-jobs row (cap 12 G = this scope MemoryMax) through the live binary, so the tick admission and every acquire count it;
+#   cargo-jobs row (cap 12 G = the admission count; the scope carries no Memory* property) through the live binary, so the tick admission and every acquire count it;
 #   it waits for Σ room (CARGO_SLOT_ACQ_WAIT_MIN, default 60) and maps acquire exit 75 (no slot) to 76. Real paths: HOME may be a throwaway.
 # 10-19 9:4x PM CTRL (front of queue: MGC must not wait FIFO behind older hand calls): a target basename listed in
 #   /mnt/data/hand/cargo.priority jumps the hand queue WHILE IT WAITS. It drops /mnt/data/hand/cargo.prio-waiting.<pid>,
@@ -560,7 +561,7 @@ if [ "$split" = 1 ]; then # phase=compile: args before the first cargo-level "--
   echo "[cargo-slot] phase=compile" >&2; cargs=("${pre[@]}" --no-run); cpost=(); t0=$SECONDS
 else cargs=("${pre[@]}"); cpost=("${post[@]}"); fi
 # CSL begin: single-phase and compile hold the target's phase lock exclusive for the whole cargo (taken OUTSIDE cargo.lock)
-run flock -x "$PL" flock "$LK" "${WRAP[@]}" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p MemoryHigh=${HIGH_G}G -p MemoryMax=${CAP_G}G nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" "$CARGO_BIN" "${cargs[@]}" "${JFLAG[@]}" "${cpost[@]}"
+run flock -x "$PL" flock "$LK" "${WRAP[@]}" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" "$CARGO_BIN" "${cargs[@]}" "${JFLAG[@]}" "${cpost[@]}"
 # CSL end
 rc=$?; [ "$rc" = 75 ] && { lg_decision refused "$(availg)" "$io"; echo "[cargo-slot] REFUSED: no memory-admission slot (acquire exit 75)" >&2; rc=76; }; echo "[cargo-slot] slot avail=$(availg)G io60=${io} rc=$rc" >&2; lg_end "$rc"
 { [ "$split" != 1 ] || [ "$rc" != 0 ]; } && exit $rc
@@ -583,7 +584,7 @@ guard "$gd" < "$gd/o" & po=$!
 guard "$gd" < "$gd/e" >&2 & pe=$!
 # $mk is touched only by the wrapper that execs cargo, i.e. after the acquire granted and the scope started
 # CSL begin: the run phase holds the phase lock SHARED around its cargo (waits for a same-target compile/check, taken before the acquire)
-run flock -s "$PL" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p MemoryHigh=${HIGH_G}G -p MemoryMax=${CAP_G}G -p CPUWeight=50 nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" bash -c 'touch "$0"; exec "$@"' "$mk" "$CARGO_BIN" "${pre[@]}" -j 4 "${post[@]}" > "$gd/o" 2> "$gd/e"
+run flock -s "$PL" "${ACQ[@]}" systemd-run --user --scope --slice=app.slice --quiet -p CPUWeight=50 nice -n 10 ionice -c2 -n7 env CARGO_SHIM_INNER=1 CARGO_HOME="$CARGO_HOME" bash -c 'touch "$0"; exec "$@"' "$mk" "$CARGO_BIN" "${pre[@]}" -j 4 "${post[@]}" > "$gd/o" 2> "$gd/e"
 # CSL end
 rc=$?
 # the filters end at EOF; a daemonized grandchild holding the fifo must not hang the call, so give them 10 s then stop our own two pids
