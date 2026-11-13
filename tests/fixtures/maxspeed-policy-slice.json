@@ -1,0 +1,29 @@
+{
+ "maxspeed": {
+  "baseline": "fable-high",
+  "classes": {
+   "baseline": {
+    "evidence": false,
+    "route": "fable-high"
+   },
+   "unresolved_reasoning_gap": {
+    "evidence": true,
+    "route": "fable-xhigh"
+   }
+  },
+  "escalation_reasons": {
+   "unresolved_reasoning_gap": "fable-xhigh"
+  },
+  "require_permission_mode": "plan",
+  "routes": {
+   "fable-high": {
+    "effort": "high",
+    "model": "claude-fable-5-1"
+   },
+   "fable-xhigh": {
+    "effort": "xhigh",
+    "model": "claude-fable-5-1"
+   }
+  }
+ }
+}
