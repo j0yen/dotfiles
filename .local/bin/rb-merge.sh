@@ -44,6 +44,13 @@ if [ $# -eq 5 ] && [ "$4" = "--handoff" ]; then handoff="$5"; set -- "$1" "$2" "
 v="$1"; pr="$2"; repo="$3"
 case "$pr" in ''|*[!0-9]*) echo "rb-merge.sh: pr must be a number, got '$pr'" >&2; usage ;; esac
 case "$repo" in */*) ;; *) echo "rb-merge.sh: repo must be owner/name, got '$repo'" >&2; usage ;; esac
+# FROZEN PRS (gate proof 11-07, quota-mutating-lane-gate-proof-20261107.md P1): a PR listed in the frozen file is refused before the log, the gate and any gh call.
+# File: ${RB_MERGE_FROZEN_FILE:-~/.config/wm-decide/frozen-prs.txt}, one owner/repo#N per line, # comments; absent = no refusal; present but unreadable = refuse (fail closed).
+frozen_file="${RB_MERGE_FROZEN_FILE:-$HOME/.config/wm-decide/frozen-prs.txt}"
+if [ -e "$frozen_file" ]; then
+  if ! frozen_list="$(grep -v '^[[:space:]]*#' "$frozen_file" 2>/dev/null | tr -d ' \t\r')" && [ ! -r "$frozen_file" ]; then echo "rb-merge.sh: FROZEN-PR-UNREADABLE $frozen_file" >&2; exit 6; fi
+  if printf '%s\n' "$frozen_list" | grep -qxF "$repo#$pr"; then echo "rb-merge.sh: FROZEN-PR $repo#$pr" >&2; exit 6; fi
+fi
 # Every call logs to ~/.cache/rb-seat/merge-logs/ (ctl 10-22 11:28 PM: a merge-done row cites this log).
 RB_MERGE_LOG_DIR="${RB_MERGE_LOG_DIR:-$HOME/.cache/rb-seat/merge-logs}"; mkdir -p "$RB_MERGE_LOG_DIR"
 LOG="$RB_MERGE_LOG_DIR/rb-merge-${repo//\//_}-$pr-$(date +%Y%m%dT%H%M%S).log"; echo "rb-merge.sh v=$v pr=$pr repo=$repo at $(date -Is)" >"$LOG"

@@ -19,6 +19,8 @@
 # PRODUCER G10 Fable regrade verdict on the verifier row or a FABLE-GRADE row (swarm-decide-regrade.timer)
 # PRODUCER G12 hand-PR reference (gate-fix daemon run or revert PR) in the PR body MISSING A35-hand-pr-refs-producer (rb)
 set -euo pipefail
+# hold gate (gate proof P2, 11-07): a present HOLD.json blocks this lane unless `fleet-merge` is preserved; the systemd Condition alone is not the only barrier.
+"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/hold-gate.sh" fleet-merge || exit 1
 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/merge-verdict-grammar.sh"   # exports MVG_LIB_DIR + the MVG_* patterns plan.py reads
 GH="${FLEET_MERGE_GH:-gh}"

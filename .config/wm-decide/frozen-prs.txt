@@ -1,0 +1,2 @@
+# owner/repo#N, one per line; rb-merge.sh refuses these before the gate. Run 1084 / hold 1085 per ~/Notes/foundation-*.md
+j0yen/mcphost#536
