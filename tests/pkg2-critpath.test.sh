@@ -28,7 +28,7 @@ UPSAS(){ printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s"}' "${2:
 UPS(){ UPSAS ctl "${1:-s1}"; }
 STOPAS(){ jq -nc --arg s "${2:-s1}" --arg m "${3:-}" '{hook_event_name:"Stop",session_id:$s,stop_hook_active:false,last_assistant_message:$m}' | WM_SEAT="$1" timeout 40 bash "$OWED" hook 2>/dev/null; }
 within(){ awk -v a="$1" -v b="$2" -v lim="$3" 'BEGIN{print ((b-a)<=lim)?"ok":"slow " (b-a)}'; }
-fresh(){ rm -rf "$W/owed" "$W/st"; : >"$W/delay"; }
+fresh(){ pkill -f "$OWED refresh" 2>/dev/null; rm -rf "$W/owed" "$W/st"; : >"$W/delay"; }   # a detached producer of an earlier control must not write into the next control's cache
 wait_cache(){ local i; for i in $(seq 100); do [ -s "$W/owed/ctl.ups-cache.json" ] && return 0; sleep 0.1; done; return 1; }
 
 # --- C1 slow ledger, cold cache: the prompt returns at once with a truthful UNKNOWN marker (the ledger sleeps 25 s)
@@ -128,6 +128,7 @@ cat >/dev/null; echo x >>"@W@/deliver.log"
 DLV
 sed -i "s#@W@#$W#g" "$W/bin/deliver"; chmod +x "$W/bin/deliver"
 fresh; : >"$W/delay"; : >"$W/deliver.log"; mkdir -p "$W/st"; export FOLLOWUP_DELIVER_CMD="$W/bin/deliver"
+echo '{"id":"PRE","rev":1,"disposition":"ready","kind":"overdue","owner":"ctl","fp":"PRE|1|ready|overdue","seat":"ctl","ts":"2026-11-13T11:00:00+00:00","delivered":false}' >"$W/st/outbox.jsonl"   # an undelivered entry: the in-hook replay would have to wait on the lock
 WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1
 ( flock -x "$W/st/lock" sleep 9 ) & lk=$!; sleep 0.4
 t0=$(now); S1="$(STOPAS ctl s13 'I recommend moving the cache to a new store.')"; t1=$(now)
@@ -143,7 +144,7 @@ ck "C13 nothing lost: the next Stop escalates T1 once, the one after passes" "$(
 o="$(UPSAS ctl s13)"
 ck "C13 a Stop that completed clears the skipped-check marker" "$(grep -c 'STOP CHECK SKIPPED' <<<"$o")" 0
 sleep 1
-ck "C13 nothing replayed twice: one delivery per outbox entry" "$(wc -l <"$W/deliver.log" | tr -d ' ')/$(wc -l <"$W/st/outbox.jsonl" | tr -d ' ')" "2/2"
+ck "C13 nothing replayed twice, the seeded entry delivered by the durable consumer: one delivery per outbox entry (PRE, suggestion, T1)" "$(wc -l <"$W/deliver.log" | tr -d ' ')/$(wc -l <"$W/st/outbox.jsonl" | tr -d ' ')" "3/3"
 export FOLLOWUP_DELIVER_CMD=true
 # --- L1 one refresher per seat (rv6 F6-4): concurrent refreshes of one seat cost the ledger the calls of one, every time. The lock is an exclusive create (noclobber), not mkdir:
 # uutils mkdir lets two racing callers both succeed, so the race is repeated 8 times (a mkdir lock fails about 4 of 10 rounds on this host class)
