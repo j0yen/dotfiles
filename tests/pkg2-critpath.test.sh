@@ -50,11 +50,12 @@ fresh; rm -f "$W/rows.json.hold"; mv "$W/rows.json" "$W/rows.hold"; : >"$W/rows.
 ck "C3 UNKNOWN is once per session and state (no recital loop)" "${o:-quiet}" quiet
 # --- C4 malformed cache: garbage, wrong seat, symlink, empty file, wrong schema => truthful malformed marker, fast, rc 0
 fresh; mkdir -p "$W/owed"; echo 25 >"$W/delay"
-for kind in garbage wrongseat symlink empty schema; do
+for kind in garbage wrongseat future symlink empty schema; do
   rm -rf "$W/owed"; mkdir -p "$W/owed"; c="$W/owed/ctl.ups-cache.json"
   case "$kind" in
     garbage) printf '{not json' >"$c" ;;
-    wrongseat) printf '{"v":1,"seat":"rb","ts":%s,"clean":false,"rows":"OVERDUE\tT1\tx"}' "$(date +%s)" >"$c" ;;
+    wrongseat) printf '{"v":1,"seat":"rb","ts":%s,"clean":false,"rows":"OVERDUE\\tT1\\tx"}' "$(date +%s)" >"$c" ;;
+    future) printf '{"v":1,"seat":"ctl","ts":%s,"clean":false,"rows":"OVERDUE\\tT1\\tx"}' "$(( $(date +%s) + 3600 ))" >"$c" ;;
     symlink) printf '{"v":1,"seat":"ctl","ts":%s,"clean":true,"rows":""}' "$(date +%s)" >"$W/real.json"; ln -s "$W/real.json" "$c" ;;
     empty) : >"$c" ;;
     schema) printf '{"v":1,"seat":"ctl","ts":"yesterday","clean":true,"rows":""}' >"$c" ;;

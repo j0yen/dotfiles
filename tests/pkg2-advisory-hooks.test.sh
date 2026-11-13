@@ -400,6 +400,8 @@ printf 'x password%%25253DFAKEF51F2\n' >"$W/err.bin"; e="$(hint)"
 ck "F5-1 triple-encoded name is decoded and redacted in place (not withheld)" "$(case "$e" in *"password=<redacted>"*) case "$e" in *FAKEF51F2*|*withheld*) echo bad;; *) echo ok;; esac;; esac)" ok
 printf 'x password%%252525253DFAKEF51F3\n' >"$W/err.bin"; e="$(hint)"
 ck "F5-1 four-level encoding is withheld with a marker, nothing guessed" "$(case "$e" in *"<encoded text withheld>"*) case "$e" in *FAKEF51F3*) echo bad;; *) echo ok;; esac;; esac)" ok
+printf '\007\001\n\n  \nwm-asks: real error here\n' >"$W/err.bin"
+ck "F5-1 a control-only first line counts as blank: the first real line is the hint" "$(hint)" "ledger query exit 2: wm-asks: real error here"
 # own negatives, beyond the reviewer's list: encoded cookie pair, encoded Authorization header, hex-escaped bearer
 hc f51-own-pct-cookie 'Set%%2DCookie: sid=FAKEF51E1\n' FAKEF51E1
 hc f51-own-pct-bearer 'authorization%%3A%%20bearer%%20FAKEF51E2\n' FAKEF51E2
