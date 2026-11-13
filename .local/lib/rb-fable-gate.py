@@ -2,7 +2,7 @@
 """rb-fable-gate.py - the Fable-verdict gate for rb-run-coder.sh (exit 80). Run as `python3 -I rb-fable-gate.py MODE ARG DB`.
 
   spec  SPEC DB   pass iff the NEWEST decisions row whose evidence holds `sha256:<hex of SPEC>` is kind=verdict, model contains `fable`,
-                  final verdict in {AGREE, AGREE-WITH-EDITS} (final = regrade JSON `verdict` when present, else the first word of `what`),
+                  final verdict in {AGREE, AGREE-WITH-EDITS} (final = regrade JSON `verdict` when present and not CONFIRM, else the first word of `what`),
                   and the spec's stem (fvg.spec.md -> fvg) appears in that row's what/evidence. stdout `OK <id>` rc 0, else the reason rc 1.
   hatch PROMPT DB pass iff PROMPT carries `Hatch: d-<id>` naming a kind=decision|other row (wm-decide record writes no kind=decision), `what` starting NO-SPEC-SPAWN, evidence holding
                   `sha256:<hex of PROMPT with the Hatch line(s) removed>`, id timestamp <= 24 h old. stdout the row id rc 0, else `hatch-<why>` rc 1.
@@ -81,15 +81,18 @@ def id_time(rid):
 
 
 def final_word(what, regrade):
+    toks = (what or "").split(None, 1)
+    own = toks[0].strip("*_`:;,.()[]—–").upper() if toks else "NONE"
     if regrade:
         try:
             rg = json.loads(regrade)
         except ValueError:
             return "REGRADE-UNREADABLE"
         if isinstance(rg, dict) and isinstance(rg.get("verdict"), str) and rg["verdict"].strip():
-            return rg["verdict"].strip().upper()
-    toks = (what or "").split(None, 1)
-    return toks[0].strip("*_`:;,.()[]—–").upper() if toks else "NONE"
+            word = rg["verdict"].strip().upper()
+            # the regrader's CONFIRM upholds the row, so the row's own word stands; CORRECT or any other word overrides it
+            return own if word == "CONFIRM" else word
+    return own
 
 
 def gate_spec(spec, db):
