@@ -2,6 +2,8 @@
 # reap.sh - L6 retention contract executor (A239): runs every entry of gen/retention.json for this host,
 # writes one journal receipt per entry (`reap entry=<id> host=<h> reaped=<N> ...`), and raises an ALARM line
 # (journal err + $REAP_STATE_DIR/alarm-<id>) when an entry is still over its cap_mb with reaped=0.
+# Flag: --dry-run (same as REAP_DRY_RUN=1) lists what would be removed, removes nothing, receipts carry dry_run=1.
+# Entry key `exclude` (array of shell globs on the child basename): matching children are skipped and counted as excluded=<n>.
 # Env: REAP_RETENTION (json), REAP_HOST, REAP_DRY_RUN=1, REAP_STATE_DIR, REAP_SYSTEMCTL, REAP_LOGGER, REAP_GIT.
 # Exit 0 on a clean pass, 2 when any alarm was raised. Reaps only direct children of a dir-age path; never follows symlinks.
 set -u
@@ -10,6 +12,8 @@ json=${REAP_RETENTION:-$here/../../.config/fleet/gen/retention.json}
 [ -f "$json" ] || json=$HOME/.config/fleet/gen/retention.json
 host=${REAP_HOST:-$(hostname -s)}
 dry=${REAP_DRY_RUN:-0}
+for a in "$@"; do case "$a" in --dry-run) dry=1;; *) echo "reap: unknown arg $a" >&2; exit 64;; esac; done
+drytag=""; [ "$dry" = 1 ] && drytag=" dry_run=1"
 state=${REAP_STATE_DIR:-$HOME/.local/state/reap}
 sysctl=${REAP_SYSTEMCTL:-systemctl}
 logger_bin=${REAP_LOGGER:-logger}
@@ -22,9 +26,10 @@ expand() { local p=$1; p=${p/#\~/$HOME}; echo "${p//\$HOME/$HOME}"; }
 size_mb() { local k; k=$(du -sk -- "$1" 2>/dev/null | cut -f1); echo $(( ${k:-0} / 1024 )); }
 
 rc=0
-while IFS=$'\t' read -r id kind path age_h cap_mb repos; do
+while IFS=$'\t' read -r id kind path age_h cap_mb repos excl; do
   alarm="$state/alarm-$id"
-  reaped=0 note=""
+  reaped=0 excluded=0 note=""
+  read -ra globs <<<"${excl/#-/}"
   case "$kind" in
     dir-age)
       p=$(expand "$path")
@@ -32,11 +37,18 @@ while IFS=$'\t' read -r id kind path age_h cap_mb repos; do
       if [ ! -d "$p" ] || [ -L "$p" ]; then say "reap entry=$id host=$host reaped=0 note=absent"; rm -f "$alarm"; continue; fi
       before=$(size_mb "$p")
       while IFS= read -r -d '' victim; do
-        if [ "$dry" = 1 ]; then reaped=$((reaped+1)); continue; fi
+        name=${victim##*/}
+        skip=0
+        for g in "${globs[@]}"; do
+          # shellcheck disable=SC2254
+          case "$name" in $g) skip=1; break;; esac
+        done
+        if [ "$skip" = 1 ]; then excluded=$((excluded+1)); continue; fi
+        if [ "$dry" = 1 ]; then echo "reap dry-run entry=$id would-remove=$victim"; reaped=$((reaped+1)); continue; fi
         rm -rf -- "$victim" && reaped=$((reaped+1))
       done < <(find "$p" -mindepth 1 -maxdepth 1 -mmin +$(( age_h * 60 )) -print0 2>/dev/null)
       after=$(size_mb "$p")
-      note="size_mb=$after before_mb=$before cap_mb=$cap_mb"
+      note="excluded=$excluded size_mb=$after before_mb=$before cap_mb=$cap_mb$drytag"
       if [ "$after" -gt "$cap_mb" ] && [ "$reaped" -eq 0 ]; then
         say "reap entry=$id host=$host reaped=$reaped $note ALARM=over-cap-reaped-0"; echo "$(date +%s) $note" > "$alarm"; rc=2
       else
@@ -52,7 +64,7 @@ while IFS=$'\t' read -r id kind path age_h cap_mb repos; do
         [ "$t" -gt 0 ] && [ "$t" -gt "$cutoff" ] && continue
         if [ "$dry" = 1 ] || "$sysctl" --user reset-failed "$unit" >/dev/null 2>&1; then reaped=$((reaped+1)); fi
       done < <("$sysctl" --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')
-      say "reap entry=$id host=$host reaped=$reaped"
+      say "reap entry=$id host=$host reaped=$reaped$drytag"
       rm -f "$alarm"
       ;;
     worktree-prune)
@@ -62,7 +74,7 @@ while IFS=$'\t' read -r id kind path age_h cap_mb repos; do
         [ "$dry" = 1 ] || "$git_bin" -C "$rp" worktree prune 2>/dev/null
         reaped=$((reaped+n))
       done
-      say "reap entry=$id host=$host reaped=$reaped"
+      say "reap entry=$id host=$host reaped=$reaped$drytag"
       rm -f "$alarm"
       ;;
     *) say "reap entry=$id host=$host reaped=0 error=unknown-kind"; rc=2;;
@@ -73,7 +85,7 @@ d = json.load(open(sys.argv[1]))
 for e in d["entries"]:
     if sys.argv[2] not in e.get("hosts", []):
         continue
-    print("\t".join([e["id"], e["kind"], e.get("path", "-"), str(e.get("age_h", 0)), str(e.get("cap_mb", 0)), " ".join(e.get("repos", [])) or "-"]))
+    print("\t".join([e["id"], e["kind"], e.get("path", "-"), str(e.get("age_h", 0)), str(e.get("cap_mb", 0)), " ".join(e.get("repos", [])) or "-", " ".join(e.get("exclude", [])) or "-"]))
 PY
 )
 exit $rc
