@@ -102,13 +102,13 @@ done
 # --- R4-4: requeue
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1; br ack e1 >/dev/null 2>&1
 cp "$BRD/done/e1.json" "$BRD/queue/e1.json"; o="$(BR_CYCLES=1 br run 2>&1)"
-[ "$(q)" = 0 ] && [ "$(d)" = 1 ] && [ "$(nrec)" = 1 ] && [ "$(rcalls)" = 0 ] && printf '%s' "$o" | grep -q 'requeue' && grep -q 'requeue' "$BRD/deliveries.log" && ls "$BRD/recovered"/e1.* >/dev/null 2>&1; chk "R4-4 a done/ record copied back into queue/ is not redelivered, and is NOT silent: typed message names the requeue command, deliveries.log line, queue copy kept under recovered/" $?
+[ "$(q)" = 0 ] && [ "$(d)" = 1 ] && [ "$(nrec)" = 1 ] && [ "$(rcalls)" = 0 ] && printf '%s' "$o" | grep -q 'ctl-event-bridge.sh requeue e1' && grep -q 'ctl-event-bridge.sh requeue e1' "$BRD/deliveries.log" && ls "$BRD/recovered"/e1.* >/dev/null 2>&1; chk "R4-4 a done/ record copied back into queue/ is not redelivered, and is NOT silent: typed message names the requeue command, deliveries.log line, queue copy kept under recovered/" $?
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1; br ack e1 >/dev/null 2>&1; o="$(br requeue e1 2>&1)"; rc=$?
 a2="$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("attempt_id","")); print(d.get("attempts"), d.get("last_delivery"), "acked" in d)' "$BRD/queue/e1.json" 2>/dev/null | tr '\n' ' ')"
 [ "$rc" = 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 1 ] && printf '%s' "$a2" | grep -qE '^[0-9]+-[0-9a-f]{8} 0 0 False'; chk "R4-4 requeue e1: a new queue file with a NEW attempt_id (attempts 0, no acked field), done/ record kept ($a2)" $?
 o="$(br ack e1 2>&1)"; [ "$(q)" = 1 ] && [ "$(d)" = 1 ]; chk "R4-4 the requeued delivery cannot be acked on the old attempt's evidence" $?
 br requeue e1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(q)" = 1 ]; chk "R4-4 requeue of an id that is already queued: refused" $?
-br requeue nosuchid >/dev/null 2>&1; [ $? != 0 ]; chk "R4-4 requeue of an unknown id: refused" $?
+o="$(br requeue nosuchid 2>&1)"; rc=$?; [ $rc != 0 ] && printf '%s' "$o" | grep -q '^unknown id: nosuchid'; chk "R4-4 requeue of an unknown id: refused with the typed 'unknown id' message" $?
 br requeue 'bad id!' >/dev/null 2>&1; [ $? != 0 ]; chk "R4-4 requeue with an invalid id: refused" $?
 newa="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["attempt_id"])' "$BRD/queue/e1.json")"; routea e1 "$newa"; gooda e1 "$newa"; br ack e1 >/dev/null 2>&1
 [ "$(q)" = 0 ] && [ "$(d)" = 2 ] && receipt e1 && receipt e1.r1 && [ "$(nrec)" = 2 ]; chk "R4-4 requeue + fresh evidence of the new attempt: acked as its own delivery (done/e1.r1.json + receipt e1.r1)" $?
@@ -125,8 +125,9 @@ printf '%s' "$hdr" | grep -q 'resolve'; chk "R4-5 router header: names resolve a
 ! printf '%s' "$hdr" | grep -q 'exit field + owned ask\|and, when work could not$'; chk "R4-5 router header no longer defines success as 'exit field + owned ask'" $?
 
 # --- R4-6: version handshake, four combinations (real router, timeout event)
-git -C "$root" show ae079b2b5a7a3d0ec3131a1abc10a0f5e68598f9:.local/bin/ctl-event-bridge.sh > "$T/base-bridge.sh" 2>/dev/null && mkdir -p "$T/basebin" "$T/headbin" && cp "$T/base-bridge.sh" "$T/basebin/ctl-event-bridge.sh" \
- && git -C "$root" show ae079b2b5a7a3d0ec3131a1abc10a0f5e68598f9:.local/bin/ctl-event-route.sh > "$T/basebin/ctl-event-route.sh" && cp "$B" "$T/headbin/ctl-event-bridge.sh" && cp "$RTR" "$T/headbin/ctl-event-route.sh" && chmod +x "$T/basebin"/* "$T/headbin"/* && have_base=1 || have_base=0
+GR="${P3_BASE_REPO:-$root}"   # a git clone that contains the base commit (default: this repo; the mutation runner points it at the real worktree)
+git -C "$GR" show ae079b2b5a7a3d0ec3131a1abc10a0f5e68598f9:.local/bin/ctl-event-bridge.sh > "$T/base-bridge.sh" 2>/dev/null && mkdir -p "$T/basebin" "$T/headbin" && cp "$T/base-bridge.sh" "$T/basebin/ctl-event-bridge.sh" \
+ && git -C "$GR" show ae079b2b5a7a3d0ec3131a1abc10a0f5e68598f9:.local/bin/ctl-event-route.sh > "$T/basebin/ctl-event-route.sh" && cp "$B" "$T/headbin/ctl-event-bridge.sh" && cp "$RTR" "$T/headbin/ctl-event-route.sh" && chmod +x "$T/basebin"/* "$T/headbin"/* && have_base=1 || have_base=0
 combo() { # $1 bridge dir, $2 router dir
   fresh; mkqa e1 $NOW A1 timeout; echo '{"id":"e1","event":{"event":"timeout","detail":{}},"created":'$NOW',"attempts":0,"last_delivery":0}' > "$BRD/queue/e1.json"; [ "$1" = headbin ] && mkqa e1 $NOW A1 timeout
   rm -f "$BRD/route.err"; BBIN="$T/$1/ctl-event-bridge.sh" RTBIN="$T/$2/ctl-event-route.sh" BR_CYCLES=2 br run >/dev/null 2>&1; }
@@ -140,6 +141,17 @@ else echo "SKIP R4-6 combinations (base commit ae079b2b not available in this cl
 fresh; mkqa e1 $NOW A1 timeout; RT_DIR="$RTD" "$RTR" route "$BRD/queue/e1.json" >/dev/null 2>&1; [ -f "$RTD/routed/e1.json" ]; chk "R4-6 control: a direct router call (caller is not a bridge) still routes" $?
 fresh; mkqa e1 $NOW A1; RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(sends)" = 1 ]; chk "R4-6 control: a stub router without the router header is not handshake-checked (unrouted id still delivered fail-safe)" $?
 
+# a caller named ctl-event-bridge.sh that announces another protocol (or none) gets no routing; attempt-v1 routes (the handshake is exact)
+mkdir -p "$T/fakebr"; printf '#!/bin/bash\nexport RT_DIR="$1"; shift\nif [ -n "${BRP:-}" ]; then export BR_PROTO="$BRP"; fi\n"$RTR_BIN" route "$@"\nexit $?\n' > "$T/fakebr/ctl-event-bridge.sh"; chmod +x "$T/fakebr/ctl-event-bridge.sh"
+for bp in "" attempt-v0 x; do fresh; mkqa e1 $NOW A1 timeout; o="$(RTR_BIN="$RTR" BRP="$bp" bash "$T/fakebr/ctl-event-bridge.sh" "$RTD" "$BRD/queue/e1.json" 2>&1)"; rc=$?
+  [ $rc = 3 ] && printf '%s' "$o" | grep -q 'bridge-version-mismatch' && [ ! -e "$RTD/routed/e1.json" ]; chk "R4-6 router called by a bridge announcing BR_PROTO='${bp:-<none>}': refused (exit 3, bridge-version-mismatch), nothing routed" $?
+done
+fresh; mkqa e1 $NOW A1 timeout; RTR_BIN="$RTR" BRP=attempt-v1 bash "$T/fakebr/ctl-event-bridge.sh" "$RTD" "$BRD/queue/e1.json" >/dev/null 2>&1; [ -f "$RTD/routed/e1.json" ]; chk "R4-6 router called by a bridge announcing attempt-v1: routes" $?
+# the bridge's own handshake needs only the router file (no process call): a real-router copy with the protocol line removed is a mismatch, with it a match
+mkdir -p "$T/rv"; grep -v '^# ctl-event-proto:' "$RTR" > "$T/rv/ctl-event-route.sh"; chmod +x "$T/rv/ctl-event-route.sh"; fresh; mkqa e1 $NOW A1 timeout
+RTBIN="$T/rv/ctl-event-route.sh" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(d)" = 0 ] && [ "$(sends)" = 0 ] && grep -q 'router-version-mismatch' "$BRD/route.err"; chk "R4-6 a router copy without the 'ctl-event-proto: attempt-v1' line: head bridge fails closed (typed route.err line, nothing acked, nothing sent)" $?
+cp "$RTR" "$T/rv/ctl-event-route.sh"; fresh; mkqa e1 $NOW A1 timeout; RTBIN="$T/rv/ctl-event-route.sh" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(d)" = 1 ] && [ "$(sends)" = 0 ]; chk "R4-6 the same copy with the protocol line: acked once" $?
+
 # --- R4-7: legacy leftover (done/<id>.json beside queue/<id>.json, neither with attempt_id)
 legacy_leftover() { fresh; echo "{\"id\":\"e1\",\"event\":{\"event\":\"timeout\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"; echo "{\"id\":\"e1\",\"event\":{\"event\":\"timeout\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0,\"acked\":$NOW}" > "$BRD/done/e1.json"; }
 for how in explicit all run; do
@@ -148,5 +160,7 @@ for how in explicit all run; do
 done
 legacy_leftover; RTBIN="$RTR" BR_CYCLES=2 br run >/dev/null 2>&1; [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && receipt e1 && [ ! -e "$RTD/handled/e1.r1" ] && [ ! -e "$RTD/routed/e1.json" ]; chk "R4-7 legacy leftover through run + REAL router: no second routing effect (no routed cache written), receipt e1 only" $?
 legacy_leftover; echo "{\"id\":\"e1\",\"event\":{\"event\":\"timeout\",\"detail\":{}},\"created\":$((NOW+500)),\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"; BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(q)" = 1 ] && [ "$(d)" = 1 ]; chk "R4-7 control: an attempt-less queue file whose payload DIFFERS from the done record is still a new delivery (kept queued)" $?
+
+legacy_leftover; echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{\"other\":1}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0}" > "$BRD/queue/e1.json"; BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(q)" = 1 ] && [ "$(d)" = 1 ] && ! receipt e1; chk "R4-7 control: same id and created but a DIFFERENT event payload is not the done delivery (kept queued, no receipt invented)" $?
 
 echo "ctl-event-ack-repair4 test: $n checks, $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"; exit $f
