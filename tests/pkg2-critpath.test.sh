@@ -206,6 +206,11 @@ mkvault "$W/v500" 500; mkvault "$W/v2000" 2000
 for att in 1 2 3; do t5="$(warmbest "$W/v500" "$W/c500")"; t20="$(warmbest "$W/v2000" "$W/c2000")"; r="$(awk -v a="$t5" -v b="$t20" 'BEGIN{printf "%.2f", b/a}')"; [ "$(awk -v r="$r" 'BEGIN{print (r<=4.5)?1:0}')" = 1 ] && break; done
 echo "SCALE summa 500=$t5 2000=$t20 ratio=$r"
 ck "S6 summa index scan: 2000 pages within 4.5x the 500-page time (linear, measured)" "$(awk -v r="$r" 'BEGIN{print (r<=4.5)?"ok":"quadratic " r}')" ok
+# the 120 ms process cost dilutes 500 vs 2000 (a quadratic scan measures only 4.7x there); 2000 vs 8000 separates the classes: linear <= 1.6x measured, quadratic >= 10x
+mkvault "$W/v8000" 8000
+for att in 1 2 3; do t20="$(warmbest "$W/v2000" "$W/c2000")"; t80="$(warmbest "$W/v8000" "$W/c8000")"; r8="$(awk -v a="$t20" -v b="$t80" 'BEGIN{printf "%.2f", b/a}')"; [ "$(awk -v r="$r8" 'BEGIN{print (r<=3.0)?1:0}')" = 1 ] && break; done
+echo "SCALE summa 2000=$t20 8000=$t80 ratio=$r8"
+ck "S6 summa index scan: 8000 pages within 3x the 2000-page time (linear; a quadratic scan is above 10x, measured)" "$(awk -v r="$r8" 'BEGIN{print (r<=3.0)?"ok":"quadratic " r}')" ok
 
 # --- GUARD NEGATIVES: the required guards still refuse at this head (none of them is touched or disabled by the advisory work)
 gn(){ rc=0; "$@" >"$W/gn.out" 2>"$W/gn.err" || rc=$?; echo "$rc"; }
