@@ -4,7 +4,7 @@ before print, so a nonzero exit can follow a committed claim. No systemd, no rea
 import importlib.util, io, json, os, sys, tempfile, contextlib, shutil, subprocess
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.realpath(os.path.join(HERE, "..", "..", ".local", "bin", "worker-route.py"))        # repointed: this clone, not the reviewer's tree
-BASE = os.environ.get("WR_PROBE_BASE") or tempfile.mkdtemp(prefix="wr-probes-")
+BASE = os.environ["WR_PROBE_BASE"]            # set by the test script under its scratch root (never /tmp)
 os.makedirs(BASE, exist_ok=True)
 FAKE_ASKS = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -57,7 +57,7 @@ def world(name, **env_extra):
         p = w + "/bin/" + n; open(p, "w").write(body); os.chmod(p, 0o755)
     db = {"A1": {"ask_id": "A1", "rev": 4, "owner": "r7", "status": "open", "claim": None, "waits_on": [], "what": "t. worker-route: host=h1 launcher=fake-coder arg=a1"}}
     json.dump(db, open(w + "/stub/db.json", "w"))
-    env = dict(HOME=w + "/home", STUB=w + "/stub", WR_STATE=w + "/state", WM_ASKS_CMD=w + "/bin/wm-asks", WR_HOST="h1", WR_LAUNCHERS="fake-coder",
+    env = dict(WR_TEST_SEAMS="1", HOME=w + "/home", STUB=w + "/stub", WR_STATE=w + "/state", WM_ASKS_CMD=w + "/bin/wm-asks", WR_HOST="h1", WR_LAUNCHERS="fake-coder",
                WR_LAUNCHER_DIR=w + "/bin", WR_START_CMD=w + "/bin/fake-start", HOLD_GATE=w + "/bin/hold", WR_UNIT_PROBE=w + "/bin/unitprobe", WR_ASKS_TIMEOUT="120")
     env.update(env_extra); os.environ.update(env)
     os.makedirs(w + "/state", exist_ok=True)

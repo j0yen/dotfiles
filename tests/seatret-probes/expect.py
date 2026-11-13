@@ -28,7 +28,7 @@ want("c1_start_client_unreachable_127", r("c1_start_client_unreachable_127").get
 want("c1_relaunch", r("c1_relaunch").get("rc") == 6, "blocked")
 want("c1_resume_still_unreachable", r("c1_resume_still_unreachable").get("rc") == 7, "resume stays UNKNOWN while uninspectable")
 want("c1_resume_proved_absent", r("c1_resume_proved_absent").get("rc") == 1 and "start-failed" in r("c1_resume_proved_absent").get("receipts", {}).values(), "FINAL only on the exact no-start proof")
-want("c2_reconciliation_code_present", r("c2_reconciliation_code_present").get("systemctl_or_is_active") is True, "a reconciliation (unit probe) exists in source")
+want("c2_reconciliation_code_present", r("c2_reconciliation_code_present").get("unit_probe_modes") == ["absent", "present", "unknown"], "the unit probe seam is exercised structurally: absent, present, unknown")
 # (d) proved no-start then retry, REAL claim semantics (rc 66 on any existing claim) and the re-claim-permissive fixture
 want("d1_first_launch_startfail", r("d1_first_launch_startfail").get("rc") == 1 and r("d1_first_launch_startfail").get("children") == 0, "proved no-start")
 want("d2_retry_against_REAL_claim_semantics", r("d2_retry_against_REAL_claim_semantics").get("rc") == 0 and r("d2_retry_against_REAL_claim_semantics").get("children") == 1 and "adopt-failed-start-claim" in r("d2_retry_against_REAL_claim_semantics").get("decisions", []), "retry works with the real claim API (held claim adopted)")

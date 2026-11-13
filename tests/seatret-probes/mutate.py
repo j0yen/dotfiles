@@ -4,7 +4,9 @@ usage: WR_MUT_BASE=<dir> mutate.py [names...]   (runs in parallel, WR_MUT_JOBS w
 import os, sys, shutil, subprocess
 from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.realpath(HERE + "/../..")
-R = os.environ.get("WR_MUT_BASE") or "/tmp/wr-mut"
+R = os.environ.get("WR_MUT_BASE")
+if not R or R == "/tmp" or R.startswith(("/tmp/", "/var/tmp")):          # R3-5: no default scratch under /tmp
+    sys.stderr.write("mutate.py: set WR_MUT_BASE to a scratch directory outside /tmp\n"); sys.exit(64)
 os.makedirs(R + "/tmp", exist_ok=True); os.makedirs(R + "/out", exist_ok=True)
 M = [
  # review 1 (12 named) + review 2 (5 new)
@@ -23,8 +25,8 @@ M = [
  ("supervise_recheck", 'if launcher_path(lname) != rec.get("launcher"):', 'if False:'),
  ("startfailed_final", 'fail_before_start(rec, "start-failed", rc=rc, error=err.strip()[:200], proof="no-start-proven")', 'decide(decision="start-failed", ask=ask, invocation=inv, rc=rc)'),
  ("claimunknown_off", '    if back is not None:\n        # the store was READ', '    if True:\n        # the store was READ'),
- ("reclaim_always_conflict", 'if not (dead and dead.get("state") == "start-failed" and dead.get("ask") == ask)', 'if True or not (dead and dead.get("state") == "start-failed" and dead.get("ask") == ask)'),
- ("dead_ask_check", ' and dead.get("ask") == ask', ''),
+ ("reclaim_always_conflict", '        if verdict != "ok":\n            decide(decision="claim-conflict"', '        if True:\n            decide(decision="claim-conflict"'),
+ ("dead_ask_check", ' or c.get("ask") != ask:\n            return "chain-member-', ':\n            return "chain-member-'),
  # repair 2: partial start / UNKNOWN / resume / binding
  ("claim127_final", '    if back is not None:\n        # the store was READ', '    if back is not None or rc == 127:\n        # the store was READ'),
  ("start_unknown_final", 'if ev == "none":', 'if ev != "started":'),
@@ -32,18 +34,48 @@ M = [
  ("marker_ignored", '(("started", ".json"), ("terminals", ".json"), ("effects", ".effect"), ("prov", ".json"))', '(("terminals", ".json"), ("effects", ".effect"), ("prov", ".json"))'),
  ("unit_present_ignored", '{"present": "started", "absent": "none"}.get(u, "unknown")', '{"present": "none", "absent": "none"}.get(u, "unknown")'),
  ("late_dropped", '            late_terminal(inv, t, prev)\n', '            pass\n'),
- ("adopt_late_evidence", '\\\n                or evidence_of_run(claim_worker(cur)):', ':'),
+ ("adopt_late_evidence", 'if evidence_of_run(r["invocation"]):', 'if False:'),
  ("resume_any_claim", 'if back and claim_worker(back[0].get("claim")) == rec["worker"]:\n            decide(decision="claim-resumed"', 'if back:\n            decide(decision="claim-resumed"'),
  ("resume_unreadable_failed", 'decide(decision="resume-pending", invocation=inv, ask=ask, note="UNKNOWN: the canonical store is still unreadable; nothing changed")\n            return 4', 'fail_before_start(rec, "claim-failed", rc=None)\n            return 5'),
  ("supervise_final_guard", 'if fin is not None and fin.get("state") in FAILED_BEFORE_START:', 'if False:'),
  ("bind_sha_off", 'b.get("sha256") == ident[1] and ', ''),
  ("bind_host_off", ' and b.get("host") == HOST', ''),
- ("bind_store_off", '\n            and si is not None and si == b.get("store"))', ')'),
- ("bind_exe_off", 'return (b.get("executable") == ident[0] and ', 'return (True and '),
+ ("bind_store_off", '\n          and si is not None and si == b.get("store") and trusted_file(ident[0])', ' and trusted_file(ident[0])'),
+ ("bind_exe_off", 'ok = (b.get("executable") == ident[0] and ', 'ok = (True and '),
  ("launch_unbound_ok", '    if not require_bound("launch"):\n        return 77\n', ''),
  ("consume_unbound_ok", '    if not require_bound("consume"):\n        return 77\n', ''),
  ("resume_unbound_ok", '    if not require_bound("resume"):\n        return 77\n', ''),
  ("resume_final_ok", ' or (c is not None and c.get("state") in FINAL)', ''),
+ # repair 3 (R3-1..R3-6)
+ ("r3_chain_claimant_only", 'r.get("worker") == token and r.get("invocation"):', 'r.get("worker") == token and r.get("invocation") == token:'),
+ ("r3_chain_open_ignored", '        if c is None or c.get("state") not in FINAL:\n            return "open", r["invocation"]', '        if False:\n            return "open", r["invocation"]'),
+ ("r3_chain_state_off", 'if c.get("state") != "start-failed" or c.get("ask") != ask:', 'if False:'),
+ ("r3_chain_host_off", '        if r.get("host") != HOST:\n            return "chain-member-other-host", []', '        if False:\n            return "chain-member-other-host", []'),
+ ("r3_reprobe_off", 'if u != "absent":', 'if False:'),
+ ("r3_reprobe_unknown_as_conflict", 'return 5 if u == "present" else 7', 'return 5'),
+ ("r3_finish_lock_off", 'lk = FileLock("start-" + rec["invocation"])\n    lk.acquire()\n    try:', 'lk = FileLock("start-" + rec["invocation"])\n    try:'),
+ ("r3_supervise_lock_off", '    lk.acquire()\n    try:\n        fin = load(', '    try:\n        fin = load('),
+ ("r3_seams_always", 'SEAMS = os.environ.get("WR_TEST_SEAMS") == "1"', 'SEAMS = True'),
+ ("r3_binding_env", 'BINDING = os.path.join(STATE, "asks-binding.json")', 'BINDING = os.environ.get("WR_ASKS_BINDING") or os.path.join(STATE, "asks-binding.json")'),
+ ("r3_exec_by_name", 'return sh([exe] + list(args), timeout=ASKS_TIMEOUT)', 'return sh([(ASKS_CMD[0] if SEAMS else exe)] + list(args), timeout=ASKS_TIMEOUT)'),
+ ("r3_sha_recheck_off", 'if file_sha(exe) != sha:', 'if False:'),
+ ("r3_trusted_off", '    return os.path.isfile(path) and st.st_uid', '    return True or os.path.isfile(path) and st.st_uid'),
+ ("r3_unit_probe_env", 'pc = _seam("WR_UNIT_PROBE")', 'pc = os.environ.get("WR_UNIT_PROBE")'),
+ ("r3_shape_off", 'ROW_KEYS = ("ask_id", "rev", "status", "claim")', 'ROW_KEYS = ()'),
+ ("r3_waits_unverified_off", 'if "waits_on" not in row:', 'if False:'),
+ # the reviewer's own 12 mutants (S/in/review3-probes/own_mutate.py), patterns adapted to the repaired code where the guarded line moved (o6 -> chain host check)
+ ("o1_resume_start_unknown_always_final", 'rc = finish_start(rec, None)\n    decide(decision="resumed"', 'fail_before_start(rec, "start-failed", rc=None, proof="x"); rc = 1\n    decide(decision="resumed"'),
+ ("o2_trust_claim_rc_not_readback", 'if back and claim_worker(back[0].get("claim")) == inv:\n        return begin_start(rec)', 'if rc == 0:\n        return begin_start(rec)'),
+ ("o3_unreadable_readback_is_success", '    # claim result unreadable AND the readback unavailable', '    if back is None:\n        return begin_start(rec)\n    # claim result unreadable AND the readback unavailable'),
+ ("o4_started_evidence_ignored", 'if ev == "started":\n        rec["state"] = "launched"', 'if False:\n        rec["state"] = "launched"'),
+ ("o5_own_inflight_check_dropped", '        if c is None or c.get("state") not in FINAL:\n            return "open", r["invocation"]', '        if False:\n            return "open", r["invocation"]'),   # adapted: the own-invocation check is now the chain-open check (the old `mine` branch was subsumed and removed)
+ ("o6_adopt_host_check_dropped", '        if r.get("host") != HOST:\n            return "chain-member-other-host", []', '        if False:\n            return "chain-member-other-host", []'),
+ ("o7_late_terminal_not_recorded", '    atomic_write(path, json.dumps(write_late, sort_keys=True, indent=1) + "\\n")\n    decide(decision="late-terminal"', '    pass\n    decide(decision="late-terminal"'),
+ ("o8_missing_binding_passes", '    if not b or ident is None:\n        return False', '    if not b:\n        return True\n    if ident is None:\n        return False'),
+ ("o9_resume_cross_host", 'or rec.get("host") != HOST or (c is not None', 'or (c is not None'),
+ ("o10_other_host_evidence_none", '    if rec.get("host") != HOST:\n        return "unknown"', '    if rec.get("host") != HOST:\n        return "none"'),
+ ("o11_binding_store_identity_ignored", 'and si is not None and si == b.get("store") and trusted_file', 'and si is not None and trusted_file'),
+ ("o12_timeout_127_final", '    if back is not None:\n        # the store was READ', '    if back is not None or rc == 127:\n        # the store was READ'),
 ]
 def one(n, o, nw):
     D = R + "/tmp/mut-" + n; shutil.rmtree(D, ignore_errors=True); os.makedirs(D)

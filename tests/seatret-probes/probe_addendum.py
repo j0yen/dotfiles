@@ -83,9 +83,16 @@ inv_c = [f[:-5] for f in os.listdir(w + "/state/launches")][0]
 rc2b, ds2b = call(m.cmd_resume, inv_c, "owner"); show("c1_resume_still_unreachable", rc=rc2b, decisions=[d["decision"] for d in ds2b], receipts=receipts(w))
 unflag(w, "probe-down")
 rc2c, ds2c = call(m.cmd_resume, inv_c, "owner"); show("c1_resume_proved_absent", rc=rc2c, decisions=[d["decision"] for d in ds2c], receipts=receipts(w))
-# does the source check host/unit/invocation/child before FINAL?
+# R3-5: the reconciliation is exercised STRUCTURALLY, not by grepping the source: the unit probe seam answers absent / present / unknown for the three stub modes
+# and the route's own unit_probe() maps them (a source-text grep proves nothing about behaviour)
+modes = []
+for md in (None, "unit-present", "probe-down"):
+    for x in ("unit-present", "probe-down"): unflag(w, x)
+    if md: flag(w, md)
+    modes.append(m.unit_probe("worker-route-wr-A1-4-deadbeef"))
+for x in ("unit-present", "probe-down"): unflag(w, x)
+show("c2_reconciliation_code_present", unit_probe_modes=modes)
 src = open(SRC).read()
-show("c2_reconciliation_code_present", systemctl_or_is_active=("systemctl" in src or "is-active" in src or "show -p" in src), unit_lookup=("list-units" in src or "InvocationID" in src))
 
 # ---------- (d) proved no-start then retry (positive)
 w = world("d-nostart-real-api"); flag(w, "startfail"); m = load_mod()
@@ -106,7 +113,7 @@ show("d4_retry_against_AUTHOR_fixture_semantics(permissive_reclaim)", rc=rc2, de
 w = world("e-binding")
 decoy = w + "/bin/wm-asks"        # any executable named by WM_ASKS_CMD is accepted
 m = load_mod()
-show("e1_asks_resolution", ASKS=m.ASKS, validated_target=any(k in src for k in ("realpath(ASKS", "sha256", "ledger_path", "WM_ASKS_DB", "canonical-target", "--version")), bound_ok=m.bound_ok())
+show("e1_asks_resolution", ASKS=m.ASKS_CMD, validated_target=any(k in src for k in ("realpath(ASKS", "sha256", "ledger_path", "WM_ASKS_DB", "canonical-target", "--version")), bound_ok=m.bound_ok())
 os.environ["WM_ASKS_CMD"] = "/nonexistent/decoy"
 m = load_mod(); rc, ds = call(m.cmd_launch, "A1"); show("e2_unbound_cmd_unreadable", rc=rc, decisions=[d["decision"] for d in ds])
 w = world("e-binding-decoy"); open(w + "/bin/decoy", "w").write(FAKE_ASKS); os.chmod(w + "/bin/decoy", 0o755); os.environ["WM_ASKS_CMD"] = w + "/bin/decoy"

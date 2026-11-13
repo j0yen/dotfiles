@@ -6,7 +6,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 W="$HERE/.local/bin/worker-route.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+. "$HERE/tests/scratch.sh"; T="$(wr_scratch)" || exit 64; trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"
 fails=0
 ok(){ echo "PASS $1"; }
@@ -111,7 +111,7 @@ if a[:2] == ["asks", "update"]:
 sys.stderr.write("fake wm-asks-real: unsupported " + " ".join(a) + "\n"); sys.exit(2)
 PY
 # anything that would be a seat model turn or an event send: must never run
-for f in seat-event.sh seat-ask.sh tmux claude fable-launch.sh seat-tick.sh systemd-run; do
+for f in seat-event.sh seat-ask.sh tmux claude fable-launch.sh seat-tick.sh systemd-run systemctl; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/forbidden.log"\nexit 0\n' "$f" "$T" > "$T/forbid/$f"; done
 chmod 755 "$T"/bin/* "$T"/forbid/*
 
@@ -128,6 +128,7 @@ fresh(){ # new stub + state world; A1 (spec) -> B1 (waits_on A1)
 J
   export WM_ASKS_CMD="$T/bin/wm-asks" WR_HOST=h1 WR_LAUNCHERS="fake-coder" WR_LAUNCHER_DIR="$T/bin" WR_START_CMD="$T/bin/fake-start" HOLD_GATE="$T/bin/hold"
   export WR_UNIT_PROBE="$T/bin/unitprobe" WR_ASKS_TIMEOUT=120
+  export WR_TEST_SEAMS=1      # R3-3: env seams (state root, host, ask executable, ...) are honoured only with this explicit test switch
   export PATH="$T/forbid:$PATH"
   bindit
 }
@@ -426,6 +427,150 @@ json.dump({"invocation":inv,"state":"start-failed","ask":"B1","consumer":"worker
 P
 run launch A1
 chk "A1 is claimed by a start-failed invocation of ANOTHER ask (B1): claim-conflict 5, never adopted, no child" 'ran && rcis 5 && [ "$(dec claim-conflict)" = 1 ] && nochild && [ "$(dec adopt)" = 0 ]'
+
+# ---- 25. R3-5 the forbidden-call list covers systemctl (the default unit-probe client): a world that forgets the unit-probe seam would be caught, shown by a positive control
+mkdir -p "$T/forbid-ctl"; printf '#!/usr/bin/env bash\necho "systemctl $*" >> "%s/forbidden-ctl.log"\nexit 0\n' "$T" > "$T/forbid-ctl/systemctl"; chmod 755 "$T/forbid-ctl/systemctl"
+fresh 25a; real; touch "$STUB/startfail"; PATH="$T/forbid-ctl:$PATH" WR_UNIT_PROBE="" run launch A1
+chk "R3-5: with no unit-probe seam the default probe is the stubbed systemctl (positive control: the forbid stub sees 'systemctl --user show ... worker-route-'), and the global forbidden log stays clean" 'ran && grep -q "systemctl --user show --property=LoadState,ActiveState worker-route-" "$T/forbidden-ctl.log" && [ -x "$T/forbid/systemctl" ] && [ ! -s "$T/forbidden.log" ]'
+
+# ---- 21. R3-1 chain-aware adoption: a held claim is adopted only while EVERY invocation that ever carried its token is a proven no-start; after a run,
+# a failure or a late terminal no second adopter may adopt it (review 3 own_probes2.py x1-x3, source cf32/5f6eb3d: adoption read only the claim-holder token's record)
+export T
+chain_prefix(){ # A start-failed (proven no-start) -> B adopts the held claim; leaves IA IB
+  touch "$STUB/startfail"; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"; run launch A1
+  IB="$(ls -t "$WR_STATE"/launches | sed 's/.json//' | grep -v "$IA" | head -1)"; }
+fresh 21a; real; chain_prefix
+chk "x0 control: A start-failed, B adopts the held claim (exit 0, one child, one claim call)" 'ran && rcis 0 && [ "$(lstate $IB)" = launched ] && [ "$(nchild)" = 1 ] && [ "$(calls "asks claim A1")" = 1 ]'
+run consume; run launch A1
+chk "x1 R3-1: B ran to completion and was consumed: a later launch is claim-conflict 5, NO second worker (one child, one adoption)" 'ran && rcis 5 && [ "$(grep -c "^a1 " "$STUB/child.log")" = 1 ] && [ "$(dec adopt-failed-start-claim)" = 1 ] && [ "$(cstate $IB)" = consumed ]'
+fresh 21b; real; echo 1 > "$STUB/rc-a1"; chain_prefix; run consume; run launch A1
+chk "x2 R3-1: B worker-failed: a later launch is claim-conflict 5 (owner decides), NO relaunch, one child" 'ran && rcis 5 && [ "$(cstate $IB)" = worker-failed ] && [ "$(nchild)" = 1 ] && [ "$(dec adopt-failed-start-claim)" = 1 ]'
+fresh 21c; real; touch "$STUB/startfail"; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; run launch A1
+IB="$(ls -t "$WR_STATE"/launches | sed 's/.json//' | grep -v "$IA" | head -1)"
+python3 -I - <<P
+import json,os;w=os.environ["WR_STATE"];r=json.load(open(w+"/launches/$IB.json"))
+t={"invocation":"$IB","nonce":r["nonce"],"ask":"A1","host":"h1","rc":0,"status":"ok","effect":"x","provenance":"unrecorded","started":"s","ended":"e"}
+json.dump(t,open(w+"/terminals/$IB.json","w"))
+P
+run consume; rm "$STUB/startfail"; run launch A1
+chk "x3 R3-1: B FINAL start-failed then B's late terminal (the unit ran): C does not adopt: claim-conflict 5, no child" 'ran && rcis 5 && [ "$(cstate $IB)" = start-failed ] && [ -f "$WR_STATE/consumed/$IB.late-terminal.json" ] && nochild'
+fresh 21d; real; touch "$STUB/startfail"; run launch A1; run launch A1; rm "$STUB/startfail"; run launch A1
+chk "x4 positive control: A and B both proven no-start (chain all start-failed, no evidence): C adopts the same held claim, one child, still ONE claim call" 'ran && rcis 0 && [ "$(nchild)" = 1 ] && [ "$(calls "asks claim A1")" = 1 ] && [ "$(dec adopt-failed-start-claim)" = 2 ]'
+fresh 21e; real; touch "$STUB/startfail"; run launch A1; rm "$STUB/startfail"; touch "$STUB/noop"; run launch A1; run launch A1
+chk "x5 an adopter whose unit was admitted (no terminal yet) blocks a third launch: invocation-in-use 6, one adoption, no child yet" 'ran && rcis 6 && [ "$(dec adopt-failed-start-claim)" = 1 ] && nochild'
+fresh 21f; real; touch "$STUB/startfail"; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
+python3 -I - <<P
+import json,os;w=os.environ["WR_STATE"];r=json.load(open(w+"/launches/$IA.json"));r["host"]="h2";json.dump(r,open(w+"/launches/$IA.json","w"))
+P
+run launch A1
+chk "x6 R3-2 (mutant o6): the adopted invocation belongs to ANOTHER host: adoption refused claim-conflict 5, no child" 'ran && rcis 5 && nochild && [ "$(dec adopt-failed-start-claim)" = 0 ]'
+
+fresh 21g; real; touch "$STUB/startfail"; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
+python3 -I - <<P
+import json,os;w=os.environ["WR_STATE"];p=w+"/consumed/$IA.json";r=json.load(open(p));r["state"]="worker-failed";json.dump(r,open(p,"w"))
+P
+run launch A1
+chk "x7 chain member whose FINAL receipt is not start-failed (even with no run evidence on disk): claim-conflict 5, never adopted" 'ran && rcis 5 && nochild && [ "$(dec adopt-failed-start-claim)" = 0 ]'
+fresh 21h; real; touch "$STUB/startfail"; run launch A1; IA="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
+python3 -I - <<P
+import json,os;w=os.environ["WR_STATE"];p=w+"/consumed/$IA.json";r=json.load(open(p));r["ask"]="B1";json.dump(r,open(p,"w"))
+P
+run launch A1
+chk "x8 the claimant's start-failed receipt names ANOTHER ask: claim-conflict 5, never adopted" 'ran && rcis 5 && nochild && [ "$(dec adopt-failed-start-claim)" = 0 ]'
+
+# ---- 22. R3-2 host guards (reviewer mutants o9, o10): resume is same-host only; start evidence for another host's invocation is UNKNOWN, never absence
+fresh 22a; real; touch "$STUB/down-after"; run launch A1; IC="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/readback-down" "$STUB/down-after"
+python3 -I - <<P
+import json,os;w=os.environ["WR_STATE"];r=json.load(open(w+"/launches/$IC.json"));r["host"]="h2";json.dump(r,open(w+"/launches/$IC.json","w"))
+P
+run resume "$IC" --by owner
+chk "o9: resume of an invocation recorded on ANOTHER host: resume-refused 3, record unchanged (claim-unknown), no claim call, no child" 'ran && rcis 3 && [ "$(lstate $IC)" = claim-unknown ] && [ "$(calls "asks claim A1")" = 1 ] && nochild && [ "$(dec resume-refused)" = 1 ]'
+fresh 22b
+chk "o10: start_evidence of an invocation recorded on another host is 'unknown' even when the local unit probe says absent (no foreign absence proof)" '[ "$(WR_TEST_SEAMS=1 python3 -I -c "
+import importlib.util,sys
+sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+print(m.start_evidence({\"invocation\":\"wr-A1-4-deadbeef\",\"host\":\"h2\",\"unit\":\"worker-route-wr-A1-4-deadbeef\"}))" "$W")" = unknown ]'
+
+# ---- 23. R3-3 the binding is not forgeable through the environment, and calls exec the VERIFIED realpath
+chk "R3-3a: env cannot redirect state, host, executable or binding without the explicit test switch (module constants with WR_STATE/WR_HOST/WM_ASKS_CMD/WR_ASKS_BINDING forged)" '[ "$(env -u WR_TEST_SEAMS WR_STATE=/forged/state WR_HOST=forged-host WM_ASKS_CMD=/forged/asks WR_ASKS_BINDING=/forged/binding.json HOME=/forged/home python3 -I -c "
+import importlib.util,sys
+sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+print(\"forged\" if any(\"forged\" in str(x) for x in (m.STATE,m.HOST,m.ASKS_CMD,m.BINDING)) else \"clean\")" "$W")" = clean ]'
+chk "R3-3b: even with the test switch an env var cannot name another BINDING file (the binding is always <state>/asks-binding.json)" '[ "$(WR_TEST_SEAMS=1 WR_STATE=/x/state WR_ASKS_BINDING=/forged/binding.json python3 -I -c "
+import importlib.util,sys
+sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+print(m.BINDING)" "$W")" = /x/state/asks-binding.json ]'
+fresh 23a; mkdir -p "$T/xreal"; sed 's|^open(S + "/calls.log", "a")|open(S + "/argv0.log", "a").write(sys.argv[0] + "\\n"); open(S + "/calls.log", "a")|' "$T/bin/wm-asks-real" > "$T/xreal/wm-asks-x"; chmod 755 "$T/xreal/wm-asks-x"; ln -s "$T/xreal/wm-asks-x" "$T/xlink"
+export WM_ASKS_CMD="$T/xlink"; python3 -I "$W" bind --executable "$(readlink -f "$T/xlink")" --store "$STUB/db.json" --by test-owner >"$T/bind.out" 2>&1; run launch A1
+chk "R3-3c: calls exec the verified realpath, not the PATH/symlink name that was checked (argv[0] of every ask call is the bound realpath)" 'ran && rcis 0 && [ "$(sort -u "$STUB/argv0.log")" = "$(readlink -f "$T/xlink")" ] && [ "$(wc -l < "$STUB/argv0.log")" -ge 3 ]'
+fresh 23b; chmod 666 "$STUB/db.json"; run bind --executable "$(readlink -f "$WM_ASKS_CMD")" --store "$STUB/db.json" --by o; R1=$(cat "$T/rc.txt"); chmod 644 "$STUB/db.json"
+cp "$T/bin/wm-asks" "$T/bin/asks-gw"; chmod 777 "$T/bin/asks-gw"; export WM_ASKS_CMD="$T/bin/asks-gw"; run bind --executable "$T/bin/asks-gw" --store "$STUB/db.json" --by o; R2=$(cat "$T/rc.txt")
+chk "R3-3d: bind refuses a world-writable store and a world-writable executable (non-zero), nothing bound" 'ran && [ "$R1" != 0 ] && [ "$R2" != 0 ]'
+
+chk "R3-3e: an executable that changes AFTER verification is never executed (sha256 re-read immediately before the exec): asks_call returns 127 and the changed program does not run" '[ "$(WR_TEST_SEAMS=1 python3 -I -c "
+import importlib.util,sys,os,hashlib
+sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+x=sys.argv[2]+\"/chg\";open(x,\"w\").write(\"#!/bin/sh\necho ok\n\");os.chmod(x,0o755)
+m._VERIFIED.update(exe=x,sha=m.file_sha(x))
+a=m.asks_call(\"asks\",\"query\")[0]
+open(x,\"a\").write(\"touch \"+sys.argv[2]+\"/ran\n\")
+b=m.asks_call(\"asks\",\"query\")[0]
+print(a,b,os.path.exists(sys.argv[2]+\"/ran\"))" "$W" "$T")" = "0 127 False" ]'
+
+mkdir -p "$T/forbid-ctl"; : > "$T/forbidden-ctl.log"
+chk "R3-3f: without the test switch an env WR_UNIT_PROBE cannot replace the unit probe (the default systemctl client is called, the forged probe is not)" '[ "$(env -u WR_TEST_SEAMS WR_UNIT_PROBE=/forged/probe PATH="$T/forbid-ctl:$PATH" python3 -I -c "
+import importlib.util,sys
+sp=importlib.util.spec_from_file_location(\"wr\",sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+print(m.unit_probe(\"worker-route-wr-A1-4-deadbeef\"))" "$W")" = unknown ] && grep -q "systemctl --user show" "$T/forbidden-ctl.log"'
+
+# ---- 24. R3-4 an absence read once is not proof later; a late admission is handled, never dropped
+fresh 24a; real; touch "$STUB/startfail"; run launch A1; rm "$STUB/startfail"; touch "$STUB/unit-present"; run launch A1
+chk "R3-4a: the unit of the start-failed invocation APPEARS after the proof (late admission): adoption re-reads it, refuses (5), no child" 'ran && rcis 5 && nochild && [ "$(dec adopt-failed-start-claim)" = 0 ] && [ "$(dec adopt-blocked)" = 1 ]'
+fresh 24b; real; touch "$STUB/startfail"; run launch A1; rm "$STUB/startfail"; touch "$STUB/probe-down"; run launch A1
+chk "R3-4b: unit not inspectable at adoption time: UNKNOWN, refused 7, no child, the earlier absence is not reused" 'ran && rcis 7 && nochild && [ "$(dec adopt-blocked)" = 1 ]'
+rm "$STUB/probe-down"; run launch A1
+chk "R3-4c: once the unit is inspected absent again, adoption proceeds (exit 0, one child, one claim call)" 'ran && rcis 0 && [ "$(nchild)" = 1 ] && [ "$(calls "asks claim A1")" = 1 ]'
+fresh 24d; real; touch "$STUB/startfail"; run launch A1; IL="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/startfail"
+python3 -I - "$WR_STATE" "$IL" "$W" "$STUB" "$T/bin/fake-start" <<'P'
+import fcntl, os, subprocess, sys, time, json
+st, inv, w, stub, _ = sys.argv[1:6]
+lk = open(st + "/locks/start-" + inv + ".lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)     # a finish_start decision is in progress for this invocation
+p = subprocess.Popen([sys.executable, "-I", w, "supervise", inv], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(1.5)
+blocked = p.poll() is None and not os.path.exists(st + "/started/" + inv + ".json")
+fcntl.flock(lk, fcntl.LOCK_UN); p.wait(timeout=30)
+open(os.environ["T"] + "/r3-4d.txt", "w").write("blocked=%s rc=%s child=%s marker=%s\n" % (blocked, p.returncode, os.path.exists(stub + "/child.log"), os.path.exists(st + "/started/" + inv + ".json")))
+P
+chk "R3-4d: a supervisor and a start-failed finalization are serialized on one per-invocation lock: the supervisor waits for the in-progress decision (no marker while it is held), then sees the FINAL receipt and runs no child" 'grep -q "blocked=True rc=0 child=False marker=False" "$T/r3-4d.txt"'
+fresh 24e; real; touch "$STUB/gone" "$STUB/probe-down"; run launch A1; IG="$(inv_of A1 2>/dev/null || echo none)"; rm "$STUB/gone" "$STUB/probe-down"
+python3 -I - "$WR_STATE" "$IG" "$W" <<'P'
+import fcntl, os, subprocess, sys, time, json
+st, inv, w = sys.argv[1:4]
+lk = open(st + "/locks/start-" + inv + ".lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)     # a supervisor is between its start marker and its child
+p = subprocess.Popen([sys.executable, "-I", w, "resume", inv, "--by", "owner"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(1.5)
+blocked = p.poll() is None
+json.dump({"invocation": inv}, open(st + "/started/" + inv + ".json", "w"))                 # the marker appears while the lock is held
+fcntl.flock(lk, fcntl.LOCK_UN); p.wait(timeout=30)
+open(os.environ["T"] + "/r3-4e.txt", "w").write("blocked=%s rc=%s\n" % (blocked, p.returncode))
+P
+chk "R3-4e: resume of a start-unknown waits for an in-progress supervisor start and then reads its marker: started (exit 0), NOT FINAL start-failed" 'grep -q "blocked=True rc=0" "$T/r3-4e.txt" && [ "$(lstate $IG)" = launched ] && [ ! -e "$WR_STATE/consumed/$IG.json" ]'
+
+# ---- 26. R3-6 the ask API calls bind to the supported source (in/api claim-api-source.json: cli.py:260-307, asks.py:211-232); a shape the source does not give is UNKNOWN, never assumed
+fresh 26a; real; run launch A1; run consume
+chk "R3-6a: every ask-store call uses only flags/verbs the supported source defines (query --json --ids --status; claim --worker --by --expect-rev; update --append); no release/resume/close verb" 'ran && ! grep -vE "^asks (query --json( --ids [A-Za-z0-9]+)?( --status (all|open))?|claim [A-Za-z0-9]+ --worker wr-[A-Za-z0-9-]+ --by worker-route --expect-rev [0-9]+|update [A-Za-z0-9]+ --append .*)$" "$STUB/calls.log" | grep -q .'
+fresh 26b; real; python3 -I - <<'P'
+import json,os;s=os.environ["STUB"]+"/db.json";d=json.load(open(s))
+for r in d.values(): r.pop("claim",None)
+json.dump(d,open(s,"w"))
+P
+run launch A1
+chk "R3-6b: query rows with NO claim key (shape not given by the source): the whole read is UNKNOWN (canonical-shape-unverified, exit 4), nothing claimed, no launch record, no child" 'ran && rcis 4 && [ "$(calls "asks claim")" = 0 ] && [ "$(dec canonical-shape-unverified)" -ge 1 ] && [ -z "$(ls "$WR_STATE/launches" 2>/dev/null)" ] && nochild'
+fresh 26c; real; python3 -I - <<'P'
+import json,os;s=os.environ["STUB"]+"/db.json";d=json.load(open(s))
+for r in d.values(): r.pop("waits_on",None)
+json.dump(d,open(s,"w"))
+P
+run launch A1; run consume
+chk "R3-6c: rows with NO waits_on key: no successor is ever started (dependency unknown), the decision says so, A itself is consumed" 'ran && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec waits-on-unverified)" -ge 1 ] && [ "$(cstate $(inv_of A1))" = consumed ]'
 
 # ---- 9. final: no seat route anywhere across all worlds
 chk "no forbidden (seat/tmux/claude/systemd-run) call in any world (one log for all $WORLDS worlds)" '[ -x "$W" ] && [ "$WORLDS" -ge 20 ] && [ ! -s "$T/forbidden.log" ]'

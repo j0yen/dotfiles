@@ -16,8 +16,10 @@ launchers; adds no task store, scheduler, coordinator or signing authority. rb a
                ask whose waits_on tokens are all consumed asks and that carries its own worker-route spec is launched the same way.
   reconcile  = the owner's readback of an UNKNOWN effect: `present` (END) or `absent` (ABSENT); never inferred.
 State: $WR_STATE (default ~/.local/state/worker-route): launches/ terminals/ consumed/ effects/ prov/ started/ decisions.jsonl locks/ asks-binding.json.
-Env seams: WM_ASKS_CMD (one executable) HOLD_GATE WR_HOST WR_LAUNCHERS WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>; default systemd-run --user)
-WR_UNIT_PROBE (<unit> -> `LoadState=`/`ActiveState=` lines; default systemctl --user show) WR_ASKS_TIMEOUT (seconds, default 120) WR_ASKS_BINDING.
+Env seams (honoured ONLY with WR_TEST_SEAMS=1; without it the state root, host, ask executable, launcher dir, hold gate and start client are fixed: state under the
+passwd home (never $HOME), host = the machine's hostname, the ask executable = the BOUND one): WM_ASKS_CMD (one executable) HOLD_GATE WR_HOST WR_STATE WR_LAUNCHERS
+WR_LAUNCHER_DIR WR_START_CMD (<unit> <description> <cmd...>; default systemd-run --user) WR_UNIT_PROBE (<unit> -> `LoadState=`/`ActiveState=` lines; default systemctl --user
+show) WR_ASKS_TIMEOUT (seconds, default 120). There is no env override for the binding file: it is always <state>/asks-binding.json.
 Exit: 0 ok | 3 resume/reconcile refused | 4 canonical ask store unavailable or claim UNKNOWN (retryable, no cap) | 5 ask claimed by another worker or claim
 not held | 6 invocation still open for this ask | 7 start UNKNOWN (blocks) | 64 usage | 76 hold gate closed | 77 ask entrypoint not bound | 78 no/invalid spec |
 79 wrong host | 1 start failed (no start PROVEN).
@@ -32,10 +34,22 @@ started/ marker the supervisor writes first, a terminal, the effect ledger, the 
 (the unit may still be running; its terminal is consumed normally); none present AND the unit inspected absent = no-start PROVEN: FINAL start-failed (recorded with the
 proof); anything else = start-unknown (UNKNOWN, blocks, exit 7; `resume` reconciles again). A launch after a PROVEN no-start ADOPTS the held claim of its own
 start-failed invocation of the same ask (a new invocation id, the claim holder token carried as `worker`, no claim call); a terminal that arrives after a
-start-failed FINAL is preserved and surfaced as UNKNOWN late-terminal, and blocks adoption. supervise re-checks the launcher allowlist at execution time
+start-failed FINAL is preserved and surfaced as UNKNOWN late-terminal, and blocks adoption. ADOPTION IS CHAIN-AWARE: the claim token is carried by the claimant and by every
+adopter after it; a claim is adopted only while EVERY invocation that ever carried the token is a FINAL start-failed on this host with no evidence of a run (marker, terminal,
+effect ledger, provenance, late terminal) AND every one of their units is re-inspected absent at adoption time (an absence read once is never reused: present -> refused 5,
+not inspectable -> refused 7 UNKNOWN). After an adopter ran, failed or left a late terminal the claim stays with the owner (claim-conflict 5). finish_start and the
+supervisor's marker are serialized on one per-invocation lock, so a supervisor either records its marker before the FINAL decision (-> started) or sees the FINAL receipt
+and runs no child. supervise re-checks the launcher allowlist at execution time
 (launcher-not-allowed -> terminal rc 78 refused, nothing executed) and refuses to start a child for an invocation that already has a FINAL start-failed receipt.
-Binding: `bind` records the resolved executable path + sha256 of WM_ASKS_CMD, the host and the store file identity (owner attestation, checked at bind against the resolved
-command); launch, consume and resume verify all four on every call and refuse (77) on any mismatch; no binding = refused. A PATH name is never trusted.
+Binding: `bind` records the resolved executable path + sha256, the host and the store file identity (owner attestation; the executable and the store must be regular files owned by
+this user or root and not world-writable and not writable by a foreign group); launch, consume and resume verify all four on every call and refuse (77) on any mismatch; no binding = refused. Every ask call
+then executes the VERIFIED REALPATH (sha256 re-read immediately before the exec), never a PATH or symlink name. Not proven: that the bound store is the canonical ledger the
+executable opens (the supplied source gives decisions.sqlite via paths.p only) and the sha-check-to-exec window is not zero.
+Ask API binding (source: S/in/api/claim-api-source.json, deployed carbon asks.py/cli.py): query = cli.py:289-296 (`asks query --json [--ids csv] [--status s]`; a row carries ask_id status
+owner due rev what, cli.py:296); claim = cli.py:280-282 + asks.py:211-232 (`--worker --by --expect-rev`; Conflict rc 66 cli.py:302-304, Refused rc 2 cli.py:253-257, committed-but-
+unpublished rc 75 cli.py:250-252); update = cli.py:278-279 (`--append`). NOT in the supplied source: the row keys `claim` and `waits_on` of `asks query --json` and the `--status`
+value domain. So a row without ask_id/rev/status/claim makes the whole read UNKNOWN (canonical-shape-unverified, nothing claimed, nothing started) and a row without `waits_on`
+never starts a successor (waits-on-unverified).
 Provenance: model/effort/account are what the launcher recorded; absent = "unrecorded". This file reads no credential and infers no account.
 """
 import fcntl
@@ -43,6 +57,7 @@ import glob
 import hashlib
 import json
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -52,21 +67,29 @@ import sys
 import tempfile
 import time
 
-HOME = os.path.expanduser("~")
-STATE = os.environ.get("WR_STATE") or os.path.join(HOME, ".local/state/worker-route")
-HOST = os.environ.get("WR_HOST") or socket.gethostname().split(".")[0]
-ASKS = shlex.split(os.environ.get("WM_ASKS_CMD") or "wm-asks")
-HOLD_GATE = os.environ.get("HOLD_GATE") or os.path.join(HOME, ".local/bin/hold-gate.sh")
-LAUNCHERS = (os.environ.get("WR_LAUNCHERS") or "rb-coder-launch.sh r7-run-coder.sh rb-run-coder.sh").replace(":", " ").split()
-LAUNCHER_DIR = os.environ.get("WR_LAUNCHER_DIR") or os.path.join(HOME, ".local/bin")
+SEAMS = os.environ.get("WR_TEST_SEAMS") == "1"          # the ONLY switch that lets env name the state root, host, ask executable, launchers or start client (tests)
+HOME = pwd.getpwuid(os.getuid()).pw_dir                  # the passwd home: $HOME is not consulted
+
+
+def _seam(name):
+    return (os.environ.get(name) or None) if SEAMS else None
+
+
+STATE = _seam("WR_STATE") or os.path.join(HOME, ".local/state/worker-route")
+HOST = _seam("WR_HOST") or socket.gethostname().split(".")[0]
+ASKS_CMD = shlex.split(_seam("WM_ASKS_CMD") or "wm-asks") if SEAMS else None      # production: None = the bound executable and nothing else
+HOLD_GATE = _seam("HOLD_GATE") or os.path.join(HOME, ".local/bin/hold-gate.sh")
+LAUNCHERS = (_seam("WR_LAUNCHERS") or "rb-coder-launch.sh r7-run-coder.sh rb-run-coder.sh").replace(":", " ").split()
+LAUNCHER_DIR = _seam("WR_LAUNCHER_DIR") or os.path.join(HOME, ".local/bin")
 SELF = os.path.realpath(__file__)
 SPEC_RE = re.compile(r"worker-route:\s*([^\n]*)")
 INV_RE = re.compile(r"^wr-[A-Za-z0-9]+-[0-9]+-[0-9a-f]{8}$")
 ASK_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
 REFUSED_RC = (70, 72, 73, 74, 76, 77, 78, 79, 80)     # the launchers' refusal exits (rb-run-coder.sh header)
 PROV_KEYS = ("model", "effort", "account", "session")
-ASKS_TIMEOUT = float(os.environ.get("WR_ASKS_TIMEOUT") or 120)
-BINDING = os.environ.get("WR_ASKS_BINDING") or os.path.join(STATE, "asks-binding.json")
+ASKS_TIMEOUT = float(_seam("WR_ASKS_TIMEOUT") or 120)
+BINDING = os.path.join(STATE, "asks-binding.json")        # no env override
+_VERIFIED = {}                                            # realpath + sha256 of the ask executable, set by bound_ok() on every verified call
 FINAL = ("consumed", "refused", "worker-failed", "worker-refused", "provider-outage", "absent-effect", "claim-failed", "start-failed")
 FAILED_BEFORE_START = ("claim-failed", "start-failed")      # claim-failed: claim not held (readback). start-failed: no start PROVEN; the claim stays held and is adopted by the next launch
 
@@ -143,7 +166,18 @@ def sh(argv, timeout=120, env=None):
 
 
 def asks_call(*args):
-    return sh(ASKS + list(args), timeout=ASKS_TIMEOUT)
+    """Run the ask store through the VERIFIED realpath (sha256 re-read immediately before the exec). Never a PATH or symlink name; unbound = exit 127, nothing run."""
+    if not _VERIFIED:
+        bound_ok()                                        # never run an ask call on an unverified entrypoint, whichever entry point reached it
+    exe, sha = _VERIFIED.get("exe"), _VERIFIED.get("sha")
+    if not exe:
+        return 127, "", "ask entrypoint not verified"
+    try:
+        if file_sha(exe) != sha:
+            return 127, "", "ask executable changed after verification"
+    except OSError as e:
+        return 127, "", str(e)
+    return sh([exe] + list(args), timeout=ASKS_TIMEOUT)
 
 
 def file_sha(path):
@@ -154,14 +188,18 @@ def file_sha(path):
     return h.hexdigest()
 
 
-def asks_identity():
-    """(realpath, sha256) of the ONE executable WM_ASKS_CMD names; None when it is not a single resolvable file."""
-    if len(ASKS) != 1:
+def asks_identity(path=None):
+    """(realpath, sha256) of the ONE ask executable: `path` when given (bind, production), else the seam-named one (tests) or the BOUND one (production). None when unresolvable."""
+    if path is None:
+        if SEAMS:
+            if len(ASKS_CMD) != 1:
+                return None
+            path = shutil.which(ASKS_CMD[0])
+        else:
+            path = (load(BINDING) or {}).get("executable")
+    if not path:
         return None
-    exe = shutil.which(ASKS[0])
-    if not exe:
-        return None
-    rp = os.path.realpath(exe)
+    rp = os.path.realpath(path)
     try:
         return rp, file_sha(rp)
     except OSError:
@@ -176,11 +214,21 @@ def store_identity(path):
     return {"path": os.path.realpath(path), "dev": st.st_dev, "ino": st.st_ino}
 
 
+def trusted_file(path):
+    """A regular file owned by this user or root, not world-writable and not group-writable by any group but the user's own."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return os.path.isfile(path) and st.st_uid in (os.getuid(), 0) and not (st.st_mode & 0o002) \
+        and not (st.st_mode & 0o020 and st.st_gid != os.getgid())
+
+
 def cmd_bind(exe, store, by):
     ensure()
-    ident = asks_identity()
+    ident = asks_identity() if SEAMS else (asks_identity(exe) if exe and os.path.isabs(exe) else None)
     si = store_identity(store) if store else None
-    if not by or not exe or ident is None or si is None or os.path.realpath(exe) != ident[0]:
+    if not by or not exe or ident is None or si is None or os.path.realpath(exe) != ident[0] or not trusted_file(ident[0]) or not trusted_file(si["path"]):
         decide(decision="bind-refused", reason="executable-or-store-not-verifiable", executable=exe[:120])
         return 3
     atomic_write(BINDING, json.dumps({"executable": ident[0], "sha256": ident[1], "host": HOST, "store": si, "by": by, "ts": now()},
@@ -190,14 +238,19 @@ def cmd_bind(exe, store, by):
 
 
 def bound_ok():
-    """The ask entrypoint is the bound one: executable path + sha256, host, store identity. Nothing is taken from a default or a PATH name."""
+    """The ask entrypoint is the bound one: executable path + sha256, host, store identity. Nothing is taken from a default or a PATH name; on success the
+    verified realpath + sha256 are what asks_call executes."""
+    _VERIFIED.clear()
     b = load(BINDING)
     ident = asks_identity()
     if not b or ident is None:
         return False
     si = store_identity((b.get("store") or {}).get("path", ""))
-    return (b.get("executable") == ident[0] and b.get("sha256") == ident[1] and b.get("host") == HOST
-            and si is not None and si == b.get("store"))
+    ok = (b.get("executable") == ident[0] and b.get("sha256") == ident[1] and b.get("host") == HOST
+          and si is not None and si == b.get("store") and trusted_file(ident[0]) and trusted_file(si["path"]))
+    if ok:
+        _VERIFIED.update(exe=ident[0], sha=ident[1])
+    return ok
 
 
 def require_bound(op):
@@ -219,7 +272,14 @@ def asks_query(*args):
         return None
     if not isinstance(rows, list) or any(not isinstance(x, dict) for x in rows):
         return None
+    if any(k not in x for x in rows for k in ROW_KEYS):       # a shape the supplied API source does not give is UNKNOWN, never assumed (module docstring)
+        decide_once("shape:" + " ".join(args), decision="canonical-shape-unverified", args=" ".join(args)[:80], need=" ".join(ROW_KEYS),
+                    note="UNKNOWN: a row lacks a key this route needs; nothing was claimed or started on it")
+        return None
     return rows
+
+
+ROW_KEYS = ("ask_id", "rev", "status", "claim")
 
 
 def claim_worker(claim):
@@ -257,6 +317,9 @@ def launcher_path(name):
 class FileLock:
     def __init__(self, name):
         self.f = open(d("locks", name + ".lock"), "a")
+
+    def acquire(self):
+        fcntl.flock(self.f, fcntl.LOCK_EX)
 
     def try_acquire(self):
         try:
@@ -309,7 +372,7 @@ def save_rec(rec):
 
 def unit_probe(unit):
     """The unit as the host reports it: 'present' | 'absent' | 'unknown' (probe unreachable, malformed or not a clean answer)."""
-    pc = os.environ.get("WR_UNIT_PROBE")
+    pc = _seam("WR_UNIT_PROBE")
     argv = (shlex.split(pc) + [unit]) if pc else ["systemctl", "--user", "show", "--property=LoadState,ActiveState", unit]
     rc, out, _ = sh(argv, timeout=20)
     if rc != 0:
@@ -336,7 +399,17 @@ def start_evidence(rec):
 
 
 def finish_start(rec, rc, err=""):
-    """The start client returned nonzero (or a resume re-reads a start that was never settled): decide only on the reconciled evidence."""
+    """The start client returned nonzero (or a resume re-reads a start that was never settled): decide only on the reconciled evidence. The evidence read and the
+    decision are one step under the per-invocation start lock the supervisor takes around its marker (R3-4: no supervisor can slip between them)."""
+    lk = FileLock("start-" + rec["invocation"])
+    lk.acquire()
+    try:
+        return _finish_start(rec, rc, err)
+    finally:
+        lk.release()
+
+
+def _finish_start(rec, rc, err):
     ev = start_evidence(rec)
     ask, inv = rec["ask"], rec["invocation"]
     if ev == "started":
@@ -365,7 +438,7 @@ def begin_start(rec):
         argv = shlex.split(sc) + [rec["unit"], desc, SELF, "supervise", inv]
     else:
         argv = ["systemd-run", "--user", "--collect", "--unit", rec["unit"], "--description", desc, "-p", "TasksMax=infinity",
-                "--setenv=WR_STATE=" + STATE, "--setenv=WR_HOST=" + HOST, SELF, "supervise", inv]
+                SELF, "supervise", inv]
     rec["state"] = "launched"
     save_rec(rec)
     rc, _, err = sh(argv, timeout=None)
@@ -379,6 +452,33 @@ def evidence_of_run(inv):
     """Anything showing the dead invocation's unit or child ran: blocks adoption of its claim."""
     return any(os.path.exists(p) for p in (d("started", inv + ".json"), d("terminals", inv + ".json"), d("effects", inv + ".effect"),
                                            d("prov", inv + ".json"), d("consumed", inv + ".late-terminal.json")))
+
+
+def adoption_chain(ask, token):
+    """('ok', [launch records]) when EVERY invocation that carried the claim token (the claimant and each adopter) is a FINAL start-failed receipt of THIS ask on this host
+    with no evidence of a run; ('open', invocation) when one of them is still unsettled; else (reason, [])."""
+    if not INV_RE.match(token):
+        return "token-not-an-invocation", []
+    chain = []
+    for f in sorted(glob.glob(d("launches", "*.json"))):
+        r = load(f)
+        if r and r.get("ask") == ask and r.get("worker") == token and r.get("invocation"):
+            chain.append(r)
+    if not any(r["invocation"] == token for r in chain):
+        return "claimant-record-missing", []
+    for r in chain:
+        c = load(d("consumed", r["invocation"] + ".json"))
+        if c is None or c.get("state") not in FINAL:
+            return "open", r["invocation"]
+    for r in chain:
+        c = load(d("consumed", r["invocation"] + ".json"))
+        if c.get("state") != "start-failed" or c.get("ask") != ask:
+            return "chain-member-%s-%s" % (r["invocation"], c.get("state")), []
+        if r.get("host") != HOST:
+            return "chain-member-other-host", []
+        if evidence_of_run(r["invocation"]):
+            return "chain-member-ran", []
+    return "ok", chain
 
 
 def start(row, successor=False):
@@ -401,17 +501,20 @@ def start(row, successor=False):
     cur = row.get("claim")
     adopt = None
     if cur:
-        mine = launch_open_for(ask)
-        if mine and claim_worker(cur) == mine:
-            decide(decision="refused", reason="invocation-in-use", ask=ask, invocation=mine)
+        verdict, chain = adoption_chain(ask, claim_worker(cur))
+        if verdict == "open":
+            decide(decision="refused", reason="invocation-in-use", ask=ask, invocation=chain)
             return 6
-        dead = load(d("consumed", claim_worker(cur) + ".json")) if INV_RE.match(claim_worker(cur)) else None
-        deadrec = load(d("launches", claim_worker(cur) + ".json")) if dead else None
-        if not (dead and dead.get("state") == "start-failed" and dead.get("ask") == ask) or not deadrec or deadrec.get("host") != HOST \
-                or evidence_of_run(claim_worker(cur)):
-            decide(decision="claim-conflict", ask=ask, claim=cur)
+        if verdict != "ok":
+            decide(decision="claim-conflict", ask=ask, claim=cur, reason=verdict)
             return 5
-        adopt = claim_worker(cur)          # its own PROVEN no-start invocation of this ask: the claim is held, a new claim is impossible (rc 66), so it is adopted
+        for rec0 in chain:                 # an absence read once is not proof later: every unit of the chain is re-inspected NOW (R3-4)
+            u = unit_probe(rec0["unit"])
+            if u != "absent":
+                decide(decision="adopt-blocked", ask=ask, claim=cur, invocation=rec0["invocation"], unit_state=u,
+                       note="the no-start proof is re-read at adoption time: a unit that is present or not inspectable blocks the adoption")
+                return 5 if u == "present" else 7
+        adopt = claim_worker(cur)          # every invocation that carried this token is a PROVEN no-start of this ask: the claim is held, a new claim is impossible (rc 66), so it is adopted
     if launch_open_for(ask):
         decide(decision="refused", reason="invocation-in-use", ask=ask)
         return 6
@@ -499,20 +602,25 @@ def cmd_supervise(inv):
     if os.path.exists(tpath):
         decide(decision="duplicate-terminal", invocation=inv, ask=rec["ask"])
         return 0
-    fin = load(d("consumed", inv + ".json"))
-    if fin is not None and fin.get("state") in FAILED_BEFORE_START:
-        decide(decision="supervise-after-final", invocation=inv, ask=rec["ask"], final=fin.get("state"), note="a FINAL failed-before-start invocation never starts a child")
-        return 0
-    try:                                                      # the first supervisor wins: the marker is the child-began evidence the start reconciliation reads
-        fd = os.open(d("started", inv + ".json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        decide(decision="duplicate-supervisor", invocation=inv, ask=rec["ask"])
-        return 0
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps({"invocation": inv, "host": HOST, "pid": os.getpid(), "unit": rec.get("unit"), "systemd_invocation_id": os.environ.get("INVOCATION_ID", ""),
-                            "started": now()}, sort_keys=True) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    lk = FileLock("start-" + inv)                              # serialized with finish_start: either the marker lands before the FINAL decision or the FINAL receipt is seen here
+    lk.acquire()
+    try:
+        fin = load(d("consumed", inv + ".json"))
+        if fin is not None and fin.get("state") in FAILED_BEFORE_START:
+            decide(decision="supervise-after-final", invocation=inv, ask=rec["ask"], final=fin.get("state"), note="a FINAL failed-before-start invocation never starts a child")
+            return 0
+        try:                                                  # the first supervisor wins: the marker is the child-began evidence the start reconciliation reads
+            fd = os.open(d("started", inv + ".json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            decide(decision="duplicate-supervisor", invocation=inv, ask=rec["ask"])
+            return 0
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps({"invocation": inv, "host": HOST, "pid": os.getpid(), "unit": rec.get("unit"), "systemd_invocation_id": os.environ.get("INVOCATION_ID", ""),
+                                "started": now()}, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        lk.release()
     env = dict(os.environ)
     prov_path = d("prov", inv + ".json")
     env.update(WR_INVOCATION=inv, WR_NONCE=rec["nonce"], WR_EFFECT_FILE=d("effects", inv + ".effect"), WR_PROVENANCE_FILE=prov_path)
@@ -640,6 +748,10 @@ def run_successors(flags):
         return
     clear_once("canon:successors")
     for row in rows:
+        if "waits_on" not in row:
+            decide_once("waits-on:" + str(row.get("ask_id")), decision="waits-on-unverified", ask=str(row.get("ask_id"))[:40],
+                        note="UNKNOWN: the supplied ask API source does not give a waits_on key; no successor is started on this row")
+            continue
         waits = row.get("waits_on") or []
         if row.get("claim") or row.get("status", "open") != "open" or not waits or not set(waits) & done:
             continue
