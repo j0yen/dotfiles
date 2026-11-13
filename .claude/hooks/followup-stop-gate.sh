@@ -16,6 +16,7 @@ fire() { mkdir -p "${LOG%/*}" 2>/dev/null; printf '%s | followup-stop-gate | %s\
 gate() {
   local in="$1" seat="${WM_SEAT:-}" sid aid tsid new r
   case "$seat" in rb|r7|ctl|aide|ops) ;; *) return 0 ;; esac
+  [ -z "${WM_HELPER:-}" ] || return 0   # A1300 E4: helper child of a ctl session carries no follow-up obligation
   command -v jq >/dev/null 2>&1 || return 0
   aid="$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)"; [ -z "$aid" ] || return 0
   sid="$(jq -r '.session_id // empty' <<<"$in" 2>/dev/null)"

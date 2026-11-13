@@ -39,17 +39,32 @@ seat_model() {  # $1 = seat -> model id (SEAT_MODEL override, else the controlle
   local role="${ROLE[$1]:-$1}"
   awk -v r="$role" '$1==r {print $2; exit}' "$TABLE" 2>/dev/null
 }
+seat_effort() {  # $1 = seat -> effort: SEAT_EFFORT override, else high for an explicit opus SEAT_MODEL (the supported escalation), else the seat-model-hold row; rb/r7 only (A1300 E1)
+  case "${ROLE[$1]:-$1}" in rb|r7) ;; *) return ;; esac
+  if [ -n "${SEAT_EFFORT:-}" ]; then printf '%s' "$SEAT_EFFORT"; return; fi
+  case "${SEAT_MODEL:-}" in *opus*) printf high; return ;; esac
+  seat_hold_effort "${ROLE[$1]:-$1}"
+}
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"   # 10-22: LEAN_ENV_VARS + LEAN_FLAGS, shared with seat-tick.sh (one source)
 LEAN_ENV=""; LEAN_ARGS=""
 if [ "${SEAT_LEAN:-1}" = 1 ]; then   # 10-20 C2/C5: lean is now the DEFAULT for seat launches; SEAT_LEAN=0 = old full-banner/mcphost launch
   LEAN_ENV="env $LEAN_ENV_VARS "
   LEAN_ARGS=" $LEAN_FLAGS"
 fi
+validate_seat() {  # $1 = seat: refuse (never print a launch line) on an unknown seat, a non-model id or an unknown effort level (A1300 AC2)
+  local m e
+  [ -n "${SID[$1]:-}" ] || { echo "$1: unknown seat" >&2; return 2; }
+  m=$(seat_model "$1"); [ -n "$m" ] || { echo "$1: no model row in $TABLE and SEAT_MODEL unset" >&2; return 5; }
+  [[ "$m" =~ ^claude-[a-z]+-[0-9]+(-[0-9]+)*$ ]] || { echo "$1: refused model '$m' (want claude-<family>-<n>[-<n>])" >&2; return 6; }
+  e=$(seat_effort "$1")
+  case "$e" in ""|low|medium|high|xhigh|max) ;; *) echo "$1: refused effort '$e' (low|medium|high|xhigh|max)" >&2; return 6 ;; esac
+  return 0
+}
 launch_cmd() {  # $1 = seat
-  local m lenv="$LEAN_ENV" lflags="$LEAN_ARGS"; m=$(seat_model "$1")
+  local m e lenv="$LEAN_ENV" lflags="$LEAN_ARGS" eflag=""; m=$(seat_model "$1"); e=$(seat_effort "$1"); [ -z "$e" ] || eflag=" --effort ${e}"
   [ "$1" = ctl ] && { lenv=""; lflags=""; }   # ctl = default settings, full hook set
-  if [ "${SEAT_AUTH:-token}" = login ]; then echo "export PATH=\$HOME/.local/seat-bin:\$PATH; env -u CLAUDE_CODE_OAUTH_TOKEN ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"
-  else echo "set -a; . ~/.config/environment.d/90-claude-oauth.conf; set +a; export PATH=\$HOME/.local/seat-bin:\$PATH; ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"; fi
+  if [ "${SEAT_AUTH:-token}" = login ]; then echo "export PATH=\$HOME/.local/seat-bin:\$PATH; env -u CLAUDE_CODE_OAUTH_TOKEN ${lenv}claude --dangerously-skip-permissions --model ${m}${eflag}${lflags} --resume ${SID[$1]}"
+  else echo "set -a; . ~/.config/environment.d/90-claude-oauth.conf; set +a; export PATH=\$HOME/.local/seat-bin:\$PATH; ${lenv}claude --dangerously-skip-permissions --model ${m}${eflag}${lflags} --resume ${SID[$1]}"; fi
 }
 ctl_guard() {  # exit 4 while the old controller (pid ${CTL_OLD_PID:-<seats.tsv old_pid>}) or any claude/node process holds the ctl SID; never kills anything
   local op="${CTL_OLD_PID:-${OLDPID[ctl]:--}}" p c
@@ -69,6 +84,16 @@ drift_test() {  # every seat's dry-run --resume SID must equal seats.tsv and --m
     if [ -n "$want" ] && [ "$got" = "$want" ]; then echo "PASS $s: dry-run --model $got == table row $role $want"; else echo "FAIL $s: dry-run --model '$got' != table row $role '$want'"; rc=1; fi
     if [ -n "$sid_want" ] && [ "$sid_got" = "$sid_want" ]; then echo "PASS $s: dry-run --resume $sid_got == seats.tsv sid"; else echo "FAIL $s: dry-run --resume '$sid_got' != seats.tsv sid '$sid_want'"; rc=1; fi
   done
+  # A1300 E5: an rb/r7 hold row (seat-model-hold.json) must agree with the table row and with the dry-run effort; an absent row = the table governs
+  local hm he
+  for s in rb r7; do
+    hm=$(jq -r --arg s "$s" '.[$s].model // empty' "${SEAT_MODEL_HOLD:-$HOME/.config/wm-decide/seat-model-hold.json}" 2>/dev/null)
+    [ -n "$hm" ] || continue
+    want=$(awk -v r="${ROLE[$s]:-$s}" '$1==r {print $2; exit}' "$TABLE")
+    if [ "$hm" = "$want" ]; then echo "PASS $s: hold row model $hm == table row $want"; else echo "FAIL $s: hold row model '$hm' != table row '$want'"; rc=1; fi
+    he=$(seat_hold_effort "$s"); got=$(env -u SEAT_MODEL -u SEAT_EFFORT SEAT_DRY_RUN=1 "$0" "$s" | grep -oE -- '--effort [^ ]+' | head -n1 | sed 's/^--effort //')
+    if [ "$he" = "$got" ]; then echo "PASS $s: dry-run effort '${got:-none}' == hold row effort"; else echo "FAIL $s: dry-run effort '$got' != hold row effort '$he'"; rc=1; fi
+  done
   # 10-22: the lean overlay has ONE source (seat-lean.sh); its LEAN_FLAGS / LEAN_ENV_VARS must appear verbatim in the rb and r7 dry-run lines
   local lf le; lf=$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"; printf '%s' "$LEAN_FLAGS"); le=$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"; printf '%s' "$LEAN_ENV_VARS")
   for s in rb r7; do
@@ -84,9 +109,9 @@ case "${1:-}" in
 esac
 [ $# -gt 0 ] || set -- rb r7   # seat names as args; default both
 for s in "$@"; do
+  validate_seat "$s" || exit $?
   if [ "${SEAT_DRY_RUN:-}" = 1 ]; then echo "$s: $(launch_cmd "$s")"; continue; fi
-  [ -n "${SID[$s]:-}" ] || { echo "$s: unknown seat" >&2; exit 2; }
-  model=$(seat_model "$s"); [ -n "$model" ] || { echo "$s: no model row in $TABLE and SEAT_MODEL unset" >&2; exit 5; }
+  model=$(seat_model "$s")
   if [ "$s" = ctl ]; then ctl_guard || exit 4; fi
   # 11:56 am 10-15: a seat session created as `tmux new-session … bash -ic 'claude …'` dies with claude (and the server
   # with the last session). Make sure a PERSISTENT-shell session exists before anything else.
