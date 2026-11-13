@@ -117,6 +117,13 @@ fresh; mkqa e1 $NOW A1 timeout; RTBIN="$RTR" BR_CYCLES=1 br run >/dev/null 2>&1;
 fresh; mkqa e1 $NOW A1; routea e1 A1; rraw e1 '{"id":"e1","route":"deterministic","result":"blocked-row","exit":2,"attempt_id":"A1"}'; br resolve e1 --disposition abandoned --reason x >/dev/null 2>&1; br requeue e1 >/dev/null 2>&1
 [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$BRD/queue/e1.json")" != A1 ]; chk "R4-4 a resolved id can be requeued: new attempt, still no done/ entry" $?
 
+# crash-leftover recovery does not depend on the evidence files: done + queue of the same attempt, the router's cache still there but its result lost or a typed failure
+for k in lost failed; do for how in explicit all run; do
+  fresh; mkqa e1 $NOW A1; routea e1 A1; [ $k = failed ] && rraw e1 '{"id":"e1","route":"deterministic","result":"blocked-row","exit":2,"attempt_id":"A1"}'
+  echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0,\"attempt_id\":\"A1\",\"acked\":$NOW}" > "$BRD/done/e1.json"
+  runmode $how e1 >/dev/null 2>&1; [ "$(q)" = 0 ] && [ "$(d)" = 1 ] && receipt e1 && [ ! -e "$BRD/done/e1.r1.json" ]; chk "R4-3 leftover (done + queue, same attempt) with the evidence $k, $how: the original ack is completed without evidence (settle runs before the evidence check)" $?
+done; done
+
 # --- R4-5: router header states the bridge's N1 rule
 hdr="$(sed -n 1,30p "$RTR")"
 printf '%s' "$hdr" | grep -q 'exit 0 AND a typed success result'; chk "R4-5 router header: consumer success = exit 0 and a typed success result" $?
@@ -149,7 +156,7 @@ done
 fresh; mkqa e1 $NOW A1 timeout; RTR_BIN="$RTR" BRP=attempt-v1 bash "$T/fakebr/ctl-event-bridge.sh" "$RTD" "$BRD/queue/e1.json" >/dev/null 2>&1; [ -f "$RTD/routed/e1.json" ]; chk "R4-6 router called by a bridge announcing attempt-v1: routes" $?
 # the bridge's own handshake needs only the router file (no process call): a real-router copy with the protocol line removed is a mismatch, with it a match
 mkdir -p "$T/rv"; grep -v '^# ctl-event-proto:' "$RTR" > "$T/rv/ctl-event-route.sh"; chmod +x "$T/rv/ctl-event-route.sh"; fresh; mkqa e1 $NOW A1 timeout
-RTBIN="$T/rv/ctl-event-route.sh" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(d)" = 0 ] && [ "$(sends)" = 0 ] && grep -q 'router-version-mismatch' "$BRD/route.err"; chk "R4-6 a router copy without the 'ctl-event-proto: attempt-v1' line: head bridge fails closed (typed route.err line, nothing acked, nothing sent)" $?
+o="$(RTBIN="$T/rv/ctl-event-route.sh" BR_CYCLES=1 br run 2>&1)"; [ "$(d)" = 0 ] && [ "$(sends)" = 0 ] && grep -q 'router-version-mismatch' "$BRD/route.err" && printf '%s' "$o" | grep -q 'router-version-mismatch'; chk "R4-6 a router copy without the 'ctl-event-proto: attempt-v1' line: head bridge fails closed (typed route.err line, nothing acked, nothing sent)" $?
 cp "$RTR" "$T/rv/ctl-event-route.sh"; fresh; mkqa e1 $NOW A1 timeout; RTBIN="$T/rv/ctl-event-route.sh" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(d)" = 1 ] && [ "$(sends)" = 0 ]; chk "R4-6 the same copy with the protocol line: acked once" $?
 
 # --- R4-7: legacy leftover (done/<id>.json beside queue/<id>.json, neither with attempt_id)
