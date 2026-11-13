@@ -451,7 +451,7 @@ def main():
     a = ap.parse_args()
     if a.cmd not in ("emit", "suggestion", "resolve", "action"):
         a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
-    if a.seat == "ops":   # ops = preferred name of ctl (A1296 rev181): one seat row, one owner set, one ledger query
+    if a.seat == "ops":   # ops = preferred name of ctl (A1296 rev181): one seat row, one owner set, one ledger query; INTENDED widening: ops now sees the whole ctl set incl. the ctl/aide/unknown-owner catch-all (review F6), no new seat
         a.seat = "ctl"
     if a.cmd == "eval":
         rows, why = read_ledger()
