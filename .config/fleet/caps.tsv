@@ -125,8 +125,7 @@ C110	cargo_jobs.max_compiling_units	3	redbaron,ryzen7	config.toml:330 (rb) ; :31
 C111	mem_caps_gb.land (rb)	12.5	redbaron	config.toml:335	memory	none found	KEEP	rb	-			
 C112	mem_caps_gb.inner (rb)	12.0	redbaron	config.toml:336	memory	none found	KEEP	rb	-			
 C113	mem_caps_gb.gate (rb)	13	redbaron	config.toml:337	memory	none found	KEEP	rb	-			
-C114	mem_caps_gb.hand (rb)	9	redbaron	config.toml:338	memory	none found	KEEP	rb	-			
-C115	mem_caps_gb wm-build hand (rb)	5	redbaron	config.toml:350	memory	none found	KEEP	rb	value read from the comment			
+C114	mem_caps_gb.hand (rb)	9	redbaron	config.toml:338	memory	none found	KEEP	rb	admission count only; scope carries no Memory* (app.slice 26 G + systemd-oomd above it)			
 C116	gate.producer_walls flake-lint	5 (unit unread)	redbaron,ryzen7	config.toml:214 (rb) ; :193 (r7)	hang-guard	none found	CHECK	rb	comment says "1-min wall"; confirm the unit			
 C117	wm-build inner MemoryHigh	rb 14G ; r7 12G	redbaron,ryzen7	wm-build-.service.d/10-inner-memory.conf	memory	none found	KEEP	rb ; r7	-			
 C118	app.slice MemoryHigh (rb)	24G	redbaron	app.slice.d/50-rb-build-mem.conf:5	memory	none found	KEEP	rb	-			
