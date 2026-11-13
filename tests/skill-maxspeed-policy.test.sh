@@ -4,7 +4,7 @@
 # Run alone: bash tests/skill-maxspeed-policy.test.sh   (MS_SLICE=<slice json> adds the AC5 provenance checks; BASE_TREE=<clone> adds the AC5e other-skills diff against that tree)
 set -u
 R="$(cd "$(dirname "$0")/.." && pwd)"
-SLICE="${MS_SLICE:-}"
+SLICE="${MS_SLICE:-$R/tests/fixtures/maxspeed-policy-slice.json}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 p=0; f=0
 ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }

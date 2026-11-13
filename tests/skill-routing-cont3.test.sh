@@ -27,6 +27,12 @@ ck "edit4 existing --policy file still resolves" '[ $rc = 0 ]'
 printf '{"task_id":"t-1","skill":"wwhtbt"}' | env -i PATH="$PATH" HOME="$T/h" python3 -I "$R/.local/lib/skill-route-resolve.py" >"$T/ro" 2>&1; rc=$?
 ck "edit4 no --policy, no env: repo policy still found" '[ $rc = 0 ]'
 
+# cont4 item 8: --policy wins over SKILL_ROUTE_POLICY (docstring order), no fall-through either way
+printf '{"task_id":"t-1","skill":"wwhtbt"}' | env -i PATH="$PATH" HOME="$T/h" SKILL_ROUTE_POLICY="$T/nope.json" python3 -I "$R/.local/lib/skill-route-resolve.py" --policy "$POL" >"$T/ro" 2>&1; rc=$?
+ck "cont4 --policy valid beats SKILL_ROUTE_POLICY missing" '[ $rc = 0 ]'
+printf '{"task_id":"t-1","skill":"wwhtbt"}' | env -i PATH="$PATH" HOME="$T/h" SKILL_ROUTE_POLICY="$POL" python3 -I "$R/.local/lib/skill-route-resolve.py" --policy "$T/nope.json" >"$T/ro" 2>&1; rc=$?
+ck "cont4 --policy missing beats SKILL_ROUTE_POLICY valid -> policy-missing" '[ $rc = 2 ] && grep -q "policy-missing" "$T/ro"'
+
 # edit 7: native xhigh deny text names the launcher route-request path
 pay fable xhigh plan "$MS" | env -i PATH="$PATH" HOME="$T/h" SKILL_ROUTE_POLICY="$POL" "$R/.claude/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; rc=$?
 ck "edit7 maxspeed xhigh native -> deny" '[ $rc = 2 ]'
