@@ -1,0 +1,10 @@
+[Unit]
+Description=ctl dispatch scan every 2 min (covers preexisting files, restarts, missed path events)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
