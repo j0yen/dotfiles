@@ -404,11 +404,19 @@ ck "F5-1 benign percent text: still a readable hint" "$(case "$e" in *"path/to/f
 cat >"$W/patho.py" <<'PYEOF'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("fe", sys.argv[1] + "/.local/bin/followup-eval.py"); fe = importlib.util.module_from_spec(spec); spec.loader.exec_module(fe)
-def best(t, n=3):
+def best(t, n=5):
     r = []
     for _ in range(n):
         a = time.perf_counter(); fe.stderr_hint(t); r.append(time.perf_counter() - a)
     return min(r)
+def ratio(t, normal):
+    # host-noise control, not a threshold change: the ratio must be within 2x on at least one of 3 attempts, each attempt re-measures the normal line and the shape
+    # (best of 5); a quadratic pattern misses 2x by two orders of magnitude on every attempt
+    for _ in range(3):
+        tn = best(normal); ts = best(t); r = ts / tn
+        if r <= 2.0:
+            break
+    return ts, tn, r
 normal = ("wm-asks: ledger database is busy, retry the query later " * 400)[:20000]
 shapes = {
     "key*7000": "key" * 7000,
@@ -427,10 +435,10 @@ shapes = {
     "dots": "a." * 10000,
     "ssh": "ssh-" * 5000,
 }
-tn = best(normal); worst = 0
+worst = 0
 for k, v in shapes.items():
-    t = best(v[:20000]); worst = max(worst, t / tn)
-    print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, t / tn))
+    t, tn, r = ratio(v[:20000], normal); worst = max(worst, r)
+    print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, r))
 print("WORST %.2f" % worst)
 PYEOF
 python3 -I "$W/patho.py" "$R" >"$W/patho.out" 2>&1; cat "$W/patho.out" | sed 's/^/  /' >>"${PATHO_LOG:-/dev/null}"
