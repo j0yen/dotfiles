@@ -1,5 +1,6 @@
 import os, shutil, sys
-R = "/mnt/ssd/cargo-target/r7-seatrv4-20261113"; S = R + "/src"
+# Retained from the independent review-4 probes (S/in/review4-probes/mkmut.py), repointed at THIS clone: writes one mutant tree per name under $WR_PROBE_BASE/mut (never /tmp). The same 18 mutants (+ the repair-4 ones) run from ../mutate.py, which is the runner of record.
+REPO = os.path.realpath(os.path.dirname(os.path.abspath(__file__)) + "/../../.."); R = os.environ["WR_PROBE_BASE"]; S = REPO
 M = {
  "m1_chain_claimant_only": ('r.get("worker") == token and r.get("invocation")', 'r.get("invocation") == token and r.get("invocation")'),
  "m2_no_reprobe_at_adoption": ('            if u != "absent":\n                decide(decision="adopt-blocked"', '            if False:\n                decide(decision="adopt-blocked"'),
@@ -21,9 +22,9 @@ M = {
  "m18_adopt_unit_unknown_passes": ('                return 5 if u == "present" else 7', '                return 5 if u == "present" else 0'),
 }
 for n, (a, b) in M.items():
-    p = R + "/src/.local/bin/worker-route.py"; t = open(p).read()
+    p = S + "/.local/bin/worker-route.py"; t = open(p).read()
     if t.count(a) != 1: print("BAD PATTERN", n, t.count(a)); continue
-    d = R + "/tmp/mut/" + n
+    d = R + "/mut/" + n
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d + "/.local"); shutil.copytree(S + "/.local/bin", d + "/.local/bin"); shutil.copytree(S + "/tests", d + "/tests")
     open(d + "/.local/bin/worker-route.py", "w").write(t.replace(a, b))
 print("done", len(M))
