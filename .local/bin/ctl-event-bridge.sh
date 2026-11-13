@@ -167,17 +167,27 @@ router_proto_ok() { # a real router (its header names ctl-event-route.sh) must c
   head -n 5 "$r" 2>/dev/null | grep -q 'ctl-event-route\.sh' || return 0
   head -n 40 "$r" 2>/dev/null | grep -qx "# ctl-event-proto: $PROTO"
 }
+proto_pause_msg() { # the one mismatch wording (route.err / ack refusal): routing, delivery AND acks are paused
+  echo "router-version-mismatch: $RTB does not carry 'ctl-event-proto: $PROTO' (bridge/router pair differs); routing, delivery and acks are paused, nothing is acked, sent or dropped; install the matching ctl-event-bridge.sh + ctl-event-route.sh pair"
+}
+acks_paused() { # F1: while routing is on and the router fails the handshake, ack <id> and ack --all refuse (nothing written); resolve stays the operator exit
+  [ "${BR_ROUTE:-1}" = 0 ] && return 1
+  [ -x "$RTB" ] || return 1
+  router_proto_ok && return 1
+  echo "ack-refused: $(proto_pause_msg)" >&2
+  return 0
+}
 route_pending() { # route each queued id once; ack deterministic/haiku ids only after consumer evidence exists
   [ "${BR_ROUTE:-1}" = 0 ] && return 0
   sweep_held
   [ -x "$RTB" ] || return 0
   if ! router_proto_ok; then
     ROUTER_MISMATCH=1
-    echo "$(iso) router-version-mismatch: $RTB does not carry 'ctl-event-proto: $PROTO' (bridge/router pair differs); routing, delivery and acks are paused, nothing is acked, sent or dropped; install the matching ctl-event-bridge.sh + ctl-event-route.sh pair" | tee -a "$BR/route.err" >&2
+    echo "$(iso) $(proto_pause_msg)" | tee -a "$BR/route.err" >&2
     return 0
   fi
   ROUTER_MISMATCH=0
-  local f id c rt rc
+  local f id c rt rc att
   ( flock 9; settle_leftovers ) 9>"$BR/.ack.lock"   # crash recovery first: a queue file whose delivery is already acked/resolved is finished, never re-routed
   for f in "$BR"/queue/*.json; do
     [ -f "$f" ] || continue
@@ -199,7 +209,8 @@ route_pending() { # route each queued id once; ack deterministic/haiku ids only 
       ( setsid "$FEB" "$f" >> "$BR/fable-esc.log" 2>&1 & ) 
     fi
     if [ "$rt" = deterministic ] || [ "$rt" = haiku ]; then
-      if evidence_ok "$id"; then ackone "$f"; else echo "$(iso) ack-refused $id no-consumer-evidence reason=$EV_WHY" >> "$BR/deliveries.log"; echo "ack-refused $id: $EV_WHY (route=$rt; queued, not acked)" >&2; fi
+      att="$(jget "$f" attempt_id)"   # F2: the delivery the evidence is judged for; ackone re-verifies it under the lock
+      if evidence_ok "$id"; then ackone "$f" "$att"; else echo "$(iso) ack-refused $id no-consumer-evidence reason=$EV_WHY" >> "$BR/deliveries.log"; echo "ack-refused $id: $EV_WHY (route=$rt; queued, not acked)" >&2; fi
     fi
   done
 }
@@ -341,6 +352,7 @@ settle_leftovers() { # caller holds the lock: finish every cut-off ack/resolve. 
 ack() {
   local f id n=0 want="${1:-}"
   [ -n "$want" ] || { echo "usage: ack <id>|--all" >&2; return 2; }
+  acks_paused && return 1   # F1: the version-mismatch pause covers acks (header lines 22-23)
   mkdir -p "$BR/queue" "$BR/done"
   if [ "$want" = "--all" ]; then   # acks only ids with consumer evidence (deterministic/haiku: result + routed cache); pane-delivered, unseen and held ids stay queued
     local skipped=""
@@ -349,8 +361,8 @@ ack() {
     sweep_held
     for f in "$BR"/queue/*.json; do
       [ -f "$f" ] || continue
-      id="$(basename "$f" .json)"
-      if ! held "$id" && handled_by_router "$id" && ackone "$f"; then n=$((n+1)); else skipped="$skipped $id"; fi
+      id="$(basename "$f" .json)"; att="$(jget "$f" attempt_id)"   # F2: judged-for attempt, re-verified under the lock by ackone
+      if ! held "$id" && handled_by_router "$id" && ackone "$f" "$att"; then n=$((n+1)); else skipped="$skipped $id"; fi
     done
     echo "acked $n"
     [ -z "$skipped" ] || { echo "skipped (no consumer evidence):$skipped" >&2; return 1; }
@@ -370,8 +382,12 @@ ack() {
 }
 ackone_locked() { # caller holds the queue lock (fd 9); the first delivery of an id is done/<id>.json + receipt <id>, a later delivery of the same id gets done/<id>.rN.json + receipt <id>.rN (never overwrites, never deleted unrecorded).
   # Crash-idempotent: the done record carries the queue file's attempt_id, so a restart that finds the queue file beside a done record of the same attempt finishes the original ack (settle_one), never a second one.
-  local f="$1" id key n=0 extra=""; id="$(basename "$f" .json)"; key="$id"
+  local f="$1" id key n=0 extra="" cur; id="$(basename "$f" .json)"; key="$id"
   [ -f "$f" ] || return 0
+  if [ $# -ge 2 ]; then   # F2 (A1296 R3-1): evidence was judged for attempt "$2"; a queue file of another attempt is a NEW delivery (a requeue in the window) and needs its own evidence: skipped, left queued
+    cur="$(jget "$f" attempt_id)"
+    if [ "$cur" != "$2" ]; then echo "ack-skipped $id: the queue file is a new delivery (attempt ${cur:-none}); the evidence was judged for attempt ${2:-none}; it stays queued and needs its own evidence" >&2; echo "$(iso) ack-skipped $id attempt-changed judged=${2:-none} now=${cur:-none}" >> "$BR/deliveries.log"; return 1; fi
+  fi
   settle_one "$f" && return 0
   while [ -e "$BR/done/$key.json" ]; do n=$((n+1)); key="$id.r$n"; extra=" delivery=r$n"; done
   crash_at pre
@@ -388,8 +404,8 @@ d=json.load(open(sys.argv[1])); d["acked"]=int(sys.argv[2]); json.dump(d,open(sy
   crash_at clear
   echo "$(iso) ack $id$extra" >> "$BR/deliveries.log"
 }
-ackone() { # serialized per queue root (flock): a concurrent ack of the same delivery finds the queue file gone and is a no-op
-  ( flock 9; ackone_locked "$1" ) 9>"$BR/.ack.lock"
+ackone() { # ackone <queue file> [judged-attempt]: serialized per queue root (flock): a concurrent ack of the same delivery finds the queue file gone and is a no-op; with the attempt the evidence was judged for, the ack is skipped (exit 1) if the file is another attempt
+  ( flock 9; ackone_locked "$@" ) 9>"$BR/.ack.lock"
 }
 # The ledger done-check for an event row is `test -e $RTD/handled/<id>`; the ack is the handler's completion, so it writes the receipt (atomic: tmp + mv).
 handled_receipt() {
