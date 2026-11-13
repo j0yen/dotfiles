@@ -245,4 +245,120 @@ ck "G4 duplicate executor: gh pr merge on a PR claimed by another lane is refuse
 for h in aside-followup-stop.sh owed-now.sh redrive-gate.sh land-push-gate.sh git-no-force-push.sh aide-claim-gate.sh fable-skill-spawn-gate.sh; do
   ck "G5 $h still registered in .claude/settings.json" "$(jq -r --arg h "$h" '[.hooks[][].hooks[]?.command | select(contains($h))] | length > 0' "$R/.claude/settings.json")" true
 done
+
+# ===================== A1296 package 2 repair 7 (rv7 F7-2 .. F7-9) =====================
+# --- F7-3 an unwritable skip marker is visible: the store is locked at Stop and the state dir cannot take the marker; the Stop still passes, but says so (systemMessage + stderr), never silent
+fresh; : >"$W/delay"; mkdir -p "$W/st" "$W/owed"
+( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 8 ) & lk=$!; sleep 0.4
+chmod 555 "$W/owed"
+S3="$(jq -nc '{hook_event_name:"Stop",session_id:"sM",stop_hook_active:false,last_assistant_message:"ok"}' | WM_SEAT=ctl timeout 40 bash "$OWED" hook 2>"$W/s3.err")"
+chmod 755 "$W/owed"; kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null
+ck "F7-3 unwritable marker dir, store locked: the Stop passes (no block) but is not silent: a systemMessage says the check was skipped and the marker could not be written" "$(jq -r 'select(.decision==null) | .systemMessage // ""' <<<"$S3" | grep -c 'NOT checked.*could not be written\|could not be written.*NOT')/$(jq -r '.decision // "pass"' <<<"${S3:-null}")" "1/pass"
+ck "F7-3 the same skipped check is also a stderr line" "$(grep -c 'STOP CHECK SKIPPED' "$W/s3.err")" 1
+fresh; : >"$W/delay"; mkdir -p "$W/st"
+( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 6 ) & lk=$!; sleep 0.4
+S3b="$(STOPAS ctl sM2 'ok')"; kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null
+ck "F7-3 control: a writable marker dir stays quiet at the Stop (the marker is the signal, no systemMessage)" "${S3b:-pass}" pass
+
+# --- F7-2 suggestion spool: nothing lost and nothing orphaned when the detached writer dies; no stacking while the lock stays held; no new store (the owed-now state dir only)
+MSG='I recommend moving the cache to a new store.'
+fresh; echo '[]' >"$W/rows.json"; mkdir -p "$W/st" "$W/owed"
+( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 9 ) & lk=$!; sleep 0.4
+for i in 1 2 3 4 5 6; do STOPAS ctl sS "$MSG" >/dev/null; done; sleep 0.5
+nspool="$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')"; nwriter="$(pgrep -f "$W/owed/sug" | wc -l | tr -d ' ')"
+ck "F7-2 six busy Stops with the same suggestion: at most one spool file and one detached writer (no unbounded stacking)" "$([ "$nspool" -le 1 ] && [ "$nwriter" -le 1 ] && echo ok || echo "files=$nspool writers=$nwriter")" ok
+for pp in $(pgrep -f "$W/owed/sug"); do g=$(ps -o pgid= -p "$pp" | tr -d ' '); kill -- -"$g" 2>/dev/null; done
+kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null; sleep 0.5
+ck "F7-2 the detached writer died before writing: the record is still on disk (spooled), not yet in the outbox" "$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')/$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)" "1/0"
+find "$W/owed" -name 'sug.*' -exec touch -d '5 minutes ago' {} +   # the writer is gone: the retry age has passed
+WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1   # the existing producer (followup-outbox-replay.sh runs this per seat): it drains the spool
+ck "F7-2 the existing producer retries the spooled record: written once, no orphan file left" "$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)/$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')" "1/0"
+WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1; STOPAS ctl sS "$MSG" >/dev/null; sleep 1
+ck "F7-2 a later Stop with the same text and a later drain add nothing (fingerprint dedupe: still one entry)" "$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)" 1
+ck "F7-2 no new store: the spool lives in the owed-now state dir only" "$(find "$W" -name 'sug.*' -not -path "$W/owed/*" | wc -l | tr -d ' ')" 0
+
+# --- F7-4 locks: 20-way races, stale-lock replacement, release on signal (probes/locks.sh, probes/race.sh)
+pkill -f "$OWED refresh" 2>/dev/null; sleep 0.3
+fresh; echo 1 >"$W/delay"; bad=0
+for r in 1 2 3 4 5; do rm -rf "$W/owed"; mkdir -p "$W/owed"; : >"$W/calls.log"
+  for i in $(seq 20); do ( WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1 ) & done; wait
+  [ "$(wc -l <"$W/calls.log" | tr -d ' ')" = 1 ] || bad=$((bad+1)); done
+ck "F7-4/F7-8 20 parallel refreshers x 5 rounds: exactly one ledger query per round (RED at feb495f6: the mkdir lock let two producers in)" "$bad" 0
+bad=0
+for r in 1 2 3 4 5 6 7 8; do rm -rf "$W/owed"; mkdir -p "$W/owed"; : >"$W/owed/ctl.refresh.lock"; touch -d '10 minutes ago' "$W/owed/ctl.refresh.lock"; : >"$W/calls.log"
+  for i in $(seq 20); do ( WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1 ) & done; wait
+  [ "$(wc -l <"$W/calls.log" | tr -d ' ')" -le 1 ] || bad=$((bad+1)); done
+ck "F7-4 20 parallel refreshers on a 10-minute-old lock x 8 rounds: never more than one producer (the stale check/rm/create race is closed)" "$bad" 0
+fresh; echo 6 >"$W/delay"; : >"$W/calls.log"
+WM_SEAT=ctl setsid bash "$OWED" refresh --seat ctl >/dev/null 2>&1 & sleep 0.9
+pg="$(pgrep -f "$OWED refresh --seat ctl" | head -1)"; had="$(find "$W/owed" -name '*refresh.lock' | wc -l | tr -d ' ')"
+kill -TERM -- -"$(ps -o pgid= -p "$pg" | tr -d ' ')" 2>/dev/null; sleep 0.6
+left="$(find "$W/owed" -name '*refresh.lock' | wc -l | tr -d ' ')"
+ck "F7-4 SIGTERM to a running producer: it held the lock, and the lock is gone afterwards (released on signal)" "$had/$left" "1/0"
+: >"$W/calls.log"; : >"$W/delay"; WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1
+ck "F7-4 the next refresh after a killed producer runs at once (it is not blocked until the 5-minute staleness)" "$(wc -l <"$W/calls.log" | tr -d ' ')" 1
+# the Summa builder uses the same protocol: a SIGTERM'd builder (mid-build, 8000-page vault) leaves no lock behind
+rm -rf "$W/sc7"; mkdir -p "$W/sc7"; ( SUMMA_VAULT="$W/v8000" SUMMA_CACHE_DIR="$W/sc7" SUMMA_LEDGER="$W/lk7.jsonl" exec setsid bash "$SUMMA" --refresh-index ) >/dev/null 2>&1 &
+for i in $(seq 100); do [ -e "$W/sc7/index.lock" ] && break; sleep 0.02; done; had7="$([ -e "$W/sc7/index.lock" ] && echo 1 || echo 0)"
+pkill -TERM -f "$SUMMA --refresh-index" 2>/dev/null; sleep 0.5
+ck "F7-4 Summa builder: it held index.lock mid-build, and no lock is left after the SIGTERM" "$had7/$(find "$W/sc7" -name 'index.lock' | wc -l | tr -d ' ')" "1/0"
+
+# --- F7-5 scale: 1,000 owed rows must still produce a cache (one jq argument is capped at 128 KiB: the old write failed and every prompt stayed UNKNOWN), and one Stop run must not rewrite the fingerprint file per obligation
+fresh; python3 - "$W/rows.json" 1000 <<'PY'
+import json,sys
+json.dump([{"ask_id":"A%d"%i,"rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing %d with some text to make it realistic"%i} for i in range(int(sys.argv[2]))],open(sys.argv[1],"w"))
+PY
+WM_SEAT=ctl timeout 300 bash "$OWED" refresh --seat ctl >/dev/null 2>&1
+o="$(UPS sc1)"
+ck "F7-5 1,000 owed rows: the refresh wrote a valid cache and the prompt lists rows (not UNKNOWN)" "$([ -s "$W/owed/ctl.ups-cache.json" ] && jq -e '.v==1 and .clean==false' "$W/owed/ctl.ups-cache.json" >/dev/null 2>&1 && echo cache)/$(grep -c 'UNKNOWN' <<<"$o")/$(grep -c 'A1' <<<"$o")" "cache/0/1"
+# one `new` run with 1,000 new obligations syncs the fingerprint file once, not once per obligation (the fsync count is filesystem independent; 18 s on this host's SSD under load, rv7 F7-5)
+python3 - "$W/rows.json" 1000 <<'PY'
+import json,sys
+json.dump([{"ask_id":"B%d"%i,"rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing %d"%i} for i in range(int(sys.argv[2]))],open(sys.argv[1],"w"))
+PY
+rm -rf "$W/st"; mkdir -p "$W/st"
+nsync="$(python3 -I - "$R" <<'PY'
+import importlib.util, os, sys, io, contextlib
+spec = importlib.util.spec_from_file_location("fe", sys.argv[1] + "/.local/bin/followup-eval.py"); fe = importlib.util.module_from_spec(spec); spec.loader.exec_module(fe)
+n = [0]; real = os.fsync
+def counting(fd):
+    n[0] += 1; return real(fd)
+os.fsync = counting
+with contextlib.redirect_stdout(io.StringIO()):
+    fe.cmd_new("ctl")
+print(n[0])
+PY
+)"
+ck "F7-5 one run with 1,000 new obligations syncs the fingerprint file at most twice (RED at 09da698f: 1,000 syncs)" "$([ "${nsync:-9999}" -le 2 ] && echo ok || echo "fsyncs=$nsync")" ok
+# the whole Stop with 1,000 new obligations and a 15 ms-per-entry delivery command (a deliverer forks a process per entry) returns inside the installed 20 s Stop timeout with margin
+printf '#!/bin/bash\ncat >/dev/null; sleep 0.015\n' >"$W/bin/slowdeliver"; chmod +x "$W/bin/slowdeliver"
+fresh; mkdir -p "$W/st"; t0=$(now); S5="$(FOLLOWUP_DELIVER_CMD="$W/bin/slowdeliver" STOPAS ctl sK '')"; t1=$(now)
+ck "F7-5 first Stop with 1,000 new obligations returns within 8 s (no inline delivery of 1,000 entries) and escalates" "$(within "$t0" "$t1" 8)/$(jq -r '.decision // "pass"' <<<"${S5:-null}")" "ok/block"
+echo '[{"ask_id":"T1","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing"}]' >"$W/rows.json"
+
+# --- F7-6 only `ops` is aliased, in every copy of the alias (bash hook/producer, evaluator, aside hook): a fail-open alias (every seat -> ctl) must be caught
+echo '[{"ask_id":"T1","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"ctl thing"},{"ask_id":"R1","rev":1,"owner":"rb","due":"2026-11-12T09:00","what":"rb thing"},{"ask_id":"A41","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"ctl row"},{"ask_id":"A42","rev":1,"owner":"rb","due":"2026-11-12T09:00","what":"rb row","key":"rb-only.timer"}]' >"$W/rows.json"
+aliasrow(){ local seat="$1" o; fresh; mkdir -p "$W/owed"; WM_SEAT="$seat" bash "$OWED" refresh --seat "$seat" >/dev/null 2>&1
+  o="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"al1"}' | WM_SEAT="$seat" bash "$OWED" hook 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')"
+  echo "$(find "$W/owed" -name '*.ups-cache.json' -printf '%f,' | tr -d '\n')/T1=$(grep -c T1 <<<"$o")/R1=$(grep -c R1 <<<"$o")"; }
+ck "F7-6 seat ops: cache key ctl (one key), ctl row shown, rb row not" "$(aliasrow ops)" "ctl.ups-cache.json,/T1=1/R1=0"
+ck "F7-6 seat rb: its own cache key, only its own row (a fail-open alias would map rb to ctl)" "$(aliasrow rb)" "rb.ups-cache.json,/T1=0/R1=1"
+ck "F7-6 seat aide: its own cache key (aide is not aliased)" "$(aliasrow aide | sed 's#/T1=.*##')" "aide.ups-cache.json,"
+ck "F7-6 seats OPS / Ops (not exactly ops): no cache under ctl, no ctl row" "$(aliasrow OPS | sed 's#.*/T1=#T1=#')/$(aliasrow Ops | sed 's#.*/T1=#T1=#')" "T1=0/R1=0/T1=0/R1=0"
+evs=""; for sv in ops ctl rb aide OPS; do ev="$(python3 -I "$R/.local/bin/followup-eval.py" eval --seat "$sv" 2>/dev/null | jq -r '[.dispositions[].id] | sort | join(",")')"; evs="$evs $sv=[${ev}]"; done
+ck "F7-6 the evaluator's alias agrees with the bash alias: ops, ctl and aide see the ctl rows only, rb sees the rb rows only, OPS sees none" "$evs" " ops=[A41,T1] ctl=[A41,T1] rb=[A42,R1] aide=[A41,T1] OPS=[]"
+aside7(){ local r; r="$(jq -nc --arg m "$2" '{last_assistant_message:$m,stop_hook_active:false,session_id:"g7"}' | WM_SEAT="$1" bash "$R/.claude/hooks/aside-followup-stop.sh" 2>/dev/null | jq -r '.decision // "allow"')"; echo "${r:-allow}"; }
+ck "F7-6 the aside hook's alias agrees: ops binds the ctl row A41 (allow), rb does not (block), rb binds its own row's key (allow)" "$(aside7 ops 'The A41 item is a separate check, not investigated.')/$(aside7 rb 'The A41 item is a separate check, not investigated.')/$(aside7 rb 'The rb-only.timer item is a separate check, not investigated.')" "allow/block/allow"
+echo '[{"ask_id":"T1","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing"}]' >"$W/rows.json"
+
+# --- F7-9 dash variants after an id never bind it (fail closed), and a real hyphenated ask id binds
+echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"x"},{"ask_id":"A7-2","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"y"}]' >"$W/rows.json"
+ck "F7-9 en dash glued to the id (A55–2) is not the exact id: blocks" "$(aside "The item A55$(printf '\xe2\x80\x93')2 $S6")" block
+ck "F7-9 em dash glued to the id (A55—x) is not the exact id: blocks" "$(aside "The item A55$(printf '\xe2\x80\x94')x $S6")" block
+ck "F7-9 trailing hyphen (A55-) is not the exact id: blocks" "$(aside "The item A55- $S6")" block
+ck "F7-9 space-hyphen-digit (A55 -2) is not the exact id: blocks" "$(aside "The item A55 -2 $S6")" block
+ck "F7-9 a real hyphenated ask id (A7-2, open, ctl-owned) binds: allow" "$(aside "The item A7-2 $S6")" allow
+ck "F7-9 a hyphenated id that is not an open row (A7-3) does not bind: blocks" "$(aside "The item A7-3 $S6")" block
+ck "F7-9 controls: plain A55, (A55), 'A55 -- x' and 'A55, ' still bind" "$(aside "The item A55 $S6")/$(aside "It (A55) $S6")/$(aside "It is a separate check, not investigated: A55 - done")/$(aside "It, per A55, $S6")" "allow/allow/allow/allow"
+echo '[{"ask_id":"T1","rev":1,"owner":"ctl","due":"2026-11-12T09:00","what":"owed thing"}]' >"$W/rows.json"
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

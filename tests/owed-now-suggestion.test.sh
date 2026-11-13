@@ -13,13 +13,18 @@ export HOME="$W/home" WM_ASKS_BIN="$W/asks.sh" WM_DECIDE_BIN="$W/dec.sh" FOLLOWU
 unset WM_DIRECTOR
 stop(){ jq -nc --arg m "$1" --arg s "${2:-s1}" '{hook_event_name:"Stop",session_id:$s,last_assistant_message:$m}' | bash "$H" hook; }
 rows(){ [ -f "$FOLLOWUP_OUTBOX" ] && jq -s 'map(select(.kind=="suggestion-only"))|length' "$FOLLOWUP_OUTBOX" || echo 0; }
+# A1296 pkg2 repair 7 (F7-1): the Stop hook no longer delivers inline (a slow delivery command held the Stop event); the existing durable consumer (the outbox replay the
+# followup-outbox-replay timer runs) delivers. The assertions below are unchanged; `consume` runs that consumer where the Stop used to deliver.
+consume(){ python3 -I "$here/.local/bin/followup-eval.py" replay >/dev/null 2>&1; }
 dl(){ [ -f "$W/deliver.log" ] && wc -l <"$W/deliver.log" | tr -d ' ' || echo 0; }
 BAD='I recommend moving the retry guard into the shared hook, and the next step would be to add a regression test.'
 out="$(stop "$BAD")"
 ck "unowned suggestion records one suggestion-only obligation" "$(rows)" 1
+ck "the Stop itself delivers nothing inline (F7-1)" "$(dl)" 0
+consume
 ck "it is delivered once through the existing deliverer" "$(dl)" 1
 ck "recording does not block the turn" "$out" ""
-stop "$BAD" >/dev/null
+stop "$BAD" >/dev/null; consume
 ck "repeat Stop dedupes (still one row)" "$(rows)" 1
 ck "repeat Stop does not redeliver" "$(dl)" 1
 stop "$BAD Also add a lint." >/dev/null

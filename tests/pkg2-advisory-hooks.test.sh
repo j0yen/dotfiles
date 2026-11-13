@@ -425,6 +425,29 @@ hc f65-curl-u "wm-asks: curl -u admin:$K65 https://ledger.invalid/q failed\n" "$
 hc f65-curl-user "wm-asks: curl --user=admin:$K65 https://ledger.invalid/q failed\n" "$K65"
 hc f65-plus-space "wm-asks: failed token+$K65\n" "$K65"
 hc f65-plus-space-pass "wm-asks: failed password+$K65 retry\n" "$K65"
+# --- F7-7 (rv7): the cheap bounded redaction residuals closed (own-canary7 cases: look-alike letters, combining mark, escape sequence inside a name, JSON name/value pair, hyphenated header name). FAKE canaries assembled here.
+# NOT claimed secret-safe: `mysql -p <word>` (a database name by mysql's own grammar), ROT13/ciphered names and other scripts' look-alikes stay named residuals.
+K77="FAKEK77CANARY0123456789"
+hc f77-cyrillic-o "wm-asks: failed t$(printf '\xd0\xbe')ken=$K77\n" "$K77"
+hc f77-greek-omicron "wm-asks: failed t$(printf '\xce\xbf')ken=$K77\n" "$K77"
+hc f77-combining-acute "wm-asks: failed toke$(printf '\xcc\x81')n=$K77\n" "$K77"
+hc f77-ansi-in-name "wm-asks: failed tok$(printf '\x1b')[0men=$K77\n" "$K77"
+hc f77-ansi-two-byte "wm-asks: failed pass$(printf '\x1b')Mword=$K77\n" "$K77"
+hc f77-json-name-value 'wm-asks: bad reply {"name":"api_token","value":"'"$K77"'"}\n' "$K77"
+hc f77-json-key-value 'wm-asks: bad reply {"key":"db_password","value":"'"$K77"'"}\n' "$K77"
+hc f77-json-value-first 'wm-asks: bad reply {"value":"'"$K77"'","name":"api_token"}\n' "$K77"
+hc f77-header-session-id "wm-asks: request sent X-Session-Id: $K77 rejected\n" "$K77"
+hc f77-header-auth-token "wm-asks: request sent X-Auth-Token: $K77 rejected\n" "$K77"
+hk(){ # hk <name> <stderr-printf-fmt> <text that must survive>: a benign line keeps its text (the closes above do not over-redact)
+  local n="$1" b="$2" keep="$3" e; printf "$b" >"$W/err.bin"; e="$(hint)"
+  ck "F7-7 negative $n: benign text kept" "$([[ "$e" == *"$keep"* ]] && echo kept || echo "got [$e]")" kept
+}
+hk f77-neg-retry-after 'wm-asks: busy Retry-After: 30\n' 'Retry-After: 30'
+hk f77-neg-request-id 'wm-asks: request X-Request-Id: req-77 failed\n' 'X-Request-Id: req-77'
+hk f77-neg-json-plain '{"name":"alice","value":"42"}\n' '"value":"42"'
+hk f77-neg-json-value-first '{"value":"42","name":"alice"}\n' '"value":"42"'
+hk f77-neg-hyphen-name 'wm-asks: x-forwarded-for gateway busy\n' 'x-forwarded-for gateway busy'
+hk f77-neg-hangul 'wm-asks: \xed\x95\x9c\xea\xb8\x80 busy\n' '한글 busy'
 e="$(printf 'wm-asks: connection refused (a+b) &amp; retry, ls -u flag, ledger is busy\n' >"$W/err.bin"; hint)"
 ck "F6-5 benign text with + & -u and plain words stays readable" "$(case "$e" in *"connection refused (a+b)"*"ls -u flag"*"ledger is busy"*) echo ok;; esac)" ok
 # F5-2: cost is bound by the patterns. Same host, in-process: each adversarial 20 KB line within 2x a normal 20 KB line (min of 3 runs each)
@@ -487,8 +510,27 @@ for k, v in shapes2.items():
     t, tn, r = ratio(v[:20000], normal); worstb = max(worstb, r)
     print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, r))
 print("BWORST %.2f" % worstb)
+# F7-7: the worst sized shapes (the NFKC/NFKD expansion at the full 20000 characters, hyphen chains, combining marks, escape sequences, JSON pairs, look-alike letters)
+shapes3 = {
+    "nfkc-expand-20000": "\ufdfa" * 20000,
+    "hyphen-chain": "a-" * 10000,
+    "hyphen-key-chain": "x-key-" * 3300,
+    "combining": "e\u0301" * 10000,
+    "ansi": "\x1b[" * 6600,
+    "ansi-name": "tok\x1b[0m" * 2200,
+    "json-pairs": '"name":"' * 2500,
+    "json-pairs-full": '{"name":"token","value":"x"},' * 700,
+    "cyrillic": "\u043e" * 20000,
+    "greek-caps": "\u0422\u041e" * 10000,
+}
+worstc = 0
+for k, v in shapes3.items():
+    t, tn, r = ratio(v[:20000], normal); worstc = max(worstc, r)
+    print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, r))
+print("CWORST %.2f" % worstc)
 PYEOF
 python3 -I "$W/patho.py" "$R" >"$W/patho.out" 2>&1; cat "$W/patho.out" | sed 's/^/  /' >>"${PATHO_LOG:-/dev/null}"
 ck "F6-5 the decoder/encoding shapes (entities, base64 runs, full-width, -u, plus, escaped quotes) each finish within 2x the normal-line time" "$(awk '/^BWORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
+ck "F7-7 the worst-case 20 KB shapes (NFKC expansion at full length, hyphen chains, combining marks, escape sequences, JSON pairs, look-alikes) each finish within 2x the normal-line time" "$(awk '/^CWORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
 ck "F5-2 the 15 adversarial 20 KB shapes each finish within 2x the normal-line time" "$(awk '/^WORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
 echo "pass=$p fail=$f"; [ "$f" = 0 ]
