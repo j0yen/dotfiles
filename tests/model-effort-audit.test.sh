@@ -12,6 +12,7 @@ build(){ # fresh fake HOME in $T/h
   cp "$R/.local/bin/ctl-launch.sh" "$R/.local/bin/ctl-relaunch.sh" "$R/.local/bin/aide-launch.sh" "$R/.local/bin/aide-relaunch.sh" "$H/.local/bin/"
   cp "$R/.claude/hooks/fable-skill-spawn-gate.sh" "$R/.claude/hooks/skill-agent-effort-guard.sh" "$R/.claude/hooks/skill-route-prompt-guard.sh" "$H/.claude/hooks/"
   for s in 5whysandrhyme wwhtbt; do mkdir -p "$H/.claude/skills/$s"; printf -- '---\nname: %s\nmodel: fable\neffort: xhigh\nfable-spawn: true\n---\nbody\n' "$s" >"$H/.claude/skills/$s/SKILL.md"; done
+  mkdir -p "$H/.claude/skills/maxspeed"; printf -- '---\nname: maxspeed\nfable-spawn: true\n---\nbody\n' >"$H/.claude/skills/maxspeed/SKILL.md"
   mkdir -p "$H/.claude/skills/dream"; printf -- '---\nname: dream\nmodel: fable\neffort: max\nfable-spawn: true\n---\n' >"$H/.claude/skills/dream/SKILL.md"
   jq -n '{ctl:{model:"claude-sonnet-5-5",effort:"medium"},aide:{model:"claude-sonnet-5-5",effort:"medium"},rb:{model:"claude-opus-5-5"}}' >"$H/.config/wm-decide/seat-model-hold.json"
   jq -n --arg g "$H/.claude/hooks/skill-agent-effort-guard.sh" '{model:"claude-sonnet-5-5",modelSettings:{"claude-sonnet-5-5":{effortLevel:"medium"},"claude-fable-5-1":{effortLevel:"high"}},env:{CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:"50"},hooks:{PreToolUse:[{matcher:"Agent",hooks:[{type:"command",command:$g}]}],UserPromptSubmit:[{hooks:[{type:"command",command:"/x/skill-route-prompt-guard.sh"}]}]}}' >"$H/.claude/settings.json"

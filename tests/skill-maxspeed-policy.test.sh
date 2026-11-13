@@ -38,7 +38,7 @@ g(){ # home model effort mode prompt -> rc, stdout/stderr in $T/o $T/e
   payload "$2" "$3" "$4" "$5" | env -i PATH="$PATH" HOME="$1" SKILL_ROUTE_POLICY="$1/.config/skill-routing/policy.json" "$1/.claude/hooks/skill-agent-effort-guard.sh" >"$T/o" 2>"$T/e"; }
 MS='Invoke the maxspeed skill (Skill tool, skill: maxspeed, args: plan). Return the page.'
 g "$H" fable high plan "$MS"; rc=$?; ck "AC5b maxspeed fable/high + plan -> allow" '[ $rc = 0 ]'
-g "$H" sonnet medium plan "$MS"; rc=$?; ck "AC5c maxspeed sonnet/medium -> deny citing policy route" '[ $rc = 2 ] && grep -q "fable-high" "$T/e"'
+g "$H" sonnet medium plan "$MS"; rc=$?; ck "AC5c maxspeed sonnet/medium -> deny citing policy route" '[ $rc = 2 ] && grep -q "resolved route claude-fable-5-1/high" "$T/e"'
 g "$H" fable high default "$MS"; rc=$?; ck "AC5c maxspeed without plan mode -> deny naming require_permission_mode" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
 g "$H" fable high "" "$MS"; rc=$?; ck "AC5c maxspeed with permission_mode absent -> deny" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
 g "$H" fable xhigh plan "$MS"; rc=$?; ck "AC5c maxspeed xhigh without evidence -> deny" '[ $rc = 2 ]'

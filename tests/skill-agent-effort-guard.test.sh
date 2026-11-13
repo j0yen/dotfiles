@@ -44,7 +44,7 @@ chk "ordinary coder spawn unchanged" 0 sonnet medium "Implement the parser from 
 chk "ordinary fable review (no skill) unchanged" 0 fable high "Review this PRD draft and return a verdict line"
 chk "haiku scout naming the page unchanged" 0 haiku "" "find the wwhtbt page path under ~/Notes"
 chk "non-Agent tool ignored" 0 "" "" "$S5" Bash
-echo '{"tool_name":"Agent"' | "$G" >/dev/null 2>&1 && echo "ok malformed input fails open" || { echo "FAIL malformed input"; fail=1; }
+echo '{"tool_name":"Agent"' | "$G" >/dev/null 2>&1; [ $? = 2 ] && echo "ok malformed input fails closed (A1300)" || { echo "FAIL malformed input"; fail=1; }
 # policy lib missing (guard copied away from the repo lib): covered skill fails closed, others pass
 mkdir -p "$T/iso/.claude/hooks"; cp "$G" "$T/iso/.claude/hooks/"; IG="$T/iso/.claude/hooks/skill-agent-effort-guard.sh"
 rec fable high "$S5" | SKILL_POLICY_LIB=/nonexistent HOME="$T/nohome" "$IG" >/dev/null 2>&1; [ $? = 2 ] \

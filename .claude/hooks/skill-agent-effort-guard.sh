@@ -8,11 +8,15 @@
 # Trigger (STRONG patterns only, so a cheap scout that merely names the page is not caught):
 #   "invoke/run/use/call ... <skill>", "skill: <skill>", "skill <skill>", "/<skill>" as a slash command, or "independent ... review"
 #   next to a skill name. A Fable-model spawn that names the skill at all is also covered.
-# Fails OPEN on malformed input / no jq (a hook must not wedge the session); model-effort-audit.sh checks the hook is wired and behaves.
+# A skill whose policy sets require_permission_mode (maxspeed: plan) is also checked against the hook input's top-level permission_mode.
+# Fails CLOSED on empty/malformed stdin (exit 2); fails open only without jq. A governed skill with no policy entry or no readable
+# policy file is denied (policy-missing). model-effort-audit.sh checks the hook is wired and behaves.
 set -uo pipefail
 JQ=$(command -v jq) || exit 0
-INPUT=$(cat) || exit 0
+INPUT=$(cat) || exit 2
+printf '%s' "$INPUT" | "$JQ" -e 'type=="object"' >/dev/null 2>&1 || { echo "skill-agent-effort-guard: empty or malformed hook input; refusing (fail closed)" >&2; exit 2; }
 [ "$(printf '%s' "$INPUT" | "$JQ" -r '.tool_name // empty' 2>/dev/null)" = Agent ] || exit 0
+PMODE=$(printf '%s' "$INPUT" | "$JQ" -r '.permission_mode // empty' 2>/dev/null) || PMODE=""
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 for _r in "${SKILL_ROUTE_LIB:-}" "$HERE/../../.local/lib/skill-route.sh" "$HOME/.local/lib/skill-route.sh"; do
   [ -n "$_r" ] && [ -r "$_r" ] && { . "$_r"; break; }; done
@@ -35,8 +39,10 @@ command -v sr_resolve >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit}
 M=$(sr_alias_model "$M")
 bad=""
 for s in $hit; do
+  sr_governed "$s"; _g=$?
+  if [ "$_g" != 0 ]; then bad="$bad $s(policy-missing: no .skills.$s entry or unreadable policy file)"; continue; fi
   if [ -z "$M" ] || [ -z "$E" ]; then bad="$bad $s(model/effort not explicit)"; continue; fi
-  req=$("$JQ" -nc --arg s "$s" --arg t "${SKILL_ROUTE_TASK_ID:-native-agent}" --arg m "$M" --arg e "$E" '{task_id:$t,skill:$s,requested:{model:$m,effort:$e}}')
+  req=$("$JQ" -nc --arg s "$s" --arg t "${SKILL_ROUTE_TASK_ID:-native-agent}" --arg m "$M" --arg e "$E" --arg pm "$PMODE" '{task_id:$t,skill:$s,requested:{model:$m,effort:$e}}+(if $pm=="" then {} else {permission_mode:$pm} end)')
   res=$(sr_resolve "$req") || bad="$bad $s($(printf '%s' "$res" | "$JQ" -r '.error // "denied"' 2>/dev/null))"
 done
 [ -z "$bad" ] && exit 0
