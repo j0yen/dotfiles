@@ -85,14 +85,30 @@ def _ancestors():
     return out
 
 
+def stderr_hint(text):
+    """Advisory first stderr line of a failed ledger query: control chars dropped, secret-shaped runs redacted, 160 chars max. Text only: never changes the fail-closed verdict."""
+    for line in (text or "").splitlines():
+        line = "".join(c if c.isprintable() else " " for c in line).strip()[:20000]
+        if not line:
+            continue
+        line = re.sub(r"://[^/@\s]+@", "://<redacted>@", line)
+        line = re.sub(r"(?i)([?&][\w.-]*(?:token|key|secret|passw|pwd|sig|auth|cred)[\w.-]*=)[^&\s]*", r"\1<redacted>", line)
+        line = re.sub(r"(?i)\b(bearer|basic|authorization|cookie|token|key|password|passwd|secret)\b(\s*[=:]\s*|\s+)(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
+        line = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<redacted-email>", line)
+        line = re.sub(r"\b(sk-|ghp_|gho_|xox)[A-Za-z0-9_-]+|\b[A-Za-z0-9+/_=-]{32,}", "<redacted>", line)
+        return line[:160]
+    return ""
+
+
 def read_ledger():
     bin_ = os.environ.get("WM_ASKS_BIN", "wm-asks")
     try:
-        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
+        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "ledger command failed: %s" % type(e).__name__
     if p.returncode != 0:
-        return None, "ledger query exit %d" % p.returncode
+        hint = stderr_hint(p.stderr)
+        return None, "ledger query exit %d%s" % (p.returncode, ": " + hint if hint else "")
     try:
         rows = json.loads(p.stdout)
     except ValueError:

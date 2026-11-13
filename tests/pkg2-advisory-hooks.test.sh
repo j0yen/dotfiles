@@ -207,4 +207,90 @@ ck "G7 timeout is logged (not silent)" "$(grep -c 'ledger-unknown ledger command
 printf '#!/bin/bash\nexec sleep 20\n' >"$W/bin/wm-asks-slow2"
 mk $'## Director aside: x.service\nThe deploy is a separate check, not investigated.\n'
 ck "G7 slow reader: a heading is not suppressed (blocks)" "$(decision "$(asideenv ctl ASIDE_WM_ASKS_BIN="$W/bin/wm-asks-slow" ASIDE_WM_ASKS_TIMEOUT=1)")" block
+
+# --- H1 (A1296 pkg2 repair 3, drift): stderr_hint on the canonical-reader failure path of followup-eval.py. Advisory text only: the verdict (error set, no dispositions, lint rc 1) never changes. FAKE canaries only.
+printf '#!/bin/bash\ncat "%s/err.bin" >&2\nexit 2\n' "$W" >"$W/bin/wm-asks-err"; chmod +x "$W/bin/wm-asks-err"
+hint(){ WM_ASKS_BIN="$W/bin/wm-asks-err" python3 -I "$EVAL" eval --seat ctl 2>/dev/null | jq -r '.error // "NOERROR"'; }
+hc(){ # hc <name> <stderr-bytes-printf-fmt> <canary...>: no canary survives in the error text; the failure prefix is intact
+  local n="$1" b="$2" e c bad=0; shift 2; printf "$b" >"$W/err.bin"; e="$(hint)"
+  for c in "$@"; do case "$e" in *"$c"*) bad=1;; esac; done
+  ck "H1 redaction $n: no canary survives" "$bad" 0
+  ck "H1 redaction $n: reason keeps 'ledger query exit 2'" "$([ "${e#ledger query exit 2}" != "$e" ] && echo ok)" ok
+}
+hc kv-token 'wm-asks: auth failed token=FAKECANARY1234567890abc\n' FAKECANARY1234567890abc
+hc kv-key 'wm-asks: bad key=FAKEKEYVALUE99 supplied\n' FAKEKEYVALUE99
+hc kv-password 'wm-asks: password: FAKEPASSWORD77 rejected\n' FAKEPASSWORD77
+hc kv-secret-colon 'secret=FAKESECRETVALUE5\n' FAKESECRETVALUE5
+hc bearer 'HTTP 401 Authorization: Bearer FAKEBEARER.abc-def_123456\n' FAKEBEARER
+hc basic 'Authorization: Basic ZmFrZTpjYW5hcnk=\n' ZmFrZTpjYW5hcnk
+hc sk-ant 'invalid credential sk-ant-api03-FAKEANTCANARY0123456789\n' FAKEANTCANARY0123456789
+hc ghp 'clone failed ghp_FAKEGHPCANARY123456 denied\n' FAKEGHPCANARY123456
+hc url-userinfo 'dial https://fakeuser:FAKEURLPASS@ledger.example/x failed\n' FAKEURLPASS fakeuser
+hc url-query 'GET https://ledger.example/q?api_key=FAKEQUERYSECRET&x=1 refused\n' FAKEQUERYSECRET
+hc url-query-sig 'GET https://ledger.example/q?x=1&signature=FAKESIGVALUE88 refused\n' FAKESIGVALUE88
+hc email 'denied for fake.canary+tag@example.invalid on ledger\n' fake.canary example.invalid
+hc quoted-multiword 'bad password="FAKEQ one FAKEQ two three" given\n' 'FAKEQ one' 'FAKEQ two' three
+hc single-quoted 'bad token='"'"'FAKESQ alpha beta'"'"' given\n' 'FAKESQ' alpha beta
+hc long-blob 'blob FAKELONGBLOB0123456789abcdefghijklmnopqrstuvwxyz0123 end\n' FAKELONGBLOB0123456789
+hc multiline-second 'wm-asks: database is locked\ntoken=FAKESECONDLINECANARY\n' FAKESECONDLINECANARY
+hc cookie 'Cookie: session=FAKECOOKIEVALUE12345\n' FAKECOOKIEVALUE12345
+printf 'wm-asks: database is locked\ntoken=FAKESECONDLINECANARY\n' >"$W/err.bin"
+ck "H1 multi-line: first line only, kept" "$(hint | grep -c 'database is locked')" 1
+printf '' >"$W/err.bin"
+ck "H1 empty stderr: exactly 'ledger query exit 2'" "$(hint)" "ledger query exit 2"
+printf '   \n\n' >"$W/err.bin"
+ck "H1 blank-only stderr: exactly 'ledger query exit 2'" "$(hint)" "ledger query exit 2"
+printf 'wm-asks: database is locked\n' >"$W/err.bin"
+ck "H1 benign stderr is shown as advisory text" "$(hint)" "ledger query exit 2: wm-asks: database is locked"
+python3 -c 'import sys; sys.stdout.buffer.write(b"bad bytes \xff\xfe\x80 then token=FAKENONUTF8CANARY end\n")' >"$W/err.bin"
+e="$(hint)"; ck "H1 non-UTF-8 stderr: no crash, prefix kept" "$([ "${e#ledger query exit 2}" != "$e" ] && echo ok)" ok
+ck "H1 non-UTF-8 stderr: canary redacted" "$(grep -c FAKENONUTF8CANARY <<<"$e")" 0
+python3 -c 'print("x"*5000 + " token=FAKELONGLINECANARY")' >"$W/err.bin"
+e="$(hint)"; ck "H1 very long line: bounded (<= 21+160 chars)" "$([ ${#e} -le 181 ] && echo ok)" ok
+python3 -c 'print("short token=FAKELONGLINECANARY2 " + "y "*5000)' >"$W/err.bin"
+ck "H1 very long line: canary at the start redacted" "$(hint | grep -c FAKELONGLINECANARY2)" 0
+printf 'ctl\001\033[31m red\033[0m control\n' >"$W/err.bin"
+ck "H1 control characters dropped" "$(hint | LC_ALL=C grep -c "[[:cntrl:]]")" 0
+# verdict never changes: same rc / error presence / no dispositions for empty, benign and hostile stderr; owed-now lint stays fail-closed (rc 1, LEDGER-UNREADABLE)
+for body in '' 'wm-asks: database is locked\n' 'token=FAKEVERDICTCANARY\n'; do
+  printf "$body" >"$W/err.bin"
+  ck "H1 verdict unchanged [$body]: error set, no dispositions" "$(WM_ASKS_BIN="$W/bin/wm-asks-err" python3 -I "$EVAL" eval --seat ctl 2>/dev/null | jq -c '[(.error|startswith("ledger query exit 2")), (.dispositions // [] | length)]')" "[true,0]"
+  out="$(WM_ASKS_BIN="$W/bin/wm-asks-err" WM_SEAT=ctl bash "$OWED" lint --seat ctl 2>/dev/null)"; rc=$?
+  ck "H1 lint [$body]: rc 1 + LEDGER-UNREADABLE, no canary" "$rc $(grep -c LEDGER-UNREADABLE <<<"$out") $(grep -c FAKEVERDICTCANARY <<<"$out")" "1 1 0"
+done
+
+# --- R3-2: pin the DEFAULT reader timeout (no knob), the WM_HELPER bypass and every aside phrase
+printf '#!/bin/bash\nexec sleep 9\n' >"$W/bin/wm-asks-slow9"; chmod +x "$W/bin/wm-asks-slow9"
+echo "$ROW" >"$W/rows.json"; echo healthy >"$W/mode"
+mk $'The x.service is a separate check, not investigated.\n'; : >"$W/fires.log"
+t0=$(date +%s); o="$(asideenv ctl ASIDE_WM_ASKS_BIN="$W/bin/wm-asks-slow9")"; t1=$(date +%s)
+ck "R3-2 default timeout (no knob): slow reader times out with TimeoutExpired" "$(jq -r '.reason // ""' <<<"$o" | grep -c 'LEDGER-UNKNOWN: ledger command failed: TimeoutExpired')" 1
+ck "R3-2 default timeout is 5 s, not longer (returns in < 8 s)" "$([ $((t1-t0)) -lt 8 ] && [ $((t1-t0)) -ge 4 ] && echo ok)" ok
+mk $'The rb timer is a separate check, not investigated.\n'
+ck "R3-2 V8 control: no WM_HELPER blocks" "$(decision "$(asideenv ctl)")" block
+ck "R3-2 V8 WM_HELPER=1 child exits allow without a ledger read" "$(decision "$(asideenv ctl WM_HELPER=1)")" allow
+: >"$W/argv.log"; asideenv ctl WM_HELPER=1 >/dev/null
+ck "R3-2 V8 WM_HELPER=1 does not query the ledger" "$(wc -l <"$W/argv.log")" 0
+for ph in "separate check" "not investigated" "unrelated to" "informational" "still open" "has not been done" "flagged" "worth a look" "later"; do
+  mk "The zzz item is $ph for the rb timer."$'\n'
+  ck "R3-2 V10 phrase [$ph] blocks an unrowed sentence" "$(decision "$(asideenv ctl)")" block
+done
+
+# --- R3-3: the SENTENCE path binds the same way the heading path does: exact equality of a sentence token with the typed ask_id / key / scope of an open row of THIS seat; free text (what/check) never binds
+echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"owed thing; mentions A99999 and \"xyz\" and closedref A2 at /tmp/x/y, repo#99, ghost.timer, \"owed\", foreign.timer","check":"test -e /var/chk/path","key":"k.service","scope":"/srv/real/path"},{"ask_id":"P7","rev":1,"owner":"rb","due":"2026-11-13T09:00","what":"foreign row","key":"foreign.timer"},{"ask_id":"A5000","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"long id row"}]' >"$W/rows.json"
+for t in A99999 '"xyz"' A2 /tmp/x/y repo#99 ghost.timer '"owed"' foreign.timer /var/chk/path A5 A500 P7 d-20261113-ghost; do
+  mk "The item $t is a separate check, not investigated."$'\n'
+  ck "R3-3 sentence token [$t] (ghost/closed/quoted/in-other-row-text/path/foreign) does not suppress" "$(decision "$(asideenv ctl)")" block
+done
+for t in A55 k.service /srv/real/path A5000; do
+  mk "The item $t is a separate check, not investigated."$'\n'
+  ck "R3-3 sentence token [$t] bound by ask_id/key/scope of an open row of this seat allows" "$(decision "$(asideenv ctl)")" allow
+done
+mk $'The item "k.service" is a separate check, not investigated.\n'
+ck "R3-3 quoted typed key allows" "$(decision "$(asideenv ctl)")" allow
+mk $'The item P7 is a separate check, not investigated.\n'
+ck "R3-3 foreign-seat ask_id as seen by rb allows (own row)" "$(decision "$(asideenv rb)")" allow
+mk $'The item A55 is a separate check, not investigated.\n'
+ck "R3-3 ctl row id seen by rb (foreign) blocks" "$(decision "$(asideenv rb)")" block
+echo "$ROW" >"$W/rows.json"
 echo "pass=$p fail=$f"; [ "$f" = 0 ]

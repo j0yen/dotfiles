@@ -4,7 +4,7 @@
 # investigated, ...) in a sentence with no subject token in an OPEN canonical ledger ask
 # (wm-asks asks query, owner-scoped; the retired open-asks.tsv is no longer read; a failed or non-JSON read = LEDGER-UNKNOWN, never a match) and no "done" claim. A49 D3, Joe 10-31 6:4x PM. Fast, no network; allows on any error.
 # A section under a "Director aside" heading is accounted (not scanned) only when the heading names a token bound to an open ledger row of this seat; a token naming nothing open, a closed/foreign row or no row suppresses nothing.
-# G1 (review 2): the heading binds by exact equality on ask_id or the typed key/scope field of an open row of this seat (the canonical row fields: ask_id, rev, owner, due, what, check, key, scope, ...); free text (what/check) never binds a heading. A sentence token still matches word-bounded over the open rows of the seat (unchanged; see the A1307 report, residual).
+# G1 (review 2): the heading binds by exact equality on ask_id or the typed key/scope field of an open row of this seat (the canonical row fields: ask_id, rev, owner, due, what, check, key, scope, ...); free text (what/check) never binds a heading. R3-3 (repair 3): a sentence token binds the same way, by exact equality on ask_id/key/scope of an open row of this seat; free text never binds a sentence either.
 # Env: ASIDE_OPEN_ASKS (legacy, ignored), ASIDE_WM_ASKS_BIN (default wm-asks), ASIDE_WM_ASKS_TIMEOUT (reader timeout seconds, default 5 of the 10 s hook budget; a timeout = LEDGER-UNKNOWN), ASIDE_STOP_LOG (fires log), FOLLOWUP_TRACE=1 (phase timings to $TMPDIR/followup-trace.log).
 # F6 (A1296 pkg2 review 1, intended widening): seat ops is an alias of ctl (spec amendment 3, rev181). ops therefore sees the full ctl set, the ctl/aide
 # owner catch-all included, in followup-eval.py main() and owed-now.sh lint; this hook scopes rows by the same alias (ops -> ctl owner set). No seats.tsv row is added.
@@ -84,7 +84,7 @@ try:
     SEAT = "ctl" if SEAT == "ops" else SEAT   # ops = ctl alias (A1296 rev181)
     OWNERS = ("ctl", "aide") if SEAT in ("ctl", "aide") else (SEAT,)
     FIELDS = ("what", "check", "key", "scope", "title")
-    open_rows, open_ids, unknown, unreadable = [], set(), "", 0
+    open_ids, unknown, unreadable = set(), "", 0
     try:
         p = subprocess.run([os.environ.get("ASIDE_WM_ASKS_BIN", "wm-asks"), "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=float(os.environ.get("ASIDE_WM_ASKS_TIMEOUT") or 5))
         if p.returncode != 0:
@@ -98,17 +98,14 @@ try:
                     if not isinstance(r.get("owner"), str) or any(r.get(k) is not None and not isinstance(r.get(k), str) for k in FIELDS):
                         unreadable += 1   # reported, never silently dropped
                     elif r["owner"] in OWNERS:
-                        open_rows.append(r["ask_id"] + "\n" + "\n".join(r.get(k) or "" for k in FIELDS))
                         open_ids.update([r["ask_id"]] + [r[k] for k in ("key", "scope") if r.get(k)])   # typed identifiers: ask_id, key, scope
     except Exception as ex:
         unknown = "ledger command failed: %s" % type(ex).__name__
-    rows = "\n".join(open_rows)
     if unknown or unreadable:
         log("ledger-unknown %s unreadable_rows=%d" % (unknown or "-", unreadable))
-    def bound(t):   # a token is bound only when it names an actual open ledger row of this seat
-        return bool(re.search(r"(?<![\w])" + re.escape(t) + r"(?![\w])", rows))
-    def heading_bound(t):   # a Director-aside heading token binds only by exact equality on an open row of this seat: its ask_id or its typed key/scope; free text (what/check) never binds
+    def bound(t):   # a token (heading or sentence) is bound only by exact equality with an open row of this seat: its ask_id or its typed key/scope; free text (what/check) never binds (G1 + R3-3)
         return t in open_ids
+    heading_bound = bound
     trace("ledger-query")
     HEAD = re.compile(r"^\s{0,3}#{1,6}\s*director[ -]aside\b(.*)$", re.I)
     SEC = re.compile(r"^\s{0,3}#{1,6}\s")
