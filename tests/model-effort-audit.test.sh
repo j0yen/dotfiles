@@ -93,6 +93,13 @@ jq '.ctl.model="claude-sonnet-5-5"' "$H/.config/wm-decide/seat-model-hold.json" 
 build; run --notify >/dev/null; [ ! -s "$T/notify.log" ] && echo "ok clean first run sends nothing" || { echo "FAIL clean sends"; fail=1; }
 build; jq '.ctl.model="x"' "$H/.config/wm-decide/seat-model-hold.json" >"$T/x" && mv "$T/x" "$H/.config/wm-decide/seat-model-hold.json"
 printf '#!/bin/sh\nexit 1\n' >"$T/notify"; run --notify >/dev/null; [ ! -e "$T/state/last" ] && echo "ok failed bell keeps state unadvanced (retry next run)" || { echo "FAIL state advanced on failed bell"; fail=1; }
+# canonical maxspeed SKILL.md (A1300 cont3 edit 6): absent = NOTE only; present must carry fable-spawn: true and no model/effort off the policy baseline
+build; rm "$H/.claude/skills/maxspeed/SKILL.md"; want_clean "absent canonical maxspeed SKILL.md passes"
+build; rm "$H/.claude/skills/maxspeed/SKILL.md"; run | jq -e '.info|any(test("maxspeed.*(absent|not present|NOTE)"))' >/dev/null && echo "ok absent maxspeed SKILL.md leaves a NOTE line" || { echo "FAIL no NOTE for absent maxspeed SKILL.md"; fail=1; }
+build; printf -- '---\nname: maxspeed\n---\nbody\n' >"$H/.claude/skills/maxspeed/SKILL.md"; want_id "maxspeed SKILL.md without fable-spawn: true fails" skill-maxspeed-no-fable-spawn
+build; printf -- '---\nname: maxspeed\nmodel: fable\neffort: max\nfable-spawn: true\n---\nbody\n' >"$H/.claude/skills/maxspeed/SKILL.md"; want_id "maxspeed SKILL.md effort: max off the baseline fails" skill-maxspeed-effort
+build; printf -- '---\nname: maxspeed\nmodel: sonnet\nfable-spawn: true\n---\nbody\n' >"$H/.claude/skills/maxspeed/SKILL.md"; want_id "maxspeed SKILL.md model: sonnet off the baseline fails" skill-maxspeed-model
+build; printf -- '---\nname: maxspeed\nmodel: fable\neffort: high\nfable-spawn: true\n---\nbody\n' >"$H/.claude/skills/maxspeed/SKILL.md"; want_clean "maxspeed SKILL.md matching the baseline (fable/high) passes"
 # the audit makes no model call: no claude binary on its PATH is ever executed
 build; mkdir -p "$T/bin"; printf '#!/bin/sh\necho called >%s/claude.called\n' "$T" >"$T/bin/claude"; chmod +x "$T/bin/claude"; PATH="$T/bin:$PATH" run >/dev/null
 [ ! -e "$T/claude.called" ] && echo "ok audit never calls claude" || { echo "FAIL audit called claude"; fail=1; }

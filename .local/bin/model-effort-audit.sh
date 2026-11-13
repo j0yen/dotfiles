@@ -105,8 +105,16 @@ else
   r4=$(rr '{"task_id":"audit","skill":"5whysandrhyme","escalation":{"reason":"complex","evidence":["file:/etc/hostname"]}}'); jq -e '.ok==false' <<<"$r4" >/dev/null 2>&1 || fail routing-escalation-open "resolver accepts an escalation with a free-text reason"
   for s in $pset; do
     f="$SK/$s/SKILL.md"
+    if [ ! -r "$f" ] && [ "$s" = maxspeed ]; then info "NOTE: canonical $f not present on this host (maxspeed skill not installed here; its checks are skipped)"; continue; fi
     [ -r "$f" ] || { fail "skill-$s-missing" "$f unreadable"; continue; }
     pm=$(fmget "$f" model); pe=$(fmget "$f" effort)
+    if [ "$s" = maxspeed ]; then  # canonical SKILL.md is read, never edited (A1300 cont3): spawn-gate flag present, no pin off the policy baseline
+      [ "$(fmget "$f" fable-spawn)" = true ] || fail skill-maxspeed-no-fable-spawn "$f lacks 'fable-spawn: true': the spawn gate would not route maxspeed while the guard demands Fable"
+      bm=$(jq -r '.skills.maxspeed as $k|$k.routes[$k.baseline].model // empty' "$POL" 2>/dev/null); be=$(jq -r '.skills.maxspeed as $k|$k.routes[$k.baseline].effort // empty' "$POL" 2>/dev/null)
+      case "$(printf '%s' "$pm" | tr '[:upper:]' '[:lower:]')" in fable) pmn=claude-fable-5-1 ;; sonnet) pmn=claude-sonnet-5-5 ;; haiku) pmn=claude-haiku-5-5 ;; opus) pmn=claude-opus-5-5 ;; *) pmn=$pm ;; esac
+      [ -z "$pm" ] || [ "$pmn" = "$bm" ] || fail skill-maxspeed-model "$f pins model='$pm', policy baseline is $bm"
+      [ -z "$pe" ] || [ "$pe" = "$be" ] || fail skill-maxspeed-effort "$f pins effort='$pe', policy baseline is $be"
+    fi
     [ -z "$pm$pe" ] || info "$s SKILL.md still pins model='$pm' effort='$pe'; governed route ignores it (inline use is blocked by the gate) - remove at install (A1300)"
     tf=$(mktemp); printf '{"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"x"}]}}\n' >"$tf"
     d=$(printf '{"tool_name":"Skill","tool_input":{"skill":"%s"},"transcript_path":"%s","tool_use_id":"x"}' "$s" "$tf")
