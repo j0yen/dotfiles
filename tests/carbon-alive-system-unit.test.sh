@@ -8,7 +8,7 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0; pass=0
 ok() { echo "PASS $1"; pass=$((pass+1)); }; bad() { echo "FAIL $1"; fail=$((fail+1)); }
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(mktemp -d)"; trap 'kill "${lp:-0}" 2>/dev/null; rm -rf "$T"' EXIT
 S="$here/.config/systemd/system-units/carbon-alive.service"; Ti="$here/.config/systemd/system-units/carbon-alive.timer"
 has() { grep -qx -- "$2" "$1" 2>/dev/null; }
 
@@ -62,10 +62,14 @@ fi
 # 10: carbon-alive.sh with HOME only (env -i: no XDG_*, XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS) writes its state
 # under HOME and alerts through the default Discord deliverer (fake curl), and calls no local systemctl/loginctl
 H="$T/home"; mkdir -p "$H/.config/carbon-alive" "$T/tmp" "$T/curl"
+# open loopback port = a REF the witness reaches (no test touches the internet)
+python3 -I "$here/tests/fixtures/carbon-alive-listen.py" > "$T/refport" & lp=$!
+for _ in $(seq 50); do [ -s "$T/refport" ] && break; sleep 0.1; done
+REF_OPEN="127.0.0.1:$(cat "$T/refport")"
 ln -s "$here/tests/fixtures/carbon-alive-fake-curl.sh" "$T/bin/curl"
 printf 'https://discord.example/api/webhooks/1/TOKENsecret9f3a\n' > "$H/.config/carbon-alive/webhook.url"; chmod 600 "$H/.config/carbon-alive/webhook.url"
 : > "$T/sysctl-calls"
-ca() { env -i HOME="$H" PATH="$T/bin:/usr/local/bin:/usr/bin:/bin" TMPDIR="$T/tmp" CARBON_ALIVE_HOST=testhost CA_FAKE_RC=255 \
+ca() { env -i HOME="$H" PATH="$T/bin:/usr/local/bin:/usr/bin:/bin" TMPDIR="$T/tmp" CARBON_ALIVE_HOST=testhost CA_FAKE_RC=255 CARBON_ALIVE_REF="$REF_OPEN" \
   CARBON_ALIVE_SSH="$here/tests/fixtures/carbon-alive-fake-ssh.sh" CA_CURL_LOG="$T/curl" CARBON_ALIVE_NOW="$1" "$here/.local/bin/carbon-alive.sh"; }
 ca 1000000; r1=$?; ca 1000120; r2=$?
 sj="$H/.local/state/carbon-alive/state.json"
