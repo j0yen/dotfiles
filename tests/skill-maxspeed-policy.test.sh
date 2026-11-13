@@ -49,7 +49,7 @@ rr(){ jq -cn --arg pm "$1" --arg ev "file:$T/ev" --argjson cls "$2" '{task_id:"t
 rr plan true; rc=$?; ck "AC5b class unresolved_reasoning_gap + evidence -> fable-xhigh allowed" '[ $rc = 0 ] && jq -e ".route==\"fable-xhigh\"" "$T/ro" >/dev/null'
 rr plan false; rc=$?; ck "AC5c xhigh requested at baseline -> deny" '[ $rc = 2 ]'
 # AC5d fallback
-ck "AC5d maxspeed appears in the guard only in comments" '! grep -v "^[[:space:]]*#" "$R/.claude/hooks/skill-agent-effort-guard.sh" | grep -q maxspeed'
+ck "AC5d maxspeed appears in the guard only in comments and the lib-missing fallback regex (A1300 cont5 E8)" '! grep -v "^[[:space:]]*#" "$R/.claude/hooks/skill-agent-effort-guard.sh" | grep -v "grep -qiE .5whysandrhyme|wwhtbt|maxspeed." | grep -q maxspeed'
 for s in maxspeed 5whysandrhyme dream wwhtbt; do
   H2="$T/h-$s"; mkhome "$H2" "$R"; rm "$H2/.config/skill-routing/policy.json"
   g "$H2" fable high plan "Invoke the $s skill (Skill tool, skill: $s, args: x)."; rc=$?
