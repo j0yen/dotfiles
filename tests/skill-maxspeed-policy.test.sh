@@ -15,7 +15,9 @@ POL="$R/.config/skill-routing/policy.json"
 ck "AC5 policy keys == SKILL_POLICY_SKILLS" '[ "$(jq -r ".skills|keys[]" "$POL" | sort)" = "$(tr " " "\n" <<<"$SKILL_POLICY_SKILLS" | sort)" ]'
 ck "AC5 maxspeed listed once" '[ "$(tr " " "\n" <<<"$SKILL_POLICY_SKILLS" | grep -cx maxspeed)" = 1 ]'
 if [ -n "$SLICE" ] && [ -r "$SLICE" ]; then
-  ck "AC5 slice raw sha a7e223b5" '[ "$(sha256sum <"$SLICE" | cut -d" " -f1)" = a7e223b526bf744526f34e4f1da478d6ec361d3e342ea76bd7176944e6b40b0d ]'
+  ck "AC5 slice ends with a newline" '[ "$(tail -c 1 "$SLICE" | xxd -p)" = 0a ]'
+  ck "AC5 slice sha a7e223b5 (final newline removed)" '[ "$(head -c -1 "$SLICE" | sha256sum | cut -d" " -f1)" = a7e223b526bf744526f34e4f1da478d6ec361d3e342ea76bd7176944e6b40b0d ]'
+  ck "AC5 slice raw sha 90ef13e126ea1caa29a612c6cbed1af4cc2860ecf6513aaf86ef932c59a15231" '[ "$(sha256sum <"$SLICE" | cut -d" " -f1)" = 90ef13e126ea1caa29a612c6cbed1af4cc2860ecf6513aaf86ef932c59a15231 ]'
   ck "AC5 .skills.maxspeed == slice (jq -S -c sha)" '[ "$(jq -S -c .skills.maxspeed "$POL" | sha256sum)" = "$(jq -S -c .maxspeed "$SLICE" | sha256sum)" ]'
 else echo "SKIP slice provenance (MS_SLICE unset or unreadable)"; fi
 
