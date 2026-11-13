@@ -99,6 +99,16 @@ printf '#!/bin/sh\nexit 1\n' > "$T/rt-fail"; chmod +x "$T/rt-fail"
 fresh; mkqa e1 $NOW A2; routea e1 A1 deterministic; gooda e1 A1; RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(sends)" = 1 ] && [ "$(q)" = 1 ] && [ "$(d)" = 0 ]; chk "R3-1 stale deterministic cache + router failure: the delivery is unrouted, delivered to the pane once, still queued, not acked" $?
 fresh; mkqa e1 $NOW A1; routea e1 A1 deterministic; gooda e1 A1; RTBIN="$T/rt-fail" BR_CYCLES=1 br run >/dev/null 2>&1; [ "$(sends)" = 0 ] && [ "$(d)" = 1 ]; chk "R3-1 control: a current deterministic cache is acked and never delivered" $?
 
+# router stage file: the classifier verdict of ONE attempt is reused on a same-attempt replay (no second model call) and never reused by a new attempt (mutant RT5)
+printf '#!/bin/sh\ncat >/dev/null\necho x >> %s/claude.log\necho "{\\"result\\":\\"{\\\\\\"route\\\\\\":\\\\\\"fable\\\\\\",\\\\\\"summary\\\\\\":\\\\\\"s\\\\\\",\\\\\\"reason\\\\\\":\\\\\\"r\\\\\\"}\\",\\"is_error\\":false}"\nexit 0\n' "$T" > "$T/claude"; chmod +x "$T/claude"
+fresh; : > "$T/claude.log"; mkqa e1 $NOW A1 taskfile
+RT_DIR="$RTD" RT_CLAUDE_BIN="$T/claude" "$RTR" route "$BRD/queue/e1.json" >/dev/null 2>&1; c1=$(wc -l < "$T/claude.log")
+[ "$c1" = 1 ] && [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("attempt_id"))' "$RTD/stage/e1.classify.json")" = A1 ]; chk "R3-1 router stage file carries the attempt_id (1 classifier call)" $?
+rm -f "$RTD/routed/e1.json" "$RTD/results/e1.json"; RT_DIR="$RTD" RT_CLAUDE_BIN="$T/claude" "$RTR" route "$BRD/queue/e1.json" >/dev/null 2>&1
+[ "$(wc -l < "$T/claude.log")" = 1 ]; chk "R3-1 router same-attempt replay after a lost cache reuses the stage verdict (no second model call)" $?
+mkqa e1 $NOW A2 taskfile; rm -f "$RTD/routed/e1.json" "$RTD/results/e1.json"; RT_DIR="$RTD" RT_CLAUDE_BIN="$T/claude" "$RTR" route "$BRD/queue/e1.json" >/dev/null 2>&1
+[ "$(wc -l < "$T/claude.log")" = 2 ] && ls "$RTD/attempts/e1/A1/e1.classify.json" >/dev/null 2>&1; chk "R3-1 router new attempt A2 re-classifies (own model call) and archives A1's stage file" $?
+
 # --- R3-2: crash-idempotent ack/receipt recovery (state-based: done + queue of the same attempt; and SIGKILL at every step boundary)
 fresh; mkqa e1 $NOW A1; routea e1 A1; gooda e1 A1
 echo "{\"id\":\"e1\",\"event\":{\"event\":\"inbox\",\"detail\":{}},\"created\":$NOW,\"attempts\":0,\"last_delivery\":0,\"attempt_id\":\"A1\",\"acked\":$NOW}" > "$BRD/done/e1.json"
