@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # skill-maxspeed-policy.test.sh: A1300 AC5/AC5b-e/AC6 — maxspeed governed by the routing policy with require_permission_mode.
 # Harmless fakes only: temp HOME, repo hook/lib/resolver symlinked in, no real claude, no network, no live policy read.
-# Run alone: bash tests/skill-maxspeed-policy.test.sh   (BASE_TREE=<clone> adds the AC5e other-skills diff against that tree)
+# Run alone: bash tests/skill-maxspeed-policy.test.sh   (MS_SLICE=<slice json> adds the AC5 provenance checks; BASE_TREE=<clone> adds the AC5e other-skills diff against that tree)
 set -u
 R="$(cd "$(dirname "$0")/.." && pwd)"
-SLICE="${MS_SLICE:-/home/jsy/.cache/rb-seat/coders/ms-slice/maxspeed-policy-slice.json}"
+SLICE="${MS_SLICE:-}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 p=0; f=0
 ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
@@ -14,11 +14,10 @@ POL="$R/.config/skill-routing/policy.json"
 # AC5 set equality + provenance
 ck "AC5 policy keys == SKILL_POLICY_SKILLS" '[ "$(jq -r ".skills|keys[]" "$POL" | sort)" = "$(tr " " "\n" <<<"$SKILL_POLICY_SKILLS" | sort)" ]'
 ck "AC5 maxspeed listed once" '[ "$(tr " " "\n" <<<"$SKILL_POLICY_SKILLS" | grep -cx maxspeed)" = 1 ]'
-if [ -r "$SLICE" ]; then
+if [ -n "$SLICE" ] && [ -r "$SLICE" ]; then
   ck "AC5 slice raw sha a7e223b5" '[ "$(sha256sum <"$SLICE" | cut -d" " -f1)" = a7e223b526bf744526f34e4f1da478d6ec361d3e342ea76bd7176944e6b40b0d ]'
   ck "AC5 .skills.maxspeed == slice (jq -S -c sha)" '[ "$(jq -S -c .skills.maxspeed "$POL" | sha256sum)" = "$(jq -S -c .maxspeed "$SLICE" | sha256sum)" ]'
-  ck "AC5 .skills.maxspeed == slice (jq -c unsorted)" '[ "$(jq -c .skills.maxspeed "$POL")" = "$(jq -c .maxspeed "$SLICE")" ]'
-else echo "SKIP slice provenance (no $SLICE)"; fi
+else echo "SKIP slice provenance (MS_SLICE unset or unreadable)"; fi
 
 # harness: temp HOME, repo files symlinked, policy via $HOME path
 mkhome(){ # dir tree

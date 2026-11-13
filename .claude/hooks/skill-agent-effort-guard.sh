@@ -36,6 +36,7 @@ for s in $SKILL_POLICY_SKILLS; do
 done
 [ -n "$hit" ] || exit 0
 command -v sr_resolve >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit} routing helpers (skill-route.sh) not found; refusing governed skill spawn (fail closed)" >&2; exit 2; }
+command -v sr_governed >/dev/null 2>&1 || { echo "skill-agent-effort-guard:${hit} skill-route.sh is too old (sr_governed missing: guard/lib install skew, install guard, lib and policy.json as one set); refusing governed skill spawn (fail closed)" >&2; exit 2; }
 M=$(sr_alias_model "$M")
 bad=""
 for s in $hit; do
@@ -48,6 +49,7 @@ done
 [ -z "$bad" ] && exit 0
 {
   echo "skill-agent-effort-guard: governed skill spawn denied:${bad}. Native spawns may only use the skill's baseline route (given model='${MODEL:-<inherited>}' effort='${EFFORT:-<inherited>}'); max and escalated routes are not available here."
+  [ "$E" = xhigh ] && echo "xhigh is not available on the native Agent path: the only justified path is fable-launch.sh --route-request with decision_class (unresolved_reasoning_gap) and evidence_refs (real ledger:/file:/pr:/run:/commit:/page: refs)."
   sr_recipe "${hit# }"
 } >&2
 exit 2

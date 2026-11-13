@@ -27,6 +27,10 @@ def find_policy(arg):
         if os.path.isfile(os.environ["SKILL_ROUTE_POLICY"]):
             return os.environ["SKILL_ROUTE_POLICY"]
         raise Deny("policy-missing: SKILL_ROUTE_POLICY names no readable file")
+    if arg:  # an explicit --policy is the only candidate too: a missing file never falls through to repo/home policy
+        if os.path.isfile(arg):
+            return arg
+        raise Deny("policy-missing: --policy names no readable file")
     for c in (arg,
               os.path.join(here, "..", "..", ".config", "skill-routing", "policy.json"),
               os.path.join(HOME, ".config", "skill-routing", "policy.json")):
