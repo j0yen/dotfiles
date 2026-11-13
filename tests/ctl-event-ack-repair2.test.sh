@@ -87,6 +87,16 @@ for i in $(seq 1 $trials); do
 done
 [ "$dups2" = 0 ]; chk "N2 same-event ack + --all + run concurrently x $trials: 0 duplicate ack lines, one done/, one receipt (dup_trials=$dups2)" $?
 
+# --- N1/N4 schema residue: exit false / 0.0 / "0" and a non-token result are not success (mutants E, M)
+for body in '{"id":"e1","route":"haiku","result":"executed","exit":false}' '{"id":"e1","route":"haiku","result":"executed","exit":0.0}' '{"id":"e1","route":"haiku","result":"executed","exit":"0"}' '{"id":"e1","route":"haiku","result":"Executed!","exit":0}' '{"id":"e1","route":"haiku","result":"","exit":0}'; do
+  fresh; mkq e1; route e1 haiku; rraw e1 "$body"; err="$(br ack e1 2>&1 >/dev/null)"; rc=$?
+  br ack --all >/dev/null 2>&1; r2=$?
+  [ "$rc" != 0 ] && [ "$r2" != 0 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ -n "$err" ]; chk "N1 not the typed success shape: ${body:30:60}" $?
+done
+# a requeued id whose queue file lacks a usable created stamp cannot prove its evidence is newer
+fresh; old_done; echo '{"id":"e1","event":{"event":"inbox","detail":{"gen":"new"}},"attempts":0,"last_delivery":0}' > "$BRD/queue/e1.json"; route e1 deterministic; good e1
+br ack e1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(q)" = 1 ] && [ "$(d)" = 1 ]; chk "N2 requeued det id with no created stamp: evidence cannot be bound to the payload, refused" $?
+
 # --- N3: a held-unreadable id (held marker, no cache, no result) is never moved to done/ by an explicit ack
 fresh; mkq e1; mkdir -p "$RTD/held"; : > "$RTD/held/e1"
 err="$(br ack e1 2>&1 >/dev/null)"; rc=$?
