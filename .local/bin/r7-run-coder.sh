@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # r7-run-coder.sh <name> <prompt-file>: one sonnet `claude -p` coder turn for the r7 seat, under a systemd-run unit
-# (premise + expiry in the unit Description/RuntimeMaxSec). Rings the seat when the turn ends. Installed as ~/.cache/r7-seat/coders/run-coder.sh.
+# (premise + expiry stamp in the unit Description; no RuntimeMaxSec, Joe #195 no runtime caps). Rings the seat when the turn ends. Installed as ~/.cache/r7-seat/coders/run-coder.sh.
 # v2 10-23 1:18 PM (row d-20261023-131752-r7-1804): removes the coder's own clone dirs /tmp/<name>.XXXXXX and /tmp/<name>.root when no
 #   process has its cwd inside (carbon /tmp is tmpfs = RAM).
 # v3 10-23 1:48 PM (row d-20261023-134850-r7-7c28, ctl df62 five whys): every git commit/push the coder makes runs
