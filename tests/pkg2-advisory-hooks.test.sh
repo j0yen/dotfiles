@@ -293,4 +293,14 @@ ck "R3-3 foreign-seat ask_id as seen by rb allows (own row)" "$(decision "$(asid
 mk $'The item A55 is a separate check, not investigated.\n'
 ck "R3-3 ctl row id seen by rb (foreign) blocks" "$(decision "$(asideenv rb)")" block
 echo "$ROW" >"$W/rows.json"
+
+# --- pins for the remaining base-line gates and the hint's shape (review-3 survivors V7, V9; hint first-non-empty-line and the 160-char bound)
+mk $'The rb timer is a separate check, not investigated.\n'
+ck "R3-2 V7 control: seat session blocks" "$(decision "$(asideenv ctl)")" block
+ck "R3-2 V7 no WM_SEAT (plain/director session) is never gated" "$(decision "$(jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:false,session_id:"s1"}' | env -u WM_SEAT bash "$ASIDE" 2>/dev/null)")" allow
+ck "R3-2 V9 stop_hook_active=true (loop guard) allows" "$(decision "$(jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:true,session_id:"s1"}' | WM_SEAT=ctl bash "$ASIDE" 2>/dev/null)")" allow
+printf '\n   \nwm-asks: database is locked\nsecond line\n' >"$W/err.bin"
+ck "H1 leading blank lines skipped: first NON-EMPTY line is the hint" "$(hint)" "ledger query exit 2: wm-asks: database is locked"
+python3 -c 'print("wm-asks: " + "word " * 200)' >"$W/err.bin"
+e="$(hint)"; ck "H1 long benign line: truncated to 160 chars after the prefix" "$([ ${#e} -eq 181 ] && echo ok)" ok
 echo "pass=$p fail=$f"; [ "$f" = 0 ]
