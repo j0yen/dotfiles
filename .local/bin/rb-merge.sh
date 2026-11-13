@@ -47,7 +47,11 @@ case "$repo" in */*) ;; *) echo "rb-merge.sh: repo must be owner/name, got '$rep
 # Every call logs to ~/.cache/rb-seat/merge-logs/ (ctl 10-22 11:28 PM: a merge-done row cites this log).
 RB_MERGE_LOG_DIR="${RB_MERGE_LOG_DIR:-$HOME/.cache/rb-seat/merge-logs}"; mkdir -p "$RB_MERGE_LOG_DIR"
 LOG="$RB_MERGE_LOG_DIR/rb-merge-${repo//\//_}-$pr-$(date +%Y%m%dT%H%M%S).log"; echo "rb-merge.sh v=$v pr=$pr repo=$repo at $(date -Is)" >"$LOG"
-exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
+exec > >(tee -a "$LOG"); TEE_OUT=$!
+exec 2> >(tee -a "$LOG" >&2); TEE_ERR=$!
+# a process substitution is not waited for by the shell: without this, the script can exit while a tee still holds the last lines, and a caller that
+# redirects stdout/stderr to a file reads it before they land (a loaded host loses ADV-*/refusal lines nondeterministically). Close our ends, then wait.
+trap 'exec >&- 2>&-; wait "$TEE_OUT" "$TEE_ERR" 2>/dev/null' EXIT
 WM_DECIDE="${WM_DECIDE_BIN:-wm-decide}"
 GH="${RB_MERGE_GH:-gh}"
 
