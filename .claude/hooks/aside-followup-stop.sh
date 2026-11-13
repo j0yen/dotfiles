@@ -4,7 +4,8 @@
 # investigated, ...) in a sentence with no subject token in an OPEN canonical ledger ask
 # (wm-asks asks query, owner-scoped; the retired open-asks.tsv is no longer read; a failed or non-JSON read = LEDGER-UNKNOWN, never a match) and no "done" claim. A49 D3, Joe 10-31 6:4x PM. Fast, no network; allows on any error.
 # A section under a "Director aside" heading is accounted (not scanned) only when the heading names a token bound to an open ledger row of this seat; a token naming nothing open, a closed/foreign row or no row suppresses nothing.
-# Env: ASIDE_OPEN_ASKS (legacy, ignored), ASIDE_WM_ASKS_BIN (default wm-asks), ASIDE_STOP_LOG (fires log), FOLLOWUP_TRACE=1 (phase timings to $TMPDIR/followup-trace.log).
+# G1 (review 2): the heading binds by exact equality on ask_id or the typed key/scope field of an open row of this seat (the canonical row fields: ask_id, rev, owner, due, what, check, key, scope, ...); free text (what/check) never binds a heading. A sentence token still matches word-bounded over the open rows of the seat (unchanged; see the A1307 report, residual).
+# Env: ASIDE_OPEN_ASKS (legacy, ignored), ASIDE_WM_ASKS_BIN (default wm-asks), ASIDE_WM_ASKS_TIMEOUT (reader timeout seconds, default 5 of the 10 s hook budget; a timeout = LEDGER-UNKNOWN), ASIDE_STOP_LOG (fires log), FOLLOWUP_TRACE=1 (phase timings to $TMPDIR/followup-trace.log).
 # F6 (A1296 pkg2 review 1, intended widening): seat ops is an alias of ctl (spec amendment 3, rev181). ops therefore sees the full ctl set, the ctl/aide
 # owner catch-all included, in followup-eval.py main() and owed-now.sh lint; this hook scopes rows by the same alias (ops -> ctl owner set). No seats.tsv row is added.
 set -u
@@ -15,7 +16,7 @@ set -u
 export ASIDE_OPEN_ASKS="${ASIDE_OPEN_ASKS:-$HOME/.cache/aide/open-asks.tsv}"
 export ASIDE_STOP_LOG="${ASIDE_STOP_LOG:-$HOME/.local/state/aside-stop/fires.log}"
 python3 -I -c '
-import json, os, re, sys, time
+import json, os, re, stat, sys, time
 os.umask(0o077)
 LOG = os.environ["ASIDE_STOP_LOG"]
 T0 = time.monotonic(); TRACE = os.environ.get("FOLLOWUP_TRACE") == "1"
@@ -24,10 +25,15 @@ def trace(phase):
     if not TRACE:
         return
     now = time.monotonic()
-    try:   # private, no-follow: a pre-existing symlink is refused (ELOOP), file is 0600 and ours
-        fd = os.open(os.path.join(os.environ.get("TMPDIR") or "/tmp", "followup-trace.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:   # private, no-follow, non-blocking: symlinked parent dir (O_NOFOLLOW|O_DIRECTORY on the dir) and symlinked file are refused (ELOOP); FIFO opens never block (O_NONBLOCK); only a regular, single-link file that is ours is written (hardlink/FIFO/device/foreign-uid skipped before any chmod)
+        dfd = os.open(os.environ.get("TMPDIR") or "/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            if os.fstat(fd).st_uid == os.getuid():
+            fd = os.open("followup-trace.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=dfd)
+        finally:
+            os.close(dfd)
+        try:
+            st = os.fstat(fd)
+            if stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_uid == os.getuid():
                 os.fchmod(fd, 0o600)
                 os.write(fd, ("%s aside-followup-stop phase=%s ms=%d\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), phase, (now - T0) * 1000)).encode())
         finally:
@@ -78,9 +84,9 @@ try:
     SEAT = "ctl" if SEAT == "ops" else SEAT   # ops = ctl alias (A1296 rev181)
     OWNERS = ("ctl", "aide") if SEAT in ("ctl", "aide") else (SEAT,)
     FIELDS = ("what", "check", "key", "scope", "title")
-    open_rows, unknown, unreadable = [], "", 0
+    open_rows, open_ids, unknown, unreadable = [], set(), "", 0
     try:
-        p = subprocess.run([os.environ.get("ASIDE_WM_ASKS_BIN", "wm-asks"), "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=5)
+        p = subprocess.run([os.environ.get("ASIDE_WM_ASKS_BIN", "wm-asks"), "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=float(os.environ.get("ASIDE_WM_ASKS_TIMEOUT") or 5))
         if p.returncode != 0:
             unknown = "ledger query exit %d" % p.returncode
         else:
@@ -93,6 +99,7 @@ try:
                         unreadable += 1   # reported, never silently dropped
                     elif r["owner"] in OWNERS:
                         open_rows.append(r["ask_id"] + "\n" + "\n".join(r.get(k) or "" for k in FIELDS))
+                        open_ids.update([r["ask_id"]] + [r[k] for k in ("key", "scope") if r.get(k)])   # typed identifiers: ask_id, key, scope
     except Exception as ex:
         unknown = "ledger command failed: %s" % type(ex).__name__
     rows = "\n".join(open_rows)
@@ -100,6 +107,8 @@ try:
         log("ledger-unknown %s unreadable_rows=%d" % (unknown or "-", unreadable))
     def bound(t):   # a token is bound only when it names an actual open ledger row of this seat
         return bool(re.search(r"(?<![\w])" + re.escape(t) + r"(?![\w])", rows))
+    def heading_bound(t):   # a Director-aside heading token binds only by exact equality on an open row of this seat: its ask_id or its typed key/scope; free text (what/check) never binds
+        return t in open_ids
     trace("ledger-query")
     HEAD = re.compile(r"^\s{0,3}#{1,6}\s*director[ -]aside\b(.*)$", re.I)
     SEC = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -107,7 +116,7 @@ try:
     for ln in msg.split("\n"):
         h = HEAD.match(ln)
         if h:
-            owed_sec = any(bound(t.strip("\"")) for t in TOK.findall(h.group(1)))
+            owed_sec = any(heading_bound(t.strip("\"")) for t in TOK.findall(h.group(1)))
             continue
         if SEC.match(ln):
             owed_sec = False

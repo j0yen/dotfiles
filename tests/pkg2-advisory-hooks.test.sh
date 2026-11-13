@@ -81,7 +81,7 @@ ck "4e seats.tsv has no ops row (one alias, no duplicate actor)" "$(grep -c '^op
 
 # --- F1: a token-shaped heading suppresses only when it names an actual OPEN row of this seat (healthy ledger holds only T1 owned by ctl, plus closed/foreign rows are absent or other-owned)
 UN=$'The deploy is a separate check, not investigated. Also still open: the rollout, flagged for later.\n'
-echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"owed thing at /srv/real/path and unit x.service"},{"ask_id":"P7","rev":1,"owner":"rb","due":"2026-11-13T09:00","what":"foreign row"}]' >"$W/rows.json"
+echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"owed thing at /srv/real/path and unit x.service","key":"x.service","scope":"/srv/real/path"},{"ask_id":"P7","rev":1,"owner":"rb","due":"2026-11-13T09:00","what":"foreign row"}]' >"$W/rows.json"
 echo healthy >"$W/mode"
 i=0; for h in '## Director aside: A99999' '## Director aside "xyz"' '###### Director aside A1' '## Director aside /tmp/x/y' '## Director aside: A2 (closed)' '## Director aside: P7 (foreign owner)' '## Director aside: d-20261113-nothing' '## Director aside: ghost.timer' '## Director aside: repo#99'; do
   i=$((i+1)); mk "$h"$'\n'"$UN"; ck "F1.$i unowed heading [$h] still blocks" "$(decision "$(aside)")" block
@@ -127,4 +127,84 @@ ASKSV="$W/bin/asks-view"
 printf '#!/bin/bash\nprintf "A9\\tOPEN\\tctl\\t2026-11-13T09:00\\tk\\tc\\tctl-owned view row\\n"\n' >"$ASKSV"; chmod +x "$ASKSV"
 ck "F5b asks-view failure is LEDGER-UNREADABLE rc 1 (non-asks source)" "$(OWED_NOW_SOURCE=view ASKS_VIEW_BIN=false bash "$OWED" lint --seat ctl --now 2026-11-13T12:00 2>/dev/null | grep -c LEDGER-UNREADABLE)/$(OWED_NOW_SOURCE=view ASKS_VIEW_BIN=false bash "$OWED" lint --seat ctl >/dev/null 2>&1; echo $?)" "1/1"
 ck "F5c ops lint over the asks-view source lists the ctl-owned row (bash alias line)" "$(OWED_NOW_SOURCE=view ASKS_VIEW_BIN="$ASKSV" bash "$OWED" lint --seat ops --now 2026-11-13T12:00 2>/dev/null | grep -c A9)" 1
+
+# --- G (A1296 pkg2 review 2): helpers
+asidef(){ jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:false,session_id:"s1"}' | WM_SEAT="${SEAT_:-ctl}" "$@" bash "$ASIDE" 2>/dev/null; }
+asideenv(){ local s="$1"; shift; jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:false,session_id:"s1"}' | env WM_SEAT="$s" "$@" bash "$ASIDE" 2>/dev/null; }
+echo healthy >"$W/mode"
+
+# --- G1 (major): a heading binds ONLY by exact equality on the open row's canonical ask_id or its typed key/scope field, never by free text (what/check)
+echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"owed thing; mentions A99999 and \"xyz\" and closedref A2 at /tmp/x/y, repo#99, ghost.timer, \"owed\", foreign.timer","check":"test -e /var/chk/path","key":"k.service","scope":"/srv/real/path"},{"ask_id":"P7","rev":1,"owner":"rb","due":"2026-11-13T09:00","what":"foreign row","key":"foreign.timer"},{"ask_id":"A5000","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"long id row"}]' >"$W/rows.json"
+i=0; for h in '## Director aside: A99999' '## Director aside "xyz"' '## Director aside: A2 (closed)' '## Director aside /tmp/x/y' '## Director aside: repo#99' '## Director aside: ghost.timer' '## Director aside "owed"' '## Director aside: P7 (foreign id)' '## Director aside: foreign.timer (foreign key)' '## Director aside /var/chk/path' '## Director aside: A5' '## Director aside: A500'; do
+  i=$((i+1)); mk "$h"$'\n'"$UN"; ck "G1.$i id/token only in free text or foreign [$h] still blocks" "$(decision "$(aside)")" block
+done
+for h in '## Director aside: A55' '## Director aside: k.service' '## Director aside /srv/real/path' '## Director aside "k.service"'; do
+  mk "$h"$'\n'"$UN"; ck "G1 open row bound by ask_id / typed key / typed scope [$h] accounts the section" "$(decision "$(aside)")" allow
+done
+mk $'The A5 item is a separate check, not investigated.\n'; ck "G1 sentence token A5 does not bind to row A55 (word-bounded)" "$(decision "$(aside)")" block
+
+# --- G6 N5: a bound heading ends at the next heading
+mk $'## Director aside: A55\nowed accounted.\n## Other section\nThe deploy is a separate check, not investigated.\n'
+ck "G6 N5 section ends at next heading: unowed aside after it blocks" "$(decision "$(aside)")" block
+# --- G6 N6: seat ops is a ctl alias inside the aside hook
+echo '[{"ask_id":"A55","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"owed x.service","key":"x.service"}]' >"$W/rows.json"
+mk $'The x.service is a separate check, not investigated.\n'
+ck "G6 N6 seat ops sees the ctl-owned row (alias in aside hook): allow" "$(decision "$(asideenv ops)")" allow
+ck "G6 N6 control: seat rb does not see the ctl-owned row: block" "$(decision "$(asideenv rb)")" block
+mk $'## Director aside: x.service\nThe deploy is a separate check, not investigated.\n'
+ck "G6 N6b seat ops heading bound to ctl-owned typed key: allow" "$(decision "$(asideenv ops)")" allow
+
+# --- G4/E1: any malformed row (missing ask_id) makes the whole read UNKNOWN; the partial rows are not used
+mk $'The x.service is a separate check, not investigated.\n'
+echo '[{"ask_id":"A55","owner":"ctl","what":"x.service","key":"x.service"},{"owner":"ctl"}]' >"$W/rows.json"
+ck "G4 row lacking ask_id: blocks (partial rows not used)" "$(decision "$(aside)")" block
+ck "G4 and says LEDGER-UNKNOWN malformed" "$(aside | jq -r .reason | grep -c 'LEDGER-UNKNOWN: malformed ledger output')" 1
+echo '[{"owner":"rb"}]' >"$W/rows.json"
+ck "G4 row lacking ask_id, other owner: still LEDGER-UNKNOWN malformed" "$(aside | jq -r .reason | grep -c 'LEDGER-UNKNOWN: malformed ledger output')" 1
+echo '[{"ask_id":7,"owner":"ctl"}]' >"$W/rows.json"
+ck "G4 non-string ask_id: LEDGER-UNKNOWN malformed" "$(aside | jq -r .reason | grep -c 'LEDGER-UNKNOWN: malformed ledger output')" 1
+echo '["A55"]' >"$W/rows.json"
+ck "G4 list of non-dicts: LEDGER-UNKNOWN malformed" "$(aside | jq -r .reason | grep -c 'LEDGER-UNKNOWN: malformed ledger output')" 1
+echo "$ROW" >"$W/rows.json"
+
+# --- G5/E2: the fires log (holds sentence excerpts) is private under a permissive caller umask
+rm -rf "$W/fl"; mk $'The deploy is a separate check, not investigated.\n'
+jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:false,session_id:"s1"}' | (umask 002; ASIDE_STOP_LOG="$W/fl/sub/fires.log" WM_SEAT=ctl bash "$ASIDE" >/dev/null 2>&1)
+ck "G5 fires log dir mode 700 under umask 002" "$(stat -c %a "$W/fl/sub" 2>/dev/null)" 700
+ck "G5 fires log file mode 600 under umask 002" "$(stat -c %a "$W/fl/sub/fires.log" 2>/dev/null)" 600
+
+# --- G2/G3: opt-in trace refuses a FIFO (no hang), a hardlink and a symlinked parent dir
+tr_run(){ jq -nc --arg tp "$W/tr.jsonl" '{transcript_path:$tp,stop_hook_active:false,session_id:"s1"}' | TMPDIR="$1" FOLLOWUP_TRACE=1 WM_SEAT=ctl timeout 6 bash "$ASIDE" >/dev/null 2>&1; echo $?; }
+mkdir -p "$W/tf"; rm -f "$W/tf/followup-trace.log"; mkfifo "$W/tf/followup-trace.log"
+ck "G2 planted FIFO, no reader: hook returns promptly (rc 0, no hang)" "$(tr_run "$W/tf")" 0
+( timeout 8 cat "$W/tf/followup-trace.log" >"$W/fifo.got" 2>/dev/null & ) ; sleep 0.3
+ck "G2 planted FIFO, reader present: hook returns promptly (rc 0)" "$(tr_run "$W/tf")" 0
+sleep 0.5; ck "G2 nothing was written into the FIFO" "$(wc -c <"$W/fifo.got" 2>/dev/null || echo 0)" 0
+rm -f "$W/tf/followup-trace.log"
+mkdir -p "$W/th"; : >"$W/th/orig"; chmod 666 "$W/th/orig"; ln "$W/th/orig" "$W/th/followup-trace.log"
+ck "G3 hardlinked trace path: hook returns rc 0" "$(tr_run "$W/th")" 0
+ck "G3 hardlink: other name not written" "$(wc -c <"$W/th/orig")" 0
+ck "G3 hardlink: other name mode untouched (666)" "$(stat -c %a "$W/th/orig")" 666
+mkdir -p "$W/real"; rm -f "$W/lnk"; ln -s "$W/real" "$W/lnk"
+ck "G3 symlinked parent dir: hook returns rc 0" "$(tr_run "$W/lnk")" 0
+ck "G3 symlinked parent dir: nothing created in the target" "$(ls -A "$W/real" | wc -l)" 0
+# --- G6 N9: a regular, single-link trace file owned by ANOTHER uid is refused (user namespace maps a second uid; no root needed)
+mkdir -p "$W/tu"; rm -f "$W/tu/followup-trace.log"
+nsout="$(unshare -U --map-users=0:$(id -u):1 --map-users=1:100000:10 --map-groups=0:$(id -g):1 --map-groups=1:100000:10 bash -c '
+  : >"$1/tu/followup-trace.log"; chown 1:1 "$1/tu/followup-trace.log"; chmod 666 "$1/tu/followup-trace.log"
+  jq -nc --arg tp "$1/tr.jsonl" "{transcript_path:\$tp,stop_hook_active:false,session_id:\"s1\"}" | TMPDIR="$1/tu" FOLLOWUP_TRACE=1 WM_SEAT=ctl bash "$2" >/dev/null 2>&1
+  echo "$(stat -c %s "$1/tu/followup-trace.log") $(stat -c %u "$1/tu/followup-trace.log")"' _ "$W" "$ASIDE" 2>&1)"
+ck "G6 N9 foreign-uid trace file is not written (size 0, uid 1)" "$nsout" "0 1"
+
+# --- G7: a reader timeout is UNKNOWN (never a match, never silent); knob ASIDE_WM_ASKS_TIMEOUT (default 5 s of the 10 s hook budget)
+printf '#!/bin/bash\nexec sleep 20\n' >"$W/bin/wm-asks-slow"; chmod +x "$W/bin/wm-asks-slow"
+mk $'The x.service is a separate check, not investigated.\n'; : >"$W/fires.log"
+t0=$(date +%s); o="$(asideenv ctl ASIDE_WM_ASKS_BIN="$W/bin/wm-asks-slow" ASIDE_WM_ASKS_TIMEOUT=1)"; t1=$(date +%s)
+ck "G7 slow reader: blocks" "$(decision "$o")" block
+ck "G7 slow reader: says LEDGER-UNKNOWN TimeoutExpired" "$(jq -r .reason <<<"$o" | grep -c 'LEDGER-UNKNOWN: ledger command failed: TimeoutExpired')" 1
+ck "G7 slow reader: bounded wall time (<= 4 s with a 1 s timeout)" "$([ $((t1-t0)) -le 4 ] && echo ok)" ok
+ck "G7 timeout is logged (not silent)" "$(grep -c 'ledger-unknown ledger command failed: TimeoutExpired' "$W/fires.log")" 1
+printf '#!/bin/bash\nexec sleep 20\n' >"$W/bin/wm-asks-slow2"
+mk $'## Director aside: x.service\nThe deploy is a separate check, not investigated.\n'
+ck "G7 slow reader: a heading is not suppressed (blocks)" "$(decision "$(asideenv ctl ASIDE_WM_ASKS_BIN="$W/bin/wm-asks-slow" ASIDE_WM_ASKS_TIMEOUT=1)")" block
 echo "pass=$p fail=$f"; [ "$f" = 0 ]
