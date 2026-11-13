@@ -280,8 +280,8 @@ fresh; echo '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN="$T/rc3-router" R
 fresh; evf taskfile "[\"$T/held-ack.md\"]" > "$T/ev"; rm -f "$T/held-ack.md"; BR_CYCLES=6 br run
 hid="$(basename "$(only "$T/br/queue")" .json)"
 [ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ]; chk "(w20 item10) precondition: held and held-log markers exist" $?
-env_ bash "$BR" ack "$hid" >/dev/null
-[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 1 ]; chk "(w20 item10) ack <id> removes held and held-log markers" $?
+env_ bash "$BR" ack "$hid" >/dev/null 2>&1; rcx=$?
+[ "$rcx" != 0 ] && [ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ]; chk "(w20 item10, brief item 3) ack <id> on a held-unreadable id is refused: markers stay, nothing moves to done/" $?
 fresh; evf taskfile "[\"$T/held-del.md\"]" > "$T/ev"; rm -f "$T/held-del.md"; BR_CYCLES=6 br run
 hid="$(basename "$(only "$T/br/queue")" .json)"; env_ RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 BR_CYCLES=1 bash "$BR" run
 [ -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) precondition: rc stamp exists" $?

@@ -60,7 +60,7 @@ fresh; mkq e1; route e1 haiku; good e1 haiku; br ack e1 >/dev/null 2>&1; [ $? = 
 fresh; mkq p1; route p1 fable; br ack p1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ]; chk "F1 pane-delivered id: explicit ack still the consumer evidence" $?
 fresh; mkq u1; br ack u1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ]; chk "F1 unrouted id (router absent, legacy path): explicit ack accepted" $?
 fresh; mkq p1; route p1 fable; mkdir -p "$RTD/held"; : > "$RTD/held/p1"; br ack p1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(q)" = 1 ]; chk "F1 held marker beside a fable cache: explicit ack refused" $?
-fresh; mkq k1; mkdir -p "$RTD/held"; : > "$RTD/held/k1"; br ack k1 >/dev/null 2>&1; [ $? = 0 ] && [ "$(d)" = 1 ] && [ ! -e "$RTD/held/k1" ]; chk "F1 held-unreadable id (no cache, router exit 75): an operator's explicit ack still clears it (base-green w20 item10)" $?
+fresh; mkq k1; mkdir -p "$RTD/held"; : > "$RTD/held/k1"; br ack k1 >/dev/null 2>&1; [ $? != 0 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ -e "$RTD/held/k1" ]; chk "F1 held-unreadable id (no cache, router exit 75): explicit ack refused, never moved to done/ (brief item 3)" $?
 fresh; mkq u1; err="$(br ack --all 2>&1 >/dev/null)"; printf '%s' "$err" | grep -q 'ack each by id'; [ $? != 0 ] && printf '%s' "$err" | grep -q u1; chk "F1 --all skip message names the id and does not suggest the per-id bypass" $?
 
 # --- F2: typed schema, UNKNOWN in any form is never done (explicit and --all)
