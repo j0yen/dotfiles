@@ -14,8 +14,11 @@
 #                  surfaced as a row and NEVER reaches the executor; message text is never run.
 #   error          the classifier answered malformed/failed after one haiku retry and one Sonnet recovery call: owned open-asks row,
 #                  the queue item stays pending, NOTHING is sent to Fable
-# Consumer success = $RT_DIR/results/<id>.json with an "exit" field (a real recorded side effect or exit status) and, when work could not
-# finish, an owned actionable ask in the canonical wm-decide ledger (owner ctl, waits-on= stated, due by date -d, marker event:<id>).
+# Consumer success (the bridge's N1 rule, brief-p3fix2 N1 + brief-p3fix3 R3-3) = $RT_DIR/results/<id>.json with exit 0 AND a typed success result (never UNKNOWN, never a blocked/error/fail/refused result name).
+# Likewise every nonzero exit and every typed failure is NOT done, even when the router opened an owned actionable ask in the canonical wm-decide ledger (owner ctl, waits-on= stated, due by date -d, marker event:<id>):
+# the row is the operator's follow-up; the queue file stays until `ctl-event-bridge.sh ack` accepts evidence or `ctl-event-bridge.sh resolve <id> --disposition ...` records a non-success disposition. A resolved id has NO handled
+# receipt, so a row done-check `test -e handled/<id>` stays false after resolve by design (ctl ratifies fix2 N1 over the earlier header wording that counted an owned ask as success).
+# ctl-event-proto: attempt-v1
 # A summary-only mechanical.log line is NOT consumer success. Replay reuses stage/results/cache files: no second model call, no duplicate row.
 # Env: RT_DIR (default ~/.cache/aide/event-route) RT_STATE RT_CLAUDE_BIN (default claude) WM_ASKS_CMD RT_ROW_DUE (date -d offset, default "60 minutes")
 #      RT_TIMEOUT_S RT_EXEC_TIMEOUT_S RT_TEXT_MAX
@@ -24,6 +27,9 @@ export LC_ALL=C
 case "${1:-}" in
   route) shift ;;
   *) echo "usage: ctl-event-route.sh route <queue-json-path>" >&2; exit 2 ;;
+esac
+case "$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)" in   # R4-6: a bridge that does not announce the protocol (an older ctl-event-bridge.sh) gets no routing
+  *ctl-event-bridge.sh*) [ "${BR_PROTO:-}" = attempt-v1 ] || { echo "$(date -Iseconds) bridge-version-mismatch: the calling ctl-event-bridge.sh does not announce BR_PROTO=attempt-v1; refusing to route (ship the matching bridge + router pair)" >&2; exit 3; } ;;
 esac
 [ -f "${1:-}" ] || { echo "no such queue file: ${1:-}" >&2; exit 1; }
 export RT_HERE="$(dirname "$(readlink -f "$0")")"
