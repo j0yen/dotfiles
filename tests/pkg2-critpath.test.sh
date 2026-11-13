@@ -336,6 +336,12 @@ for r in $(seq 100); do
 done
 ck "F7-8 lock primitive: 16 racers released together take exlock_take exclusively in 100 of 100 rounds (exactly one winner per round)" "$dbl" 0
 
+# a holder whose lock was replaced (it outlived the 5-minute staleness) releases nothing of its successor's: the release is token-checked
+d="$W/tokrel"; mkdir -p "$d"
+tokres="$( . "$LOCKLIB"; exlock_take "$d/l" && printf 'successor-token' >"$d/l"; exlock_release; [ -e "$d/l" ] && [ "$(cat "$d/l")" = successor-token ] && echo kept )"
+own="$( . "$LOCKLIB"; exlock_take "$d/m" && exlock_release; [ ! -e "$d/m" ] && echo gone )"
+ck "F7-4 release is token-checked: a replaced holder leaves its successor's lock, an unreplaced holder removes its own" "$tokres/$own" "kept/gone"
+
 # --- F7-5 scale: 1,000 owed rows must still produce a cache (one jq argument is capped at 128 KiB: the old write failed and every prompt stayed UNKNOWN), and one Stop run must not rewrite the fingerprint file per obligation
 fresh; python3 - "$W/rows.json" 1000 <<'PY'
 import json,sys
