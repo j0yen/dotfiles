@@ -49,8 +49,9 @@ waits_plausible() {   # waits_plausible <detail> <due-epoch> <now-epoch>
 
 lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   local seat="$1" now="$2" f
+  [ "$seat" != ops ] || seat=ctl   # ops = preferred name of ctl (A1296 rev181): one alias, same ledger query
   if [ "$(src)" = asks ] && [ "$seat" != - ]; then
-    FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tcanonical ledger unreadable: %s\n' "$FU_REASON"; return 1; }
+    FOLLOWUP_NOW="$(date -d "@$now" '+%Y-%m-%dT%H:%M')" fu_eval "$seat" || { printf 'LEDGER\t-\t\tLEDGER-UNREADABLE: canonical ledger unreadable (%s); this is NOT "none owed"\n' "$FU_REASON"; return 1; }
     [ "$FU_EVAL" != "[]" ] || return 0
     local rows="" id due kind detail de
     while IFS=$'\t' read -r id due kind detail; do
@@ -63,7 +64,7 @@ lint() {   # lint <seat> <now-epoch>  -> prints rows, returns 1 on any
   fi
   [ -n "$seat" ] || return 0
   f="$(mktemp -p "${TMPDIR:-$HOME/.cache}" owed-view.XXXXXX)" || return 0   # A1255: rows come from the canonical ledger via asks-view, never from open-asks.tsv
-  "${ASKS_VIEW_BIN:-asks-view}" >"$f" 2>/dev/null || { rm -f "$f"; echo "owed-now: canonical ask ledger unreadable (asks-view incident opened); no rows linted" >&2; return 0; }
+  "${ASKS_VIEW_BIN:-asks-view}" >"$f" 2>/dev/null || { rm -f "$f"; printf 'LEDGER\t-\t\tLEDGER-UNREADABLE: asks-view failed (asks-view incident opened); this is NOT "none owed"\n'; return 1; }
   _lint_rows "$seat" "$now" "$f"; local rc=$?; rm -f "$f"; return $rc
 }
 
@@ -139,6 +140,11 @@ hook() {
     return 0
   fi
   rows="$(lint "$seat" "$(date +%s)")" && return 0
+  if [ "$(printf '%s\n' "$rows" | head -1 | cut -f1)" = LEDGER ]; then   # unreadable ledger: say so loudly as context, exit 0, never block or exit 2
+    body="$(printf '%s\n' "$rows" | head -1 | cut -f4)"
+    if [ "$ev" = UserPromptSubmit ]; then jq -cn --arg r "$body (seat $seat)" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'; else printf '%s (seat %s)\n' "$body" "$seat"; fi
+    return 0
+  fi
   n="$(printf '%s\n' "$rows" | grep -c .)"
   body="OWED NOW (seat $seat, $n row(s), $(LC_ALL=C date '+%-I:%M %p')): each row below is done this turn, or its what-column gets waits-on=<host|seat|person|event> naming what it waits for, or it is reported MISSED with the earliest real time. A due time is for work that waits on someone else; what this session can do, it does now (Joe 10-31 11:1x PM, approvals #181/#182).
 $(printf '%s\n' "$rows" | head -n "$MAXR")"
