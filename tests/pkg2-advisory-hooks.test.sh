@@ -57,6 +57,7 @@ for m in exit2 exit127 malformed; do
   ck "3 $m: LEDGER-UNREADABLE printed" "$(grep -c LEDGER-UNREADABLE <<<"$out")" 1
 done
 echo exit2 >"$W/mode"
+WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1   # critical-path reduction (A1296): the prompt reads the producer's cache; the producer ran against the failing ledger
 hk="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"s2"}' | WM_SEAT=ctl bash "$OWED" hook 2>/dev/null)"; hrc=$?
 ck "3 hook mode: exit 0 with LEDGER-UNREADABLE context" "$hrc/$(grep -c LEDGER-UNREADABLE <<<"$hk")" "0/1"
 echo healthy >"$W/mode"

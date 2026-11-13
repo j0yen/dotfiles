@@ -20,7 +20,13 @@
 #                                             (Joe 10-31 11:3x PM "use code to make this impossible moving forward").
 #       Stop             -> blocks up to OWED_NOW_STOP_MAX (3) times per turn (counter reset at UserPromptSubmit), not once.
 #   owed-now.sh --selftest                    run the cases in a throwaway dir
-# Env: OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
+#   owed-now.sh refresh --seat S             the background producer: runs the lint (canonical ledger, live) and writes the seat's prompt-context cache
+#                                             ($OWED_NOW_STATE/<seat>.ups-cache.json, atomic rename, one refresher per seat via a lock dir)
+# Critical path (A1296 hook critical-path reduction, Joe 11-13): in canonical (asks) mode the UserPromptSubmit hook NEVER reads the ledger: it prints the seat's cached
+#   rows (from `refresh`, started detached by the hook itself when the cache is older than OWED_CACHE_REFRESH_S and by the outbox-replay timer), marked STALE past
+#   OWED_CACHE_MAX_AGE_S, or a truthful "UNKNOWN: cache absent/malformed, NOT none owed" marker once per session. The Stop hook stays a synchronous required guard
+#   (it persists fingerprints and blocks on a NEW one); on a ledger failure it already fails open. Fingerprint, dedupe, claim and outbox semantics are untouched.
+# Env: OWED_CACHE_REFRESH_S (default 20) OWED_CACHE_MAX_AGE_S (default 900) OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
 set -u
 GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
 MAXR="${OWED_NOW_MAX_ROWS:-15}"; [[ "$MAXR" =~ ^[0-9]{1,3}$ ]] || MAXR=15
@@ -101,6 +107,58 @@ seat_of() {   # seat_of <hook json>
   awk -F'\t' -v s="$sid" '$3==s && $1 ~ /^[a-z0-9]+$/ {print $1; exit}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" 2>/dev/null
 }
 
+# --- UserPromptSubmit prompt-context cache (canonical mode only). No ledger call on the prompt path.
+CACHE_REFRESH_S="${OWED_CACHE_REFRESH_S:-20}"; [[ "$CACHE_REFRESH_S" =~ ^[0-9]{1,5}$ ]] || CACHE_REFRESH_S=20
+CACHE_MAX_AGE_S="${OWED_CACHE_MAX_AGE_S:-900}"; [[ "$CACHE_MAX_AGE_S" =~ ^[0-9]{1,6}$ ]] || CACHE_MAX_AGE_S=900
+self_path() { readlink -f "${BASH_SOURCE[0]}"; }
+cache_file() { printf '%s/%s.ups-cache.json' "$(state_dir)" "$1"; }
+
+# cache_read <seat>: C_STATE = fresh | stale | absent | malformed; C_AGE seconds; C_CLEAN true|false; C_ROWS text. Reads one local regular file, never the ledger.
+cache_read() {
+  local f now ts sz out
+  C_STATE=absent; C_AGE=0; C_CLEAN=false; C_ROWS=""
+  f="$(cache_file "$1")"
+  [ -e "$f" ] || return 0
+  if [ ! -f "$f" ] || [ -L "$f" ]; then C_STATE=malformed; return 0; fi
+  sz="$(stat -c %s "$f" 2>/dev/null)"; { [[ "$sz" =~ ^[0-9]+$ ]] && [ "$sz" -le 1048576 ]; } || { C_STATE=malformed; return 0; }
+  out="$(jq -r --arg s "$1" 'select(type=="object" and .v==1 and .seat==$s and (.ts|type=="number") and (.clean|type=="boolean") and (.rows|type=="string")) | [.ts, .clean, (.rows|@base64)] | @tsv' "$f" 2>/dev/null)"
+  [ -n "$out" ] || { C_STATE=malformed; return 0; }
+  ts="$(cut -f1 <<<"$out")"; C_CLEAN="$(cut -f2 <<<"$out")"; C_ROWS="$(cut -f3 <<<"$out" | base64 -d 2>/dev/null)"
+  [[ "$ts" =~ ^[0-9]+$ ]] || { C_STATE=malformed; return 0; }
+  now="$(date +%s)"; C_AGE=$((now - ts)); [ "$C_AGE" -ge 0 ] || { C_STATE=malformed; return 0; }
+  if [ "$C_AGE" -gt "$CACHE_MAX_AGE_S" ]; then C_STATE=stale; else C_STATE=fresh; fi
+}
+
+# spawn_refresh <seat>: start the producer detached (own session, no inherited fds) and return at once; the hook never waits on it.
+spawn_refresh() {
+  local me; me="$(self_path)"
+  if command -v setsid >/dev/null 2>&1; then setsid -f bash "$me" refresh --seat "$1" </dev/null >/dev/null 2>&1
+  else ( nohup bash "$me" refresh --seat "$1" </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1; fi
+  return 0
+}
+
+# refresh <seat>: the producer. One refresher per seat (lock dir, a stale lock older than 300 s is replaced); writes the cache atomically.
+refresh() {
+  local seat="$1" st lock f tmp rows rc now
+  [ "$seat" != ops ] || seat=ctl
+  [[ "$seat" =~ ^[a-z0-9]+$ ]] || return 2
+  [ "$(src)" = asks ] || return 0
+  st="$(state_dir)"; mkdir -p "$st" 2>/dev/null || return 0
+  lock="$st/$seat.refresh.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
+    rm -rf "$lock"; mkdir "$lock" 2>/dev/null || return 0
+  fi
+  trap 'rm -rf "$lock"' RETURN
+  now="$(date +%s)"
+  rows="$(lint "$seat" "$now")"; rc=$?
+  f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
+  if jq -cn --arg s "$seat" --argjson ts "$now" --argjson clean "$([ "$rc" = 0 ] && echo true || echo false)" --arg rows "$rows" '{v:1,seat:$s,ts:$ts,clean:$clean,rows:$rows}' >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+  else rm -f "$tmp"; fi
+  return 0
+}
+
 hook() {
   [ -z "${WM_HELPER:-}" ] || { cat >/dev/null 2>&1; return 0; }   # A1300 E4: helper child owes nothing; the guard mode is untouched
   local in ev aid seat rows n body sid cf
@@ -110,6 +168,7 @@ hook() {
   case "$ev" in UserPromptSubmit|Stop) ;; *) return 0 ;; esac
   seat="$(seat_of "$in")"; [ -n "$seat" ] || return 0
   if [ "$(src)" = asks ] && [ "$ev" = Stop ]; then   # canonical mode: a Stop blocks only on a NEW fingerprint, never on a recital of unchanged ids
+    cache_read "$seat"; { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"   # keep the next prompt's cache warm, detached
     if ! fu_eval_bin >/dev/null 2>&1; then   # missing evaluator = visible owned state, once per session (no recital loop)
       local msid mst mf; msid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$msid" =~ ^[A-Za-z0-9._-]+$ ]] || msid=nosid
       mst="$(state_dir)"; mkdir -p "$mst" 2>/dev/null; mf="$mst/$msid.noeval"
@@ -139,10 +198,35 @@ hook() {
     if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$body"; else jq -cn --arg r "$body" '{decision:"block", reason:$r}'; fi
     return 0
   fi
-  rows="$(lint "$seat" "$(date +%s)")" && return 0
+  local stale_note=""
+  if [ "$(src)" = asks ] && [ "$ev" = UserPromptSubmit ]; then   # critical path: cached rows or a truthful UNKNOWN, never a ledger call
+    cache_read "$seat"
+    { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"
+    local usid ust uk; usid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$usid" =~ ^[A-Za-z0-9._-]+$ ]] || usid=nosid
+    ust="$(state_dir)"; mkdir -p "$ust" 2>/dev/null
+    case "$C_STATE" in
+      absent|malformed)
+        uk="$ust/$usid.unk"; [ "$(cat "$uk" 2>/dev/null)" != "$C_STATE" ] || return 0   # once per session and state, never a recital loop
+        echo "$C_STATE" >"$uk"
+        jq -cn --arg r "OWED NOW UNKNOWN (seat $seat): the owed-rows cache is $C_STATE, so what this seat owes is not known yet; a background refresh was started. This is NOT \"none owed\"; run ~/.claude/hooks/owed-now.sh lint --seat $seat to read the ledger now." '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+        return 0 ;;
+      stale) stale_note=" [cache STALE: read $((C_AGE / 60)) min ago; a refresh was started]" ;;
+    esac
+    if [ "$C_CLEAN" = true ] && [ -z "$C_ROWS" ]; then   # the last read found nothing owed
+      [ -n "$stale_note" ] || { rm -f "$ust/$usid.unk" 2>/dev/null; return 0; }
+      uk="$ust/$usid.unk"; [ "$(cat "$uk" 2>/dev/null)" != stale ] || return 0
+      echo stale >"$uk"
+      jq -cn --arg r "OWED NOW (seat $seat): the last ledger read ($((C_AGE / 60)) min ago) found nothing owed, and the cache is STALE; a background refresh was started." '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+      return 0
+    fi
+    rm -f "$ust/$usid.unk" 2>/dev/null
+    rows="$C_ROWS"
+  else
+    rows="$(lint "$seat" "$(date +%s)")" && return 0
+  fi
   if [ "$(printf '%s\n' "$rows" | head -1 | cut -f1)" = LEDGER ]; then   # unreadable ledger: say so loudly as context, exit 0, never block or exit 2
     body="$(printf '%s\n' "$rows" | head -1 | cut -f4)"
-    if [ "$ev" = UserPromptSubmit ]; then jq -cn --arg r "$body (seat $seat)" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'; else printf '%s (seat %s)\n' "$body" "$seat"; fi
+    if [ "$ev" = UserPromptSubmit ]; then jq -cn --arg r "$body (seat $seat)$stale_note" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'; else printf '%s (seat %s)\n' "$body" "$seat"; fi
     return 0
   fi
   n="$(printf '%s\n' "$rows" | grep -c .)"
@@ -165,7 +249,7 @@ $(printf '%s\n' "$rows" | head -n "$MAXR")"
       [ "$(cat "$uf" 2>/dev/null)" != "$ufp" ] || return 0
       echo "$ufp" >"$uf"
     fi
-    jq -cn --arg r "$body" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
+    jq -cn --arg r "$body$stale_note" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$r}}'
   fi
 }
 
@@ -288,7 +372,8 @@ case "${1:-hook}" in
         while [ $# -gt 0 ]; do case "$1" in --seat) seat="$2"; shift 2;; --now) [ -n "${2:-}" ] || { echo "owed-now.sh: --now needs an ISO time (a bare --now would loop forever)" >&2; exit 2; }; now="$(date -d "$2" +%s)" || exit 2; shift 2;; *) shift;; esac; done
         lint "$seat" "$now" ;;
   hook) hook ;;
+  refresh) shift; seat="${WM_SEAT:-}"; while [ $# -gt 0 ]; do case "$1" in --seat) seat="${2:-}"; shift 2;; *) shift;; esac; done; refresh "$seat" ;;
   guard) guard ;;
   --selftest) selftest ;;
-  *) echo "usage: owed-now.sh lint [--seat S|-] [--now ISO] | hook | guard | --selftest" >&2; exit 2 ;;
+  *) echo "usage: owed-now.sh lint [--seat S|-] [--now ISO] | refresh --seat S | hook | guard | --selftest" >&2; exit 2 ;;
 esac

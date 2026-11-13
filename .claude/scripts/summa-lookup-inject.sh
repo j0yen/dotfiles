@@ -23,6 +23,13 @@
 #
 # Wall-budget target: <300ms against the real vault (1394 entities).
 # Skips short prompts and slash commands. Silent on every failure.
+#
+# Critical path (A1296 hook critical-path reduction, Joe 11-13): the lookup reads a cached index ($SUMMA_CACHE_DIR/lookup-index.tsv: "A<TAB>basename<TAB>question"
+# and "E<TAB>entity" lines) with ONE awk pass and never walks the wiki in the steady state. A stale index (older than SUMMA_INDEX_MAX_AGE_MIN, default 10) is
+# still used and refreshed by a detached `--refresh-index` child; the hook never waits on it. No index yet (first prompt on a host): one linear scan builds it
+# (find -type f + one awk, no per-file forks, FIFOs and other non-regular files are never opened). The lookup-ledger append is cosmetic: a non-regular ledger
+# target (FIFO, directory) is skipped, never opened.
+# Modes: no argument = the hook (stdin JSON); --refresh-index = rebuild the index (atomic rename, one builder via a lock dir).
 
 set -uo pipefail
 
@@ -30,10 +37,45 @@ SUMMA_VAULT="${SUMMA_VAULT:-$HOME/Notes}"
 SUMMA_LEDGER="${SUMMA_LEDGER:-$HOME/.cache/summa/lookups.jsonl}"
 
 wiki_dir="$SUMMA_VAULT/wiki"
-[ -d "$wiki_dir" ] || exit 0
+SUMMA_CACHE_DIR="${SUMMA_CACHE_DIR:-$HOME/.cache/summa}"
+IDX="$SUMMA_CACHE_DIR/lookup-index.tsv"
 
 JQ="${JQ:-jq}"
 command -v "$JQ" >/dev/null 2>&1 || exit 0
+
+# build_index <dest>: one linear pass over the wiki. find -type f never opens a FIFO; one awk reads the answers (first question: line of each file).
+build_index() {
+    local dest="$1"
+    [ -d "$wiki_dir" ] || return 1
+    {
+        if [ -d "$wiki_dir/answers" ]; then
+            find "$wiki_dir/answers" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null | xargs -0 -r awk '
+                function fin() { if (cur != "") printf "A\t%s\t%s\n", cur, q }
+                FNR == 1 { fin(); cur = FILENAME; sub(/.*\//, "", cur); q = ""; got = 0 }
+                !got && /^question:/ { q = $0; sub(/^question:[ \t]*/, "", q); sub(/^"/, "", q); sub(/"$/, "", q); gsub(/\t/, " ", q); got = 1 }
+                END { fin() }' 2>/dev/null
+        fi
+        if [ -d "$wiki_dir/entities" ]; then
+            find "$wiki_dir/entities" -maxdepth 1 -type f -name '*.md' ! -name '.*' -printf '%f\n' 2>/dev/null | sed -e 's/\.md$//' | awk 'length($0) >= 5 { printf "E\t%s\n", $0 }'
+        fi
+    } >"$dest"
+}
+
+# refresh_index: one builder at a time (lock dir, a stale lock older than 5 min is replaced); atomic rename into place.
+refresh_index() {
+    local lock="$SUMMA_CACHE_DIR/index.lock" tmp
+    mkdir -p "$SUMMA_CACHE_DIR" 2>/dev/null || return 0
+    if ! mkdir "$lock" 2>/dev/null; then
+        [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
+        rm -rf "$lock"; mkdir "$lock" 2>/dev/null || return 0
+    fi
+    trap 'rm -rf "$lock"' RETURN
+    tmp="$(mktemp "$IDX.XXXXXX" 2>/dev/null)" || return 0
+    if build_index "$tmp" && [ -s "$tmp" ]; then mv -f "$tmp" "$IDX" 2>/dev/null || rm -f "$tmp"; else rm -f "$tmp"; fi
+    return 0
+}
+
+if [ "${1:-}" = "--refresh-index" ]; then refresh_index; exit 0; fi
 
 prompt=""
 sid=""
@@ -114,81 +156,63 @@ keywords="$(
 
 mapfile -t kw_arr <<<"$keywords"
 
-# ---- Answer lookup --------------------------------------------------------
-# For each wiki/answers/*.md: frontmatter `question:` line (quotes stripped)
-# plus the filename; count how many distinct keywords appear (case-insensitive
-# substring). Rank by count desc, keep top 3 with count >=1.
-answers_dir="$wiki_dir/answers"
-answer_hits=""
-answer_count=0
-if [ -d "$answers_dir" ] && compgen -G "$answers_dir"/*.md >/dev/null 2>&1; then
-    for f in "$answers_dir"/*.md; do
-        base="$(basename "$f")"
-        qline="$(grep -m1 '^question:' "$f" 2>/dev/null | sed -e 's/^question:[[:space:]]*//' -e 's/^"//' -e 's/"$//')"
-        haystack="$(printf '%s %s' "$base" "$qline" | tr 'A-Z' 'a-z')"
-        n=0
-        for kw in "${kw_arr[@]}"; do
-            case "$haystack" in
-                *"$kw"*) n=$((n + 1)) ;;
-            esac
-        done
-        [ "$n" -ge 1 ] || continue
-        printf -v line '%d\t%s\t%s' "$n" "$base" "$qline"
-        answer_hits="$answer_hits$line"$'\n'
-    done
+# ---- Index ----------------------------------------------------------------
+# Steady state: read the cached index, never the wiki. Stale index: use it and refresh detached. No index: one linear scan builds it (first prompt on a host).
+if [ -f "$IDX" ] && [ ! -L "$IDX" ]; then
+    if [ -n "$(find "$IDX" -maxdepth 0 -mmin +"${SUMMA_INDEX_MAX_AGE_MIN:-10}" 2>/dev/null)" ]; then
+        if command -v setsid >/dev/null 2>&1; then setsid -f bash "$0" --refresh-index </dev/null >/dev/null 2>&1
+        else ( nohup bash "$0" --refresh-index </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1; fi
+    fi
+else
+    [ -d "$wiki_dir" ] || exit 0
+    refresh_index
+    [ -f "$IDX" ] || exit 0
 fi
+
+# ---- Answer lookup --------------------------------------------------------
+# For each indexed answer (basename + frontmatter `question:` line): count how many distinct keywords appear (case-insensitive substring). Rank by count desc,
+# keep top 3 with count >=1.
+answer_count=0
+answer_hits="$(awk -F'\t' -v kws="$keywords" '
+    BEGIN { n = split(kws, K, "\n") }
+    $1 == "A" { h = tolower($2 " " $3); c = 0; for (i = 1; i <= n; i++) if (K[i] != "" && index(h, K[i]) > 0) c++; if (c >= 1) printf "%d\t%s\t%s\n", c, $2, $3 }' "$IDX" 2>/dev/null)"
 
 top_answers=""
 if [ -n "$answer_hits" ]; then
-    top_answers="$(printf '%s' "$answer_hits" | sort -t $'\t' -k1,1 -rn | head -n 3)"
+    top_answers="$(printf '%s\n' "$answer_hits" | sort -t $'\t' -k1,1 -rn | head -n 3)"
     answer_count="$(printf '%s\n' "$top_answers" | grep -c . || true)"
 fi
 
 # ---- Entity lookup ---------------------------------------------------------
-# Names list from wiki/entities/*.md basenames (drop names <5 chars), then a
-# whole-word fixed-string grep of each entity title inside the prompt.
-entities_dir="$wiki_dir/entities"
+# Entity names from the index (names <5 chars were dropped at build time), then a whole-word fixed-string grep of each entity title inside the prompt.
 entity_hits=""
 entity_count=0
-if [ -d "$entities_dir" ]; then
-    names_file="$(mktemp)"
-    trap 'rm -f "$names_file"' EXIT
-    {
-        for f in "$entities_dir"/*.md; do
-            [ -e "$f" ] || continue
-            name="${f##*/}"
-            name="${name%.md}"
-            [ "${#name}" -ge 5 ] || continue
-            printf '%s\n' "$name"
-        done
-    } >"$names_file"
-    if [ -s "$names_file" ]; then
-        # grep -o returns the matched TEXT AS IT APPEARED IN THE PROMPT
-        # (whatever case the user typed), not the pattern's original
-        # case — so resolve each match back to its original-case
-        # basename via a case-insensitive exact-line lookup in
-        # names_file before using it to build a wiki path.
-        matched_raw="$(grep -o -i -w -F -f "$names_file" <<<"$prompt" 2>/dev/null \
-            | awk '!seen[tolower($0)]++' || true)"
-        if [ -n "$matched_raw" ]; then
-            resolved=""
-            while IFS= read -r m; do
-                [ -n "$m" ] || continue
-                orig="$(grep -m1 -ixF "$m" "$names_file" 2>/dev/null)"
-                [ -n "$orig" ] || orig="$m"
-                resolved="$resolved$orig"$'\n'
-            done <<<"$matched_raw"
-            matched="$(printf '%s' "$resolved" | grep -v '^$' | awk '!seen[tolower($0)]++' || true)"
-            if [ -n "$matched" ]; then
-                entity_count="$(printf '%s\n' "$matched" | grep -c . || true)"
-                top_entities="$(printf '%s\n' "$matched" | head -n 3)"
-                entity_hits="$top_entities"
-            fi
+names_file="$(mktemp)"
+trap 'rm -f "$names_file"' EXIT
+awk -F'\t' '$1 == "E" { print $2 }' "$IDX" >"$names_file" 2>/dev/null
+if [ -s "$names_file" ]; then
+    # grep -o returns the matched TEXT AS IT APPEARED IN THE PROMPT (whatever case the user typed), not the pattern's original case, so resolve each match
+    # back to its original-case basename via a case-insensitive exact-line lookup in names_file before using it to build a wiki path.
+    matched_raw="$(grep -o -i -w -F -f "$names_file" <<<"$prompt" 2>/dev/null \
+        | awk '!seen[tolower($0)]++' || true)"
+    if [ -n "$matched_raw" ]; then
+        resolved=""
+        while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            orig="$(grep -m1 -ixF "$m" "$names_file" 2>/dev/null)"
+            [ -n "$orig" ] || orig="$m"
+            resolved="$resolved$orig"$'\n'
+        done <<<"$matched_raw"
+        matched="$(printf '%s' "$resolved" | grep -v '^$' | awk '!seen[tolower($0)]++' || true)"
+        if [ -n "$matched" ]; then
+            entity_count="$(printf '%s\n' "$matched" | grep -c . || true)"
+            top_entities="$(printf '%s\n' "$matched" | head -n 3)"
+            entity_hits="$top_entities"
         fi
     fi
-    rm -f "$names_file"
-    trap - EXIT
 fi
+rm -f "$names_file"
+trap - EXIT
 
 # ---- Build output ----------------------------------------------------------
 pages=()
@@ -261,7 +285,8 @@ line="$("$JQ" -nc \
     '{ts:$ts, sid:$sid, prompt_sha:$sha, keywords:$keywords, answers:$answers, entities:$entities, result:$result, pages:$pages, mode:$mode, host:$host}' \
     2>/dev/null)"
 
-if [ -n "$line" ]; then
+# cosmetic: a ledger target that exists and is not a regular file (FIFO, directory, device) is skipped, never opened (opening a FIFO with no reader blocks forever)
+if [ -n "$line" ] && { [ ! -e "$SUMMA_LEDGER" ] || [ -f "$SUMMA_LEDGER" ]; }; then
     printf '%s\n' "$line" >>"$SUMMA_LEDGER" 2>/dev/null || true
 fi
 

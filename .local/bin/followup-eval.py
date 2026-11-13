@@ -48,7 +48,17 @@ def ts(v):
     return ""
 
 
+_ALIVE = {}
+
+
 def alive(w):
+    """Worker liveness, probed once per distinct handle per run (same answer for every claim the handle holds; fewer tmux/pgrep forks on a large ledger)."""
+    if w not in _ALIVE:
+        _ALIVE[w] = _alive(w)
+    return _ALIVE[w]
+
+
+def _alive(w):
     if not w:
         return False
     cmd = os.environ.get("FOLLOWUP_WORKER_ALIVE_CMD")
