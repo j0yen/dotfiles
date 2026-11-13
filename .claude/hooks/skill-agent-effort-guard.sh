@@ -28,7 +28,7 @@ if [ -z "${SKILL_POLICY_SKILLS:-}" ]; then echo "skill-agent-effort-guard: skill
 MODEL=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.model // empty' 2>/dev/null) || exit 0
 EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.effort // empty' 2>/dev/null) || exit 0
 # The real client payload carries effort only at top-level effort.level; tool_input.effort (when present) wins.
-[ -n "$EFFORT" ] || EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.effort.level // empty' 2>/dev/null) || exit 0
+[ -n "$EFFORT" ] || EFFORT=$(printf '%s' "$INPUT" | "$JQ" -r '.effort.level? // empty' 2>/dev/null) || { echo "skill-agent-effort-guard: cannot read effort.level; refusing (fail closed)" >&2; exit 2; }
 TEXT=$(printf '%s' "$INPUT" | "$JQ" -r '[.tool_input.prompt, .tool_input.description] | map(. // "") | join("\n")' 2>/dev/null) || exit 0
 M=$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]'); E=$(printf '%s' "$EFFORT" | tr '[:upper:]' '[:lower:]')
 hit=""

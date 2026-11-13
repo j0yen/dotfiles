@@ -28,13 +28,13 @@ v(){ jq -c --arg m "$2" --arg p "$MS" '.tool_input.model=$m|.tool_input.prompt=$
 g "$(v "$PLAN" fable)"; rc=$?
 ck "plan + fable + captured effort low -> deny naming the forbidden effort" '[ $rc = 2 ] && grep -q "forbidden effort .low." "$T/e"'
 g "$(v "$PLAN" sonnet)"; rc=$?
-ck "plan + sonnet + captured low -> deny" '[ $rc = 2 ]'
+ck "plan + sonnet + captured low -> deny naming given sonnet/low and forbidden effort" '[ $rc = 2 ] && grep -q "forbidden effort .low." "$T/e" && grep -q "given model=.sonnet. effort=.low." "$T/e"'
 g "$(v "$PLAN" sonnet | jq -c '.effort.level="high"')"; rc=$?
 ck "derived-high plan + sonnet -> deny naming the resolved fable route" '[ $rc = 2 ] && grep -q "resolved route claude-fable-5-1/high" "$T/e"'
 g "$(v "$DEF" fable)"; rc=$?
 ck "default + fable -> deny naming require_permission_mode" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
 g "$(v "$DEF" sonnet)"; rc=$?
-ck "default + sonnet -> deny" '[ $rc = 2 ]'
+ck "default + sonnet -> deny naming require_permission_mode and given sonnet" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e" && grep -q "given model=.sonnet." "$T/e"'
 
 # DERIVED variants: only the VALUE of top-level effort.level changes (shape kept)
 dv(){ v "$PLAN" fable | jq -c --arg e "$1" '.effort.level=$e'; }
@@ -43,15 +43,25 @@ ck "derived-high plan + fable + effort.level high -> allow" '[ $rc = 0 ]'
 g "$(v "$DEF" fable | jq -c '.effort.level="high"')"; rc=$?
 ck "derived-high default + fable + effort.level high -> deny naming require_permission_mode" '[ $rc = 2 ] && grep -q require_permission_mode "$T/e"'
 g "$(dv xhigh)"; rc=$?
-ck "derived-xhigh plan + fable -> deny" '[ $rc = 2 ]'
+ck "derived-xhigh plan + fable -> deny naming fable-launch.sh --route-request" '[ $rc = 2 ] && grep -q "fable-launch.sh --route-request" "$T/e"'
 
 # fail closed
 g "$(v "$PLAN" fable | jq -c 'del(.effort)')"; rc=$?
 ck "no effort anywhere -> deny (not explicit)" '[ $rc = 2 ] && grep -q "not explicit" "$T/e"'
 g "$(dv xhigh | jq -c '.tool_input.effort="low"')"; rc=$?
-ck "tool_input.effort low + top-level xhigh -> deny (tool_input wins)" '[ $rc = 2 ]'
+ck "tool_input.effort low + top-level xhigh -> deny (tool_input wins, stderr names low)" '[ $rc = 2 ] && grep -q "effort=.low." "$T/e"'
 g "$(dv low | jq -c '.tool_input.effort="high"')"; rc=$?
 ck "tool_input.effort high + top-level low -> allow (tool_input wins)" '[ $rc = 0 ]'
+
+# E1: wrong-shape effort (string, not object) must fail closed, not allow
+g "$(v "$PLAN" fable | jq -c '.effort="high"')"; rc=$?
+ck "E1 effort is a string -> deny (not explicit)" '[ $rc = 2 ] && grep -q "not explicit" "$T/e"'
+
+# E4: the unmodified captured fixtures (haiku, no governed skill) pass as-is
+for fx in "$PLAN" "$DEF"; do
+  g "$(cat "$fx")"; rc=$?
+  ck "E4 unmodified $(basename "$fx") -> allow" '[ $rc = 0 ]'
+done
 
 # finding record: at f396753 the guard read only tool_input.effort, so the real plan fixture + fable resolved E to empty
 # ("model/effort not explicit" deny); now E=low from effort.level and the resolver denies on the effort value.
