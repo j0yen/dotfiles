@@ -1447,7 +1447,8 @@ if [ "$ASK_NEW" -gt 0 ]; then
     asks_consume && [ -n "$ASK_CONSUMED" ] && echo "seat-tick: $SEAT $ASK_NEW queued ask(s) carried in this prompt, queue -> ${ASK_CONSUMED##*/}"
   else echo "seat-tick: $SEAT WARN claude not launchable (or pre-turn save failed): $ASK_NEW queued ask(s) stay queued" >&2; fi
 fi
-( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${MT_ARGV[@]}" --disallowedTools ScheduleWakeup "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
+EF_ARGV=(); case "$ROLE" in rb|r7) _ef="$(seat_hold_effort "$ROLE")"; [ -z "$_ef" ] || EF_ARGV=(--effort "$_ef") ;; esac   # A1300 E1: rb/r7 effort from seat-model-hold.json (one source with seat-relaunch.sh), not the shared settings.json
+( cd "$HOME" && exec timeout -k 30 "$CAP" "$CLAUDE_BIN" -p --dangerously-skip-permissions --model "$MODEL" "${EF_ARGV[@]}" "${MT_ARGV[@]}" --disallowedTools ScheduleWakeup "${LEAN_ARGV[@]}" --resume "$SID" "$PROMPT" ) 2>&1 | tee "$LOG"
 rc="${PIPESTATUS[0]:-1}"
 # a capped turn ends `Error: Reached max turns (<N>)` with exit 1 (see MAX-TURNS in the header): the seat did its bounded sweep, a normal end
 MT_N=""; [ "$rc" != 0 ] && [ -n "$MAX_TURNS" ] && MT_N="$(max_turns_hit "$LOG")"

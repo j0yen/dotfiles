@@ -39,6 +39,12 @@ seat_model() {  # $1 = seat -> model id (SEAT_MODEL override, else the controlle
   local role="${ROLE[$1]:-$1}"
   awk -v r="$role" '$1==r {print $2; exit}' "$TABLE" 2>/dev/null
 }
+seat_effort() {  # $1 = seat -> effort: SEAT_EFFORT override, else high for an explicit opus SEAT_MODEL (the supported escalation), else the seat-model-hold row; rb/r7 only (A1300 E1)
+  case "${ROLE[$1]:-$1}" in rb|r7) ;; *) return ;; esac
+  if [ -n "${SEAT_EFFORT:-}" ]; then printf '%s' "$SEAT_EFFORT"; return; fi
+  case "${SEAT_MODEL:-}" in *opus*) printf high; return ;; esac
+  seat_hold_effort "${ROLE[$1]:-$1}"
+}
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seat-lean.sh"   # 10-22: LEAN_ENV_VARS + LEAN_FLAGS, shared with seat-tick.sh (one source)
 LEAN_ENV=""; LEAN_ARGS=""
 if [ "${SEAT_LEAN:-1}" = 1 ]; then   # 10-20 C2/C5: lean is now the DEFAULT for seat launches; SEAT_LEAN=0 = old full-banner/mcphost launch
@@ -46,10 +52,10 @@ if [ "${SEAT_LEAN:-1}" = 1 ]; then   # 10-20 C2/C5: lean is now the DEFAULT for 
   LEAN_ARGS=" $LEAN_FLAGS"
 fi
 launch_cmd() {  # $1 = seat
-  local m lenv="$LEAN_ENV" lflags="$LEAN_ARGS"; m=$(seat_model "$1")
+  local m e lenv="$LEAN_ENV" lflags="$LEAN_ARGS" eflag=""; m=$(seat_model "$1"); e=$(seat_effort "$1"); [ -z "$e" ] || eflag=" --effort ${e}"
   [ "$1" = ctl ] && { lenv=""; lflags=""; }   # ctl = default settings, full hook set
-  if [ "${SEAT_AUTH:-token}" = login ]; then echo "export PATH=\$HOME/.local/seat-bin:\$PATH; env -u CLAUDE_CODE_OAUTH_TOKEN ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"
-  else echo "set -a; . ~/.config/environment.d/90-claude-oauth.conf; set +a; export PATH=\$HOME/.local/seat-bin:\$PATH; ${lenv}claude --dangerously-skip-permissions --model ${m}${lflags} --resume ${SID[$1]}"; fi
+  if [ "${SEAT_AUTH:-token}" = login ]; then echo "export PATH=\$HOME/.local/seat-bin:\$PATH; env -u CLAUDE_CODE_OAUTH_TOKEN ${lenv}claude --dangerously-skip-permissions --model ${m}${eflag}${lflags} --resume ${SID[$1]}"
+  else echo "set -a; . ~/.config/environment.d/90-claude-oauth.conf; set +a; export PATH=\$HOME/.local/seat-bin:\$PATH; ${lenv}claude --dangerously-skip-permissions --model ${m}${eflag}${lflags} --resume ${SID[$1]}"; fi
 }
 ctl_guard() {  # exit 4 while the old controller (pid ${CTL_OLD_PID:-<seats.tsv old_pid>}) or any claude/node process holds the ctl SID; never kills anything
   local op="${CTL_OLD_PID:-${OLDPID[ctl]:--}}" p c
