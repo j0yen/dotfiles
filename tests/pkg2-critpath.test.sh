@@ -144,6 +144,8 @@ ck "C13 nothing lost: the next Stop escalates T1 once, the one after passes" "$(
 o="$(UPSAS ctl s13)"
 ck "C13 a Stop that completed clears the skipped-check marker" "$(grep -c 'STOP CHECK SKIPPED' <<<"$o")" 0
 sleep 1
+# repair 7 (F7-1): the Stop chain no longer replays inline, so the durable consumer (the timer script) is what delivers; the assertion is unchanged, the consumer runs before it is read
+bash "$R/.local/bin/followup-outbox-replay.sh" >/dev/null 2>&1; bash "$R/.local/bin/followup-outbox-replay.sh" >/dev/null 2>&1
 ck "C13 nothing replayed twice, the seeded entry delivered by the durable consumer: one delivery per outbox entry (PRE, suggestion, T1)" "$(wc -l <"$W/deliver.log" | tr -d ' ')/$(wc -l <"$W/st/outbox.jsonl" | tr -d ' ')" "3/3"
 export FOLLOWUP_DELIVER_CMD=true
 # --- L1 one refresher per seat (rv6 F6-4): concurrent refreshes of one seat cost the ledger the calls of one, every time. The lock is an exclusive create (noclobber), not mkdir:
@@ -265,17 +267,29 @@ MSG='I recommend moving the cache to a new store.'
 fresh; echo '[]' >"$W/rows.json"; mkdir -p "$W/st" "$W/owed"
 ( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 9 ) & lk=$!; sleep 0.4
 for i in 1 2 3 4 5 6; do STOPAS ctl sS "$MSG" >/dev/null; done; sleep 0.5
-nspool="$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')"; nwriter="$(pgrep -f "$W/owed/sug" | wc -l | tr -d ' ')"
+nspool="$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')"; nwriter="$(ps -eo sid=,comm=,args= | awk -v k="$W/owed/sug" '$2!="awk" && $2!="ps" && index($0,k){print $1}' | sort -u | wc -l | tr -d ' ')"   # one detached writer = one session (setsid), however many helper processes it forks
 ck "F7-2 six busy Stops with the same suggestion: at most one spool file and one detached writer (no unbounded stacking)" "$([ "$nspool" -le 1 ] && [ "$nwriter" -le 1 ] && echo ok || echo "files=$nspool writers=$nwriter")" ok
 for pp in $(pgrep -f "$W/owed/sug"); do g=$(ps -o pgid= -p "$pp" | tr -d ' '); kill -- -"$g" 2>/dev/null; done
 kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null; sleep 0.5
-ck "F7-2 the detached writer died before writing: the record is still on disk (spooled), not yet in the outbox" "$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')/$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)" "1/0"
+ck "F7-2 the detached writer died before writing: the record is still on disk (spooled), not yet in the outbox" "$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')/$(cat "$W/st/outbox.jsonl" 2>/dev/null | grep -c suggestion-only)" "1/0"
 find "$W/owed" -name 'sug.*' -exec touch -d '5 minutes ago' {} +   # the writer is gone: the retry age has passed
 WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1   # the existing producer (followup-outbox-replay.sh runs this per seat): it drains the spool
-ck "F7-2 the existing producer retries the spooled record: written once, no orphan file left" "$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)/$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')" "1/0"
+ck "F7-2 the existing producer retries the spooled record: written once, no orphan file left" "$(cat "$W/st/outbox.jsonl" 2>/dev/null | grep -c suggestion-only)/$(find "$W" -name 'sug.*' | wc -l | tr -d ' ')" "1/0"
 WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1; STOPAS ctl sS "$MSG" >/dev/null; sleep 1
 ck "F7-2 a later Stop with the same text and a later drain add nothing (fingerprint dedupe: still one entry)" "$(grep -c suggestion-only "$W/st/outbox.jsonl" 2>/dev/null)" 1
 ck "F7-2 no new store: the spool lives in the owed-now state dir only" "$(find "$W" -name 'sug.*' -not -path "$W/owed/*" | wc -l | tr -d ' ')" 0
+# a spooled record survives a failed retry: with the state dir unwritable the drain writes nothing and keeps the file; once the dir is writable the next drain writes it
+MSG2='I recommend adding a second regression test for the shared hook.'
+fresh; echo '[]' >"$W/rows.json"; mkdir -p "$W/st" "$W/owed"
+( exec 9>"$W/st/lock"; flock -x 9; echo $BASHPID >"$W/hold.pid"; exec sleep 5 ) & lk=$!; sleep 0.4
+STOPAS ctl sS2 "$MSG2" >/dev/null; sleep 0.3
+for pp in $(pgrep -f "$W/owed/sug"); do g=$(ps -o pgid= -p "$pp" | tr -d ' '); kill -- -"$g" 2>/dev/null; done
+kill "$(cat "$W/hold.pid")" 2>/dev/null; wait $lk 2>/dev/null; sleep 0.3
+find "$W/owed" -name 'sug.*' -exec touch -d '5 minutes ago' {} +; rm -f "$W/st/fingerprints.json" "$W/st/outbox.jsonl"; chmod 555 "$W/st"
+WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1; chmod 755 "$W/st"
+ck "F7-2 unwritable store at the drain: nothing written, the spooled record is kept (not dropped as if delivered)" "$(cat "$W/st/outbox.jsonl" 2>/dev/null | grep -c suggestion-only)/$(find "$W/owed" -name 'sug.*' | wc -l | tr -d ' ')" "0/1"
+WM_SEAT=ctl bash "$OWED" refresh --seat ctl >/dev/null 2>&1
+ck "F7-2 the next drain, store writable again, writes it once and removes the file" "$(cat "$W/st/outbox.jsonl" 2>/dev/null | grep -c suggestion-only)/$(find "$W/owed" -name 'sug.*' | wc -l | tr -d ' ')" "1/0"
 
 # --- F7-4 locks: 20-way races, stale-lock replacement, release on signal (probes/locks.sh, probes/race.sh)
 pkill -f "$OWED refresh" 2>/dev/null; sleep 0.3

@@ -10,6 +10,7 @@ set -u
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck disable=SC1091
 . "$here/followup-lib.sh" 2>/dev/null || exit 0
+. "$here/followup-stop-nowait.sh" 2>/dev/null || exit 0   # F7-1: the one non-waiting Stop obligation check
 LOG="${FOLLOWUP_STOP_FIRES_LOG:-$HOME/.local/state/followup-stop-gate/fires.log}"
 fire() { mkdir -p "${LOG%/*}" 2>/dev/null; printf '%s | followup-stop-gate | %s\n' "$(date -Iseconds)" "$*" >>"$LOG" 2>/dev/null; }
 
@@ -24,8 +25,8 @@ gate() {
   tsid="$(awk -F'\t' -v s="$seat" '$1==s && $3!="" {print $3; exit}' "${SEATS_TABLE:-$HOME/.claude/state/seats.tsv}" 2>/dev/null)"
   [ -z "$tsid" ] || [ -z "$sid" ] || [ "$tsid" = "$sid" ] || return 0
   # R4 decision (A1346): evaluator-missing visibility is CHAIN-level. owed-now.sh (same Stop chain, canonical mode default) reports it once per session; this entrypoint stays silent so one defect is not recited three times. tests/followup-evaluator-missing.test.sh pins the chain.
-  new="$(fu_new_obligations "$seat")"
-  fu_outbox_replay >/dev/null 2>&1 || true
+  # F7-1: no wait on the store lock, no inline delivery (a busy store = pass + the skipped-check marker; the outbox is delivered by followup-outbox-replay.timer)
+  fu_stop_new "$seat" "$sid"; new="$FU_STOP_NEW"
   [ -n "$new" ] || return 0
   r="$(fu_block_reason "$new")"
   fire "FOLLOWUP-ESCALATED seat=$seat ids=$(jq -rs 'map(.id) | join(",")' <<<"$new")"

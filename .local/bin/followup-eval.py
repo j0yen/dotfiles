@@ -102,13 +102,21 @@ def _ancestors():
 _KW = r"bearer|basic|authorization|token|key|password|passwd|secret|pass|pwd|cred|auth|session|jwt"
 _KW_END = r"bearer|basic|authorization|token|key|password|passwd|secret"
 _VALUE = r"(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)"
-_NAME_EQ = re.compile(r"(?i)(?<!\w)(?=\w*?(?:" + _KW + r"))(?=(\w+))\1\\*[\"']?\s*[=:]\s*" + _VALUE)   # \\* = JSON-in-JSON escaped quote before the separator (F6-5)
+_NAME_EQ = re.compile(r"(?i)(?<![\w-])(?=[\w-]*?(?:" + _KW + r"))(?=([\w-]+))\1\\*[\"']?\s*[=:]\s*" + _VALUE)   # \\* = JSON-in-JSON escaped quote before the separator (F6-5)
 _NAME_SP = re.compile(r"(?i)(?<!\w)(?=\w*?(?:" + _KW_END + r")(?!\w))(?=(\w+))\1(?:\s+|\+)" + _VALUE)   # \+ = form-encoded space (F6-5)
 _B64 = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{8,}={0,2}")
 _KW_FIRST = re.compile(r"(?i)" + _KW)
 _KW_END_AT = re.compile(r"(?i)(?:" + _KW_END + r")$")
 _QUERY = re.compile(r"(?i)([?&])([\w.-]*)=[^&\s]*")
 _QUERY_KW = re.compile(r"(?i)token|key|secret|pass|pwd|sig|auth|cred|code|session|sid|jwt|otp|ticket|nonce|bearer")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")   # CSI / two-byte escape sequences inside a name must not split it (F7-7); linear: the three classes are disjoint
+_JPAIR = re.compile(r'(?i)("(?:name|key)"\s*:\s*"([^"]{0,200})"\s*,\s*"value"\s*:\s*)"[^"]*"')   # {"name":"api_token","value":"V"} (F7-7)
+_JPAIR_R = re.compile(r'(?i)("value"\s*:\s*)"[^"]*"(\s*,\s*"(?:name|key)"\s*:\s*"([^"]{0,200})")')
+# look-alike letters (Cyrillic / Greek) folded to Latin so a homoglyph-spelled credential name still matches (F7-7). A small fixed table, not a full confusables map: other scripts stay a named residual.
+_CONF = str.maketrans({"\u0430": "a", "\u0441": "c", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0445": "x", "\u0443": "y", "\u0456": "i", "\u0458": "j", "\u0455": "s",
+                       "\u0501": "d", "\u051b": "q", "\u051d": "w", "\u04bb": "h", "\u04cf": "l", "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K", "\u041c": "M",
+                       "\u041d": "H", "\u041e": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03b1": "a",
+                       "\u03c1": "p", "\u03ba": "k", "\u03c4": "t", "\u03c5": "u", "\u03c7": "x"})
 _ESC = re.compile(r"\\u([0-9A-Fa-f]{4})|\\x([0-9A-Fa-f]{2})|\\U([0-9A-Fa-f]{8})")
 
 
@@ -143,6 +151,26 @@ def _b64(m):
     return "<redacted>" if (_NAME_EQ.search(t) or _NAME_SP.search(t)) else m.group(0)
 
 
+def _jpair(m):
+    return m.group(1) + '"<redacted>"' if _KW_FIRST.search(m.group(2)) else m.group(0)
+
+
+def _jpair_r(m):
+    return m.group(1) + '"<redacted>"' + m.group(2) if _KW_FIRST.search(m.group(3)) else m.group(0)
+
+
+def _fold(t):
+    """NFKD with combining marks dropped (e + U+0301 -> e), look-alike letters folded, recomposed (NFC, so Hangul survives). Chunked: stops once 20000 characters exist, so a
+    run of characters that expand (U+FDFA = 18) costs a bounded amount whatever the line length (F7-7: the NFKC expansion control was sized below its worst case)."""
+    out, n = [], 0
+    for i in range(0, len(t), 1000):
+        c = unicodedata.normalize("NFC", "".join(ch for ch in unicodedata.normalize("NFKD", t[i:i + 1000]) if not unicodedata.combining(ch))).translate(_CONF)
+        out.append(c); n += len(c)
+        if n >= 20000:
+            break
+    return "".join(out)
+
+
 def _printable(line):
     return "".join(c if c.isprintable() else (" " if c == "\t" else "") for c in line)
 
@@ -151,7 +179,7 @@ def _decoded(line):
     """Bounded decoding: at most 3 passes of HTML entity / percent / \\u / \\x unescape plus NFKC (full-width letters), each pass linear and capped at 20000 chars
     (NFKC can expand). None when the text is still changing after the last pass (deeply nested encoding): the caller withholds it rather than guess."""
     def one(t):
-        return _printable(unicodedata.normalize("NFKC", _ESC.sub(_esc, urllib.parse.unquote(html.unescape(t), errors="replace"))))[:20000]
+        return _printable(_fold(_ESC.sub(_esc, urllib.parse.unquote(html.unescape(t), errors="replace"))))[:20000]
     for _ in range(3):
         d = one(line)
         if d == line:
@@ -165,7 +193,7 @@ def stderr_hint(text):
     """Advisory first stderr line of a failed ledger query: control chars dropped, percent/\\u-escaped names decoded (bounded), secret-shaped runs redacted by
     linear-time patterns, 160 chars max. Text only: never changes the fail-closed verdict."""
     for line in (text or "").splitlines():
-        line = _printable(line).strip()[:20000]
+        line = _printable(_ANSI.sub("", line)).strip()[:20000]
         if not line:
             continue
         line = _decoded(line)
@@ -176,6 +204,8 @@ def stderr_hint(text):
         line = re.sub(r"(?i)\b(set-cookie|cookie)\s*[=:].*$", r"\1=<redacted>", line)
         line = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*$", "-----BEGIN PRIVATE KEY-----<redacted>", line)
         line = re.sub(r"(?<![\w-])(ssh-[a-z0-9]+|ecdsa-sha2-[\w-]+)\s+\S+", r"\1 <redacted>", line)
+        line = _JPAIR.sub(_jpair, line)
+        line = _JPAIR_R.sub(_jpair_r, line)
         line = _NAME_EQ.sub(_name_eq, line)
         line = _NAME_SP.sub(_name_sp, line)
         line = re.sub(r"(?<![\w-])eyJ[\w-]*\.[\w-]+(?:\.[\w-]*)?", "<redacted>", line)
@@ -374,15 +404,17 @@ def cmd_new(seat):
             seen = {}
     except (OSError, ValueError):
         seen = {}
-    new, stamp = [], datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    new, stamp, lines = [], datetime.datetime.now().astimezone().isoformat(timespec="seconds"), []
     for o in obl:
         if o["fp"] in seen:
             continue
-        with open(outbox_path(sd), "a") as ob:   # outbox first: a failed write leaves the fingerprint unrecorded, so the next run re-escalates
-            ob.write(json.dumps(dict(o, seat=seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
-        seen[o["fp"]] = stamp
-        atomic_write(fp_path, json.dumps(seen, sort_keys=True))
+        seen[o["fp"]] = stamp   # recorded in memory only: the file is written once after the outbox (F7-5: one rewrite per run, not one per obligation = quadratic at 1,000 rows)
+        lines.append(json.dumps(dict(o, seat=seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
         new.append(o)
+    if new:
+        with open(outbox_path(sd), "a") as ob:   # outbox first: a failed write leaves the fingerprints unrecorded, so the next run re-escalates
+            ob.write("".join(lines))
+        atomic_write(fp_path, json.dumps(seen, sort_keys=True))
     fh.close()
     print(json.dumps({"new": new, "reason": reason(new) if new else "", "error": why or None}))
 

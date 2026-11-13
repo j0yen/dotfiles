@@ -61,22 +61,21 @@ build_index() {
     } >"$dest"
 }
 
-# refresh_index: one builder at a time (exclusive lock file, a stale lock older than 5 min is replaced); atomic rename into place.
+# refresh_index: one builder at a time (the exclusive lock-file protocol of hooks/exlock.sh: a stale lock older than 5 min is replaced under a flock, a killed builder releases
+# its lock through the traps of the --refresh-index mode, rv7 F7-4); atomic rename into place.
+here_s="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+. "$here_s/../hooks/exlock.sh" 2>/dev/null || . "$HOME/.claude/hooks/exlock.sh" 2>/dev/null || true
 refresh_index() {
     local lock="$SUMMA_CACHE_DIR/index.lock" tmp
     mkdir -p "$SUMMA_CACHE_DIR" 2>/dev/null || return 0
-    # exclusive create through bash noclobber (O_EXCL), not `mkdir`: uutils coreutils mkdir can succeed for both of two racing callers (rv6 F6-4)
-    if ! ( set -C; : >"$lock" ) 2>/dev/null; then
-        [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
-        rm -f "$lock"; ( set -C; : >"$lock" ) 2>/dev/null || return 0
-    fi
-    trap 'rm -f "$lock"' RETURN
-    tmp="$(mktemp "$IDX.XXXXXX" 2>/dev/null)" || return 0
+    type exlock_take >/dev/null 2>&1 && exlock_take "$lock" || return 0
+    tmp="$(mktemp "$IDX.XXXXXX" 2>/dev/null)" || { exlock_release; return 0; }
     if build_index "$tmp" && [ -s "$tmp" ]; then mv -f "$tmp" "$IDX" 2>/dev/null || rm -f "$tmp"; else rm -f "$tmp"; fi
+    exlock_release
     return 0
 }
 
-if [ "${1:-}" = "--refresh-index" ]; then refresh_index; exit 0; fi
+if [ "${1:-}" = "--refresh-index" ]; then trap 'exlock_release' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT; trap 'exit 129' HUP; refresh_index; exit 0; fi
 
 prompt=""
 sid=""

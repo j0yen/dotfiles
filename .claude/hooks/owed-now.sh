@@ -24,8 +24,9 @@
 #                                             ($OWED_NOW_STATE/<seat>.ups-cache.json, atomic rename, one refresher per seat via an exclusive lock file)
 # Critical path (A1296 hook critical-path reduction, Joe 11-13): in canonical (asks) mode the UserPromptSubmit hook NEVER reads the ledger: it prints the seat's cached
 #   rows (from `refresh`, started detached by the hook itself when the cache is older than OWED_CACHE_REFRESH_S and by the outbox-replay timer), marked STALE past
-#   OWED_CACHE_MAX_AGE_S, or a truthful "UNKNOWN: cache absent/malformed, NOT none owed" marker once per session. The Stop hook stays a synchronous required guard
-#   (it persists fingerprints and blocks on a NEW one); on a ledger failure it already fails open. Fingerprint, dedupe, claim and outbox semantics are untouched.
+#   OWED_CACHE_MAX_AGE_S, or a truthful "UNKNOWN: cache absent/malformed, NOT none owed" marker on EVERY prompt while the cache is unknown (the full text once per session and state, a short
+#   line after; stale: a STALE line every prompt; rv6 F6-2, silence read as none owed). The Stop hook stays a synchronous required guard for the ledger READ (it persists
+#   fingerprints and blocks on a NEW one) but never waits on the store lock and never delivers (F7-1: followup-stop-nowait.sh; delivery = followup-outbox-replay.timer); on a ledger failure it already fails open. Fingerprint, dedupe, claim and outbox semantics are untouched.
 # Env: OWED_CACHE_REFRESH_S (default 20) OWED_CACHE_MAX_AGE_S (default 900) OPEN_ASKS SEATS_TABLE OWED_NOW_GRACE_MIN (default 10) OWED_NOW_MAX_ROWS (default 15) OWED_NOW_STOP_MAX (default 3) OWED_NOW_STATE. Never fails a tool call: errors to stderr.
 set -u
 GRACE="${OWED_NOW_GRACE_MIN:-10}"; [[ "$GRACE" =~ ^[0-9]{1,3}$ ]] || GRACE=10
@@ -38,6 +39,8 @@ state_dir() { printf "%s" "${OWED_NOW_STATE:-$HOME/.claude/state/owed-now}"; }
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck disable=SC1091
 . "$here/followup-lib.sh" 2>/dev/null || true
+. "$here/exlock.sh" 2>/dev/null || true   # F7-4: the one lock-file protocol
+. "$here/followup-stop-nowait.sh" 2>/dev/null || true   # F7-1: the one non-waiting Stop obligation check (shared with followup-stop-gate.sh and seat-followups.sh)
 src() { if [ -n "${OWED_NOW_SOURCE:-}" ]; then printf '%s' "$OWED_NOW_SOURCE"; elif [ -n "${OPEN_ASKS:-}" ]; then printf tsv; else printf asks; fi; }
 
 # A row whose what-column carries a well-formed waits-on=<host|seat|person|event>:<target> is accounted, not OVERDUE, while the target is still plausible:
@@ -141,25 +144,46 @@ spawn_refresh() {
   return 0
 }
 
-# suggest_detached <evaluator> <message> <suggestion args...>: the blocking write of an unowned-suggestion record, started detached when the store lock was busy (F6-3)
+# suggest_detached <evaluator> <message> <suggestion args...>: the blocking write of an unowned-suggestion record, started detached when the store lock was busy (F6-3).
+# F7-2: the record is spooled as one JSON file in the state dir this hook already owns (no new store), named by the hash of its content so a repeated busy Stop reuses it
+# (at most one detached writer per distinct record, none stacked while the lock stays held); `owed-now.sh spool-run <file>` writes it through the evaluator and removes the
+# file only after the write succeeded. A writer that died (crash, reboot) leaves the file for drain_spool, which the existing producer timer (followup-outbox-replay.sh ->
+# `refresh`) runs: nothing is lost and nothing is orphaned.
+SPOOL_RETRY_MIN=1
 suggest_detached() {
-  local sev="$1" msg="$2" f; shift 2
-  f="$(mktemp "$(state_dir)/sug.XXXXXX" 2>/dev/null)" || return 0; printf '%s' "$msg" >"$f"
-  if command -v setsid >/dev/null 2>&1; then setsid -f bash -c 'python3 -I "$1" "${@:3}" <"$2" >/dev/null 2>&1; rm -f "$2"' _ "$sev" "$f" "$@" </dev/null >/dev/null 2>&1
-  else ( nohup bash -c 'python3 -I "$1" "${@:3}" <"$2" >/dev/null 2>&1; rm -f "$2"' _ "$sev" "$f" "$@" </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1; fi
+  local sev="$1" msg="$2" h f sd me; shift 2
+  sd="$(state_dir)"; mkdir -p "$sd" 2>/dev/null || return 0
+  h="$(printf '%s\0' "$@" "$msg" | sha1sum | cut -c1-20)"; f="$sd/sug.$h.json"
+  [ -z "$(find "$f" -maxdepth 0 -mmin -"$SPOOL_RETRY_MIN" 2>/dev/null)" ] || return 0   # written within the last minute: its detached writer is (assumed) still waiting for the lock
+  printf '%s\0' "$@" | jq -Rsc --arg msg "$msg" '{v:1,args:(split("\u0000")[:-1]),msg:$msg}' >"$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" 2>/dev/null || { rm -f "$f.tmp.$$"; return 0; }
+  me="$(self_path)"
+  if command -v setsid >/dev/null 2>&1; then setsid -f bash "$me" spool-run "$f" </dev/null >/dev/null 2>&1
+  else ( nohup bash "$me" spool-run "$f" </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1; fi
+  return 0
+}
+# spool_run <file>: write one spooled suggestion (blocking on the store lock: the caller is detached or the producer timer); the file goes only after the write succeeded.
+spool_run() {
+  local f="$1" ev out; local -a args
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  ev="$(fu_eval_bin)" || return 0
+  mapfile -t args < <(jq -r '.args[]' "$f" 2>/dev/null); [ "${#args[@]}" -gt 0 ] || { rm -f "$f"; return 0; }
+  out="$(jq -j '.msg // ""' "$f" 2>/dev/null | python3 -I "$ev" "${args[@]}" 2>/dev/null)"
+  # the file goes only when the evaluator's own answer says the record is on disk (emitted, or already there = deduped) or that nothing is flagged; a busy store (75), an unwritable state dir (3) or a crash prints no such answer and keeps the file for the next drain
+  if jq -e '(.flagged == false) or (.flagged == true and (.emitted == true or .deduped == true))' >/dev/null 2>&1 <<<"$out"; then rm -f "$f"; fi
+  return 0
+}
+# drain_spool: retry every spooled suggestion older than SPOOL_RETRY_MIN (its detached writer is gone). Idempotent: the evaluator dedupes by fingerprint.
+drain_spool() {
+  local f
+  for f in "$(state_dir)"/sug.*.json; do
+    [ -f "$f" ] || continue
+    [ -n "$(find "$f" -maxdepth 0 -mmin +"$SPOOL_RETRY_MIN" 2>/dev/null)" ] || continue
+    spool_run "$f"
+  done
   return 0
 }
 
-# lock_take <path>: exclusive create through bash noclobber (open O_EXCL), never `mkdir`: uutils coreutils mkdir (ryzen7) can report success for both of two racing
-# callers (measured, 119 of 300 races), which let two producers run at once (rv6 F6-4). A lock older than 5 min is stale and replaced (best effort).
-lock_take() {
-  local l="$1"
-  ( set -C; : >"$l" ) 2>/dev/null && return 0
-  [ -n "$(find "$l" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 1
-  rm -f "$l"; ( set -C; : >"$l" ) 2>/dev/null
-}
-
-# refresh <seat>: the producer. One refresher per seat (exclusive lock file, see lock_take); writes the cache atomically.
+# refresh <seat>: the producer. One refresher per seat (exclusive lock file, exlock.sh); writes the cache atomically.
 refresh() {
   local seat st lock f tmp rows rc now
   seat="$(seat_alias "$1")"
@@ -167,14 +191,15 @@ refresh() {
   [ "$(src)" = asks ] || return 0
   st="$(state_dir)"; mkdir -p "$st" 2>/dev/null || return 0
   lock="$st/$seat.refresh.lock"
-  lock_take "$lock" || return 0
+  type exlock_take >/dev/null 2>&1 && exlock_take "$lock" || return 0
   now="$(date +%s)"
   rows="$(lint "$seat" "$now")"; rc=$?
-  f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || { rm -f "$lock"; return 0; }
-  if jq -cn --arg s "$seat" --argjson ts "$now" --argjson clean "$([ "$rc" = 0 ] && echo true || echo false)" --arg rows "$rows" '{v:1,seat:$s,ts:$ts,clean:$clean,rows:$rows}' >"$tmp" 2>/dev/null; then
+  f="$(cache_file "$seat")"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || { exlock_release; return 0; }
+  # rows go in on stdin, never as a command-line argument: one argument is capped at 128 KiB (MAX_ARG_STRLEN), so 1,000 owed rows made the old `jq --arg rows` fail and the cache never appeared (F7-5)
+  if printf '%s' "$rows" | jq -Rsc --arg s "$seat" --argjson ts "$now" --argjson clean "$([ "$rc" = 0 ] && echo true || echo false)" '{v:1,seat:$s,ts:$ts,clean:$clean,rows:.}' >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
   else rm -f "$tmp"; fi
-  rm -f "$lock"   # explicit, not a RETURN trap: a RETURN trap is inherited by the $(lint) subshell and released the lock early
+  exlock_release   # explicit on the normal path; the EXIT / TERM / INT / HUP traps of the refresh mode release it when the process is killed (F7-4)
   return 0
 }
 
@@ -189,7 +214,7 @@ hook() {
   seat="$(seat_alias "$seat")"   # once, before cache_read / spawn_refresh / the UNKNOWN state key: reader and producer share one key (rv6 F6-1)
   if [ "$(src)" = asks ] && [ "$ev" = Stop ]; then   # canonical mode: a Stop blocks only on a NEW fingerprint, never on a recital of unchanged ids
     cache_read "$seat"; { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"   # keep the next prompt's cache warm, detached
-    if ! fu_eval_bin >/dev/null 2>&1; then   # missing evaluator = visible owned state, once per session (no recital loop)
+    if ! fu_eval_bin >/dev/null 2>&1 || ! type fu_stop_new >/dev/null 2>&1; then   # missing evaluator (or the shared Stop helper) = visible owned state, once per session (no recital loop)
       local msid mst mf; msid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$msid" =~ ^[A-Za-z0-9._-]+$ ]] || msid=nosid
       mst="$(state_dir)"; mkdir -p "$mst" 2>/dev/null; mf="$mst/$msid.noeval"
       [ ! -e "$mf" ] || return 0
@@ -213,15 +238,11 @@ hook() {
       printf '%s' "$smsg" | python3 -I "$sev" suggestion --nowait --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"} >/dev/null 2>&1
       [ $? -ne 75 ] || suggest_detached "$sev" "$smsg" suggestion --seat "$seat" --id "stop-$ssid" --rev 1 ${sown:+--owner "$sown"} ${sdue:+--due "$sdue"} ${sact:+--action "$sact"}   # store busy: the same write, blocking, off the Stop path; nothing lost, fp dedupe keeps it once
     fi
-    # F6-3 (option a): the Stop path never waits on the fingerprint-store lock. The check + fingerprint write is tried once; when another process holds the lock the Stop
-    # passes with a marker the next prompt prints (the fingerprint stays unrecorded, so the next Stop escalates it); the outbox delivery is left to the durable replay consumer.
-    local evb nraw new="" ksid kf; evb="$(fu_eval_bin)"
-    ksid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$ksid" =~ ^[A-Za-z0-9._-]+$ ]] || ksid=nosid
-    kf="$(state_dir)/$ksid.stoplock"
-    nraw="$(python3 -I "$evb" new --nowait --seat "$seat" 2>/dev/null)"
-    if [ "$(jq -r '.locked // false' <<<"$nraw" 2>/dev/null)" = true ]; then mkdir -p "$(state_dir)" 2>/dev/null; date +%s >"$kf" 2>/dev/null
-    else rm -f "$kf" 2>/dev/null; new="$(jq -c '.new[]?' <<<"$nraw" 2>/dev/null)"; fi
-    python3 -I "$evb" replay --nowait >/dev/null 2>&1 || true
+    # F6-3 (option a) + F7-1: the Stop path never waits on the fingerprint-store lock and never delivers. followup-stop-nowait.sh tries the lock once; when another process holds
+    # it the Stop passes with a marker the next prompt prints (the fingerprint stays unrecorded, so the next Stop escalates it). Outbox delivery is left to the existing durable
+    # consumer (followup-outbox-replay.timer): no Stop hook replays, so a slow delivery command cannot hold the Stop event.
+    local new ksid; ksid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"
+    fu_stop_new "$seat" "$ksid"; new="$FU_STOP_NEW"
     [ -n "$new" ] || return 0
     body="$(fu_block_reason "$new")"
     if [ "${WM_DIRECTOR:-}" = hermes ]; then printf 'director=hermes report-not-block: %s\n' "$body"; else jq -cn --arg r "$body" '{decision:"block", reason:$r}'; fi
@@ -413,8 +434,11 @@ case "${1:-hook}" in
         while [ $# -gt 0 ]; do case "$1" in --seat) seat="$2"; shift 2;; --now) [ -n "${2:-}" ] || { echo "owed-now.sh: --now needs an ISO time (a bare --now would loop forever)" >&2; exit 2; }; now="$(date -d "$2" +%s)" || exit 2; shift 2;; *) shift;; esac; done
         lint "$seat" "$now" ;;
   hook) hook ;;
-  refresh) shift; seat="${WM_SEAT:-}"; while [ $# -gt 0 ]; do case "$1" in --seat) seat="${2:-}"; shift 2;; *) shift;; esac; done; refresh "$seat" ;;
+  refresh) shift; seat="${WM_SEAT:-}"; while [ $# -gt 0 ]; do case "$1" in --seat) seat="${2:-}"; shift 2;; *) shift;; esac; done
+           trap 'exlock_release' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT; trap 'exit 129' HUP   # F7-4: a killed producer releases its lock (SIGKILL: the 5-minute staleness)
+           refresh "$seat"; rc=$?; drain_spool; exit "$rc" ;;
+  spool-run) spool_run "${2:-}" ;;
   guard) guard ;;
   --selftest) selftest ;;
-  *) echo "usage: owed-now.sh lint [--seat S|-] [--now ISO] | refresh --seat S | hook | guard | --selftest" >&2; exit 2 ;;
+  *) echo "usage: owed-now.sh lint [--seat S|-] [--now ISO] | refresh --seat S | spool-run FILE | hook | guard | --selftest" >&2; exit 2 ;;
 esac
