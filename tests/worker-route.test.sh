@@ -13,7 +13,7 @@ ok(){ echo "PASS $1"; }
 bad(){ echo "FAIL $1${2:+: $2}"; fails=$((fails+1)); }
 chk(){ if eval "$2"; then ok "$1"; else bad "$1" "$2"; fi; }
 
-mkdir -p "$T/bin" "$T/forbid"
+mkdir -p "$T/bin" "$T/forbid"; rm -f "$T/forbidden.log"; WORLDS=0
 # fake ask store: query (--ids/--status/--json), claim (--worker --by --expect-rev), update (--append). Never close/resolve.
 cat > "$T/bin/wm-asks" <<'PY'
 #!/usr/bin/env python3
@@ -32,10 +32,14 @@ if a[:2] == ["asks", "query"]:
     if "--status" not in a or a[a.index("--status") + 1] != "all": rows = [r for r in rows if r.get("status", "open") == "open"]
     print(json.dumps(rows)); sys.exit(0)
 if a[:2] == ["asks", "claim"]:
-    r = db[a[2]]; w = a[a.index("--worker") + 1]; rev = int(a[a.index("--expect-rev") + 1])
-    if r.get("claim") and r["claim"].split("@")[0] != w: sys.exit(1)
+    r = db[a[2]]; w = a[a.index("--worker") + 1]; rev = int(a[a.index("--expect-rev") + 1]); by = a[a.index("--by") + 1]
+    if os.path.exists(S + "/claimfail"): sys.stderr.write("transient claim failure\n"); sys.exit(1)
+    own_stale = by == "worker-route" and str(r.get("claim") or "").startswith("wr-")   # fixture: worker-route may re-claim its own dead invocation's claim
+    if r.get("claim") and r["claim"].split("@")[0] != w and not own_stale: sys.exit(1)
     if r["rev"] != rev: sys.exit(2)
-    r["claim"] = w + "@2026-11-13T02:40"; r["rev"] += 1; save(); sys.exit(0)
+    r["claim"] = w + "@2026-11-13T02:40"; r["rev"] += 1; save()
+    if os.path.exists(S + "/dieafterclaim"): open(S + "/down", "w").close()   # the claim landed, the readback cannot be read
+    sys.exit(0)
 if a[:2] == ["asks", "update"]:
     r = db[a[2]]; r.setdefault("notes", []).append(a[a.index("--append") + 1]); r["rev"] += 1; save(); sys.exit(0)
 sys.stderr.write("fake wm-asks: unsupported " + " ".join(a) + "\n"); sys.exit(2)
@@ -51,7 +55,10 @@ SH
 # START_CMD stub: <unit> <description> <cmd...>: records unit+description, runs the supervisor synchronously.
 cat > "$T/bin/fake-start" <<'SH'
 #!/usr/bin/env bash
-echo "$1 :: $2" >> "$STUB/start.log"; shift 2; exec "$@"
+echo "$1 :: $2" >> "$STUB/start.log"
+[ -e "$STUB/startfail" ] && { echo "unit start refused" >&2; exit 9; }
+[ -e "$STUB/noop" ] && exit 0
+shift 2; exec "$@"
 SH
 cat > "$T/bin/hold" <<'SH'
 #!/usr/bin/env bash
@@ -63,8 +70,8 @@ for f in seat-event.sh seat-ask.sh tmux claude fable-launch.sh seat-tick.sh syst
 chmod 755 "$T"/bin/* "$T"/forbid/*
 
 fresh(){ # new stub + state world; A1 (spec) -> B1 (waits_on A1)
-  export STUB="$T/s$1" WR_STATE="$T/st$1"
-  rm -rf "$STUB" "$WR_STATE" "$T/forbidden.log"; mkdir -p "$STUB"
+  export STUB="$T/s$1" WR_STATE="$T/st$1"; WORLDS=$((WORLDS+1))
+  rm -rf "$STUB" "$WR_STATE"; mkdir -p "$STUB"      # forbidden.log is NOT reset: one log covers every world
   cat > "$STUB/db.json" <<'J'
 {"A1":{"ask_id":"A1","rev":4,"owner":"r7","status":"open","claim":null,"waits_on":[],"ready":true,"check":"c1",
        "what":"first task. worker-route: host=h1 launcher=fake-coder arg=a1 model=sonnet-5.5 effort=medium"},
@@ -78,6 +85,7 @@ J
 }
 run(){ python3 -I "$W" "$@" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"; }
 rcis(){ [ "$(cat "$T/rc.txt")" = "$1" ]; }
+ran(){ [ -x "$W" ] && [ -f "$T/rc.txt" ] && ! grep -q "No such file" "$T/out.txt"; }   # the unit under test existed and was invoked: a negative never passes vacuously
 calls(){ grep -c -- "$1" "$STUB/calls.log" 2>/dev/null || true; }
 dec(){ grep -c -- "$1" "$WR_STATE/decisions.jsonl" 2>/dev/null || true; }
 inv_of(){ python3 -I -c "import json,sys,glob;print([json.load(open(f))['invocation'] for f in sorted(glob.glob('$WR_STATE/launches/*.json')) if json.load(open(f))['ask']=='$1'][0])"; }
@@ -103,17 +111,18 @@ chk "asks never closed/resolved/accepted by the route (only query, claim, update
 chk "source has no seat model route (seat-event|seat-ask|tmux|claude -p)" '! grep -nE "seat-event|seat-ask|send-keys|claude -p" "$W" | grep -v "^[0-9]*:\s*#" | grep -v "^[0-9]*:.*never"'
 
 # ---- 2. wrong host
-fresh 2; python3 -I - <<'P'
+fresh 2; [ -n "${WR_TEST_INJECT_FORBIDDEN:-}" ] && echo "injected seat-event.sh world2" >> "$T/forbidden.log"
+python3 -I - <<'P'
 import json,os;s=os.environ["STUB"]+"/db.json";d=json.load(open(s));d["A1"]["what"]=d["A1"]["what"].replace("host=h1","host=h2");json.dump(d,open(s,"w"))
 P
 run launch A1
-chk "wrong host at launch: refused 79, no claim, no launch record, no child" 'rcis 79 && [ "$(calls "asks claim")" = 0 ] && [ ! -e "$WR_STATE/launches" -o -z "$(ls "$WR_STATE/launches" 2>/dev/null)" ] && [ ! -e "$STUB/child.log" ]'
+chk "wrong host at launch: refused 79, no claim, no launch record, no child" 'ran && rcis 79 && [ "$(dec wrong-host)" -ge 1 ] && [ "$(calls "asks claim")" = 0 ] && [ ! -e "$WR_STATE/launches" -o -z "$(ls "$WR_STATE/launches" 2>/dev/null)" ] && [ ! -e "$STUB/child.log" ]'
 fresh 2b; run launch A1; IA="$(inv_of A1)"
 python3 -I - <<P
 import json,os;p=os.environ["WR_STATE"]+"/terminals/$IA.json";d=json.load(open(p));d["host"]="h2";json.dump(d,open(p,"w"))
 P
 run consume
-chk "terminal from another host: left unconsumed for that host, decision wrong-host, B not launched" 'rcis 0 && [ ! -e "$WR_STATE/consumed/$IA.json" ] && [ "$(dec wrong-host)" -ge 1 ] && [ "$(calls "asks claim B1")" = 0 ]'
+chk "terminal from another host: left unconsumed for that host, decision wrong-host, B not launched" 'ran && rcis 0 && [ ! -e "$WR_STATE/consumed/$IA.json" ] && [ "$(dec wrong-host)" -ge 1 ] && [ "$(calls "asks claim B1")" = 0 ]'
 
 # ---- 3. stale / reused identity
 fresh 3; run launch A1; IA="$(inv_of A1)"
@@ -121,31 +130,31 @@ python3 -I - <<P
 import json,os;p=os.environ["WR_STATE"]+"/terminals/$IA.json";d=json.load(open(p));d["nonce"]="deadbeefdeadbeef";json.dump(d,open(p,"w"))
 P
 run consume
-chk "wrong nonce (stale/forged terminal): refused stale-identity, B not launched, ask untouched" 'rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = refused ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec stale-identity)" -ge 1 ]'
+chk "wrong nonce (stale/forged terminal): refused stale-identity, B not launched, ask untouched" 'ran && rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = refused ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec stale-identity)" -ge 1 ]'
 fresh 3b; run launch A1; IA="$(inv_of A1)"
 python3 -I - <<'P'
 import json,os;s=os.environ["STUB"]+"/db.json";d=json.load(open(s));d["A1"]["claim"]="someone-else@2026-11-13T03:00";json.dump(d,open(s,"w"))
 P
 run consume
-chk "claim re-owned by another worker before consume: refused claim-mismatch, B not launched" 'rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = refused ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec claim-mismatch)" -ge 1 ]'
+chk "claim re-owned by another worker before consume: refused claim-mismatch, B not launched" 'ran && rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = refused ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec claim-mismatch)" -ge 1 ]'
 fresh 3c; run launch A1; run launch A1
-chk "reused identity: a second launch of A while its invocation is unconsumed is refused, one child only" '! rcis 0 && [ "$(grep -c . "$STUB/child.log")" = 1 ]'
+chk "reused identity: a second launch of A while its invocation is unconsumed is refused with exit 6 invocation-in-use, one child only" 'ran && rcis 6 && grep -q invocation-in-use "$WR_STATE/decisions.jsonl" && [ "$(grep -c . "$STUB/child.log")" = 1 ]'
 fresh 3d; run launch X9
-chk "ask already claimed by another worker: refused 5, original invocation keeps it, no launch" 'rcis 5 && [ ! -e "$STUB/child.log" ]'
+chk "ask already claimed by another worker: refused 5, original invocation keeps it, no launch" 'ran && rcis 5 && [ "$(dec claim-conflict)" = 1 ] && [ ! -e "$STUB/child.log" ]'
 
 # ---- 4. unavailable consumer
 fresh 4; run launch A1; touch "$STUB/down"; run consume
-chk "ask store down at consume: exit 4, terminal stays pending, nothing launched" 'rcis 4 && [ ! -e "$WR_STATE/consumed/$(inv_of A1).json" ] && [ "$(grep -c . "$STUB/child.log")" = 1 ] && [ "$(dec canonical-unavailable)" -ge 1 ]'
+chk "ask store down at consume: exit 4, terminal stays pending, nothing launched" 'ran && rcis 4 && [ ! -e "$WR_STATE/consumed/$(inv_of A1).json" ] && [ "$(grep -c . "$STUB/child.log")" = 1 ] && [ "$(dec canonical-unavailable)" -ge 1 ]'
 rm "$STUB/down"; run consume
 chk "store back: the same terminal is consumed and B launches (no retry cap, no replay of A)" 'rcis 0 && [ "$(calls "asks claim B1 --worker wr-")" = 1 ] && [ "$(grep -c a1 "$STUB/child.log")" = 1 ]'
 fresh 4b; touch "$STUB/garbage"; run launch A1
-chk "malformed ask store: launch refused 4, nothing started" 'rcis 4 && [ ! -e "$STUB/child.log" ]'
+chk "malformed ask store: launch refused 4, nothing started" 'ran && rcis 4 && [ "$(dec canonical-unavailable)" -ge 1 ] && [ ! -e "$STUB/child.log" ]'
 fresh 4c; run launch A1; WR_LAUNCHERS="other-launcher" run consume
 chk "successor launcher not allowlisted: A consumed, B stays unclaimed, decision consumer-unavailable" 'rcis 0 && [ "$(jget "$WR_STATE/consumed/$(inv_of A1).json" state)" = consumed ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec consumer-unavailable)" -ge 1 ]'
 run consume
 chk "launcher allowlisted again: B launches on the next consume" 'rcis 0 && [ "$(calls "asks claim B1 --worker wr-")" = 1 ]'
 fresh 4d; run launch A1; touch "$STUB/hold"; run consume
-chk "quota hold gate closed: no successor launched, decision held; released -> launches" '[ "$(calls "asks claim B1")" = 0 ] && [ "$(dec held)" -ge 1 ]'
+chk "quota hold gate closed: no successor launched, decision held; released -> launches" 'ran && [ "$(calls "asks claim B1")" = 0 ] && [ "$(dec held)" -ge 1 ]'
 rm "$STUB/hold"; run consume
 chk "hold released: B launches" '[ "$(calls "asks claim B1 --worker wr-")" = 1 ]'
 
@@ -156,6 +165,8 @@ fresh 5b; echo 78 > "$STUB/rc-a1"; run launch A1; IA="$(inv_of A1)"; run consume
 chk "refused worker (rc 78): state worker-refused, NO successor, terminal status refused" '[ "$(jget "$WR_STATE/consumed/$IA.json" state)" = worker-refused ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(jget "$WR_STATE/terminals/$IA.json" status)" = refused ]'
 run consume; run consume
 chk "failed/refused terminals are not retried or replayed by later consumes (one child total)" '[ "$(grep -c . "$STUB/child.log")" = 1 ]'
+fresh 5c; echo 1 > "$STUB/rc-a1"; run launch A1; run consume; run consume; run consume
+chk "duplicate failed terminal is processed once: one worker-failed decision, one ask note" 'ran && [ "$(dec worker-failed)" = 1 ] && [ "$(calls "asks update A1")" = 1 ]'
 
 # ---- 6. duplicate terminal
 fresh 6; run launch A1; IA="$(inv_of A1)"
@@ -168,6 +179,7 @@ chk "consume x3 over one terminal: A consumed once, B claimed once, B launched o
 fresh 7; printf 'BEGIN push-branch\n' > "$STUB/effect-a1"; run launch A1; IA="$(inv_of A1)"; run consume
 chk "effect ledger has BEGIN without END: state unknown-effect, NO successor" 'rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = unknown-effect ] && [ "$(calls "asks claim B1")" = 0 ]'
 run consume; run consume
+chk "UNKNOWN is reported once, not re-processed on each later consume (one unknown-effect decision)" 'ran && [ "$(dec unknown-effect)" = 1 ]'
 chk "UNKNOWN is preserved across later consumes (never downgraded, B still not launched)" '[ "$(jget "$WR_STATE/consumed/$IA.json" state)" = unknown-effect ] && [ "$(calls "asks claim B1")" = 0 ]'
 run reconcile "$IA" --verdict maybe --by r7
 chk "reconcile with a bad verdict refused" '! rcis 0 && [ "$(jget "$WR_STATE/consumed/$IA.json" state)" = unknown-effect ]'
@@ -180,7 +192,49 @@ chk "after reconcile the next consume proceeds: A consumed, B launched once" '[ 
 fresh 8; touch "$STUB/noprov-a1"; run launch A1; IA="$(inv_of A1)"; run consume
 chk "launcher wrote no provenance: receipt says unrecorded, no account inferred" 'grep -q unrecorded "$WR_STATE/consumed/$IA.json" && ! grep -q acct-from-launcher "$WR_STATE/consumed/$IA.json"'
 
+# ---- 10. failed-before-start is terminal and relaunchable (review F1); UNKNOWN still blocks
+nrec(){ ls "$WR_STATE"/launches/*.json 2>/dev/null | wc -l; }
+fresh 10; touch "$STUB/claimfail"; run launch A1
+chk "transient claim failure: exit 5, decision claim-failed, no child, no claim held" 'ran && rcis 5 && [ "$(dec claim-failed)" = 1 ] && [ ! -e "$STUB/child.log" ] && [ "$(python3 -I -c "import json;print(json.load(open(\"$STUB/db.json\"))[\"A1\"][\"claim\"])")" = None ]'
+IF="$(inv_of A1 2>/dev/null || echo none)"
+chk "claim-failed record is a FINAL receipt of its own carrying the failure decision (visible in history)" '[ "$(jget "$WR_STATE/consumed/$IF.json" state)" = claim-failed ] && [ "$(jget "$WR_STATE/launches/$IF.json" state)" = claim-failed ]'
+rm "$STUB/claimfail"; run launch A1
+chk "store recovered: the ask relaunches under a NEW invocation id (not rc 6), child runs once, history keeps the failed record" 'ran && rcis 0 && [ "$(nrec)" = 2 ] && [ "$(grep -c . "$STUB/child.log")" = 1 ] && [ "$(dec claim-failed)" = 1 ] && [ "$(jget "$WR_STATE/consumed/$IF.json" state)" = claim-failed ] && ! grep -q "$IF" "$STUB/child.log"'
+run consume
+chk "after the relaunch the successor chain still completes (A consumed, B launched once)" 'rcis 0 && [ "$(calls "asks claim B1 --worker wr-")" = 1 ]'
+fresh 10b; touch "$STUB/startfail"; run launch A1
+chk "start failure: exit 1, decision start-failed, no child" 'ran && rcis 1 && [ "$(dec start-failed)" = 1 ] && [ ! -e "$STUB/child.log" ]'
+IF="$(inv_of A1 2>/dev/null || echo none)"
+chk "start-failed record is FINAL (receipt state start-failed), not an open invocation" '[ "$(jget "$WR_STATE/consumed/$IF.json" state)" = start-failed ]'
+rm "$STUB/startfail"; run launch A1
+chk "start recovered: relaunch under a NEW invocation id re-claims the dead invocation claim, child runs once" 'ran && rcis 0 && [ "$(nrec)" = 2 ] && [ "$(grep -c . "$STUB/child.log")" = 1 ] && grep -q "claim A1 --worker wr-A1-[0-9]*-[0-9a-f]* " "$STUB/calls.log" && [ "$(jget "$WR_STATE/consumed/$IF.json" state)" = start-failed ]'
+fresh 10c; touch "$STUB/dieafterclaim"; run launch A1
+chk "claim landed but readback unreadable: exit 4, record state claim-unknown, reported UNKNOWN, no child" 'ran && rcis 4 && [ "$(dec claim-unknown)" = 1 ] && [ ! -e "$STUB/child.log" ]'
+IU="$(inv_of A1 2>/dev/null || echo none)"
+rm "$STUB/down" "$STUB/dieafterclaim"; run launch A1
+chk "UNKNOWN still blocks: relaunch refused 6 invocation-in-use, never silently retried (one claim call, no child, record not final)" 'ran && rcis 6 && [ "$(calls "asks claim A1")" = 1 ] && [ ! -e "$STUB/child.log" ] && [ ! -e "$WR_STATE/consumed/$IU.json" ] && [ "$(jget "$WR_STATE/launches/$IU.json" state)" = claim-unknown ]'
+
+# ---- 11. partial waits_on never launches a successor (review F4)
+fresh 11; python3 -I - <<'PYEOF'
+import json,os;s=os.environ["STUB"]+"/db.json";d=json.load(open(s))
+d["B1"]["waits_on"]=["A1","Z9"]; d["Z9"]={"ask_id":"Z9","rev":1,"owner":"r7","status":"open","claim":None,"waits_on":[],"what":"unrelated open dependency, no spec"}
+json.dump(d,open(s,"w"))
+PYEOF
+run launch A1; run consume; run consume
+chk "B waits_on [A1,Z9]: A consumed but Z9 is not, so B is never claimed or launched" 'ran && [ "$(jget "$WR_STATE/consumed/$(inv_of A1).json" state)" = consumed ] && [ "$(calls "asks claim B1")" = 0 ] && [ "$(grep -c . "$STUB/child.log")" = 1 ]'
+
+# ---- 12. supervise re-validates the launcher at execution time (review F6)
+fresh 12; touch "$STUB/noop"; printf '#!/usr/bin/env bash\ntouch "%s/evil.ran"\n' "$T" > "$T/evil"; chmod 755 "$T/evil"; rm -f "$T/evil.ran"
+run launch A1; IT="$(inv_of A1)"
+T_EVIL="$T/evil" python3 -I - <<PYEOF
+import json,os;p=os.environ["WR_STATE"]+"/launches/$IT.json";d=json.load(open(p));d["launcher"]=os.environ["T_EVIL"];json.dump(d,open(p,"w"))
+PYEOF
+python3 -I "$W" supervise "$IT" >"$T/out.txt" 2>&1; echo $? > "$T/rc.txt"
+chk "tampered launch record (launcher outside the allowlist): supervise refuses, the planted program never runs" 'ran && [ ! -e "$T/evil.ran" ] && [ "$(jget "$WR_STATE/terminals/$IT.json" status)" = refused ] && [ "$(jget "$WR_STATE/terminals/$IT.json" rc)" = 78 ] && [ "$(dec launcher-not-allowed)" = 1 ]'
+run consume
+chk "the refusal flows to a worker-refused receipt, no successor" '[ "$(jget "$WR_STATE/consumed/$IT.json" state)" = worker-refused ] && [ "$(calls "asks claim B1")" = 0 ]'
+
 # ---- 9. final: no seat route anywhere across all worlds
-chk "no forbidden (seat/tmux/claude/systemd-run) call in any world" '[ ! -s "$T/forbidden.log" ]'
+chk "no forbidden (seat/tmux/claude/systemd-run) call in any world (one log for all $WORLDS worlds)" '[ -x "$W" ] && [ "$WORLDS" -ge 20 ] && [ ! -s "$T/forbidden.log" ]'
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "FAILURES: $fails"; exit 1; }
