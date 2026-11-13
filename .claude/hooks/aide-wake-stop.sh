@@ -4,7 +4,7 @@
 # wake is armed (aide-wake.sh arm <minutes>, called after CronCreate). stop_hook_active true = allow (one block per turn). Subagents are never blocked.
 # Any failure allows. Env: AIDE_WAKE_BIN (default ~/.local/bin/aide-wake.sh), AIDE_WAKE_DIR.
 set -u
-case "${WM_SEAT:-}" in aide|ctl) ;; *) exit 0 ;; esac
+case "${WM_SEAT:-}" in aide|ctl|ops) ;; *) exit 0 ;; esac
 in="$(cat 2>/dev/null)"
 command -v jq >/dev/null 2>&1 || exit 0
 [ -z "$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)" ] || exit 0

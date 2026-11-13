@@ -157,6 +157,8 @@ selftest() {
   SEAT_EVENT_DRY=1 "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
   [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ ! -e "$EVENTS_DIR/ctl-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 2 ]; chk "ctl alias: aide + ctl both append to aide-events.log (2 lines, no ctl-events.log)" $?
   "$SELF" nosuch "x" >/dev/null 2>&1; [ $? = 64 ]; chk "ctl alias does not admit other unknown seats (64)" $?
+  : >"$EVENTS_DIR/aide-events.log"; SEAT_EVENT_DRY=1 "$SELF" ops "ops line (A1296 rev181)" >/dev/null 2>&1; r3=$?
+  [ "$r3" = 0 ] && [ ! -e "$EVENTS_DIR/ops-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 1 ]; chk "ops alias: ops, ctl and aide all append to aide-events.log, no ops-events.log" $?
   # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
   [ "$("$SELF" --inbox-row aide)" = "$(printf 'aide\tinbox\t-\t0\t0\t-\t-')" ]; chk "--inbox-row aide prints the tab-separated row" $?
   "$SELF" --inbox-row 'bad name' >/dev/null 2>&1; [ $? = 64 ]; chk "--inbox-row refuses a bad seat name (64)" $?
@@ -173,6 +175,7 @@ fi
 SEAT="$1"; shift
 # ctl = the aide since 11-06 (#244, hermes-handover 2.3): `aide` is an alias of `ctl` once seats.tsv carries only the ctl row, and both write
 # aide-events.log, the path aide-inbox.sh reads (internal file names keep the old seat name; CLAUDE.md § CTL).
+[ "$SEAT" = ops ] && ! known_seat ops && known_seat ctl && SEAT=ctl   # ops = preferred name of ctl (A1296 rev181): same executor, same inbox log
 [ "$SEAT" = aide ] && ! known_seat aide && known_seat ctl && SEAT=ctl
 known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
