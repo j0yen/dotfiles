@@ -25,7 +25,7 @@ a new id, a changed revision, a changed disposition or a lapsed next_check is a 
 (one flock serialises check, outbox append, fingerprint write and replay; files are replaced by rename).
 Env: WM_ASKS_BIN FOLLOWUP_STATE_DIR FOLLOWUP_OUTBOX FOLLOWUP_DELIVER_CMD FOLLOWUP_WORKER_ALIVE_CMD FOLLOWUP_NOW.
 """
-import argparse, datetime, fcntl, hashlib, json, os, re, subprocess, sys
+import argparse, datetime, fcntl, hashlib, json, os, re, subprocess, sys, urllib.parse
 
 KNOWN = ("rb", "r7", "ctl", "aide")
 PROSE = re.compile(r"waits-on=|\bPID\b|\bACK\b", re.I)
@@ -85,21 +85,77 @@ def _ancestors():
     return out
 
 
+# stderr_hint redaction: every pattern is anchored at a token/run start (lookbehind) and takes its run atomically (lookahead capture), so each character is
+# scanned a bounded number of times: cost is linear in the line, with no backtracking over a shared run (F5-2). Decoding is bounded (F5-1).
+_KW = r"bearer|basic|authorization|token|key|password|passwd|secret|pass|pwd|cred|auth|session|jwt"
+_KW_END = r"bearer|basic|authorization|token|key|password|passwd|secret"
+_VALUE = r"(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)"
+_NAME_EQ = re.compile(r"(?i)(?<!\w)(?=\w*?(?:" + _KW + r"))(?=(\w+))\1[\"']?\s*[=:]\s*" + _VALUE)
+_NAME_SP = re.compile(r"(?i)(?<!\w)(?=\w*?(?:" + _KW_END + r")(?!\w))(?=(\w+))\1\s+" + _VALUE)
+_KW_FIRST = re.compile(r"(?i)" + _KW)
+_KW_END_AT = re.compile(r"(?i)(?:" + _KW_END + r")$")
+_QUERY = re.compile(r"(?i)([?&])([\w.-]*)=[^&\s]*")
+_QUERY_KW = re.compile(r"(?i)token|key|secret|pass|pwd|sig|auth|cred|code|session|sid|jwt|otp|ticket|nonce|bearer")
+_ESC = re.compile(r"\\u([0-9A-Fa-f]{4})|\\x([0-9A-Fa-f]{2})|\\U([0-9A-Fa-f]{8})")
+
+
+def _name_eq(m):
+    run = m.group(1)
+    k = _KW_FIRST.search(run)
+    return run[:k.end()] + "=<redacted>"
+
+
+def _name_sp(m):
+    run = m.group(1)
+    k = _KW_END_AT.search(run)
+    return run[:k.end()] + "=<redacted>"
+
+
+def _query(m):
+    return m.group(0) if not _QUERY_KW.search(m.group(2)) else m.group(1) + m.group(2) + "=<redacted>"
+
+
+def _esc(m):
+    n = int(m.group(1) or m.group(2) or m.group(3), 16)
+    return chr(n) if n < 0xD800 or 0xE000 <= n <= 0x10FFFF else "\ufffd"
+
+
+def _printable(line):
+    return "".join(c if c.isprintable() else (" " if c == "\t" else "") for c in line)
+
+
+def _decoded(line):
+    """Bounded decoding: at most 3 passes of percent / \\u / \\x unescape, each pass linear. None when the text is still changing after the last pass (deeply
+    nested encoding): the caller withholds it rather than guess."""
+    for _ in range(3):
+        d = _printable(_ESC.sub(_esc, urllib.parse.unquote(line, errors="replace")))
+        if d == line:
+            return line
+        line = d
+    d = _printable(_ESC.sub(_esc, urllib.parse.unquote(line, errors="replace")))
+    return line if d == line else None
+
+
 def stderr_hint(text):
-    """Advisory first stderr line of a failed ledger query: control chars dropped, secret-shaped runs redacted, 160 chars max. Text only: never changes the fail-closed verdict."""
+    """Advisory first stderr line of a failed ledger query: control chars dropped, percent/\\u-escaped names decoded (bounded), secret-shaped runs redacted by
+    linear-time patterns, 160 chars max. Text only: never changes the fail-closed verdict."""
     for line in (text or "").splitlines():
-        line = "".join(c if c.isprintable() else (" " if c == "\t" else "") for c in line).strip()[:20000]
+        line = _printable(line).strip()[:20000]
         if not line:
             continue
+        line = _decoded(line)
+        if line is None:
+            return "<encoded text withheld>"
         line = re.sub(r"://[^/@\s]+@", "://<redacted>@", line)
-        line = re.sub(r"(?i)([?&][\w.-]*(?:token|key|secret|pass|pwd|sig|auth|cred|code|session|sid|jwt|otp|ticket|nonce|bearer)[\w.-]*=)[^&\s]*", r"\1<redacted>", line)
+        line = _QUERY.sub(_query, line)
         line = re.sub(r"(?i)\b(set-cookie|cookie)\s*[=:].*$", r"\1=<redacted>", line)
         line = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*$", "-----BEGIN PRIVATE KEY-----<redacted>", line)
-        line = re.sub(r"\b(ssh-[a-z0-9]+|ecdsa-sha2-\S+)\s+\S+", r"\1 <redacted>", line)
-        line = re.sub(r"(?i)(bearer|basic|authorization|token|key|password|passwd|secret)(?:\w*[\"']?\s*[=:]\s*|\s+)(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
-        line = re.sub(r"(?i)(pass|pwd|cred|auth|session|jwt)\w*[\"']?\s*[=:]\s*(?:\"[^\"]*\"?|'[^']*'?|\S+)", r"\1=<redacted>", line)
+        line = re.sub(r"(?<![\w-])(ssh-[a-z0-9]+|ecdsa-sha2-[\w-]+)\s+\S+", r"\1 <redacted>", line)
+        line = _NAME_EQ.sub(_name_eq, line)
+        line = _NAME_SP.sub(_name_sp, line)
+        line = re.sub(r"(?<![\w-])eyJ[\w-]*\.[\w-]+(?:\.[\w-]*)?", "<redacted>", line)
         line = re.sub(r"(?<!\S)-p(?=\S)\S+", "-p<redacted>", line)
-        line = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<redacted-email>", line)
+        line = re.sub(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<redacted-email>", line)
         line = re.sub(r"\b(sk-|ghp_|gho_|xox)[A-Za-z0-9_-]+|\b[A-Za-z0-9+/_=-]{32,}", "<redacted>", line)
         return line[:160]
     return ""

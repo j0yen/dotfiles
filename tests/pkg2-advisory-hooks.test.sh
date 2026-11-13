@@ -370,4 +370,68 @@ ck "F4-6 narrowing (intended): unit only in what/check text, no key/scope, does 
 echo '[{"ask_id":"A77","rev":1,"owner":"ctl","due":"2026-11-13T09:00","what":"restart zzz-unit.service","check":"systemctl is-active zzz-unit.service","key":"zzz-unit.service"}]' >"$W/rows.json"
 ck "F4-6 same row with the typed key rows the aside" "$(decision "$(asideenv ctl)")" allow
 echo "$ROW" >"$W/rows.json"
+# --- rv5 repair 5 (F5-1, F5-2): escaped credential names + short JWT (bounded decoding), and linear-time redaction (cost bound by the patterns, not a timeout/cap)
+# canaries are assembled at run time from pieces; each FAKE value contains FAKEF5
+hc f51-pct-password-eq 'user%%3Dbob%%26password%%3DFAKEF51A1\n' FAKEF51A1
+hc f51-pct-token-eq 'x token%%3DFAKEF51A2\n' FAKEF51A2
+hc f51-pct-underscore-name 'GET /p?access%%5Ftoken=FAKEF51A3\n' FAKEF51A3
+hc f51-pct-letters-in-name 'x %%70assword=FAKEF51A4\n' FAKEF51A4
+hc f51-pct-colon 'api%%5Fkey%%3A FAKEF51A5\n' FAKEF51A5
+hc f51-pct-double 'token%%253DFAKEF51A6\n' FAKEF51A6
+hc f51-pct-triple 'password%%25253DFAKEF51A7\n' FAKEF51A7
+hc f51-u-json-key '{"\\u0074oken":"FAKEF51B1"}\n' FAKEF51B1
+hc f51-u-value 'password=\\u0041FAKEF51B2\n' FAKEF51B2
+hc f51-u-name-sep 'secret\\u003dFAKEF51B3\n' FAKEF51B3
+hc f51-u-upper 'x api\\u005Fkey: FAKEF51B4\n' FAKEF51B4
+hc f51-x-escaped 'pass\\x77ord=FAKEF51B5\n' FAKEF51B5
+hc f51-mixed-pct-u 'a\\u0070ass%%77ord=FAKEF51B6\n' FAKEF51B6
+hc f51-nul-pct-in-label 'pass%%00word=FAKEF51B7\n' FAKEF51B7
+hc f51-newline-pct-in-label 'pass%%0Aword=FAKEF51B8\n' FAKEF51B8
+hc f51-deep-encoding-withheld 'password%%252525253DFAKEF51B9\n' FAKEF51B9
+hc f51-short-jwt 'bad eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxFAKEF51C1.sig\n' FAKEF51C1
+hc f51-short-jwt-nosig 'eyJhbGciOi.eyJzdWIiOiFAKEF51C2.\n' FAKEF51C2
+hc f51-jwt-after-colon 'jwt:eyJhbGciOi.eyJzdWIiOiFAKEF51C3.xyz\n' FAKEF51C3
+hc f51-pct-url-userinfo 'postgres://u:FAKEF51D1%%40x@h/db\n' FAKEF51D1
+# own negatives, beyond the reviewer's list: encoded cookie pair, encoded Authorization header, hex-escaped bearer
+hc f51-own-pct-cookie 'Set%%2DCookie: sid=FAKEF51E1\n' FAKEF51E1
+hc f51-own-pct-bearer 'authorization%%3A%%20bearer%%20FAKEF51E2\n' FAKEF51E2
+hc f51-own-u-bearer 'Authorization:\\u0020Bearer\\u0020FAKEF51E3\n' FAKEF51E3
+# benign encoded text stays readable and bounded
+e="$(printf 'wm-asks: path%%2Fto%%2Ffile not found (100%% sure)\n' >"$W/err.bin"; hint)"
+ck "F5-1 benign percent text: still a readable hint" "$(case "$e" in *"path/to/file not found"*) echo ok;; esac)" ok
+# F5-2: cost is bound by the patterns. Same host, in-process: each adversarial 20 KB line within 2x a normal 20 KB line (min of 3 runs each)
+cat >"$W/patho.py" <<'PYEOF'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("fe", sys.argv[1] + "/.local/bin/followup-eval.py"); fe = importlib.util.module_from_spec(spec); spec.loader.exec_module(fe)
+def best(t, n=3):
+    r = []
+    for _ in range(n):
+        a = time.perf_counter(); fe.stderr_hint(t); r.append(time.perf_counter() - a)
+    return min(r)
+normal = ("wm-asks: ledger database is busy, retry the query later " * 400)[:20000]
+shapes = {
+    "key*7000": "key" * 7000,
+    "pass_*4000": "pass_" * 4000,
+    "?token*4000": "?" + "token" * 4000,
+    "a@*": "a" * 20000,
+    "ecdsa": "ecdsa-sha2-" * 1800,
+    "eyJ*": "eyJ" * 6600,
+    "pct": "%41" * 6600,
+    "u-esc": "\\u0041" * 3300,
+    "token-space": "token " * 3300,
+    "password=*": "password=" * 2200,
+    "&key*": "&key" * 5000,
+    "cookie": "cookie " * 2800,
+    "BEGIN": "-----BEGIN " * 1800,
+    "dots": "a." * 10000,
+    "ssh": "ssh-" * 5000,
+}
+tn = best(normal); worst = 0
+for k, v in shapes.items():
+    t = best(v[:20000]); worst = max(worst, t / tn)
+    print("TIMING %s %.4f normal %.4f ratio %.2f" % (k, t, tn, t / tn))
+print("WORST %.2f" % worst)
+PYEOF
+python3 -I "$W/patho.py" "$R" >"$W/patho.out" 2>&1; cat "$W/patho.out" | sed 's/^/  /' >>"${PATHO_LOG:-/dev/null}"
+ck "F5-2 the 15 adversarial 20 KB shapes each finish within 2x the normal-line time" "$(awk '/^WORST/{print ($2<=2.0)?"ok":"slow " $2}' "$W/patho.out")" ok
 echo "pass=$p fail=$f"; [ "$f" = 0 ]
