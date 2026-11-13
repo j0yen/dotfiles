@@ -2,7 +2,7 @@
 # cargo-slot.sh (rb 10-17 2:4x pm, controller ruling): product hand-coder cargo.
 # usage: cargo-slot.sh <cargo args...>   (e.g. cargo-slot.sh test --test suite_core_07)
 # 10-18 1:58 AM controller (third hard freeze 10-17 11:36 PM, compile set admitted by COUNT): ONE slot only
-#   (/mnt/data/hand/cargo.lock, -j 4; the scope carries no Memory* property and carries TasksMax=infinity, the bound above it is app.slice + systemd-oomd), granted only while MemAvailable >= 12G + the admission count (12G) = 24G;
+#   (/mnt/data/hand/cargo.lock, -j 4; the scope carries no Memory* property by policy (Joe #195, no discretionary worker caps) and carries TasksMax=infinity (the bound above it is app.slice + systemd-oomd); CAP_G is the MemGate admission count only), granted only while MemAvailable >= 12G + the admission count (12G) = 24G;
 #   below that it waits in 30 s polls up to CARGO_SLOT_MEM_MAXWAIT s (default 3600), then REFUSES (exit 76) — never runs anyway.
 #   Slot 2 (cargo2.lock) is retired until the .59 MG memory-admission gate ships.
 # -j goes BEFORE a "--" separator (after it, args belong to the test binary)
@@ -457,7 +457,7 @@ fi
 export CARGO_HOME="$ch"
 CAP_G=12; FLOOR_G=12
 # rb 10-19 11:2x PM (CTRL 11:17, Fable 1008 ruling): a wm-build clone holds a MEASURED cap (6 MIG scopes, max memory.peak 2.8 G):
-#   --prefix wm-build -> [cargo_jobs.mem_caps_gb.wm-build] hand = 5; CAP_G is the admission count only (the scope carries no Memory* property; the bound above it is app.slice + systemd-oomd).
+#   --prefix wm-build -> [cargo_jobs.mem_caps_gb.wm-build] hand = 5; CAP_G is the admission count only (the scope carries no Memory* property by policy (Joe #195, no discretionary worker caps)).
 #   Physical floor = the daemon headroom_gb (4) instead of 12. Reverse: a wm-build scope peak > 5 G (run-peak.log hand.wm-build-*) -> cap = peak + 1.
 # 11:2x PM correction: the binary stores no prefix on a hand row, so the Σ reads the CLASS cap. hand class default = 5 (config);
 #   any non-wm-build hand cargo (mcphost) acquires as --class land (12.5 G count) so it is never undercounted.
@@ -491,7 +491,7 @@ case "$cls_kind" in wm-build) CAP_G=5; FLOOR_G=4; CLS=hand; PFX=wm-build;; mcpho
 #   Reverse: one release scope measured with memory.peak sampled to the end <= 4 G -> release may use class hand.
 case " $* " in *" --release "*|*" -r "*) [ "$CLS" = hand ] && { CAP_G=12; FLOOR_G=12; CLS=land; PFX=; };; esac
 echo "[cargo-slot] class=$CLS${PFX:+ prefix=$PFX} via=$cls_via${cls_kind:+ kind=$cls_kind}" >&2   # W4: the decision, once per call (a verifier reads this line)
-# rb 10-20 12:4x AM (CTRL caps-drift ask): CAP_G is the admission count only, DERIVED from the class cap the Σ counts (floor of [cargo_jobs.mem_caps_gb].<class>); the scope carries no Memory* property (bound above it = app.slice + systemd-oomd),
+# rb 10-20 12:4x AM (CTRL caps-drift ask): CAP_G is the admission count only, DERIVED from the class cap the Σ counts (floor of [cargo_jobs.mem_caps_gb].<class>); the scope carries no Memory* property by policy (Joe #195, no discretionary worker caps),
 #   and a cap change needs no edit here. Unreadable config = the literals above.
 # rb 10-22 1:0x PM (CTRL seat note 1): a wm-build clone acquires with --prefix wm-build (the binary prices a hand row by the prefix recorded on
 #   the row since 0.77.59, run_prefix), so the admission count CAP_G = floor([cargo_jobs.mem_caps_gb.wm-build].<class>) first, the class table second.
