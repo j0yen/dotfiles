@@ -83,11 +83,21 @@ _budget_left() {
 }
 
 # Sleep $1 seconds ($2 = the same in ms) only if it ends before the deadline.
-# Returns 1 (no sleep) once the budget cannot cover it.
+# Returns 1 (no sleep) once the budget cannot cover it. A sleep costs its
+# nominal length plus the host's fork/schedule overshoot (tens of ms on a
+# loaded host), so the check also covers the largest overshoot seen so far in
+# this run; without it the last sleep could end past the deadline.
+sleep_over_ms=0
 _budget_sleep() {
+    local before rc over
     _budget_left
-    [ "$budget_ms" -gt "$2" ] || return 1
-    sleep "$1"
+    [ "$budget_ms" -gt $(( $2 + sleep_over_ms )) ] || return 1
+    before=$budget_ms
+    sleep "$1"; rc=$?
+    _budget_left
+    over=$(( before - budget_ms - $2 ))
+    [ "$over" -le "$sleep_over_ms" ] || sleep_over_ms=$over
+    return "$rc"
 }
 
 # Run a command capped at the remaining budget; rc 1 if none is left.
