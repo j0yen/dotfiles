@@ -54,7 +54,7 @@ for m in rc1-noout rc1-validjson rc137 empty blank malformed garbage shape-noarr
   seed; echo "$m" >"$W/mode"; echo "$EPOCH" >"$(MK)"
   t0=$(now); S="$(STOP)"; rc=$?; t1=$(now)
   ck "R87-1 $m: Stop returns promptly, rc 0, no block decision" "$(within "$t0" "$t1" 4)/$rc/$(jq -r '.decision // "pass"' <<<"${S:-null}" 2>/dev/null)" "ok/0/pass"
-  ck "R87-1 $m: the pre-existing skip marker is kept, its locked line intact" "$([ -e "$(MK)" ] && echo kept || echo cleared)/$(grep -cx "$EPOCH" "$(MK)" 2>/dev/null || echo 0)" "kept/1"
+  ck "R87-1 $m: the pre-existing skip marker is kept, its locked line intact" "$([ -e "$(MK)" ] && echo kept || echo cleared)/$(grep -cx "$EPOCH" "$(MK)" 2>/dev/null)" "kept/1"
   o="$(ctx "$(UPS)")"
   ck "R87-1 $m: next prompt discloses evaluator failed, NOT none owed" "$(grep -c 'evaluator failed' <<<"$o")/$(grep -c 'NOT \\"none owed\\"\|NOT "none owed"' <<<"$o")" "1/1"
   ck "R87-1 $m: the locked-skip disclosure is still shown next to it" "$(grep -c 'STOP CHECK SKIPPED' <<<"$o")" 1
@@ -74,7 +74,7 @@ ck "R87-1 a second prompt still discloses the failed check" "$(grep -c 'evaluato
 # a failed check through the other P2 Stop entrypoint (followup-stop-gate.sh) uses the same helper and marker
 seed; echo "$EPOCH" >"$(MK g1)"; echo rc1-noout >"$W/mode"
 G="$(jq -nc '{session_id:"g1",stop_hook_active:false}' | WM_SEAT=ctl FOLLOWUP_EVAL="$W/stub-eval.py" timeout 20 bash "$GATE" 2>/dev/null)"
-ck "R87-1 followup-stop-gate.sh: passes, keeps the marker, records the failure" "${G:-pass}/$(grep -cx "$EPOCH" "$(MK g1)" 2>/dev/null || echo 0)/$(grep -c '^evalfail rc-1$' "$(MK g1)" 2>/dev/null || echo 0)" "pass/1/1"
+ck "R87-1 followup-stop-gate.sh: passes, keeps the marker, records the failure" "${G:-pass}/$(grep -cx "$EPOCH" "$(MK g1)" 2>/dev/null)/$(grep -c '^evalfail rc-1$' "$(MK g1)" 2>/dev/null)" "pass/1/1"
 # failure + unwritable marker dir: not silent (the F7-3 channel: a systemMessage on stdout and a stderr line), never a block
 seed; echo malformed >"$W/mode"; chmod 555 "$W/owed"; S="$(STOP sU)"; chmod 755 "$W/owed"
 ck "R87-1 failure + unwritable marker dir: systemMessage says evaluator failed, could not be written, NOT none owed; no block" "$(jq -r '.systemMessage // ""' <<<"$S" 2>/dev/null | grep -c 'evaluator failed.*could not be written.*NOT')/$(jq -r '.decision // "pass"' <<<"${S:-null}" 2>/dev/null)/$(leak "$S")" "1/pass/0"
@@ -97,7 +97,7 @@ ck "R87-2 success with a new obligation: blocks with the reason" "$(jq -r '.deci
 
 # --- item 3: locked path and unwritable-marker path unchanged
 seed; echo locked >"$W/mode"; S="$(STOP)"; o="$(ctx "$(UPS)")"
-ck "R87-3 locked: pass, marker written with an epoch, prompt says STOP CHECK SKIPPED, no evaluator-failed text" "${S:-pass}/$(grep -cxE '[0-9]+' "$(MK)" 2>/dev/null || echo 0)/$(grep -c 'STOP CHECK SKIPPED' <<<"$o")/$(grep -c 'evaluator failed' <<<"$o")" "pass/1/1/0"
+ck "R87-3 locked: pass, marker written with an epoch, prompt says STOP CHECK SKIPPED, no evaluator-failed text" "${S:-pass}/$(grep -cxE '[0-9]+' "$(MK)" 2>/dev/null)/$(grep -c 'STOP CHECK SKIPPED' <<<"$o")/$(grep -c 'evaluator failed' <<<"$o")" "pass/1/1/0"
 seed; echo locked >"$W/mode"; chmod 555 "$W/owed"; S="$(STOP sL)"; chmod 755 "$W/owed"
 ck "R87-3 locked + unwritable marker dir: systemMessage skipped/could not be written, stderr line, no block" "$(jq -r '.systemMessage // ""' <<<"$S" 2>/dev/null | grep -c 'NOT checked.*could not be written')/$(grep -c 'STOP CHECK SKIPPED' "$W/stop.err")/$(jq -r '.decision // "pass"' <<<"${S:-null}" 2>/dev/null)" "1/1/pass"
 # helper unit: FU_STOP_NEW / FU_STOP_LOCKED on each class, return 0
