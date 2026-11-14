@@ -28,7 +28,8 @@ ev; : > "$T/tmux.log"; br run
 grep -q 'Enter' "$T/tmux.log"; chk "Enter sent after text" $?
 grep -q 'deliver' "$T/br/deliveries.log"; chk "deliveries.log has deliver lines" $?
 # ack
-br ack --all >/dev/null; [ "$(q)" = 0 ] && [ "$(d)" = 2 ]; chk "ack --all moves both to done/" $?
+br ack --all >/dev/null 2>&1; [ $? = 1 ] && [ "$(q)" = 2 ]; chk "ack --all leaves unrouted pane-delivered ids queued (no consumer evidence), exit 1" $?
+for i in "$T"/br/queue/*.json; do br ack "$(basename "$i" .json)" >/dev/null; done; [ "$(q)" = 0 ] && [ "$(d)" = 2 ]; chk "ack <id> per id moves both to done/" $?
 : > "$T/tmux.log"; BR_CYCLES=2 br run; [ "$(sends)" = 0 ]; chk "after ack a further cycle delivers nothing" $?
 br ack nope >/dev/null 2>&1; [ $? = 1 ]; chk "ack unknown id exits 1" $?
 # timeout creates nothing

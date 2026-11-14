@@ -14,8 +14,11 @@
 #                  surfaced as a row and NEVER reaches the executor; message text is never run.
 #   error          the classifier answered malformed/failed after one haiku retry and one Sonnet recovery call: owned open-asks row,
 #                  the queue item stays pending, NOTHING is sent to Fable
-# Consumer success = $RT_DIR/results/<id>.json with an "exit" field (a real recorded side effect or exit status) and, when work could not
-# finish, an owned actionable ask in the canonical wm-decide ledger (owner ctl, waits-on= stated, due by date -d, marker event:<id>).
+# Consumer success (the bridge's N1 rule, brief-p3fix2 N1 + brief-p3fix3 R3-3) = $RT_DIR/results/<id>.json with exit 0 AND a typed success result (never UNKNOWN, never a blocked/error/fail/refused result name).
+# Likewise every nonzero exit and every typed failure is NOT done, even when the router opened an owned actionable ask in the canonical wm-decide ledger (owner ctl, waits-on= stated, due by date -d, marker event:<id>):
+# the row is the operator's follow-up; the queue file stays until `ctl-event-bridge.sh ack` accepts evidence or `ctl-event-bridge.sh resolve <id> --disposition ...` records a non-success disposition. A resolved id has NO handled
+# receipt, so a row done-check `test -e handled/<id>` stays false after resolve by design (ctl ratifies fix2 N1 over the earlier header wording that counted an owned ask as success).
+# ctl-event-proto: attempt-v1
 # A summary-only mechanical.log line is NOT consumer success. Replay reuses stage/results/cache files: no second model call, no duplicate row.
 # Env: RT_DIR (default ~/.cache/aide/event-route) RT_STATE RT_CLAUDE_BIN (default claude) WM_ASKS_CMD RT_ROW_DUE (date -d offset, default "60 minutes")
 #      RT_TIMEOUT_S RT_EXEC_TIMEOUT_S RT_TEXT_MAX
@@ -25,6 +28,17 @@ case "${1:-}" in
   route) shift ;;
   *) echo "usage: ctl-event-route.sh route <queue-json-path>" >&2; exit 2 ;;
 esac
+is_bridge_parent() { # F5: the parent is a bridge only when one of its first three argv words (interpreter, flags, script) has the base name ctl-event-bridge.sh; a command line that merely mentions the name is not a bridge
+  local w i=0
+  while IFS= read -r -d '' w; do
+    [ "${w##*/}" = ctl-event-bridge.sh ] && return 0
+    i=$((i+1)); [ $i -ge 3 ] && return 1
+  done < "/proc/$PPID/cmdline" 2>/dev/null
+  return 1
+}
+if is_bridge_parent; then   # R4-6: a bridge that does not announce the protocol (an older ctl-event-bridge.sh) gets no routing (a renamed older bridge is not detected: residual R2)
+  [ "${BR_PROTO:-}" = attempt-v1 ] || { echo "$(date -Iseconds) bridge-version-mismatch: the calling ctl-event-bridge.sh does not announce BR_PROTO=attempt-v1; refusing to route (ship the matching bridge + router pair)" >&2; exit 3; }
+fi
 [ -f "${1:-}" ] || { echo "no such queue file: ${1:-}" >&2; exit 1; }
 export RT_HERE="$(dirname "$(readlink -f "$0")")"
 exec python3 -I - "$1" <<'PY'
@@ -57,7 +71,20 @@ eid = str(q.get("id") or os.path.basename(qf)[:-5])
 if not re.fullmatch(r"[A-Za-z0-9._-]+", eid): sys.exit("bad id")
 cache = os.path.join(RT, "routed", eid + ".json")
 resf = os.path.join(RT, "results", eid + ".json")
-if os.path.isfile(cache):               # replay: cached route, no second model call
+stagef = os.path.join(RT, "stage", eid + ".classify.json")
+# attempt identity (A1296 R3-1): the bridge stamps every queue file instance (a delivery) with `attempt_id`; this router copies it into the cache, the result and the stage
+# file. Artifacts of an EARLIER attempt of the same event id are archived under $RT/attempts/<id>/<old attempt>/ (never served as this attempt's result, never deleted);
+# a requeue is therefore routed fresh. Queue files without attempt_id (legacy) keep the id-keyed behaviour.
+att = q.get("attempt_id")
+if not (isinstance(att, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", att)): att = None
+AF = {"attempt_id": att} if att else {}
+for _p in (cache, resf, stagef):
+    _d = rjson(_p) if os.path.isfile(_p) else None
+    if isinstance(_d, dict) and _d.get("attempt_id") != att:
+        _dst = os.path.join(RT, "attempts", eid, str(_d.get("attempt_id") or "none")); _k = 0
+        while os.path.exists(os.path.join(_dst, os.path.basename(_p))) and _k < 1000: _k += 1; _dst = os.path.join(RT, "attempts", eid, "%s.%d" % (str(_d.get("attempt_id") or "none"), _k))
+        os.makedirs(_dst, exist_ok=True); os.replace(_p, os.path.join(_dst, os.path.basename(_p)))
+if os.path.isfile(cache):               # replay: cached route of THIS attempt, no second model call
     print(open(cache).read().strip()); sys.exit(0)
 
 ev = q.get("event") or {}
@@ -158,7 +185,7 @@ def parse_verdict(text):
     return None
 
 def classify():
-    st = os.path.join(RT, "stage", eid + ".classify.json")
+    st = stagef
     c = rjson(st)
     if c is not None: return c.get("verdict"), c.get("calls") or []
     prompt = CLS + event_text()
@@ -166,8 +193,8 @@ def classify():
         text, rec = run_claude(role, model, prompt, TMO)
         v = parse_verdict(text); rec["parsed"] = v is not None
         if v is not None:
-            wjson(st, {"verdict": v, "calls": calls}); return v, calls
-    wjson(st, {"verdict": None, "calls": calls}); return None, calls
+            wjson(st, {"verdict": v, "calls": calls, **AF}); return v, calls
+    wjson(st, {"verdict": None, "calls": calls, **AF}); return None, calls
 
 TERM = re.compile(r"\b(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b")
 VLINE = re.compile(r"^[\s>*_`#-]*VERDICT\s*:?[\s*_`]*(DONE|MERGE-OK|CONFIRM|PASS|FAIL|GATED)\b", re.I)
@@ -196,9 +223,10 @@ def finish(route, model, reason, result, exit_, extra=None, row=None, cont=None)
     out = {"id": eid, "kind": kind, "route": route, "model": model, "reason": reason, "result": result, "exit": exit_,
            "ts": now(), "model_calls": calls, "row": row or ""}
     if extra: out.update(extra)
+    out.update(AF)
     if not os.path.isfile(resf) or rjson(resf) is None or "exit" not in rjson(resf):
         wjson(resf, {"id": eid, "kind": kind, "route": route, "result": result, "exit": exit_, "ts": out["ts"], "row": row or "",
-                     "model_calls": calls, **(cont or {})})
+                     "model_calls": calls, **(cont or {}), **AF})
     if route not in ("fable", "error"): pass
     append("model-calls.log", out)
     wjson(cache, out)
@@ -444,12 +472,12 @@ text, rec = run_claude("execute", "claude-haiku-5-5", EXE + event_text(), XTMO)
 m = re.findall(r"(?m)^OUTCOME:\s*(DONE|BLOCKED)\b(.*)$", text or "")
 if m and m[-1][0] == "DONE":
     outcome = m[-1][1].strip()[:300]
-    wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "executed", "exit": 0, "outcome": outcome, "ts": now(), "row": "", "model_calls": calls})
+    wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "executed", "exit": 0, "outcome": outcome, "ts": now(), "row": "", "model_calls": calls, **AF})
     mech({"result": "executed", "summary": str(verdict.get("summary", ""))[:200], "outcome": outcome})
     finish("haiku", "haiku", "classifier:" + str(verdict.get("reason", ""))[:200], "executed", 0, extra={"outcome": outcome})
 why = (m[-1][1].strip() if m else ("executor-failed rc=%s" % rec.get("rc")))[:300]
 rid = open_row("continuation not completed (%s); task: %s" % (why, str(verdict.get("summary", ""))[:200]), "ctl-completes-or-redates")
 if rid is None: sys.exit("row-write-failed")
-wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "blocked-row", "exit": 2, "reason": why, "ts": now(), "row": rid, "model_calls": calls})
+wjson(resf, {"id": eid, "kind": kind, "route": "haiku", "result": "blocked-row", "exit": 2, "reason": why, "ts": now(), "row": rid, "model_calls": calls, **AF})
 finish("haiku", "haiku", "classifier:" + str(verdict.get("reason", ""))[:200], "blocked-row", 2, row=rid)
 PY

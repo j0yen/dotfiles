@@ -91,7 +91,8 @@ cat > "$T/stub-router" <<'STUB'
 #!/bin/sh
 id=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[2]))["id"])' "$1" "$2")
 mkdir -p "$RT_DIR/routed"; echo "{\"id\":\"$id\",\"summary\":\"handled\"}" >> "$RT_DIR/mechanical.log"
-echo "{\"id\":\"$id\",\"route\":\"haiku\",\"model\":\"haiku\",\"reason\":\"x\",\"result\":\"handled\",\"row\":\"\"}" > "$RT_DIR/routed/$id.json"
+att=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[2])).get("attempt_id",""))' "$1" "$2")   # repair 3: an attempt-aware router copies the delivery's attempt_id into its cache
+echo "{\"id\":\"$id\",\"route\":\"haiku\",\"model\":\"haiku\",\"reason\":\"x\",\"result\":\"handled\",\"row\":\"\",\"attempt_id\":\"$att\"}" > "$RT_DIR/routed/$id.json"
 STUB
 chmod +x "$T/stub-router"; XRT_BIN="$T/stub-router" br run
 [ "$(q)" = 1 ] && [ "$(d)" = 0 ] && [ "$(sends)" = 0 ] && grep -q 'ack-refused' "$T/br/deliveries.log"; chk "RED: summary-only mechanical.log handling is refused ack (stays queued, not sent to the pane)" $?
@@ -102,11 +103,11 @@ fresh; echo "$EV_PASS" > "$T/ev"; br run
 r="$(only "$T/rt/routed")"; [ "$(jf "$r" route)" = deterministic ] && [ "$(jf "$r" result)" = record ] && [ "$(jf "$T/rt/results/$(basename "$r")" exit)" = 0 ]; chk "(a) route=deterministic result=record, results/<id>.json exit 0" $?
 [ "$(rows)" = 0 ]; chk "(a) a pass outcome opens no row" $?
 fresh; echo "$EV_FAIL" > "$T/ev"; br run
-[ "$(calls)" = 0 ] && [ "$(sends)" = 0 ] && [ "$(d)" = 1 ] && [ "$(rows)" = 1 ]; chk "(a2) verifier FAIL in the artifact: surfaced as an owned open-asks row, 0 calls, acked after the row" $?
+[ "$(calls)" = 0 ] && [ "$(sends)" = 0 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ "$(rows)" = 1 ]; chk "(a2) verifier FAIL in the artifact: surfaced as an owned open-asks row, 0 calls, typed failure stays queued, not acked (N1)" $?
 row="$(grep 'event:' "$T/asks.jsonl")"; printf '%s' "$row" | grep -q '"owner": "ctl"' && printf '%s' "$row" | grep -q 'waits-on=' && printf '%s' "$row" | grep -qP '"ask_id": "A1149".*"due": "\d{4}-\d\d-\d\dT\d\d:\d\d"'; chk "(a2) row: next A id, owner ctl, date -d due, waits-on= stated" $?
 grep -q '"check": "test -e ' "$T/asks.jsonl"; chk "(a2) row carries a done-check on the handled receipt" $?
 fresh; echo "$EV_ERR" > "$T/ev"; br run
-[ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(calls)" = 0 ]; chk "(a3) errored verifier run (is_error): owned row, acked, 0 calls" $?
+[ "$(rows)" = 1 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ "$(calls)" = 0 ]; chk "(a3) errored verifier run (is_error): owned row, stays queued not acked (N1), 0 calls" $?
 fresh; echo "$EV_TOKSTR" > "$T/ev"; br run
 [ "$(jf "$(only "$T/rt/routed")" result)" = row-created ] && [ "$(rows)" = 1 ]; chk "(a4) a PASS+sha string in the detail with an unreadable artifact is NOT a record (no terminal-token grep)" $?
 fresh; echo "$EV_NONE" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
@@ -129,12 +130,12 @@ r="$(only "$T/rt/results")"; [ "$(jf "$r" exit)" = 0 ] && [ "$(jf "$r" result)" 
 grep -q 'run the cleanup script' "$T/last-prompt.exe"; chk "(c) executor received the event text" $?
 # summary-only executor (no OUTCOME line) is not completion: owned row, results exit 2, acked only because the row exists
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe "I think this is fine."; br run
-r="$(only "$T/rt/results")"; [ "$(jf "$r" exit)" = 2 ] && [ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(sends)" = 0 ]; chk "(c2) executor with no OUTCOME: owned row created, exit 2 recorded, acked after the row" $?
+r="$(only "$T/rt/results")"; [ "$(jf "$r" exit)" = 2 ] && [ "$(rows)" = 1 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ "$(sends)" = 0 ]; chk "(c2) executor with no OUTCOME: owned row created, exit 2 recorded, stays queued not acked (N1)" $?
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe 'cannot
 OUTCOME: BLOCKED gate denied'; br run
 [ "$(rows)" = 1 ] && grep 'event:' "$T/asks.jsonl" | grep -q 'gate denied'; chk "(c2) OUTCOME: BLOCKED opens an owned row naming the reason" $?
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; echo 1 > "$T/rc.exe"; br run
-[ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(jf "$(only "$T/rt/results")" exit)" = 2 ]; chk "(c3) failure before completion (executor exits 1): obligation preserved as an owned row" $?
+[ "$(rows)" = 1 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ "$(jf "$(only "$T/rt/results")" exit)" = 2 ]; chk "(c3) failure before completion (executor exits 1): obligation preserved as an owned row, stays queued not acked (N1)" $?
 
 # ---- ordinary taskfile: haiku, ONE rule; only an explicit judgment reason reaches Fable
 fresh; echo "$EV_TASK" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; br run
@@ -182,7 +183,7 @@ fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe "I think this is fine."
 BR_CYCLES=1 BR_ROUTE=0 br run
 qf="$(only "$T/br/queue")"; env_ bash "$RTS" route "$qf" >/dev/null; rm -f "$T/rt/routed"/*.json; c3="$(calls)"
 BR_CYCLES=2 br run
-[ "$(calls)" = "$c3" ] && [ "$(rows)" = 1 ] && [ "$(d)" = 1 ] && [ "$(acks)" = 1 ]; chk "(f3) restart between completion and cache: no re-execution, no duplicate row, acked once" $?
+[ "$(calls)" = "$c3" ] && [ "$(rows)" = 1 ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ] && [ "$(acks)" = 0 ]; chk "(f3) restart between completion and cache: no re-execution, no duplicate row, typed failure stays queued, never acked (N1)" $?
 # delayed second event after the first turn ended
 fresh; echo "$EV_SIMPLE" > "$T/ev"; cls "$CLS_EXEC"; exe "$EXE_OK"; BR_CYCLES=3 br run
 echo "$EV_PASS" > "$T/ev"; BR_CYCLES=3 br run
@@ -280,8 +281,8 @@ fresh; echo '{"event":"inbox","detail":{}}' > "$T/ev"; XRT_BIN="$T/rc3-router" R
 fresh; evf taskfile "[\"$T/held-ack.md\"]" > "$T/ev"; rm -f "$T/held-ack.md"; BR_CYCLES=6 br run
 hid="$(basename "$(only "$T/br/queue")" .json)"
 [ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ]; chk "(w20 item10) precondition: held and held-log markers exist" $?
-env_ bash "$BR" ack "$hid" >/dev/null
-[ ! -e "$T/rt/held/$hid" ] && [ ! -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 1 ]; chk "(w20 item10) ack <id> removes held and held-log markers" $?
+env_ bash "$BR" ack "$hid" >/dev/null 2>&1; rcx=$?
+[ "$rcx" != 0 ] && [ -e "$T/rt/held/$hid" ] && [ -e "$T/rt/held-log/$hid" ] && [ "$(d)" = 0 ] && [ "$(q)" = 1 ]; chk "(w20 item10, brief item 3) ack <id> on a held-unreadable id is refused: markers stay, nothing moves to done/" $?
 fresh; evf taskfile "[\"$T/held-del.md\"]" > "$T/ev"; rm -f "$T/held-del.md"; BR_CYCLES=6 br run
 hid="$(basename "$(only "$T/br/queue")" .json)"; env_ RT_BIN="$T/rc3-router" HELD_LOG_SEC=0 BR_CYCLES=1 bash "$BR" run
 [ -e "$T/rt/held-log/$hid.rc" ]; chk "(w20 item10) precondition: rc stamp exists" $?
