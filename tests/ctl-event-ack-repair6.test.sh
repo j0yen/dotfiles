@@ -84,6 +84,9 @@ refcase "F3 fable cache + result denied exit 0" 1 fable denied 0
 refcase "F3 fable cache + result deliver exit 0 + sibling error key" 1 fable deliver 0 '"error":"boom"'
 refcase "F3 fable cache + UNKNOWN status in a deliver result" 1 fable deliver 0 '"status":"UNKNOWN"'
 refcase "F3 fable result (no cache) UNKNOWN status" 0 fable deliver 0 '"status":"UNKNOWN"'
+# the refusal names its reason class (survivor of mutant G: the exit check skipped for the Fable route)
+fresh; mkqa e1 $NOW A1 timeout; routea e1 A1 fable; res e1 fable deliver ""; o="$(br ack e1 2>&1)"; printf '%s' "$o" | grep -q 'reason class: invalid-exit'; chk "F3 fable cache + result with no exit field: refusal names reason class invalid-exit" $?
+fresh; mkqa e1 $NOW A1 timeout; routea e1 A1 fable; res e1 fable executed 1; o="$(br ack e1 2>&1)"; printf '%s' "$o" | grep -q 'reason class: typed-failure'; chk "F3 fable cache + result exit 1: refusal names reason class typed-failure" $?
 # attempt-bound: a fable result of ANOTHER delivery is not this delivery's evidence
 fresh; mkqa e1 $NOW A1 timeout; routea e1 A1 fable; printf '{"id":"e1","route":"fable","result":"deliver","exit":0,"attempt_id":"A0"}' > "$RTD/results/e1.json"
 br ack e1 >/dev/null 2>&1; rc=$?; [ "$rc" != 0 ] && nothing_acked && [ "$(qatt e1)" = A1 ]; chk "F3 fable cache + result of another attempt: explicit ack refuses (attempt-bound evidence)" $?
