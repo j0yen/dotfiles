@@ -16,7 +16,7 @@ tok="tokalive$(od -An -N5 -tx1 /dev/urandom | tr -d ' \n')"   # names no tmux se
 cat >"$base/probe.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("fe", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-print("live" if m._alive(sys.argv[2]) else "dead")
+print("live" if m.alive(sys.argv[2]) else "dead")
 PY
 for name in claude hookshell; do printf '#!/bin/bash\npython3 -I "$1" "$2" "$3"\n' >"$base/$name"; chmod +x "$base/$name"; done   # no exec: the wrapper stays the parent
 out="$("$base/claude" "$base/probe.py" "$EV" "$tok" 2>&1)"
