@@ -28,9 +28,17 @@ case "${1:-}" in
   route) shift ;;
   *) echo "usage: ctl-event-route.sh route <queue-json-path>" >&2; exit 2 ;;
 esac
-case "$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)" in   # R4-6: a bridge that does not announce the protocol (an older ctl-event-bridge.sh) gets no routing
-  *ctl-event-bridge.sh*) [ "${BR_PROTO:-}" = attempt-v1 ] || { echo "$(date -Iseconds) bridge-version-mismatch: the calling ctl-event-bridge.sh does not announce BR_PROTO=attempt-v1; refusing to route (ship the matching bridge + router pair)" >&2; exit 3; } ;;
-esac
+is_bridge_parent() { # F5: the parent is a bridge only when one of its first three argv words (interpreter, flags, script) has the base name ctl-event-bridge.sh; a command line that merely mentions the name is not a bridge
+  local w i=0
+  while IFS= read -r -d '' w; do
+    [ "${w##*/}" = ctl-event-bridge.sh ] && return 0
+    i=$((i+1)); [ $i -ge 3 ] && return 1
+  done < "/proc/$PPID/cmdline" 2>/dev/null
+  return 1
+}
+if is_bridge_parent; then   # R4-6: a bridge that does not announce the protocol (an older ctl-event-bridge.sh) gets no routing (a renamed older bridge is not detected: residual R2)
+  [ "${BR_PROTO:-}" = attempt-v1 ] || { echo "$(date -Iseconds) bridge-version-mismatch: the calling ctl-event-bridge.sh does not announce BR_PROTO=attempt-v1; refusing to route (ship the matching bridge + router pair)" >&2; exit 3; }
+fi
 [ -f "${1:-}" ] || { echo "no such queue file: ${1:-}" >&2; exit 1; }
 export RT_HERE="$(dirname "$(readlink -f "$0")")"
 exec python3 -I - "$1" <<'PY'

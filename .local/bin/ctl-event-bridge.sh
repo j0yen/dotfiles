@@ -79,13 +79,16 @@ deliverable() { # unrouted (router absent/failed: fail-safe, never dropped) or r
   held "$1" && return 1
   local rt; rt="$(cached_route "$1")"; [ -z "$rt" ] || [ "$rt" = fable ]
 }
+# F4: the typed-success ALLOWLIST = the result names ctl-event-route.sh finish() writes at exit 0 as a success (tests/ctl-event-ack-repair6.test.sh keeps this list and the router in step); every other name is not-done
+TYPED_SUCCESS="unchanged deliver surfaced-row surfaced-dup continued informational dispatch-owned record executed"
 evidence_ok() { # evidence_ok <id> [nocache]. typed fail-closed check for a deterministic/haiku id: results/<id>.json and routed/<id>.json must match the schema exactly; success = exit 0 and no typed failure
   # evidence belongs to ONE delivery: both files must carry the queue file's attempt_id (a requeue is a new delivery with a new attempt_id; file mtimes are not consulted).
   # Sets EV_WHY to the refusal class.
   local id="$1" row out
   EV_WHY=""
   out="$(python3 -I -c 'import json,os,re,sys
-rd,cd,eid,qf,df,mode=sys.argv[1:7]
+rd,cd,eid,qf,df,mode,allow=sys.argv[1:8]
+allow=allow.split()
 def no(w): print("NO\t"+w); sys.exit(0)
 def load(p):
     try: d=json.load(open(p))
@@ -100,14 +103,13 @@ nc=mode=="nocache"   # R4-1: no routed cache, a result file exists: the result a
 r=load(rf); c=load(cf) if not nc else (dict(id=eid,route=r.get("route"),row=r.get("row",""),attempt_id=r.get("attempt_id")) if r is not None else None)
 if r is None or c is None: no("missing")
 if unk(r) or unk(c): no("UNKNOWN")
-fab=nc and r.get("route")=="fable"   # a fable-route result is the consumer'"'"'s word (same as the cache-present path); only UNKNOWN and the attempt binding apply
-if not fab:
-    if c.get("id")!=eid or c.get("route") not in ("deterministic","haiku"): no("invalid-cache")
-    if r.get("id")!=eid or r.get("route",c["route"])!=c["route"]: no("invalid-result-id")
-    if not isinstance(r.get("result"),str) or not re.fullmatch(r"[a-z][a-z0-9-]*",r["result"]): no("invalid-result")
-    e=r.get("exit")
-    if not isinstance(e,int) or isinstance(e,bool): no("invalid-exit")
-    if e!=0 or re.search(r"blocked|error|fail|refused",r["result"]): no("typed-failure")   # router typed failures: blocked-row exit 2, error-row exit 4, any nonzero exit
+# F3/F4: every route is judged the same way when a result file exists (the Fable route included): id bound, a typed result name on the explicit success ALLOWLIST (TYPED_SUCCESS), exit 0, no sibling error. Anything else is not-done.
+if c.get("id")!=eid or c.get("route") not in ("deterministic","haiku","fable"): no("invalid-cache")
+if r.get("id")!=eid or r.get("route",c["route"])!=c["route"]: no("invalid-result-id")
+if not isinstance(r.get("result"),str) or not re.fullmatch(r"[a-z][a-z0-9-]*",r["result"]): no("invalid-result")
+e=r.get("exit")
+if not isinstance(e,int) or isinstance(e,bool): no("invalid-exit")
+if e!=0 or r["result"] not in allow or r.get("error") not in (None,"",False,[],{}): no("typed-failure")   # nonzero exit, a result name that is not a listed success type (denied, aborted, timeout, blocked-row, error-row, any unknown name), or a sibling error key
 rw=c.get("row","")
 if not isinstance(rw,str): no("invalid-cache")
 q=load(qf); qa=q.get("attempt_id") if q else None
@@ -118,7 +120,7 @@ if rq:
     if not isinstance(cr,int) or isinstance(cr,bool): no("invalid-created")
     if qa is None: no("stale-requeue")   # a requeued delivery with no attempt identity cannot be bound to any evidence
 if r.get("attempt_id")!=qa or c.get("attempt_id")!=qa: no("stale-requeue" if rq else "attempt-mismatch")
-print("OK\t"+rw)' "$RTD" "$RTD" "$id" "$BR/queue/$id.json" "$BR/done/$id.json" "${2:-cache}")" || { EV_WHY=invalid; return 1; }
+print("OK\t"+rw)' "$RTD" "$RTD" "$id" "$BR/queue/$id.json" "$BR/done/$id.json" "${2:-cache}" "$TYPED_SUCCESS")" || { EV_WHY=invalid; return 1; }
   if [ "${out%%$'\t'*}" != OK ]; then EV_WHY="${out#*$'\t'}"; return 1; fi
   row="${out#*$'\t'}"
   [ -z "$row" ] || "${ASKS_VIEW_BIN:-asks-view}" 2>/dev/null | grep -qF "event:$id" || { EV_WHY=row-marker; return 1; }
@@ -141,7 +143,7 @@ ack_ok() { # explicit `ack <id>`: a held id is refused (held-unreadable without 
   rt="$(jget "$c" route)"
   case "$rt" in
     deterministic|haiku) evidence_ok "$id" || { echo "refused $id: route=$rt needs the typed success result (exit 0, id bound, never UNKNOWN or a typed failure, the same attempt_id as this delivery) and the routed cache; reason class: $EV_WHY" >&2; return 1; } ;;
-    fable) ;;
+    fable) [ ! -e "$RTD/results/$id.json" ] || evidence_ok "$id" || { echo "refused $id: route=fable and a result file exists: it must be the typed success result (exit 0, id bound, a listed success type, no error, never UNKNOWN, the same attempt_id as this delivery); reason class: $EV_WHY" >&2; return 1; } ;;   # no result file = the consumer's explicit word (F3)
     *) EV_WHY=invalid-cache; echo "refused $id: routed cache is missing/malformed or names route '${rt:-none}'" >&2; return 1 ;;
   esac
 }
