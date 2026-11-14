@@ -260,7 +260,11 @@ hook() {
     { [ "$C_STATE" = fresh ] && [ "$C_AGE" -le "$CACHE_REFRESH_S" ]; } || spawn_refresh "$seat"
     local usid ust uk; usid="$(jq -r '.session_id // "nosid"' <<<"$in" 2>/dev/null)"; [[ "$usid" =~ ^[A-Za-z0-9._-]+$ ]] || usid=nosid
     ust="$(state_dir)"; mkdir -p "$ust" 2>/dev/null
-    [ ! -e "$ust/$usid.stoplock" ] || LOCKNOTE="FOLLOW-UP STOP CHECK SKIPPED: the follow-up store was locked at this session's last Stop, so new obligations were NOT checked then; this is NOT \"none owed\"."
+    if [ -e "$ust/$usid.stoplock" ]; then   # R8-7: the marker's `evalfail <code>` line = the evaluator failed; an epoch line (or any other content) = the store was locked
+      local ukc ufc; ukc="$(head -c 256 "$ust/$usid.stoplock" 2>/dev/null)"; ufc="$(grep -m1 -xE 'evalfail (rc-[0-9]{1,3}|empty|malformed|shape)' <<<"$ukc" | cut -d' ' -f2)"
+      [ -z "$ufc" ] || LOCKNOTE="FOLLOW-UP STOP CHECK FAILED: the follow-up evaluator failed ($ufc) at this session's last Stop, so new obligations were NOT checked then; this is NOT \"none owed\"."
+      { [ -n "$ufc" ] && ! grep -qxE '[0-9]+' <<<"$ukc"; } || LOCKNOTE="${LOCKNOTE:+$LOCKNOTE }FOLLOW-UP STOP CHECK SKIPPED: the follow-up store was locked at this session's last Stop, so new obligations were NOT checked then; this is NOT \"none owed\"."
+    fi
     case "$C_STATE" in
       absent|malformed)   # F6-2: every prompt while the cache is unknown carries a marker: the full text once per session and state, a short line after (no recital loop, no silence)
         uk="$ust/$usid.unk"
