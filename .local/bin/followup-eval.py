@@ -67,20 +67,37 @@ def alive(w):
                 continue
             if probe[0] == "pgrep":
                 # pgrep -f matches any argv containing the token, including this evaluator's own ancestors (a shell whose command line names the token): those never count
-                pids = {int(x) for x in r.stdout.split() if x.isdigit()} - _ancestors()
+                pids = {int(x) for x in r.stdout.split() if x.isdigit()} - _ancestors(tok)
                 if not pids:
                     continue
             return True
     return False
 
 
-_WORKER_COMMS = ("claude", "tmux")   # ancestor kinds a handle can name (a claude session process, a tmux server): never dropped from a match
+_WORKER_COMM = "claude"   # the one ancestor a handle can name: the claimed session's claude process (exact comm, never a prefix such as claude-* or tmux-*)
+_SESSION_FLAGS = ("--resume", "--session-id")
 
 
-def _ancestors():
+def _names_session(pid, tok):
+    """True when /proc/<pid>/cmdline passes tok as its session argument: the element after --resume / --session-id, or the value of
+    --resume=<v> / --session-id=<v>, starts with tok. The token in a prompt or any other argument does not count; a read failure is False."""
+    try:
+        argv = open("/proc/%d/cmdline" % pid, "rb").read().decode("utf-8", "replace").split("\0")
+    except OSError:
+        return False
+    for i, a in enumerate(argv):
+        flag, eq, val = a.partition("=")
+        if flag in _SESSION_FLAGS and (val if eq else (argv[i + 1] if i + 1 < len(argv) else "")).startswith(tok):
+            return True
+    return False
+
+
+def _ancestors(tok):
     """Pids of the evaluator's own invocation chain (itself, hook shells, wrappers) whose command lines may name the token: dropped from a pgrep match.
-    An ancestor whose comm is a worker kind (claude, tmux) stays in the match: when the evaluator runs inside the claimed session (Stop hook, owed-now,
-    in-session eval) that ancestor IS the live worker (A1307 rev 13: the handle ctl:<sid> read dead from inside the ctl session, live from any other)."""
+    The one ancestor kept is the claimed worker itself, comm exactly claude with tok as its session argument: when the evaluator runs inside the claimed
+    session (Stop hook, owed-now, in-session eval) that process IS the live worker (A1307 rev 13: the handle ctl:<sid> read dead from inside the ctl
+    session, live from any other). Every other ancestor is dropped, the tmux server included: its argv is its startup command line, stale for the
+    server's whole life, and a session named by the handle is already found by tmux has-session (A1307 fix1: F1, F2)."""
     out, seen, pid = {os.getpid()}, {os.getpid()}, os.getppid()
     while pid > 1 and pid not in seen:
         seen.add(pid)
@@ -90,7 +107,7 @@ def _ancestors():
             ppid = int(stat.rsplit(")", 1)[1].split()[1])
         except (OSError, ValueError, IndexError):
             break
-        if not comm.startswith(_WORKER_COMMS):
+        if not (comm == _WORKER_COMM and _names_session(pid, tok)):
             out.add(pid)
         pid = ppid
     return out
