@@ -336,6 +336,9 @@ def assess_starts(c, args, decisions, malformed):
                             "work is ready now (computed at observe time)" % forged[-1].get("class_label"), "forged-class", forged[-1])
                 elif legacy:
                     verdict("unknown", "legacy decision without task_rev cannot be bound to the claim", d=legacy[-1])
+                elif any(d.get("task_rev") is None for d in allowed):
+                    d = [d for d in allowed if d.get("task_rev") is None][-1]
+                    verdict("unknown", "decision has no task_rev (the ledger row carried no rev); it cannot be bound to the claim", d=d)
                 elif any(d.get("task_rev") is not None and d["task_rev"] != st["claim_rev"] - 1 for d in allowed):
                     d = allowed[-1]
                     verdict("unknown", "revision changed: decision read rev %s, claim event is rev %s" % (d.get("task_rev"), st["claim_rev"]), d=d)
