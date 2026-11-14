@@ -84,7 +84,9 @@ t_valid_exception_auditable(){
   [ $rc = 0 ] && ok exception-allowed || bad exception-allowed "rc=$rc"
   L=$(tail -1 "$CTL_OQ_STATE/decisions.jsonl")
   echo "$L" | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['task_id']=='A2' and d['higher_priority_candidates']==['A1'] and d['exception']['owner']=='ctl' and d['exception']['source_approval']=='approvals #999' and d['exception']['review_trigger']" && ok exception-recorded || bad exception-recorded "$L"
-  o=$(q $W/f.json observe --json | jq_ "len(d['bypasses'])"); [ "$o" = 1 ] && ok observe-detects || bad observe-detects "$o"
+  # A1289 F4: a valid recorded exception is detected AS a valid exception, never counted as a bypass (was: len(bypasses)==1)
+  o=$(q $W/f.json observe --json | jq_ "(len(d['bypasses']),[(x['task_id'],x['higher_priority_candidates'],x['exception_valid']) for x in d['valid_exceptions']])")
+  [ "$o" = "(0, [('A2', ['A1'], True)])" ] && ok observe-detects || bad observe-detects "$o"
 }
 t_unavailable_source_fails_visibly(){
   mkdir -p $W/bin; printf '#!/bin/sh\necho boom >&2\nexit 1\n' >$W/bin/wm-asks; chmod +x $W/bin/wm-asks

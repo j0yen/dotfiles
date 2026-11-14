@@ -3,8 +3,30 @@
 
 Reads the canonical open asks (wm-asks asks query --json --status open) and, if
 available, wm-decide followups; classifies each obligation by priority class and
-readiness; records start decisions in an append-only jsonl; observes discretionary
-starts that bypassed actionable higher-priority work.
+readiness; records start decisions in an append-only jsonl; observes claimed starts
+against those decisions.
+
+decide: the priority class is computed from the canonical row and its dependencies
+(the same classifier as queue); --class is the caller's declaration, recorded as
+class_label and never used as authority (class_supported says whether the row facts
+support it). Every decision is recorded, including REFUSE and REFUSE-ACTIVE, with
+the row revision read (task_rev) and the optional --worker that will claim the task.
+
+observe: the start evidence is the existing canonical claim, read through
+`wm-asks asks query` (claim, rev) and `wm-asks asks events ID --json` (op=claim:
+rev, ts, worker). Each claimed open ask is bound to the latest decision recorded for
+the same task at the revision just before its claim event, at or before the claim
+time, and for the same worker when the decision named one. Result per start:
+allowed | valid-exception | dependency-repair (bound), bypass (unlogged-start: no
+decision for the task; refused-then-started: the governing decision refused;
+forged-class: a legacy allowed decision that trusted a declared class the row does
+not support while higher-priority work was ready), or unknown (claim evidence cannot
+be bound: events unavailable/malformed, no or duplicate claim event, stamp mismatch,
+changed revision, unrelated worker, decision after the claim, legacy decision without
+task_rev, malformed decision log). Valid exceptions and refusals are listed
+separately and are not bypasses. A claim is not proof of useful execution: worker
+liveness and useful effect stay UNKNOWN (see MISSING_PRODUCER); a start without a
+canonical claim is not observable here.
 
 Priority class: 1 safety/security/data-integrity/prod/recovery or cross-task
 unblocker; 2 authorized unblocked overdue commitment; 3 discretionary/other.
@@ -12,12 +34,16 @@ Readiness: ready | blocked (exact dependency + owner + evidence) | triage defect
 (blocker language with no structured waits-on token: NOT runnable) | deferred
 (explicit not-before in the future) | active (claim held; never duplicated).
 
-Exit codes: 0 ok, 2 usage, 3 REFUSE, 4 canonical source unavailable (no fallback),
-5 task already actively claimed.
+Exit codes: 0 ok (observe: CLEAN), 2 usage, 3 REFUSE, 4 canonical source unavailable
+(no fallback, nothing replayed), 5 task already actively claimed, 6 observe found a
+bypass, 7 observe could not bind every claimed start (UNKNOWN).
 """
 import argparse, datetime, json, os, re, subprocess, sys
 
-EXIT_REFUSE, EXIT_SOURCE, EXIT_ACTIVE = 3, 4, 5
+EXIT_REFUSE, EXIT_SOURCE, EXIT_ACTIVE, EXIT_BYPASS, EXIT_UNKNOWN = 3, 4, 5, 6, 7
+MISSING_PRODUCER = ("no supported canonical producer binds a running worker, its liveness or its useful effect to an ask "
+                    "claim: wm-asks ask_events records op=claim (rev, ts, worker) and has no launch, heartbeat or release op; "
+                    "a start without a canonical claim is not observable here")
 CLASS1 = re.compile(r"\b(security|secur\w*|leak\w*|credential\w*|data[- ]integrity|data[- ]loss|corrupt\w*|"
                     r"prod|production|outage|recovery|restore|backup|incident|rollback)\b", re.I)
 DISCRETIONARY = re.compile(r"\b(discretionary|nice[- ]to[- ]have|optional|new idea)\b", re.I)
@@ -47,10 +73,13 @@ def load_source(args):
     if fx:
         try:
             d = json.load(open(fx))
+            assert isinstance(d, dict) and isinstance(d["asks"], list)
         except Exception as e:
             die_source("fixture %s: %s" % (fx, e))
+        args._fixture = d
         return d["asks"], d.get("followups"), norm_ts(args.now) or d.get("now") or now, "fixture"
     cmd = (os.environ.get("CTL_OQ_WM_ASKS") if args.test else None) or "wm-asks"
+    args._wm_asks = cmd
     try:
         r = subprocess.run([cmd, "asks", "query", "--json", "--status", "open"],
                            capture_output=True, text=True, timeout=120)
@@ -105,7 +134,7 @@ def classify(asks, now):
         aid = a["ask_id"]
         seg, toks = deps[aid]
         base = {"ask_id": aid, "row_id": a.get("row_id"), "owner": a.get("owner"), "due": a.get("due"),
-                "summary": seg[:160]}
+                "rev": a.get("rev"), "summary": seg[:160]}
         due = norm_ts(a.get("due"))
         overdue = bool(due and due <= now)
         if aid in unblockers or (a.get("row_id") in unblockers):
@@ -164,19 +193,155 @@ def state_dir(args):
     return os.path.expanduser("~/.local/state/ctl-obligation")
 
 
-def read_decisions(args):
+def read_decisions(args, with_malformed=False):
     p = os.path.join(state_dir(args), "decisions.jsonl")
-    if not os.path.exists(p):
-        return []
-    rows = []
-    for line in open(p):
-        line = line.strip()
-        if line:
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
-    return rows
+    rows, bad = [], 0
+    if os.path.exists(p):
+        for line in open(p):
+            line = line.strip()
+            if line:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    r = None
+                if isinstance(r, dict) and r.get("task_id") and r.get("outcome"):
+                    rows.append(r)
+                else:
+                    bad += 1
+    return (rows, bad) if with_malformed else rows
+
+
+def ts19(s):
+    return str(s or "").replace(" ", "T")[:19]
+
+
+def load_claim_events(args, aid):
+    """-> (claim events, None) or (None, reason). Canonical source: `wm-asks asks events ID --json`."""
+    fx = getattr(args, "_fixture", None)
+    if fx is not None:
+        if not isinstance(fx.get("events"), dict):
+            return None, "canonical events unavailable (fixture has no events)"
+        ev = fx["events"].get(aid, [])
+    else:
+        cmd = getattr(args, "_wm_asks", None) or "wm-asks"
+        try:
+            r = subprocess.run([cmd, "asks", "events", aid, "--json"], capture_output=True, text=True, timeout=120)
+        except Exception as e:
+            return None, "canonical events unavailable: %s" % e
+        if r.returncode != 0:
+            return None, "canonical events unavailable: exit %d %s" % (r.returncode, r.stderr.strip()[:120])
+        try:
+            ev = json.loads(r.stdout)
+        except ValueError as e:
+            return None, "malformed canonical events: %s" % e
+    out = []
+    if not isinstance(ev, list):
+        return None, "malformed canonical events: not a list"
+    for e in ev:
+        if not isinstance(e, dict) or "op" not in e:
+            return None, "malformed canonical events: row without op"
+        if e["op"] != "claim":
+            continue
+        det = e.get("detail")
+        try:
+            det = json.loads(det) if isinstance(det, str) else det
+            assert isinstance(det, dict) and isinstance(e.get("rev"), int) and e.get("ts")
+        except Exception:
+            return None, "malformed canonical claim event"
+        out.append({"rev": e["rev"], "ts": e["ts"], "worker": det.get("worker"), "claim": det.get("claim")})
+    return out, None
+
+
+def task_index(c):
+    return {x["ask_id"]: x for k in ("queue", "blocked", "active", "deferred", "triage_defects") for x in c[k]}
+
+
+def is_dependency_repair(c, tid):
+    return tid in c["_unblockers"] or any(
+        x.get("row_id") == tid for x in c["queue"] + c["blocked"] if x["row_id"] in c["_unblockers"])
+
+
+def higher_candidates(c, tid, actor, any_owner=False):
+    return [x["ask_id"] for x in c["queue"] if x["class"] < 3 and x["ask_id"] != tid and (any_owner or x["owner"] == actor)]
+
+
+def assess_starts(c, args, decisions, malformed):
+    """Bind every claimed open ask to the decisions log through its canonical claim event."""
+    idx, starts = task_index(c), []
+    stamps = {}
+    for x in c["active"]:
+        stamps.setdefault(x["claim"], []).append(x["ask_id"])
+    for x in c["active"]:
+        aid, claim = x["ask_id"], x["claim"]
+        worker = str(claim).split("@", 1)[0]
+        st = {"ask_id": aid, "owner": x["owner"], "claim": claim, "worker": worker, "row_rev": x.get("rev"),
+              "claim_rev": None, "claim_ts": None, "authorization": None, "kind": None, "reason": None,
+              "decision_ts": None, "decision_task_rev": None, "worker_liveness": "UNKNOWN", "useful_effect": "UNKNOWN"}
+        starts.append(st)
+        problem = None
+        ev, why = load_claim_events(args, aid)
+        if ev is None:
+            problem = why
+        elif not ev:
+            problem = "no canonical claim event for claim %s" % claim
+        elif len(ev) > 1:
+            problem = "duplicate start identity: %d claim events" % len(ev)
+        elif ev[0]["claim"] != claim or ev[0]["worker"] != worker:
+            problem = "claim event %s does not match the current claim %s" % (ev[0]["claim"], claim)
+        else:
+            st["claim_rev"], st["claim_ts"] = ev[0]["rev"], ev[0]["ts"]
+        if not problem and len(stamps[claim]) > 1:
+            problem = "duplicate start identity: claim %s also on %s" % (claim, ",".join(i for i in stamps[claim] if i != aid))
+        decs = [d for d in decisions if d.get("task_id") == aid]
+        allowed = [d for d in decs if d.get("outcome") == "allowed"]
+        refused = [d for d in decs if d.get("outcome") == "refused"]
+
+        def verdict(auth, why_, kind=None, d=None):
+            st.update(authorization=auth, reason=why_, kind=kind)
+            if d:
+                st.update(decision_ts=d.get("ts"), decision_task_rev=d.get("task_rev"))
+
+        if not allowed and malformed:
+            verdict("unknown", "no well-formed allowing decision for %s, and decisions.jsonl has %d malformed line(s)" % (aid, malformed))
+        elif not allowed and refused:
+            verdict("bypass", "every decision recorded for %s refused it; the task was claimed anyway" % aid, "refused-then-started", refused[-1])
+        elif not allowed:
+            verdict("bypass", "claimed with no start decision recorded for %s" % aid, "unlogged-start")
+        elif problem:
+            verdict("unknown", problem)
+        else:
+            gov = [d for d in decs if d.get("outcome") in ("allowed", "refused") and d.get("task_rev") is not None
+                   and d["task_rev"] == st["claim_rev"] - 1 and ts19(d.get("ts")) <= ts19(st["claim_ts"])]
+            if gov:
+                d = gov[-1]
+                if d["outcome"] == "refused":
+                    verdict("bypass", "the decision at rev %s refused %s; claimed at rev %s" % (d["task_rev"], aid, st["claim_rev"]),
+                            "refused-then-started", d)
+                elif d.get("worker") and d["worker"] != worker:
+                    verdict("unknown", "decision named worker %s; claim is by %s (unrelated worker)" % (d["worker"], worker), d=d)
+                elif d.get("exception_valid") and d.get("higher_priority_candidates"):
+                    verdict("valid-exception", "bound to a valid recorded priority exception", d=d)
+                elif d.get("dependency_repair"):
+                    verdict("dependency-repair", "bound to an allowed dependency-repair decision", d=d)
+                else:
+                    verdict("allowed", "bound to an allowed decision with no actionable higher-priority candidate", d=d)
+            else:
+                legacy = [d for d in allowed if d.get("task_rev") is None and "computed_priority_class" not in d
+                          and ts19(d.get("ts")) <= ts19(st["claim_ts"])]
+                t = idx.get(aid)
+                forged = [d for d in legacy if d.get("class_label") != "discretionary" and not d.get("dependency_repair")]
+                if forged and t and t["class"] == 3 and not is_dependency_repair(c, aid) and \
+                        higher_candidates(c, aid, forged[-1].get("actor")):
+                    verdict("bypass", "legacy decision trusted declared class %s; the row computes class 3 and higher-priority "
+                            "work is ready now (computed at observe time)" % forged[-1].get("class_label"), "forged-class", forged[-1])
+                elif legacy:
+                    verdict("unknown", "legacy decision without task_rev cannot be bound to the claim", d=legacy[-1])
+                elif any(d.get("task_rev") is not None and d["task_rev"] != st["claim_rev"] - 1 for d in allowed):
+                    d = allowed[-1]
+                    verdict("unknown", "revision changed: decision read rev %s, claim event is rev %s" % (d.get("task_rev"), st["claim_rev"]), d=d)
+                else:
+                    verdict("unknown", "every allowing decision for %s was recorded after the claim" % aid, d=allowed[-1])
+    return starts
 
 
 def fu_summary(fu):
@@ -198,6 +363,9 @@ def snapshot(args):
 
 def cmd_queue(args):
     c = snapshot(args)
+    decisions, bad = read_decisions(args, with_malformed=True)
+    for x, s in zip(c["active"], assess_starts(c, args, decisions, bad)):
+        x["start_check"] = s["authorization"] + (":" + s["kind"] if s["kind"] else "")
     pub = {k: v for k, v in c.items() if not k.startswith("_")}
     if args.json:
         print(json.dumps(pub, indent=1))
@@ -229,7 +397,7 @@ def render_md(c, decisions, top):
     L.append(", ".join(ids) if ids else "none")
     L += ["", "## Active claims (not duplicated)", ""]
     for x in c["active"]:
-        L.append("- %s owner %s claim %s" % (x["ask_id"], x["owner"], x["claim"]))
+        L.append("- %s owner %s claim %s; start check %s" % (x["ask_id"], x["owner"], x["claim"], x.get("start_check")))
     if not c["active"]:
         L.append("none")
     L += ["", "## Deferred by explicit not-before", ""]
@@ -252,16 +420,37 @@ def cmd_decide(args):
     c = snapshot(args)
     tid = args.task_id
     actor = args.actor or os.environ.get("WM_SEAT") or "ctl"
-    cls = CLASS_NAMES[args.cls]
+    declared = CLASS_NAMES[args.cls]
+    t = task_index(c).get(tid)
+    cls = t["class"] if t else None
+    base = {"ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "task_id": tid, "actor": actor,
+            "priority_class": cls, "class_label": args.cls, "declared_priority_class": declared,
+            "computed_priority_class": cls, "computed_class_reason": t and t["class_reason"],
+            "class_supported": bool(t) and declared >= cls, "rationale": args.rationale,
+            "task_rev": t and t.get("rev"), "worker": args.worker}
+
+    def record(rec):
+        d = state_dir(args)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "decisions.jsonl"), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    if t is None:
+        why = "%s is not an open row in the canonical ledger; its priority cannot be computed" % tid
+        record(dict(base, higher_priority_candidates=[], dependency_repair=False, exception=None, exception_valid=False,
+                    outcome="refused", decision_reason=why, source=c["source"], ledger_now=c["now"]))
+        print("REFUSE: %s" % why)
+        return EXIT_REFUSE
     if any(x["ask_id"] == tid for x in c["active"]):
+        record(dict(base, higher_priority_candidates=[], dependency_repair=False, exception=None, exception_valid=False,
+                    outcome="refused-active", existing_claim=t["claim"],
+                    decision_reason="task already holds an active claim; not duplicated", source=c["source"], ledger_now=c["now"]))
         print("REFUSE-ACTIVE: %s already holds an active claim; not duplicated" % tid)
         return EXIT_ACTIVE
-    is_unblocker = tid in c["_unblockers"] or any(
-        x.get("row_id") == tid for x in c["queue"] + c["blocked"] if x["row_id"] in c["_unblockers"])
+    is_unblocker = is_dependency_repair(c, tid)
     cands = []
     if cls == 3 and not is_unblocker:
-        cands = [x["ask_id"] for x in c["queue"] if x["class"] < 3 and x["ask_id"] != tid
-                 and (args.any_owner or x["owner"] == actor)]
+        cands = higher_candidates(c, tid, actor, args.any_owner)
     exc = None
     fields = [args.exception_reason, args.exception_owner, args.exception_approval, args.exception_review_trigger]
     if any(fields):
@@ -275,15 +464,10 @@ def cmd_decide(args):
         why = "discretionary start bypasses actionable higher-priority candidates without a valid exception"
     elif cands:
         why = "valid priority exception"
-    rec = {"ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "task_id": tid, "actor": actor,
-           "priority_class": cls, "class_label": args.cls, "rationale": args.rationale,
-           "higher_priority_candidates": cands, "dependency_repair": is_unblocker,
-           "exception": exc, "exception_valid": exc_valid, "outcome": outcome, "decision_reason": why,
-           "source": c["source"], "ledger_now": c["now"]}
-    d = state_dir(args)
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "decisions.jsonl"), "a") as f:
-        f.write(json.dumps(rec) + "\n")
+    if outcome == "refused" and not base["class_supported"]:
+        why += "; declared class %s is not supported by the row (computed class %d: %s)" % (args.cls, cls, t["class_reason"])
+    record(dict(base, higher_priority_candidates=cands, dependency_repair=is_unblocker, exception=exc,
+                exception_valid=exc_valid, outcome=outcome, decision_reason=why, source=c["source"], ledger_now=c["now"]))
     if outcome == "refused":
         print("REFUSE: %s; candidates: %s" % (why, ", ".join(cands[:15]) + (" ..." if len(cands) > 15 else "")))
         return EXIT_REFUSE
@@ -292,17 +476,33 @@ def cmd_decide(args):
 
 
 def cmd_observe(args):
-    rows = [d for d in read_decisions(args) if d.get("class_label") == "discretionary"
-            and d.get("outcome") == "allowed" and d.get("higher_priority_candidates")]
+    c = snapshot(args)                       # canonical source required: outage exits 4, nothing is replayed
+    decisions, bad = read_decisions(args, with_malformed=True)
+    starts = assess_starts(c, args, decisions, bad)
+    claimed = {s["ask_id"] for s in starts}
+    out = {"result": None, "result_scope": "claim-evidenced starts on open asks only", "source": c["source"], "now": c["now"],
+           "starts": starts,
+           "bypasses": [s for s in starts if s["authorization"] == "bypass"],
+           "unknown": [s for s in starts if s["authorization"] == "unknown"],
+           "valid_exceptions": [d for d in decisions if d.get("outcome") == "allowed" and d.get("exception_valid")
+                                and d.get("higher_priority_candidates")],
+           "refusals": [dict(d, start_evidence="canonical claim present" if d["task_id"] in claimed else
+                             "no canonical claim (a start without a claim is not observable)")
+                        for d in decisions if d.get("outcome") in ("refused", "refused-active")],
+           "decision_log": {"rows": len(decisions), "malformed": bad},
+           "missing_producer": MISSING_PRODUCER}
+    out["result"] = "BYPASS" if out["bypasses"] else ("UNKNOWN" if out["unknown"] else "CLEAN")
     if args.json:
-        print(json.dumps({"bypasses": rows}, indent=1))
+        print(json.dumps(out, indent=1))
     else:
-        for d in rows:
-            print("%s %s bypassed %d higher-priority candidates (exception valid: %s)" % (
-                d["ts"], d["task_id"], len(d["higher_priority_candidates"]), d["exception_valid"]))
-        if not rows:
-            print("no discretionary start bypassed actionable higher-priority work")
-    return 0
+        print("observe: %s (%s); %d claimed start(s), %d bypass, %d unknown, %d valid exception(s), %d refusal(s)" % (
+            out["result"], out["result_scope"], len(starts), len(out["bypasses"]), len(out["unknown"]),
+            len(out["valid_exceptions"]), len(out["refusals"])))
+        for s in starts:
+            print("- %s claim %s rev %s: %s%s; %s" % (s["ask_id"], s["claim"], s["claim_rev"], s["authorization"],
+                                                      ":" + s["kind"] if s["kind"] else "", s["reason"]))
+        print("worker liveness and useful effect: UNKNOWN; " + MISSING_PRODUCER)
+    return {"BYPASS": EXIT_BYPASS, "UNKNOWN": EXIT_UNKNOWN}.get(out["result"], 0)
 
 
 def main():
@@ -322,6 +522,7 @@ def main():
     d.add_argument("--rationale", default="")
     d.add_argument("--actor")
     d.add_argument("--any-owner", action="store_true")
+    d.add_argument("--worker", help="the worker id that will claim the task (wm-asks asks claim --worker); observe requires the claim to match")
     d.add_argument("--exception-reason")
     d.add_argument("--exception-owner")
     d.add_argument("--exception-approval")
