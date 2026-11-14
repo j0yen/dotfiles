@@ -14,14 +14,20 @@ cat > "$BASE/home/.local/bin/uv" <<'EOS'
 echo "uv $*" >> "$HOME/uv.calls"; exit 0
 EOS
 chmod +x "$BASE/home/.local/bin/uv"
+# Hermetic env: the script's Saturday (America/Los_Angeles) branch needs NIGHTLY_DISCOVER_BRIEF (the unit's EnvironmentFile
+# sets it), so a throwaway briefs dir is always set and the ok cases pass on every weekday; inherited NIGHTLY_*/SYNTHORG_*
+# levers are cleared so no caller env can force a link, defer on a wait slug, or reach a real `wm-build live`.
+mkdir -p "$BASE/briefs"
+HENV=(-u NIGHTLY_FORCE_DISCOVER -u NIGHTLY_FORCE_MTPROOF -u NIGHTLY_WAIT_FOR_SLUGS -u NIGHTLY_LIVE_AFTER_TRUTH -u NIGHTLY_LIVE_AFTER_EXPLORE
+      -u NIGHTLY_CI -u SYNTHORG_PROD_ENDPOINT -u SYNTHORG_QUOTA_RESET -u SYNTHORG_CHAIN_QUOTA_ENV_FILE NIGHTLY_DISCOVER_BRIEF="$BASE/briefs")
 fail=0
 run() { # name expected_rc value|UNSET
   local name=$1 want=$2 val=$3 rc
   : > "$BASE/home/uv.calls"
   if [ "$val" = UNSET ]; then
-    env -u SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE HOME="$BASE/home" bash "$S" >/dev/null 2>&1; rc=$?
+    env -u SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE "${HENV[@]}" HOME="$BASE/home" bash "$S" >/dev/null 2>&1; rc=$?
   else
-    SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE="$val" HOME="$BASE/home" bash "$S" >/dev/null 2>&1; rc=$?
+    env "${HENV[@]}" SYNTHORG_CHAIN_LINK_MAX_USD_EXPLORE="$val" HOME="$BASE/home" bash "$S" >/dev/null 2>&1; rc=$?
   fi
   if [ "$rc" = "$want" ]; then echo "PASS: $name rc=$rc"; else echo "FAIL: $name rc=$rc want $want"; fail=$((fail+1)); fi
   if [ "$want" = 78 ] && [ -s "$BASE/home/uv.calls" ]; then echo "FAIL: $name ran a link"; fail=$((fail+1)); fi
