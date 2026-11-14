@@ -47,7 +47,7 @@ lc() {  # lc <name> <args...>: launch under fakes; stdout+stderr
   local nm="$1"; shift
   HOME="$th/home" FAKE_DIR="$th" AIDE_VERIFIER_DIR="$th/av" AIDE_VERIFIER_ROOM_CMD="$th/bin/fake-room" AIDE_VERIFIER_SYSTEMD_RUN="$th/bin/fake-sdrun" \
     AIDE_VERIFIER_SYSTEMCTL="$th/bin/fake-systemctl" AIDE_VERIFIER_BELL="$th/bin/fake-bell" AIDE_VERIFIER_WM_DECIDE="$th/bin/fake-wmd" AIDE_VERIFIER_GATE_ROOT="$th/gate" AIDE_VERIFIER_LOGCMD_CMD="$th/bin/fake-logcmd" \
-    PATH="$th/bin:$PATH" AIDE_VERIFIER_CGROUP_FILE="$th/cgroup-absent" AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_SLOT_CEIL=2 AIDE_VERIFIER_POLL_S=1 \
+    PATH="$th/bin:$PATH" AIDE_VERIFIER_CGROUP_FILE="$th/cgroup-absent" AIDE_VERIFIER_SELFTEST=1 AIDE_VERIFIER_POLL_S=1 \
     AIDE_VERIFIER_LOADAVG_FILE="$th/loadavg" AIDE_VERIFIER_MAX_LOAD=100 \
     bash "$script" launch "$nm" --repo j0yen/dotfiles --pr 7 --gated "$G" --token "$TOK" --head "$H" "$@" 2>&1
 }

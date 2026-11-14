@@ -3,6 +3,7 @@
 set -u
 D="$(cd "$(dirname "$0")/.." && pwd)"; L="$D/.local/bin/fable-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+export ACCOUNT_LANE_STATE="$T/lanes" ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}" ACCOUNT_LANE_TEST=1 ACCOUNT_LANE_NOW=1800000000
 mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' > "$T/store/josephsyen"; printf 'TOKEN-TECH-zzzzzzzz' > "$T/store/jyen.tech"; printf 'TOKEN-PM-yyyyyyyy' > "$T/store/jyen.pm"; chmod 600 "$T/store"/*
 cat > "$T/claude" <<'S'
 #!/usr/bin/env bash
@@ -27,7 +28,7 @@ run --helper --model fable; ck "helper cannot be fable" '[ "$(cat $T/rc)" = 64 ]
 # A1221 round-robin: alternation, resume pin, no fallback (carried from origin/account-router 16e63f1)
 rm -rf "$T/rr"; run --model sonnet; a1=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); run --model sonnet; a2=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); ck "new non-Fable allocations alternate" '[ "$a1" != "$a2" ] && [ -n "$a1" ] && [ -n "$a2" ]'
 S1=aaaaaaaa-1111-2222-3333-444444444444; run --model sonnet --session-id $S1; p1=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); run --model sonnet; run --model sonnet; run --model sonnet --resume $S1; p2=$(sed -n 's/.*acct=\([^ ]*\).*/\1/p' $SPYLOG); ck "resume pinned to recorded account (odd intervening launches, counter parity cannot mask)" '[ "$p1" = "$p2" ] && [ -n "$p1" ]'
-S2=bbbbbbbb-1111-2222-3333-444444444444; printf '%s jyen.pm\n' $S2 >> "$T/rr/sid-map"; run --model sonnet --resume $S2; ck "sid-map row naming non-pool jyen.pm -> exit 65, no launch" '[ "$(cat $T/rc)" = 65 ] && [ ! -s $SPYLOG ]'
+S2=bbbbbbbb-1111-2222-3333-444444444444; printf '%s jyen.pm\n' $S2 >> "$T/rr/sid-map"; run --model sonnet --resume $S2; ck "sid-map row naming non-pool jyen.pm -> blocked adopt_unverified (rc 75), no launch (lane contract A1300)" '[ "$(cat $T/rc)" = 75 ] && [ ! -s $SPYLOG ]'
 rm -rf "$T/rr"; mv "$T/store/jyen.tech" "$T/store/x2"; run --model sonnet; run --model sonnet; ck "missing pool credential fails closed 66, no fallback" '[ "$(cat $T/rc)" = 66 ] && [ ! -s $SPYLOG ]'; mv "$T/store/x2" "$T/store/jyen.tech"
 # generic failures never switch: no fallback path exists; missing fable credential fails closed instead of using josephsyen
 mv "$T/store/jyen.pm" "$T/store/x"; run --model fable; ck "missing PM cred fails closed (66), no josephsyen" '[ "$(cat $T/rc)" = 66 ] && [ ! -s $SPYLOG ]'; mv "$T/store/x" "$T/store/jyen.pm"
@@ -37,7 +38,7 @@ run --model fable; ck "no token in stderr/args" '! grep -q "TOKEN-" "$T/err" && 
 SID=11111111-2222-3333-4444-555555555555; sleep 30 --x-$SID 2>/dev/null & sp=$!; bash -c "exec -a 'claude --resume $SID' sleep 20" & dp=$!; sleep 0.3
 run --model fable --resume $SID; ck "duplicate resume refused (73)" '[ "$(cat $T/rc)" = 73 ] && [ ! -s $SPYLOG ]'
 kill $dp $sp 2>/dev/null; wait 2>/dev/null
-run --model fable --resume 99999999-2222-3333-4444-555555555555; ck "no duplicate -> resume proceeds" 'grep -q "acct=jyen.pm" $SPYLOG'
+run --model fable --resume 99999999-2222-3333-4444-555555555555; ck "unmapped resume -> blocked session_unmapped (rc 75), no silent transfer (lane contract A1300)" '[ "$(cat $T/rc)" = 75 ] && [ ! -s $SPYLOG ]'
 run --model fable --model sonnet; ck "duplicate --model refused" '[ "$(cat $T/rc)" = 64 ] && [ ! -s $SPYLOG ]'
 run --model sonnet --effort low --effort=high; ck "duplicate --effort refused" '[ "$(cat $T/rc)" = 64 ]'
 : > "$SPYLOG"; FABLE_LAUNCH_TEST=0 FABLE_ACCOUNT=josephsyen "$L" --model fable 2>"$T/err"; rc=$?; ck "production FABLE_ACCOUNT override refused" '[ $rc = 64 ] && [ ! -s $SPYLOG ]'

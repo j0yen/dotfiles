@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly: agorabus cargo-deny check and lock-refresh staging (RedBaron only; skips elsewhere)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

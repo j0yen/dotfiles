@@ -37,7 +37,7 @@ print(g(paths.get(f,[])))' "$1" 2>/dev/null
 
 detect_role() {
   if [ -n "${MRC_FORCE_ROLE:-}" ]; then printf '%s' "$MRC_FORCE_ROLE"; return; fi
-  case "${WM_SEAT:-}" in rb|r7|aide|ctl) printf '%s' "$WM_SEAT"; return ;; esac
+  case "${WM_SEAT:-}" in rb|r7|aide|ctl|bld|rls) printf "%s" "$WM_SEAT"; return ;; ops) printf ctl; return ;; esac   # ops = preferred name of ctl (A1296 rev181), same role row
   if [ -n "${TMUX:-}" ]; then
     local s
     if [ -n "${TMUX_PANE:-}" ]; then s=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
@@ -95,6 +95,8 @@ matches() { # matches <detected> <required>
 check() {
   local role="$1" tp="$2" required model src
   required=$(awk -v r="$role" '$1==r {print $2; exit}' "$TABLE" 2>/dev/null)
+  # bld/rls (A1572 stage 3): default required model lives here, a table row overrides it (Sonnet 5.5 medium builder, Hermes 11-12 amendment; effort is not checked)
+  [ -n "$required" ] || case "$role" in bld|rls) required=claude-sonnet-5-5 ;; esac
   [ -n "$required" ] || return 0
   model=$(model_from_transcript "$tp"); src=transcript
   if [ -z "$model" ] && [ -z "${MRC_SKIP_FALLBACK:-}" ]; then

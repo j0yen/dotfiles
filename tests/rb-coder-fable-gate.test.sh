@@ -11,6 +11,7 @@ fail=0; npass=0
 pass() { npass=$((npass+1)); echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 R=$(mktemp -d "${TMPDIR:-/tmp}/rb-fable-gate-test.XXXXXX") || exit 2
+: > "$R/coder-hosts.empty.tsv"; export RB_CODER_HOSTS_MAP="$R/coder-hosts.empty.tsv"   # gate tests stay on the local path: the repo routing map (default row redbaron) would send them to another host when run on ryzen7
 LOCKPID=""
 trap '[ -z "$LOCKPID" ] || kill "$LOCKPID" 2>/dev/null; case "$R" in */rb-fable-gate-test.*) rm -rf "$R";; esac' EXIT
 
@@ -126,7 +127,9 @@ case_ "(d3) what=AGREE, regrade verdict DISAGREE -> verdict-DISAGREE" 80 "verdic
 mkdb $R/d4.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"by":"fable-regrader","result":"RESOLVED"}')]"
 case_ "(d4) regrade JSON without a verdict key falls back to what (AGREE passes)" 0 - $R/d4.db "$P"
 mkdb $R/d5.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"CONFIRM"}')]"
-case_ "(d5) regrade verdict CONFIRM -> verdict-CONFIRM" 80 "verdict-CONFIRM $ID1" $R/d5.db "$P"
+case_ "(d5) what=AGREE, regrade verdict CONFIRM upholds the row -> AGREE passes" 0 - $R/d5.db "$P"
+mkdb $R/d5b.db "[$(row $ID1 verdict $M 'DISAGREE zed' "$EV" '{"verdict":"CONFIRM"}')]"
+case_ "(d5b) what=DISAGREE, regrade verdict CONFIRM upholds the row -> verdict-DISAGREE" 80 "verdict-DISAGREE $ID1" $R/d5b.db "$P"
 mkdb $R/d6.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{"verdict":"ESCALATE"}')]"
 case_ "(d6) regrade verdict ESCALATE -> verdict-ESCALATE" 80 "verdict-ESCALATE $ID1" $R/d6.db "$P"
 mkdb $R/d7.db "[$(row $ID1 verdict $M 'AGREE zed' "$EV" '{not json')]"

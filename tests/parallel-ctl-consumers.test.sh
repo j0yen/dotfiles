@@ -4,7 +4,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 C="$HERE/.local/bin/director-event-consumer.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+mkdir -p "$HOME/.cache/director-scratch"; T="$(mktemp -d "$HOME/.cache/director-scratch/t.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 fails=0
 ok(){ echo "PASS $1"; }
 bad(){ echo "FAIL $1${2:+: $2}"; fails=$((fails+1)); }
@@ -56,7 +56,7 @@ cat > "$T/reset" <<'SH'
 #!/usr/bin/env bash
 echo "$1" >> "$STUB/reset.log"
 SH
-chmod +x "$T"/wm-asks "$T"/launcher "$T"/hold "$T"/active "$T"/reset
+chmod 755 "$T"/wm-asks "$T"/launcher "$T"/hold "$T"/active "$T"/reset
 
 row(){ # id rev ready claim scope
   printf '"%s":{"ask_id":"%s","rev":%s,"owner":"hermes","status":"open","claim":%s,"ready":%s,"what":"w","check":"c","scope":"%s"}' "$1" "$1" "$2" "${4:-null}" "${3:-false}" "${5:-}"

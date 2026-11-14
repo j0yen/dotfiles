@@ -27,7 +27,7 @@ run ctl-marker-exempt          0 PROBE_GATE_HOSTNAME=carbon WM_SEAT=ctl
 run ctl-marker-exempt-anyhost  0 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=ctl
 run seat-r7-gated              2 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=r7
 run seat-rb-gated              2 PROBE_GATE_HOSTNAME=redbaron WM_SEAT=rb
-grep -qE '""\|aide\|ctl\)' "$gate" && echo "PASS gate-has-aide-and-ctl-predicate" || { echo "FAIL gate-has-aide-and-ctl-predicate"; fail=1; }
+grep -qE '""\|aide\|ctl\|ops\)' "$gate" && echo "PASS gate-has-aide-ctl-ops-predicate" || { echo "FAIL gate-has-aide-ctl-ops-predicate"; fail=1; }
 grep -qF 'case "${WM_SEAT:-}" in ""' "$gate" && echo "PASS gate-has-plain-predicate" || { echo "FAIL gate-has-plain-predicate"; fail=1; }
 if sed 's/#.*//' "$gate" | grep -q 'hostname'; then echo "FAIL gate-still-reads-hostname"; fail=1; else echo "PASS gate-does-not-infer-aide-from-hostname"; fi
 exit $fail

@@ -27,17 +27,24 @@ else echo "NOT OK - rb-merge.sh pre-merge jq filter is not the anchored (?im) fo
 # (a2) the PRE-merge branch-commit check: pulls/N/commits is read and ATTRIBUTION-BRANCH is the refusal
 if grep -v '^[[:space:]]*#' "$RBM" | grep -q 'pulls/' && grep -v '^[[:space:]]*#' "$RBM" | grep -q '/commits' && grep -v '^[[:space:]]*#' "$RBM" | grep -q 'ATTRIBUTION-BRANCH'; then echo "ok - rb-merge.sh pre-checks the branch commits (pulls/ + /commits + ATTRIBUTION-BRANCH)"
 else echo "NOT OK - rb-merge.sh lacks the pre-merge branch-commit check (pulls/, /commits, ATTRIBUTION-BRANCH)"; fail=1; fi
+# (a3) mergeone.sh refuses a branch commit author other than j0yen before the gate (A1296: GitHub appends the author as Co-authored-by even with --body)
+MO="$here/.local/bin/mergeone.sh"
+if grep -v '^[[:space:]]*#' "$MO" | grep -q 'pulls/$n/commits' && grep -v '^[[:space:]]*#' "$MO" | grep -q 'ATTRIBUTION-AUTHOR'; then echo "ok - mergeone.sh pre-checks branch commit authors (ATTRIBUTION-AUTHOR)"
+else echo "NOT OK - mergeone.sh lacks the branch commit author check (pulls/\$n/commits, ATTRIBUTION-AUTHOR)"; fail=1; fi
 # (b) the latest commit on j0yen/dotfiles main: a trailer is a FAILURE only when the commit is newer than tests/attribution-off.since (the mechanism's timestamp)
 since_f="$here/tests/attribution-off.since"
+allow_f="$here/tests/attribution-off.allow"   # exact 40-hex shas of landed commits whose trailer stays in history (no rewrite)
 if ! command -v gh >/dev/null 2>&1 || ! timeout 20 gh auth status >/dev/null 2>&1; then echo "skip - gh missing or unauthenticated; landed-commit check not run"
 else
   c="$(timeout 30 gh api 'repos/j0yen/dotfiles/commits?per_page=1' -q '.[0] | [.sha, .commit.committer.date, (.commit.message | gsub("\n"; "\u0001"))] | join("\t")' 2>/dev/null)" || c=""
   if [ -z "$c" ]; then echo "skip - network/gh api unavailable; landed-commit check not run"
   else
     sha="${c%%$'\t'*}"; rest="${c#*$'\t'}"; cdate="${rest%%$'\t'*}"; msg="${rest#*$'\t'}"; msg="${msg//$'\001'/$'\n'}"
-    hits="$(printf '%s\n' "$msg" | grep -ciE '^[[:space:]]*(co-authored-by:|generated with)' || true)"
+    # a GitHub squash adds the PR author's own noreply as Co-authored-by (25043e44); that is the human author, not Claude attribution
+    hits="$(printf '%s\n' "$msg" | grep -iE '^[[:space:]]*(co-authored-by:|generated with)' | grep -vciE '^[[:space:]]*co-authored-by:[^<]*<([0-9]+\+)?j0yen@users\.noreply\.github\.com>' || true)"
     since="$(cat "$since_f" 2>/dev/null || true)"
     if [ "$hits" = 0 ]; then echo "ok - latest main commit ${sha:0:7} carries no attribution trailer"
+    elif grep -qE "^$sha([[:space:]]|\$)" "$allow_f" 2>/dev/null; then echo "info: allowlisted landed trailer in $sha (tests/attribution-off.allow)"
     elif [ -n "$since" ] && [[ "$cdate" > "$since" ]]; then echo "NOT OK - ATTRIBUTION-LANDED $sha ($cdate is after the mechanism marker $since)"; fail=1
     else echo "info: legacy trailer in $sha (pre-mechanism; committed $cdate, marker ${since:-none})"; fi
   fi

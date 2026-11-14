@@ -1,0 +1,2 @@
+fable-launch: account=jyen.pm model=claude-fable-5-1 effort=high
+account-lane: failure classified unknown (no state change, no fallback)

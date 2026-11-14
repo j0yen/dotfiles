@@ -60,7 +60,8 @@ selftest() {
   [ "$rc" = 0 ]; chk "append: exit 0" $?
   grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+[+-][0-9:]+ \| selftest \| selftest 9:07 PM: ALARM landrisk: 1025 CI red$' "$L"; chk "append: '<ISO> | <source> | <source> <time>: <line>' ($(tail -n1 "$L" | cut -c1-80))" $?
   [ "$(stat -c %a "$L")" = 600 ] && [ "$(stat -c %a "$J")" = 600 ]; chk "log and json mode 0600" $?
-  [[ "$out" == "systemd-run --user --collect --unit seat-event-tst-"*" -p WorkingDirectory=$HOME $T/fake-tick tst --event" ]]; chk "free lock: spawn command (dry): '${out:0:150}'" $?
+  [[ "$out" == "systemd-run --user --collect --unit seat-event-tst-"*" -p WorkingDirectory=$HOME -p TasksMax=infinity $T/fake-tick tst --event" ]]; chk "free lock: spawn command (dry): '${out:0:150}'" $?
+  [[ "$out" == *" -p TasksMax=infinity "* ]]; chk "A1466: dry-run command carries -p TasksMax=infinity" $?
   [ ! -e "$T/spawned" ] && [ ! -e "$EVENTS_DIR/tst.wake" ]; chk "dry run started nothing and touched no .wake" $?
   [ "$(jq -r '.appended' "$J")" = 1 ] && [ "$(jq -r '.woke_tick' "$J")" = 1 ]; chk "json: appended=1 woke_tick=1" $?
   [ "$(jq -r '.last_event' "$J")" != null ] && [ "$(jq -r '.last_wake' "$J")" != null ]; chk "json: the FIRST-ever append sets last_event and last_wake (not null): $(jq -c '[.last_event,.last_wake]' "$J")" $?
@@ -122,7 +123,7 @@ selftest() {
   [ "$(last_line)" = "selftest 9:07 PM: see rb 6:1x AM: in the middle" ]; chk "a label in the MIDDLE of the text is untouched ($(last_line))" $?
   SEAT_EVENT_DRY=1 "$SELF" tst "aide 6:41 AM: already stamped looking" >/dev/null 2>&1
   [ "$(last_line)" = "selftest 9:07 PM: already stamped looking" ]; chk "a leading stamp-looking label is always replaced (not idempotent by design)" $?
-  ! tail -n 5 "$L" | grep -v 'in the middle' | grep -Eq '6:1x|2:19|6:41' ; chk "typed clocks (6:1x, 2:19, 6:41) never reach the stored log lines" $?
+  ! tail -n 5 "$L" | sed -E 's/^[^|]+ \| //' | grep -v 'in the middle' | grep -Eq '6:1x|2:19|6:41' ; chk "typed clocks (6:1x, 2:19, 6:41) never reach the stored log lines" $?
   [ "$(wc -l <"$L")" = $((n0 + 5)) ] && [ "$(jq -r '.stamped' "$J")" = $((s0 + 5)) ] && [ "$(jq -r '.typed_label_replaced' "$J")" = $((t0 + 3)) ]; chk "counters: +5 stamped, +3 typed_label_replaced ($(jq -c '[.stamped,.typed_label_replaced]' "$J"))" $?
   SEAT_EVENT_DRY=1 "$SELF" tst "rb 6:2x AM: typed label body" >/dev/null 2>&1; SEAT_STAMP_NOW="9:08 PM" SEAT_EVENT_DRY=1 "$SELF" tst "typed label body" >/dev/null 2>&1
   [ "$(wc -l <"$L")" = $((n0 + 5)) ] && [ "$(jq -r '.dropped_dup' "$J")" = 3 ]; chk "debounce compares label-stripped bodies: a repeat with another typed/real clock is a dup (dropped_dup=$(jq -r '.dropped_dup' "$J"))" $?
@@ -156,6 +157,8 @@ selftest() {
   SEAT_EVENT_DRY=1 "$SELF" ctl "ctl line two" >/dev/null 2>&1; r2=$?
   [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ ! -e "$EVENTS_DIR/ctl-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 2 ]; chk "ctl alias: aide + ctl both append to aide-events.log (2 lines, no ctl-events.log)" $?
   "$SELF" nosuch "x" >/dev/null 2>&1; [ $? = 64 ]; chk "ctl alias does not admit other unknown seats (64)" $?
+  : >"$EVENTS_DIR/aide-events.log"; SEAT_EVENT_DRY=1 "$SELF" ops "ops line (A1296 rev181)" >/dev/null 2>&1; r3=$?
+  [ "$r3" = 0 ] && [ ! -e "$EVENTS_DIR/ops-events.log" ] && [ "$(wc -l <"$EVENTS_DIR/aide-events.log")" = 1 ]; chk "ops alias: ops, ctl and aide all append to aide-events.log, no ops-events.log" $?
   # --inbox-row prints the exact seats.tsv row (tabs), refuses a bad name
   [ "$("$SELF" --inbox-row aide)" = "$(printf 'aide\tinbox\t-\t0\t0\t-\t-')" ]; chk "--inbox-row aide prints the tab-separated row" $?
   "$SELF" --inbox-row 'bad name' >/dev/null 2>&1; [ $? = 64 ]; chk "--inbox-row refuses a bad seat name (64)" $?
@@ -172,6 +175,7 @@ fi
 SEAT="$1"; shift
 # ctl = the aide since 11-06 (#244, hermes-handover 2.3): `aide` is an alias of `ctl` once seats.tsv carries only the ctl row, and both write
 # aide-events.log, the path aide-inbox.sh reads (internal file names keep the old seat name; CLAUDE.md § CTL).
+[ "$SEAT" = ops ] && ! known_seat ops && known_seat ctl && SEAT=ctl   # ops = preferred name of ctl (A1296 rev181): same executor, same inbox log
 [ "$SEAT" = aide ] && ! known_seat aide && known_seat ctl && SEAT=ctl
 known_seat "$SEAT" || self_lane "$SEAT" || { echo "seat-event: unknown seat '$SEAT' in $SEATS" >&2; exit 64; }
 LINE="$(printf '%s' "$*" | tr '\r\n\t' '   ' | sed -E 's/^ +//; s/ +$//')"
@@ -223,7 +227,7 @@ if inbox_seat "$SEAT"; then { flock 7; bump inbox_only; } 7>>"$DIR/$SEAT-events.
 
 # wake: is a turn running? (flock -n, released at once; the lock file is the one seat-tick.sh holds for a whole turn)
 if ( flock -n 9 ) 9>>"$DIR/$SEAT.lock" 2>/dev/null; then
-  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s%N)-$$" -p "WorkingDirectory=$HOME" "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
+  cmd=(systemd-run --user --collect --unit "seat-event-$SEAT-$(date +%s%N)-$$" -p "WorkingDirectory=$HOME" -p TasksMax=infinity "${SEAT_EVENT_TICK_BIN:-$HOME/.local/bin/seat-tick.sh}" "$SEAT" --event)
   { flock 7; bump woke_tick; } 7>>"$DIR/$SEAT-events.lock"
   if [ "${SEAT_EVENT_DRY:-}" = 1 ]; then echo "${cmd[*]}"; exit 0; fi
   # a same-second duplicate unit name fails: harmless, the first unit's turn reads this line (it composes its prompt after taking the lock)

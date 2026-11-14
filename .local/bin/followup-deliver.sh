@@ -74,8 +74,11 @@ jq -e -s . "$ob" >/dev/null 2>&1 || nocommit "unparseable outbox (a malformed or
 # unconfirmed one, or one whose confirm was voided by a later reconcile_confirm_failed line (legacy, no longer written; the confirm is written only by commit_atomic = temp copy + fsync + rename, so a non-durable confirm never reaches the outbox; history is never filtered or dropped); the part then reads as the open UNKNOWN it was before, which keeps the single original needs_reconcile notification.
 JQCONF='def conf($a; $i): $a[$i] as $r | any($a[$i+1:][]; .reconcile_confirmed==true and .ref==$r.ts and .key==$r.key and .part==$r.part) and (any($a[$i+1:][]; .reconcile_confirm_failed==true and .ref==$r.ts) | not);'
 sent() { jq -e -s --arg k "$key" --arg p "$1" "$JQCONF"'. as $a | any(range(0; length); . as $i | $a[$i] | (.sent_part==true or (.reconciled==true and .action=="sent" and conf($a; $i))) and .key==$k and .part==$p)' "$ob" >/dev/null 2>&1; }
-record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" \
-  '{sent_part:true,delivered:true,key:$k,part:$p,message_id:$m,dest:$d,ts:$ts}')"; }
+# A1570: a sent_part line names the ask the notice was about (.task // .id of the input) and the delivering process as actor. The actor is fixed here from the kernel uid and this script's name,
+# never read from the input, so an event author cannot claim it; the effect checker requires the corrective event's actor to be the ask owner and different from this one.
+sender_actor="followup-deliver:uid=$(id -u)"; ask_ref="$(jq -r '(.task // .id // empty) | tostring' <<<"$in" 2>/dev/null)"
+record() { commit_line "$(jq -nc --arg k "$key" --arg p "$1" --arg m "$2" --arg d "$dest" --arg ts "$(date -Ins)" --arg a "$ask_ref" --arg who "$sender_actor" \
+  '{sent_part:true,delivered:true,key:$k,part:$p,message_id:$m,dest:$d,ts:$ts,ask_id:$a,actor:$who}')"; }
 mark() { # kind part [marker_ts]: kind = sending_part | send_cleared | needs_reconcile; 0 only when durably committed
   commit_line "$(jq -nc --arg kind "$1" --arg k "$key" --arg p "$2" --arg d "$dest" --arg i "$id" --arg ts "$(date -Ins)" --arg mts "${3:-}" \
     '{($kind):true,key:$k,part:$p,dest:$d,id:$i,ts:$ts} + (if $mts == "" then {} else {marker_ts:$mts} end)')"; }

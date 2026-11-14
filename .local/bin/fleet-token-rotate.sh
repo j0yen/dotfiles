@@ -131,6 +131,8 @@ rotate() {
   if [ -n "$blk" ] && [[ "$trigger" != joe-* ]]; then
     echo "fleet-token-rotate: REFUSED: '$acct' is $blk (fleet-token-store.sh unblock $acct, or --trigger joe-<date> on Joe's word)" >&2; return 1
   fi
+  # A1300 lane policy: the fleet token serves non-Fable seats; mcphost.dev (Fable lane only) and exhausted lanes are refused before anything is verified or placed.
+  ft_lane_check "$acct" "$trigger" || { echo "fleet-token-rotate: REFUSED: '$acct' is not allowed for the fleet (non-Fable) token by the account lane policy" >&2; return 1; }
   if [ "$CHECK" = 1 ]; then echo "check ok: $acct (trigger $trigger, by $by)"; return 0; fi
   mkdir -p "$FT_STATE" "$FT_DASH"
   exec 8>>"$FT_STATE/rotate.lock"

@@ -20,3 +20,9 @@ seat_floor_stage() {
   echo "$n"
 }
 seat_floor_stage_on() { [ "$(seat_floor_stage)" -ge "$1" ]; }
+
+# A1300 E1: ONE effort source for rb/r7 seat launches (seat-relaunch.sh dry-run/launch and seat-tick.sh turns): the `<seat>.effort` key of
+# seat-model-hold.json (the same key ctl-relaunch.sh reads for ctl). Empty = no row, the caller passes no --effort and settings.json governs.
+seat_hold_effort() {  # $1 = seat/role -> effort or empty
+  jq -r --arg s "$1" '.[$s].effort // empty' "${SEAT_MODEL_HOLD:-$HOME/.config/wm-decide/seat-model-hold.json}" 2>/dev/null
+}

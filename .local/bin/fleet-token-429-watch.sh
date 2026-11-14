@@ -95,6 +95,7 @@ probe_reset() {
 skip_reason() {
   local c="$1" now="$2" line ts rs f last
   [ -f "$FT_STORE/$c" ] || { echo "no store entry"; return; }
+  ft_lane_check "$c" 2>/dev/null || { echo "account lane policy (not allowed or exhausted for the non-Fable fleet token)"; return; }
   last="$(ft_block_reason "$c" "$now")"
   if [ -n "$last" ]; then echo "$last"; return; fi
   f="$FT_STATE/fail-$c.stamp"; last="$(cat "$f" 2>/dev/null || true)"
@@ -168,6 +169,8 @@ watch() {
     wlog "blocked $limacct until $(ft_la_iso "$(ft_blocked_until "$limacct")")"
   fi
 
+  # A1300: the fleet token serves non-Fable seats; record the limit in the nonfable lane (structured seat-tick quota_wait_until evidence only; no free text) so launches and ring selection see it. No-op until the lane policy is installed; the watcher stays disarmed past EXPIRES.
+  ft_lane_record "$limacct" "$maxreset" || wlog "lane record for $limacct FAILED (policy enforced, tool error): ring selection still filters by lane"
   local ring=() line name i start=0 order=() cand="" why="" skipped=""
   if [ -r "$FT_CFG/ring" ]; then
     while IFS= read -r line || [ -n "$line" ]; do

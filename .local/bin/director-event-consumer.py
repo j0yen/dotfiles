@@ -34,21 +34,38 @@ A failing ready poll appends one durable incident row (ts, command, rc, scrubbed
 with --status all, so a row closed meanwhile still gets its receipt.
 """
 import fcntl
+import glob
 import json
 import os
+import pwd
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
 
 HOME = os.path.expanduser("~")
+PW_HOME = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)   # the account's home; $HOME can be a scratch dir inside a unit
 STATE = os.environ.get("DIRECTOR_STATE") or os.path.join(HOME, ".local/state/director-consumer")
 EVENTS_LOG = os.environ.get("DIRECTOR_EVENTS_LOG") or os.path.join(HOME, ".cache/fleet-dash/hermes-events.log")
 HOLD_GATE = os.environ.get("HOLD_GATE") or os.path.join(HOME, ".local/bin/hold-gate.sh")
 ASKS = shlex.split(os.environ.get("WM_ASKS_CMD") or "wm-asks")
 HERMES = os.environ.get("DIRECTOR_HERMES_CMD") or os.path.join(HOME, ".local/bin/hermes")
 SELF = os.path.realpath(__file__)
+LIVE_STATE = os.path.join(HOME, ".local/state/director-consumer")
+LIVE_DECIDE_STATE = os.path.join(PW_HOME, ".local/state/swarm-decide")
+LIVE_STATE_PW = os.path.join(PW_HOME, ".local/state/director-consumer")
+# Child (worker) environment: the transient unit inherits the user manager's whole environment (tokens included), so the
+# worker is started by `child-exec`, which rebuilds the environment from this allowlist only and fails closed first.
+CHILD_PASS = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME", "TZ", "HERMES_HOME")
+CHILD_ISO_VARS = ("DIRECTOR_STATE", "WM_ASKS_CMD", "WM_DECIDE_STATE")
+CHILD_EXTRA = ("DIRECTOR_SCRATCH",)
+SCRATCH_REL = ".cache/director-scratch"
+# Live locations (relative to the live home) an isolation worker can never use as HOME/HERMES_HOME and cannot reach in its unit.
+LIVE_DENY_REL = (".hermes", ".claude", ".config", ".ssh", ".local/state", ".config/fleet-token", ".config/wm-sudo",
+                 ".local/state/swarm-decide")
+EX_CONFIG = 78
 
 EVENT_RE = re.compile(r"^[A-Za-z0-9._-]{4,80}$")
 ASK_RE = re.compile(r"^A[0-9]+$")
@@ -349,9 +366,278 @@ and write the receipt; do not create a duplicate effect.
     return path
 
 
+def _real(p):
+    return os.path.realpath(p) if p else ""
+
+
+def _within(p, root):
+    return p == root or p.startswith(root.rstrip("/") + "/")
+
+
+def live_homes():
+    """The live home: the account's passwd home with symlinks resolved (never $HOME, which a unit sets to a scratch dir)."""
+    return [PW_HOME]
+
+
+def forbidden_paths(live_home=None):
+    """Live locations an isolation worker must never use as HOME/HERMES_HOME (realpath'd)."""
+    out = set()
+    for h in [live_home] if live_home else live_homes():
+        h = _real(h)
+        out.add(h)
+        for rel in LIVE_DENY_REL:
+            out.add(_real(os.path.join(h, rel)))
+    return sorted(out)
+
+
+def scratch_root(live_home=None):
+    return _real(os.path.join(live_home or live_homes()[0], SCRATCH_REL))
+
+
+def check_child_dirs(env, live_home=None):
+    """Isolation guard shared by the launcher and child-exec: HOME, HERMES_HOME (and DIRECTOR_CHILD_HOME when set) must,
+    after realpath of every symlink, be existing directories strictly inside DIRECTOR_SCRATCH, which itself is a direct
+    child of the scratch root; none may be, contain or sit inside a live location. Returns the list of reasons (empty = ok)."""
+    bad = []
+    root = scratch_root(live_home)
+    sc = _real(env.get("DIRECTOR_SCRATCH", ""))
+    if not sc or os.path.dirname(sc) != root or not os.path.isdir(sc):
+        bad.append("DIRECTOR_SCRATCH=not-a-unit-dir-under-scratch-root")
+        sc = ""
+    deny = forbidden_paths(live_home)
+    for k in ("HOME", "HERMES_HOME", "DIRECTOR_CHILD_HOME"):
+        raw = env.get(k)
+        if not raw:
+            if k != "DIRECTOR_CHILD_HOME":
+                bad.append(k + "=unset")
+            continue
+        r = _real(raw)
+        if any(r == d or (not _within(root, d) and (_within(r, d) or _within(d, r))) for d in deny):
+            bad.append(k + "=live")
+        if not sc or r == sc or not _within(r, sc) or not os.path.isdir(r):
+            bad.append(k + "=outside-scratch")
+    return sorted(set(bad))
+
+
+HOST_IPC_DENY = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/run/dbus", "/run/snapd.socket", "/run/snapd-snap.socket",
+                 "/run/tailscale", "/run/cups", "/run/avahi-daemon", "/run/polkit", "/run/ssh-unix-local")
+
+
+# Host sockets reached by path: journald/syslog, systemd varlink services and the manager notify socket. Varlink names are globbed at launch.
+SOCKET_DENY_STATIC = ("/dev/log", "/run/systemd/journal", "/run/systemd/notify", "/run/systemd/private", "/run/systemd/userdb")
+SOCKET_DENY_GLOBS = ("/run/systemd/io.systemd.*", "/run/systemd/*/io.systemd.*")
+# Device-name listings denied on top of the tmpfs /run, which already hides /run/udev and /run/lock.
+LISTING_DENY = ("/sys/class/input", "/sys/class/hidraw", "/proc/bus/input")
+
+
+# Supplementary groups cannot be dropped from a user unit (probed: setpriv --clear-groups, unshare -Ur and PrivateUsers=yes all keep the
+# kernel credentials or fail with EPERM; no newuidmap here), so the files whose access depends on one are hidden by InaccessiblePaths.
+# Fast roots only (/var/tmp and /usr are slow and hold nothing group-gated beyond the listed subdirs); /home and /tmp are not on the
+# host side of the unit (tmpfs / PrivateTmp).
+GROUP_GATED_ROOTS = ("/etc", "/var/log", "/var/lib", "/var/cache", "/var/spool", "/var/backups", "/opt", "/srv", "/boot", "/sys", "/run",
+                     "/usr/sbin", "/usr/bin", "/usr/share/ppd")
+
+
+def group_gated_paths(roots=GROUP_GATED_ROOTS):
+    """Files and directories not owned by us that the kernel lets us read, write or search although their other bits do not
+    (access through a supplementary group or an ACL entry: adm logs, journal files, dip ppp config, input-group sysfs LEDs, ...).
+    Scan time is launch-time only; a path created later is a documented residual."""
+    me = os.getuid()
+    out = []
+    for r in roots:
+        for top, dirs, files in os.walk(r):
+            keep = []
+            for n in dirs + files:
+                p = os.path.join(top, n)
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                if stat.S_ISLNK(st.st_mode):
+                    continue
+                if st.st_uid != me and any(os.access(p, m) and not st.st_mode & bit for m, bit in ((os.R_OK, 4), (os.W_OK, 2), (os.X_OK, 1))):
+                    while any(c.isspace() for c in p):      # a property value is whitespace separated: deny the nearest clean ancestor
+                        p = os.path.dirname(p)
+                    out.append(p)
+                elif n in dirs:
+                    keep.append(n)
+            dirs[:] = keep
+    return sorted(set(out))
+
+
+def socket_deny_paths():
+    return list(SOCKET_DENY_STATIC) + sorted(set(g for pat in SOCKET_DENY_GLOBS for g in glob.glob(pat)))
+
+
+class LaunchRefused(Exception):
+    pass
+
+
+def child_writable_roots(root):
+    """Realpaths a worker can write: the unit scratch dir it receives, every unit scratch dir under the root (a prior child's), the
+    state dirs. A unit scratch dir is a direct child of the root named director-* or holding a hermes-home dir."""
+    out = [_real(os.path.join(root, "director-child"))]
+    for k in ("DIRECTOR_SCRATCH", "DIRECTOR_STATE", "WM_DECIDE_STATE"):
+        if os.environ.get(k):
+            out.append(_real(os.environ[k]))
+    out.append(_real(STATE))
+    try:
+        for n in os.listdir(root):
+            d = os.path.join(root, n)
+            if n.startswith("director-") or os.path.isdir(os.path.join(d, "hermes-home")):
+                out.append(_real(d))
+    except OSError:
+        pass
+    return out
+
+
+def override_file_ok(r, root, writable):
+    """The resolved launcher file is ours alone: owned by the current uid, no group/other write bit on it or its directory, a single
+    hard link, and outside every child-writable location."""
+    try:
+        st, dst = os.stat(r), os.stat(os.path.dirname(r))
+    except OSError:
+        return False
+    return (st.st_uid == os.getuid() and dst.st_uid == os.getuid() and not st.st_mode & 0o022 and not dst.st_mode & 0o022
+            and st.st_nlink == 1 and not any(_within(r, q) for q in writable))
+
+
+def check_overrides(live_home=None):
+    """Isolation mode only: DIRECTOR_LAUNCH_CMD / DIRECTOR_RESET_CMD replace the boundary, so each must name (first word,
+    after realpath) an existing file strictly inside the scratch root that override_file_ok accepts. Returns the refused variable names."""
+    if not isolation_mode():
+        return []
+    root, bad = scratch_root(live_home), []
+    writable = child_writable_roots(root)
+    for k in ("DIRECTOR_LAUNCH_CMD", "DIRECTOR_RESET_CMD"):
+        val = os.environ.get(k)
+        if not val:
+            continue
+        try:
+            w = shlex.split(val)
+        except ValueError:
+            w = []
+        r = _real(w[0]) if w and os.path.isabs(w[0]) else ""
+        if not r or r == root or not _within(r, root) or not os.path.isfile(r) or not override_file_ok(r, root, writable):
+            bad.append(k)
+    return bad
+
+
+def isolation_mode():
+    """Isolation = the consumer runs on a state dir that is not the live one, or DIRECTOR_ISOLATION=1."""
+    return bool(os.environ.get("DIRECTOR_ISOLATION")) or os.path.realpath(STATE) != os.path.realpath(LIVE_STATE)
+
+
+def child_vars(unit="director-child", live_home=None):
+    """The exact vars the worker receives (name -> value), set explicitly on the unit; nothing else is passed.
+    In isolation HOME and HERMES_HOME are fresh scratch-only dirs under ~/.cache/director-scratch/<unit>."""
+    v = {k: os.environ[k] for k in CHILD_PASS if os.environ.get(k)}
+    v["DIRECTOR_STATE"] = STATE
+    v["DIRECTOR_CONSUMER"] = CONSUMER
+    if os.environ.get("WM_ASKS_CMD"):
+        v["WM_ASKS_CMD"] = os.environ["WM_ASKS_CMD"]
+    if os.environ.get("WM_DECIDE_STATE"):
+        v["WM_DECIDE_STATE"] = os.environ["WM_DECIDE_STATE"]
+    req = ["DIRECTOR_STATE"] + [k for k in ("WM_ASKS_CMD", "WM_DECIDE_STATE") if k in v]
+    if isolation_mode():
+        sc = os.path.join(scratch_root(live_home), unit)
+        home, hh = os.path.join(sc, "home"), os.path.join(sc, "hermes-home")
+        for d in (sc, home, hh):
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        v.update(DIRECTOR_ISOLATION="1", DIRECTOR_SCRATCH=_real(sc), HOME=_real(home), HERMES_HOME=_real(hh))
+        req = list(CHILD_ISO_VARS) + ["DIRECTOR_SCRATCH", "HOME", "HERMES_HOME"]
+    v["DIRECTOR_CHILD_REQUIRE"] = ",".join(req)
+    return v
+
+
+def sandbox_props(v, live_home=None, cmds=()):
+    """systemd boundary for the transient unit. Live mode keeps the original home access (the live worker needs its
+    Hermes home). Isolation mode enforces it: an empty read-only tmpfs over the live home, binds for only the scratch dir,
+    the state dir and the ledger dir (plus read-only binds of the launcher/command files that live under the home),
+    inaccessible credential dirs, the user bus and host IPC sockets (docker, system bus, snapd, ...), private /tmp, a fresh
+    /dev/shm, a private network namespace (no providers, no loopback services, no abstract X11 sockets), no new privileges. PrivateDevices=yes drops input/video/snd/dri/fuse nodes (its /dev/shm stays shared, so the TemporaryFileSystem
+    over /dev/shm is kept next to it); PrivatePIDs=yes leaves the child only its own pid in /proc, so host cmdlines are not openable.
+    ProtectProc=invisible and ProcSubset=pid are left out (probed: not applied by the user manager); DevicePolicy=closed + DeviceAllow
+    is left out too (probed: the user manager opens every node anyway)."""
+    live_home = _real(live_home) if live_home else live_homes()[0]
+    if not v.get("DIRECTOR_ISOLATION"):
+        home = v.get("HOME", HOME)
+        rw = [STATE, v.get("HERMES_HOME") or os.path.join(home, ".hermes"), os.path.join(home, ".cache/director-scratch")]
+        return ["ProtectHome=read-only", "PrivateTmp=yes", "NoNewPrivileges=yes",
+                "ReadWritePaths=" + " ".join("-" + p for p in rw)]
+    rw = []
+    for p in (v["DIRECTOR_SCRATCH"], v["DIRECTOR_STATE"], v.get("WM_DECIDE_STATE")):
+        if p and not any(_within(_real(p), q) for q in rw):
+            rw.append(_real(p))
+    ro = [p for p in dict.fromkeys(_real(c) for c in cmds if c) if _within(p, live_home) and os.path.exists(p) and not any(_within(p, q) for q in rw)]
+    deny = [os.path.join(live_home, rel) for rel in LIVE_DENY_REL] + ["/run/user/%d" % os.getuid()] + list(HOST_IPC_DENY) + socket_deny_paths() + list(LISTING_DENY) + group_gated_paths()
+    props = ["TemporaryFileSystem=%s:ro /dev/shm /run:ro" % live_home, "BindPaths=" + " ".join(rw)]
+    if ro:
+        props.append("BindReadOnlyPaths=" + " ".join(ro))
+    return props + ["InaccessiblePaths=" + " ".join("-" + p for p in deny), "PrivateTmp=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "PrivatePIDs=yes", "NoNewPrivileges=yes"]
+
+
+def launch_argv(unit, env, tail=None, live_home=None, child_exec=True):
+    """systemd-run argv. `tail` replaces the worker command and `live_home` the home the boundary protects (tests run a stub
+    under the real unit properties; child_exec=False skips the in-unit guard for a fake-home probe)."""
+    v = child_vars(unit, live_home)
+    iso = bool(v.get("DIRECTOR_ISOLATION"))
+    if iso:
+        bad = check_child_dirs(v, live_home)
+        if bad:
+            raise RuntimeError("isolation launch refused: " + ",".join(bad))
+    hermes = _real(HERMES) if iso else HERMES
+    ask0 = shlex.split(v.get("WM_ASKS_CMD", ""))[:1]
+    argv = ["systemd-run", "--user", "--unit", unit, "--collect"]
+    for k in sorted(v):
+        argv += ["--setenv", "%s=%s" % (k, v[k])]
+    argv += ["-p", "TasksMax=infinity"]
+    for p in sandbox_props(v, live_home, [SELF, hermes] + [a for a in ask0 if a.startswith("/")]):
+        argv += ["-p", p]
+    cmd = tail if tail is not None else [hermes, "chat", "-Q", "--query-file", env]
+    return argv + ["--"] + ([sys.executable, SELF, "child-exec", "--"] if child_exec else []) + cmd
+
+
+def cmd_child_exec(argv):
+    """Runs inside the unit before any provider call: verify isolation, rebuild the environment from the allowlist, exec.
+    Exits 78 (nothing started) when a required var is missing or an isolation run points at live state or a live home."""
+    if "--" not in argv:
+        print("usage: child-exec -- <command...>", file=sys.stderr)
+        return 64
+    cmd = argv[argv.index("--") + 1:]
+    e = os.environ
+    req = [k for k in e.get("DIRECTOR_CHILD_REQUIRE", "").split(",") if k]
+    miss = [k for k in ["DIRECTOR_STATE", "DIRECTOR_CHILD_REQUIRE"] + req if not e.get(k)]
+    if miss or not cmd:
+        print("child-exec: refused, missing %s" % ",".join(miss or ["command"]), file=sys.stderr)
+        return EX_CONFIG
+    iso = bool(e.get("DIRECTOR_ISOLATION")) or os.path.realpath(e["DIRECTOR_STATE"]) != os.path.realpath(LIVE_STATE_PW)
+    if iso:
+        bad = [k for k in CHILD_ISO_VARS if not e.get(k)]
+        if e.get("DIRECTOR_STATE") and os.path.realpath(e["DIRECTOR_STATE"]) in (os.path.realpath(LIVE_STATE), os.path.realpath(LIVE_STATE_PW)):
+            bad.append("DIRECTOR_STATE=live")
+        if e.get("WM_DECIDE_STATE") and os.path.realpath(e["WM_DECIDE_STATE"]) == os.path.realpath(LIVE_DECIDE_STATE):
+            bad.append("WM_DECIDE_STATE=live")
+        if e.get("WM_ASKS_CMD") and e["WM_ASKS_CMD"].split() == ["wm-asks"]:
+            bad.append("WM_ASKS_CMD=live")
+        bad += check_child_dirs(e)
+        if bad:
+            print("child-exec: refused in isolation mode: %s" % ",".join(bad), file=sys.stderr)
+            return EX_CONFIG
+    clean = {k: e[k] for k in CHILD_PASS + CHILD_EXTRA + ("DIRECTOR_STATE", "DIRECTOR_CONSUMER", "DIRECTOR_ISOLATION", "WM_ASKS_CMD", "WM_DECIDE_STATE") if e.get(k)}
+    try:
+        os.execvpe(cmd[0], cmd, clean)
+    except OSError as ex:
+        print("child-exec: exec failed: %s" % ex, file=sys.stderr)
+        return 127
+
+
 def launch(r):
     """One launch attempt. Returns True when the launcher started the run. Exit 75 = provider outage: the claim is kept,
     the attempt is not counted and recover retries."""
+    bad = check_overrides()
+    if bad:
+        raise LaunchRefused("isolation launch refused: %s outside the scratch dir" % ",".join(bad))
     env = write_envelope(r)
     attempt = r.get("attempts", 0) + 1
     uncounted = r.pop("outage_relaunch", False)      # a relaunch after a provider outage never counts as an attempt
@@ -365,8 +651,7 @@ def launch(r):
     if lc:
         argv = shlex.split(lc) + [unit, env]
     else:
-        argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--",
-                HERMES, "chat", "-Q", "--query-file", env]
+        argv = launch_argv(unit, env)
     rc, _, err = sh(argv)
     r["unit"] = unit
     if rc == 0:
@@ -925,6 +1210,8 @@ def cmd_reconcile(eid, verdict, by):
 
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "consume"
+    if cmd == "child-exec":
+        return cmd_child_exec(argv[2:])
     if cmd not in ("consume", "recover", "complete", "reconcile"):
         print("usage: director-event-consumer.py [consume|recover|complete <event_id> --effect <path>|reconcile <event_id> --verdict present|absent --by <who>]", file=sys.stderr)
         return 64
@@ -943,10 +1230,14 @@ def main(argv):
             print("usage: reconcile <event_id> --verdict present|absent --by <who>", file=sys.stderr)
             return 64
         return cmd_reconcile(argv[2], opt("--verdict"), opt("--by"))
-    if cmd == "consume":
-        read_events()
-    recover_runs(replay=(cmd == "recover"))
-    poll_ready()
+    try:
+        if cmd == "consume":
+            read_events()
+        recover_runs(replay=(cmd == "recover"))
+        poll_ready()
+    except LaunchRefused as ex:
+        print("director-event-consumer: %s" % ex, file=sys.stderr)
+        return EX_CONFIG
     return 0
 
 

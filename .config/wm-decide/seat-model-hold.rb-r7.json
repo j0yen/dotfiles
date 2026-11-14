@@ -1,0 +1,18 @@
+{
+  "rb": {
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "reason": "A1300 rev 192: routine rb default is Sonnet 5.5 medium; Opus 5.5 high stays the escalation via RB_CODER_MODEL=opus or an explicit SEAT_MODEL/SEAT_EFFORT override",
+    "by": "joe-20261112 \"Plan approved\" via Hermes task model-effort-rollout-approved-20261112",
+    "expires": "2026-12-12",
+    "after_expiry": "row absent: the controller-model-required table governs"
+  },
+  "r7": {
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "reason": "A1300 rev 192: routine r7 default is Sonnet 5.5 medium; Opus 5.5 high stays the escalation via RB_CODER_MODEL=opus or an explicit SEAT_MODEL/SEAT_EFFORT override",
+    "by": "joe-20261112 \"Plan approved\" via Hermes task model-effort-rollout-approved-20261112",
+    "expires": "2026-12-12",
+    "after_expiry": "row absent: the controller-model-required table governs"
+  }
+}

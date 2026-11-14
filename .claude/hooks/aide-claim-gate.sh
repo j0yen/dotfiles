@@ -20,7 +20,7 @@
 # ADVISORY: task objects `task:<slug>` are claim-by-convention only, never parsed here: run `aide-claim.sh take task:<slug>` before a hand task.
 # Fails OPEN on a missing jq/python3 or a non-Bash payload.
 set -uo pipefail
-case "${WM_SEAT:-}" in aide|ctl) ;; *) exit 0 ;; esac
+case "${WM_SEAT:-}" in aide|ctl|ops) ;; *) exit 0 ;; esac
 JQ=$(command -v jq) || exit 0
 PY=$(command -v python3) || exit 0
 INPUT=$(cat) || exit 0
