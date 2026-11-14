@@ -74,14 +74,25 @@ def alive(w):
     return False
 
 
+_WORKER_COMMS = ("claude", "tmux")   # ancestor kinds a handle can name (a claude session process, a tmux server): never dropped from a match
+
+
 def _ancestors():
-    out, pid = {os.getpid()}, os.getppid()
-    while pid > 1 and pid not in out:
-        out.add(pid)
+    """Pids of the evaluator's own invocation chain (itself, hook shells, wrappers) whose command lines may name the token: dropped from a pgrep match.
+    An ancestor whose comm is a worker kind (claude, tmux) stays in the match: when the evaluator runs inside the claimed session (Stop hook, owed-now,
+    in-session eval) that ancestor IS the live worker (A1307 rev 13: the handle ctl:<sid> read dead from inside the ctl session, live from any other)."""
+    out, seen, pid = {os.getpid()}, {os.getpid()}, os.getppid()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
         try:
-            pid = int(open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()[1])
+            stat = open("/proc/%d/stat" % pid).read()
+            comm = stat[stat.index("(") + 1:stat.rindex(")")]
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
         except (OSError, ValueError, IndexError):
             break
+        if not comm.startswith(_WORKER_COMMS):
+            out.add(pid)
+        pid = ppid
     return out
 
 
