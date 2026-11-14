@@ -7,7 +7,11 @@
 
 set -uo pipefail
 
-deadline_ms=$(( ${EPOCHREALTIME/./} / 1000 + 100 ))
+# Both agorabus queries share one 100 ms deadline. AGORABUS_OVERLAP_DEADLINE_MS
+# (digits only) overrides it so the overlap-rule tests do not depend on how fast
+# a loaded host spawns the client; production never sets it.
+case "${AGORABUS_OVERLAP_DEADLINE_MS:-}" in ''|*[!0-9]*) query_ms=100 ;; *) query_ms=$AGORABUS_OVERLAP_DEADLINE_MS ;; esac
+deadline_ms=$(( ${EPOCHREALTIME/./} / 1000 + query_ms ))
 AB=$(command -v agorabus) || exit 0
 JQ=$(command -v jq) || exit 0
 
