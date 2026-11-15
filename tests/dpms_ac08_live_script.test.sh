@@ -73,6 +73,14 @@ h=$(live_home "$tw/crash.sh"); run_live "$h"
 assert_eq "$LRC" 8 "R5(e) crash gate: exit 8"
 assert_contains "$LOUT" "probe=empty verdict=admit" "R5(e) crash gate: non-zero exit counts as admit"
 
+# Extra: deny JSON printed with a non-zero exit is not a deny (the harness
+# reads hook JSON only on exit 0) -> 8
+printf '#!/usr/bin/env bash\ncat >/dev/null\necho %s\nexit 1\n' "'{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\"}}'" >"$tw/denyrc1.sh"
+OUT=$(echo '{}' | bash "$tw/denyrc1.sh"); is_deny "$OUT" && ok "R5(e) rc1 stub prints deny JSON" || notok "R5(e) rc1 stub prints deny JSON ($OUT)"
+h=$(live_home "$tw/denyrc1.sh"); run_live "$h"
+assert_eq "$LRC" 8 "R5(e) deny JSON with exit 1: exit 8"
+assert_contains "$LOUT" "probe=foreign verdict=admit" "R5(e) deny JSON with exit 1 counts as admit"
+
 # Extra: a hook path resolving to a directory -> 2
 h=$(live_home "$tw"); run_live "$h"
 assert_eq "$LRC" 2 "R5(e) hook resolves to a directory: exit 2"
