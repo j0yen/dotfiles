@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-15 — dream-prd-marker-per-session (patch)
+
+`prd-write-gate.sh` admits a `build-queue/PRD-*.md` creation only for the session whose own
+`${SKILL_MARKER_DIR:-~/.claude/state/skill-active}/dream-prd.<session_id>` is younger than `DREAM_TTL_MIN` (180), or on
+`~/.claude/.allow-prd-handfile`; it never reads `~/.claude/.dream-active`, another session's marker or the sibling
+`dream.<sid>`, refreshes the own marker only after an admit by it, and denies an input with no `session_id`
+(`reason=no-session-id`, was fail-open). Log lines gain `session=<id|missing> reason=<marker-absent|marker-stale|no-session-id>`.
+`dream-marker.sh` creates the marker directory and touches `dream-prd.<sid>` (nothing for an empty id) instead of the
+home-wide file. Tests `tests/dpms_ac0[1-8]_*.test.sh` with digest-pinned 61d0c6a2 fixtures; install readback
+`bash ~/dotfiles/tests/dpms_live.sh` (0 installed, 7 not-installed, 8 unknown admit, 2 usage).
+
 ## 2026-11-02 — rb-run-coder-room-rb (patch)
 
 `rb-run-coder.sh` room step now reads real memory on RedBaron: off carbon it forces `carbon-room.sh` to measure (`CARBON_ROOM_HOST`,
