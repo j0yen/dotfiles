@@ -41,12 +41,12 @@ SCRATCH=$(mktemp -d 2>/dev/null </dev/null) || { echo "dpms_live: cannot create 
 trap 'rm -rf "$SCRATCH"' EXIT
 for p in empty foreign; do
     h="$SCRATCH/$p"
-    mkdir -p "$h/.claude/state/skill-active" "$h/.cache" "$h/proj/build-queue" </dev/null \
-        && touch "$h/.claude/.dream-active" </dev/null \
+    mkdir -p "$h/.claude/state/skill-active" "$h/.cache" "$h/proj/build-queue" \
+        && touch "$h/.claude/.dream-active" \
         || { echo "dpms_live: cannot create a temporary HOME" >&2; exit 2; }
 done
 touch "$SCRATCH/foreign/.claude/state/skill-active/dream-prd.other" \
-      "$SCRATCH/foreign/.claude/state/skill-active/dream.other" </dev/null \
+      "$SCRATCH/foreign/.claude/state/skill-active/dream.other" \
     || { echo "dpms_live: cannot create a temporary HOME" >&2; exit 2; }
 
 echo "hook=$HOOK sha256=$SHA"
