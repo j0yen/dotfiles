@@ -122,6 +122,8 @@ if [ -n "$ROUTE_REQ" ]; then
     rep="$(canon | LC_ALL=C awk '$2 ~ /^PRD-[a-z0-9-]+\.md$/ {print $2}' | LC_ALL=C sort | uniq -d | head -1)"
     [ -z "$rep" ] || { R_SCOPE_ID=""; snap_refuse "prd-repeat $rep (one PRD basename listed with two digests)"; }
     ( cd -- "$(dirname -- "$M")" && sha256sum --check --quiet --strict -- "$(basename -- "$M")" ) >&2 || snap_refuse "sha256sum --check failed from $(dirname -- "$M")"
+    # The guard sees a launch only through its id in argv, so a fresh review must pre-draw it (a resume carries its id already).
+    [ "$SIDARG" = 1 ] || [ "$RESUME" = 1 ] || { R_WHY="review launch needs a pre-drawn --session-id so the guard can see it"; dec_row denied; echo "fable-launch: $R_WHY; nothing started" >&2; exit 64; }
   elif [ "$R_REVIEW" = object ]; then
     echo "fable-launch: review object without snapshot: launching as author (unbindable as a Review: line once the lint PRD is installed)" >&2
     R_WHY="${R_WHY:+$R_WHY; }review-without-snapshot"
@@ -156,21 +158,43 @@ if [ -n "$sid" ] && [[ "$sid" =~ ^[0-9a-f-]{36}$ ]]; then
   # the atomic pid+starttime claim below is the real duplicate guard.
   anc=" "; _p=$$; for _i in 1 2 3 4 5 6 7 8; do anc="$anc$_p "; _p="$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')"; [[ "$_p" =~ ^[0-9]+$ ]] && [ "$_p" -gt 1 ] || break; done
   dup="$(ps -eo pid=,ppid=,args= | awk -v s="$sid" -v me="$$" -v anc="$anc" '$1!=me && $2!=me && index(anc, " " $1 " ")==0 && index($0,s) && !/awk -v s=/ {print $1}' | head -3 | tr '\n' ' ')"
-  [ -z "$dup" ] || { echo "fable-launch: session $sid already running (pid $dup); not resuming a duplicate" >&2; exit 73; }
+  [ -z "$dup" ] || { [ "$ROUTED" = 0 ] || { R_WHY="session $sid already running (pid ${dup% }); not resuming a duplicate"; dec_row denied; }; echo "fable-launch: session $sid already running (pid $dup); not resuming a duplicate" >&2; exit 73; }
 fi
 if [ "$ROUTED" = 1 ]; then
+  # Guard lock: the duplicate scan, both resume rules, the session claim and the launch row run under one flock (bounded 30 s), released
+  # before the CLI starts, so two same-scope launches started at once are serialized. Any failure to take it is a denied row, never an unlocked scan.
+  if ! { mkdir -p "$(dirname "$DEC_LOG")" 2>/dev/null && { exec 9>"${DEC_LOG}.guard.lock"; } 2>/dev/null && flock -w 30 9; }; then
+    R_WHY="guard lock ${DEC_LOG}.guard.lock not taken (unopenable, flock failed or 30 s wait expired)"; dec_row denied; echo "fable-launch: $R_WHY; nothing started" >&2; exit 73
+  fi
   # Same-session resume must keep the recorded route; a changed model/effort needs a new task session, not a silent switch.
   R_RESUME=false
   if [ -n "$sid" ] && [ "$SIDARG" = 0 ] && [ -r "$DEC_LOG" ]; then
     R_RESUME=true
-    prev="$(jq -r --arg s "$sid" 'select(.session==$s and .decision=="launch")|"\(.model)/\(.effort)"' "$DEC_LOG" 2>/dev/null | tail -1)"
+    prev="$(jq -R -r --arg s "$sid" 'fromjson? | objects | select(.session==$s and .decision=="launch")|"\(.model)/\(.effort)"' "$DEC_LOG" 2>/dev/null | tail -1)"
     [ -z "$prev" ] || [ "$prev" = "$model/$effort" ] || { R_WHY="resume route $model/$effort differs from session's recorded $prev"; dec_row denied; echo "fable-launch: $R_WHY; start a new session for the new route" >&2; exit 64; }
   fi
-  # Duplicate dispatch: a live worker already launched for this task+skill blocks a second launch.
+  # A resumed session keeps its recorded role and scope_id (latest launch row for the session, any task; a role other than review = author).
+  if [ "$RESUME" = 1 ] && [ -r "$DEC_LOG" ]; then
+    prevrs="$(jq -R -r --arg s "$sid" 'fromjson? | objects | select(.session==$s and .decision=="launch")|"\(if .role == "review" then "review" else "author" end)/\(.scope_id // "")"' "$DEC_LOG" 2>/dev/null | tail -1)"
+    [ -z "$prevrs" ] || [ "$prevrs" = "${R_ROLE:-author}/${R_SCOPE_ID:-}" ] || { R_WHY="resume role/scope differs: request ${R_ROLE:-author}/${R_SCOPE_ID:-}, session's recorded $prevrs"; dec_row denied; echo "fable-launch: $R_WHY; start a new session" >&2; exit 64; }
+  fi
+  # Duplicate dispatch, keyed on (task, skill, role, scope_id): a session's role is that of its latest launch row for the pair; a live author
+  # blocks another author, a live review blocks another review of the same scope_id; every other pairing proceeds.
   if [ -r "$DEC_LOG" ]; then
-    for psid in $(jq -r --arg t "$R_TASK" --arg k "$R_SKILL" 'select(.task_id==$t and .skill==$k and .decision=="launch" and .session!="")|.session' "$DEC_LOG" 2>/dev/null | sort -u); do
+    declare -A G_ROLE=() G_SCOPE=(); G_ORDER=()
+    while IFS=$'\t' read -r gs gr gsc; do
+      [ -n "${G_ROLE[$gs]+x}" ] || G_ORDER+=("$gs"); G_ROLE[$gs]="$gr"; G_SCOPE[$gs]="$gsc"
+    done < <(jq -R -r --arg t "$R_TASK" --arg k "$R_SKILL" 'fromjson? | objects | select(.task_id==$t and .skill==$k and .decision=="launch" and (.session|type)=="string" and .session!="") | [.session, (if .role == "review" then "review" else "author" end), (.scope_id // "")] | @tsv' "$DEC_LOG" 2>/dev/null)
+    for psid in "${G_ORDER[@]}"; do
       [ "$psid" = "$sid" ] && continue
-      if ps -eo args= | grep -F -- "$psid" | grep -vq grep; then R_WHY="task $R_TASK/$R_SKILL already has a live worker (session $psid)"; dec_row denied; echo "fable-launch: $R_WHY; not dispatching a duplicate" >&2; exit 73; fi
+      if [ "$R_ROLE" = review ]; then
+        [ "${G_ROLE[$psid]}" = review ] && [ "${G_SCOPE[$psid]}" = "$R_SCOPE_ID" ] || continue
+        why="task $R_TASK/$R_SKILL already has a live review of scope_id $R_SCOPE_ID (session $psid)"
+      else
+        [ "${G_ROLE[$psid]}" = author ] || continue
+        why="task $R_TASK/$R_SKILL already has a live worker (session $psid)"
+      fi
+      if ps -eo args= | grep -F -- "$psid" | grep -vq grep; then R_WHY="$why"; dec_row denied; echo "fable-launch: $R_WHY; not dispatching a duplicate" >&2; exit 73; fi
     done
   fi
   if [ -z "$sid" ]; then sid="$(cat /proc/sys/kernel/random/uuid)"; out+=(--session-id "$sid"); fi
@@ -202,7 +226,7 @@ ACCT="$(printf '%s' "$CL" | jq -r '.account')"
 [[ "$ACCT" =~ ^[A-Za-z0-9._-]+$ ]] || exit 64
 f="$STORE/$ACCT"
 [ -s "$f" ] || { echo "fable-launch: no stored credential for account '$ACCT'" >&2; python3 -I "$LANE_PY" session-abort --session "$KEY" >/dev/null 2>&1; exit 66; }
-[ "$ROUTED" = 0 ] || dec_row launch
+[ "$ROUTED" = 0 ] || { dec_row launch; exec 9>&-; }   # guard lock released before the CLI starts
 tok="$(cat "$f")"
 # Paid-overage safeguard + inherited credential scrub: only the selected account's OAuth token may authenticate this process.
 for _v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY AWS_BEARER_TOKEN_BEDROCK; do
