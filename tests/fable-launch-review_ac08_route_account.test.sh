@@ -19,7 +19,7 @@ ck "that refusal is a denied row naming the pid, with the derived review fields"
 flr_req au2 A8-B; flr_run sga au2 --session-id "$SX" -p x
 ck "routed author launch with that id: 73 and a denied row naming the pid" '[ "$FLR_RC" = 73 ] && flr_get sga .reasons | grep -qE "pid $LX( |\$|\))" && [ "$(flr_get sga .role)" = author ]'
 flr_kill "$LX"
-mkdir "$DEC.guard.lock"
+rm -f "$DEC.guard.lock"; mkdir "$DEC.guard.lock"   # earlier routed runs left the (inert) lock file
 flr_run gl rv --session-id "$(uuid)" -p x
 ck "unopenable guard lock file: 73, nothing started" '[ "$FLR_RC" = 73 ] && flr_spy_empty gl'
 ck "unopenable guard lock file: denied row whose reason begins guard lock" '[ "$(flr_count gl denied)" = 1 ] && [ "$(flr_count gl launch)" = 0 ] && case "$(flr_get gl .reasons)" in "guard lock"*) :;; *) false;; esac'

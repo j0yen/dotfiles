@@ -7,8 +7,9 @@ flr_req au A5; flr_run a au -p x; SA="$(flr_get a .session)"
 SR="$(uuid)"; flr_req rh A5 "$FX/happy.sha256"; flr_run r rh --session-id "$SR" -p x; S="$(flr_get r .scope_id)"
 ck "setup: author and reviewer sessions launched" '[ "$(flr_get a .role)" = author ] && [ "$(flr_get r .role)" = review ] && [ ${#S} = 64 ]'
 differs(){ # NAME: 64, the R6 denied row, nothing started
-  ck "$1: exit 64, nothing started, no launch row" '[ "$(cat $T/rc.$1)" = 64 ] && flr_spy_empty $1 && [ "$(flr_count $1 launch)" = 0 ]'
-  ck "$1: denied row \"resume role/scope differs\"" '[ "$(flr_count $1 denied)" = 1 ] && flr_get $1 .reasons | grep -qF "resume role/scope differs"'
+  dn="$1"
+  ck "$dn: exit 64, nothing started, no launch row" '[ "$(cat $T/rc.$dn)" = 64 ] && flr_spy_empty $dn && [ "$(flr_count $dn launch)" = 0 ]'
+  ck "$dn: denied row \"resume role/scope differs\"" '[ "$(flr_count $dn denied)" = 1 ] && flr_get $dn .reasons | grep -qF "resume role/scope differs"'
 }
 flr_run ra1 rh --resume "$SA" -p x; differs ra1
 ck "ra1: denied row carries the request's role review and S, session SA" '[ "$(flr_get ra1 "[.role,.scope_id,.session]|join(\",\")")" = "review,$S,$SA" ]'
