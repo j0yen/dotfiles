@@ -61,12 +61,15 @@ done
 # The CLI's own --output-format decides how the supervisor reads headless output; stdout content never does. Unknown/empty value = refuse.
 case "$OUTFMT" in text|json|stream-json) ;; *) echo "fable-launch: unsupported --output-format '$OUTFMT' (text|json|stream-json)" >&2; exit 64 ;; esac
 ROUTED=0
+# Review scope (PRD fable-launch-review-scope-guard): role comes only from a verifying review.snapshot manifest, never from env or a label.
+R_ROLE=author; R_SCOPE=""; R_SCOPE_ID=""; R_REVIEW=none; R_SNAP=""
 DEC_LOG="${SKILL_ROUTING_DECISIONS:-$HOME/.local/state/skill-routing/decisions.jsonl}"
 dec_row() { # decision, extra jq args...
   mkdir -p "$(dirname "$DEC_LOG")" 2>/dev/null
   jq -nc --arg ts "$(date -Is)" --arg d "$1" --arg tid "${R_TASK:-}" --arg sk "${R_SKILL:-}" --arg route "${R_ROUTE:-}" \
     --arg m "${model:-}" --arg e "${effort:-}" --arg acct "${ACCT:-}" --arg sid "${sid:-}" --arg why "${R_WHY:-}" --argjson resume "${R_RESUME:-false}" \
-    '{ts:$ts,decision:$d,task_id:$tid,skill:$sk,route:$route,model:$m,effort:$e,account:$acct,session:$sid,resume:$resume,reasons:$why}' >>"$DEC_LOG" 2>/dev/null
+    --arg role "${R_ROLE:-author}" --arg scope "${R_SCOPE:-}" --arg scope_id "${R_SCOPE_ID:-}" \
+    '{ts:$ts,decision:$d,task_id:$tid,skill:$sk,route:$route,model:$m,effort:$e,account:$acct,session:$sid,resume:$resume,reasons:$why,role:$role,scope:$scope,scope_id:$scope_id}' >>"$DEC_LOG" 2>/dev/null
 }
 if [ -n "$ROUTE_REQ" ]; then
   ROUTED=1
@@ -78,6 +81,8 @@ if [ -n "$ROUTE_REQ" ]; then
   jq -c --arg m "$model" --arg e "$effort" '.requested = ((.requested // {}) + (if $m!="" then {model:$m} else {} end) + (if $e!="" then {effort:$e} else {} end))' "$ROUTE_REQ" >"$RQ" 2>/dev/null \
     || { echo "fable-launch: route request is not valid JSON; refusing (fail closed)" >&2; exit 64; }
   R_TASK="$(jq -r '.task_id // ""' "$RQ" 2>/dev/null)"; R_SKILL="$(jq -r '.skill // ""' "$RQ" 2>/dev/null)"
+  R_REVIEW="$(jq -r 'if (.review|type)=="object" then (if (.review|has("snapshot")) then "snapshot" else "object" end) else "none" end' "$RQ" 2>/dev/null)"
+  R_SNAP="$(jq -r '.review.snapshot | if type=="string" then . else "" end' "$RQ" 2>/dev/null)"
   if ! RES="$(python3 -I "$RESOLVER" --file "$RQ")"; then
     R_WHY="$(printf '%s' "$RES" | jq -r '.error // "denied"' 2>/dev/null)"
     dec_row denied; echo "fable-launch: route DENIED, nothing started: $R_WHY" >&2
@@ -99,6 +104,27 @@ if [ -n "$ROUTE_REQ" ]; then
         *) nout+=("${out[$j]}") ;;
       esac; j=$((j+1)); done
     out=("${nout[@]}" --permission-mode "$PMODE")
+  fi
+  # Review scope: a request naming review.snapshot launches as a review only if the manifest passes four checks, in order (fail closed, exit 64):
+  # line-rule (sha256sum's own line shape, LF-terminated), no-prd (a PRD-<slug>.md basename), prd-repeat (one PRD basename, two digests),
+  # sha256sum (--check from the manifest's own directory). scope_id = sha256 of the "<sha256>  <basename>" lines, LC_ALL=C sort -u.
+  if [ "$R_REVIEW" = snapshot ]; then
+    R_ROLE=review; R_SCOPE="$(readlink -f -- "$R_SNAP" 2>/dev/null)" || R_SCOPE="$R_SNAP"; [ -n "$R_SCOPE" ] || R_SCOPE="$R_SNAP"
+    snap_refuse() { R_WHY="review snapshot $R_SCOPE: $1"; dec_row denied; echo "fable-launch: review snapshot refused, nothing started: $R_WHY" >&2; exit 64; }
+    M="$R_SCOPE"; ln=""
+    if [ -f "$M" ] && [ -r "$M" ]; then ln="$(LC_ALL=C grep -Evn '^[0-9a-f]{64}  [^[:space:]]+$' -- "$M" 2>/dev/null | head -1 | cut -d: -f1)"; fi
+    [[ "$ln" =~ ^[0-9]+$ ]] || ln=0
+    { [ -f "$M" ] && [ -r "$M" ] && [ -s "$M" ] && [ "$(tail -c1 -- "$M" | od -An -tx1 | tr -d ' \n')" = 0a ] \
+      && ! LC_ALL=C grep -Evq '^[0-9a-f]{64}  [^[:space:]]+$' -- "$M"; } || snap_refuse "line-rule failed at line $ln"
+    canon() { LC_ALL=C awk '{n=split($2,p,"/"); print $1 "  " p[n]}' "$M" | LC_ALL=C sort -u; }
+    R_SCOPE_ID="$(canon | sha256sum | cut -d' ' -f1)"
+    canon | LC_ALL=C grep -Eq '^[0-9a-f]{64}  PRD-[a-z0-9-]+\.md$' || snap_refuse "no-prd (no listed basename matches PRD-<slug>.md)"
+    rep="$(canon | LC_ALL=C awk '$2 ~ /^PRD-[a-z0-9-]+\.md$/ {print $2}' | LC_ALL=C sort | uniq -d | head -1)"
+    [ -z "$rep" ] || { R_SCOPE_ID=""; snap_refuse "prd-repeat $rep (one PRD basename listed with two digests)"; }
+    ( cd -- "$(dirname -- "$M")" && sha256sum --check --quiet --strict -- "$(basename -- "$M")" ) >&2 || snap_refuse "sha256sum --check failed from $(dirname -- "$M")"
+  elif [ "$R_REVIEW" = object ]; then
+    echo "fable-launch: review object without snapshot: launching as author (unbindable as a Review: line once the lint PRD is installed)" >&2
+    R_WHY="${R_WHY:+$R_WHY; }review-without-snapshot"
   fi
 fi
 [ -n "$model" ] || { echo "fable-launch: --model is required (explicit model, no default)" >&2; exit 64; }
