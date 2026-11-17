@@ -4,6 +4,10 @@
 # private lane state, the test lane policy, SKILL_ROUTING_DECISIONS in a temp dir, decision_class plus evidence refs, liveness by
 # `exec -a 'claude --session-id <sid>' sleep`. No provider call, no real credential, no real decisions log. Source it from a test file.
 set -u
+# A1300 FFDR F11: a routed worker or a launcher-started session that runs this suite must not leak its markers into the launches under test
+# (an inherited SKILL_ROUTE_ROLE=review would deny every routed launch as nested dispatch). A test that wants one sets it after sourcing.
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT \
+  SKILL_ROUTE_TERMINAL SKILL_ROUTE_RESOLVER FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL FABLE_LAUNCH_ACK_UNKNOWN_EFFECT
 D="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; L="$D/.local/bin/fable-launch.sh"
 FX="$D/tests/fixtures/skill-routing/review-scope"
 T="$(mktemp -d)"; FLR_BG=()
