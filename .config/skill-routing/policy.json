@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "approved": "Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300",
+  "approved": "Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300; Fable-free Dream route: Joe 2026-11-17 \"I agree with your recommendation\" (A1296 amendment § Nov 17; A1300 bootstrap dc5ad9ac)",
   "models": {
     "claude-fable-5-1": {
       "efforts": [
@@ -9,6 +9,13 @@
         "max"
       ],
       "family": "fable"
+    },
+    "claude-opus-5-5": {
+      "efforts": [
+        "high",
+        "xhigh"
+      ],
+      "family": "opus"
     },
     "claude-sonnet-5-5": {
       "efforts": [
@@ -132,6 +139,14 @@
           "model": "claude-sonnet-5-5",
           "effort": "medium"
         },
+        "opus-high": {
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        },
+        "opus-xhigh": {
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
+        },
         "fable-high": {
           "model": "claude-fable-5-1",
           "effort": "high"
@@ -192,19 +207,19 @@
           "evidence": false
         },
         "new_vision": {
-          "route": "fable-high",
+          "route": "opus-high",
           "evidence": true
         },
         "prioritization": {
-          "route": "fable-high",
+          "route": "opus-high",
           "evidence": true
         },
         "difficult_decomposition": {
-          "route": "fable-high",
+          "route": "opus-high",
           "evidence": true
         },
         "consequential_uncertainty": {
-          "route": "fable-xhigh",
+          "route": "opus-xhigh",
           "evidence": true
         },
         "max_exception": {
@@ -253,7 +268,7 @@
       "explicit_user_request"
     ],
     "route": {
-      "model": "claude-fable-5-1",
+      "model": "claude-opus-5-5",
       "effort": "high"
     },
     "evidence": true
