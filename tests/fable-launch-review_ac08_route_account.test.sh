@@ -8,10 +8,13 @@ flr_req au A8; flr_run a au -p x
 ck "review and author with one task, skill and decision_class both launch" '[ "$(cat $T/rc.r)" = 0 ] && [ "$(cat $T/rc.a)" = 0 ] && [ "$(flr_get r .role)" = review ] && [ "$(flr_get a .role)" = author ]'
 ck "their rows carry the same route, model and effort; each account is its nonfable round-robin slot (review 0, author 1), not chosen by role" '[ "$(flr_get r "[.route,.model,.effort]|join(\",\")")" = "$(flr_get a "[.route,.model,.effort]|join(\",\")")" ] && [ "$(flr_get r .account)" = "$(flr_nf 0)" ] && [ "$(flr_get a .account)" = "$(flr_nf 1)" ]'
 ck "the spy got the same model and effort for both, each under the account its row records" '[ "$(grep -o "acct=[^ ]*" "$T/spy.r")" = "acct=$(flr_get r .account)" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.a")" = "acct=$(flr_get a .account)" ] && grep -q -- "--model claude-opus-5-5" "$T/spy.r" && grep -q -- "--effort xhigh" "$T/spy.r" && grep -q -- "--model claude-opus-5-5" "$T/spy.a" && grep -q -- "--effort xhigh" "$T/spy.a"'
-flr_run cm rv --session-id "$(uuid)" --model claude-fable-5-1 -p x
-ck "review request with a conflicting --model (Fable, off the Opus route): 64, nothing started" '[ "$FLR_RC" = 64 ] && flr_spy_empty cm'
-flr_run ce rv --session-id "$(uuid)" --effort high -p x
-ck "review request with a conflicting --effort: 64, nothing started" '[ "$FLR_RC" = 64 ] && flr_spy_empty ce'
+# The conflict vectors use a scope with no prior review (A1300 FFDR O3): beside SR's completed review of happy, a same-scope launch is also
+# refused as unchanged-review-replay, so rc 64 alone would not show the conflict; the denied row must carry the resolver's conflict reason.
+flr_req rvc A8 "$FX/single.sha256"
+flr_run cm rvc --session-id "$(uuid)" --model claude-fable-5-1 -p x
+ck "review request with a conflicting --model (Fable, off the Opus route): 64, nothing started, the conflict reason" '[ "$FLR_RC" = 64 ] && flr_spy_empty cm && [ "$(flr_count cm denied)" = 1 ] && flr_get cm .reasons | grep -qF "requested claude-fable-5-1/- does not match the resolved route claude-opus-5-5/xhigh"'
+flr_run ce rvc --session-id "$(uuid)" --effort high -p x
+ck "review request with a conflicting --effort: 64, nothing started, the conflict reason" '[ "$FLR_RC" = 64 ] && flr_spy_empty ce && [ "$(flr_count ce denied)" = 1 ] && flr_get ce .reasons | grep -qF "requested -/high does not match the resolved route claude-opus-5-5/xhigh"'
 SX="$(uuid)"; flr_live "$SX"; LX=$FLR_LIVE
 flr_run sg rv --session-id "$SX" -p x
 ck "routed launch whose pre-drawn id a non-ancestor sleep carries: 73, nothing started" '[ "$FLR_RC" = 73 ] && flr_spy_empty sg'
