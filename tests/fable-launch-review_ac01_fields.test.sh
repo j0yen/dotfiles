@@ -12,11 +12,11 @@ ck "review launch row: role review" '[ "$(flr_get rev "select(.decision==\"launc
 ck "review launch row: scope is the manifest real path" '[ "$(flr_get rev "select(.decision==\"launch\") | .scope")" = "$(readlink -f "$FX/happy.sha256")" ]'
 ck "review launch row: scope_id is the sha256 of the canonical scope text (R4)" '[ "$(flr_get rev "select(.decision==\"launch\") | .scope_id")" = "$WANT" ]'
 ck "review launch row: eleven existing fields keep names and order, new three appended" '[ "$(flr_get rev "keys_unsorted | .[0:11] == $K11 and .[11:] == [\"role\",\"scope\",\"scope_id\"]")" = true ]'
-ck "review launch row: existing values (launch, A1, dream, fable-xhigh, fable xhigh, jyen.pm, session, resume false)" '[ "$(flr_get rev "[.decision,.task_id,.skill,.route,.model,.effort,.account,.session,(.resume|tostring)] | join(\",\")")" = "launch,A1,dream,fable-xhigh,claude-fable-5-1,xhigh,jyen.pm,$S1,false" ]'
+ck "review launch row: existing values (launch, A1, dream, opus-xhigh, opus xhigh, first nonfable round-robin primary, session, resume false)" '[ "$(flr_get rev "[.decision,.task_id,.skill,.route,.model,.effort,.account,.session,(.resume|tostring)] | join(\",\")")" = "launch,A1,dream,opus-xhigh,claude-opus-5-5,xhigh,$(flr_nf 0),$S1,false" ]'
 flr_req au A1b; flr_run au au -p x
 ck "author request launches (rc 0)" '[ "$FLR_RC" = 0 ] && [ -s "$T/spy.au" ]'
 ck "author launch row: role author, scope and scope_id empty" '[ "$(flr_get au "[.role,.scope,.scope_id] | join(\"|\")")" = "author||" ]'
-ck "author and review rows agree on the eleven fields but ts, task, session (reasons from the resolver)" '[ "$(flr_get au "del(.ts,.task_id,.session,.role,.scope,.scope_id)")" = "$(flr_get rev "del(.ts,.task_id,.session,.role,.scope,.scope_id)")" ]'
+ck "author and review rows agree on the eleven fields but ts, task, session, account (reasons from the resolver); the author took the next round-robin primary" '[ "$(flr_get au "del(.ts,.task_id,.session,.role,.scope,.scope_id,.account) | tojson")" = "$(flr_get rev "del(.ts,.task_id,.session,.role,.scope,.scope_id,.account) | tojson")" ] && [ "$(flr_get au .account)" = "$(flr_nf 1)" ]'
 flr_req obj A1c - 'del(.review) | .review={reason:"independent_verifier_required",evidence:.evidence_refs}'; flr_run obj obj -p x
 ck "review object without snapshot launches as author (rc 0, role author)" '[ "$FLR_RC" = 0 ] && [ "$(flr_get obj ".role")" = author ]'
 ck "review object without snapshot: the R2 stderr line" 'grep -qxF "fable-launch: review object without snapshot: launching as author (unbindable as a Review: line once the lint PRD is installed)" "$T/err.obj"'

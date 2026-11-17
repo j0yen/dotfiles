@@ -28,6 +28,6 @@ out=$(printf '%s' '{"task_id":"A1300","skill":"5whysandrhyme"}' | python3 -I "$R
 printf '%s' "$out" | jq -e 'has("review")|not' >/dev/null && ok "default resolve carries no review launch" || no "default resolve carries no review launch"
 printf '%s' '{"task_id":"A1300","skill":"wwhtbt","review":{"reason":"automatic","evidence":'"$EV"'}}' | python3 -I "$RES" >/dev/null 2>&1; [ $? = 2 ] && ok "unjustified review denied" || no "unjustified review denied"
 for rs in prod_money_real_user_data low_confidence_weakest_link explicit_user_request; do
-  printf '%s' '{"task_id":"A1300","skill":"wwhtbt","review":{"reason":"'$rs'","evidence":'"$EV"'}}' | python3 -I "$RES" 2>/dev/null | jq -e '.review.model_id=="claude-fable-5-1"' >/dev/null && ok "justified flag $rs allows second" || no "justified flag $rs allows second"
+  printf '%s' '{"task_id":"A1300","skill":"wwhtbt","review":{"reason":"'$rs'","evidence":'"$EV"'}}' | python3 -I "$RES" 2>/dev/null | jq -e '.review.model_id=="claude-opus-5-5"' >/dev/null && ok "justified flag $rs allows second (review route opus, A1300 FFDR)" || no "justified flag $rs allows second (review route opus, A1300 FFDR)"
 done
 exit $fail

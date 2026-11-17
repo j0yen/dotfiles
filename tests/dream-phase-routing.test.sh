@@ -28,10 +28,10 @@ for p in amendment draft_approved_vision; do
   chk "phase $p = sonnet medium" 0 "$D"',"decision_class":"'$p'"}' '.model_id=="claude-sonnet-5-5" and .effort=="medium"'
 done
 for p in new_vision prioritization difficult_decomposition; do
-  chk "phase $p = fable high (evidence)" 0 "$D"',"decision_class":"'$p'","evidence_refs":'"$EV"'}' '.model_id=="claude-fable-5-1" and .effort=="high"'
+  chk "phase $p = opus high (evidence; Fable-free Dream route)" 0 "$D"',"decision_class":"'$p'","evidence_refs":'"$EV"'}' '.model_id=="claude-opus-5-5" and .effort=="high"'
   chk "phase $p without evidence denied" 2 "$D"',"decision_class":"'$p'"}'
 done
-chk "consequential uncertainty = fable xhigh (evidence)" 0 "$D"',"decision_class":"consequential_uncertainty","evidence_refs":'"$EV"'}' '.model_id=="claude-fable-5-1" and .effort=="xhigh"'
+chk "consequential uncertainty = opus xhigh (evidence; Fable-free Dream route)" 0 "$D"',"decision_class":"consequential_uncertainty","evidence_refs":'"$EV"'}' '.model_id=="claude-opus-5-5" and .effort=="xhigh"'
 chk "consequential uncertainty without evidence denied" 2 "$D"',"decision_class":"consequential_uncertainty"}'
 chk "max without exception record denied" 2 "$D"',"decision_class":"max_exception"}'
 chk "max with placeholder evidence denied" 2 "$D"',"decision_class":"max_exception","exception":{"reason":"unresolved_gap","evidence":["ledger:tbd"]}}'
