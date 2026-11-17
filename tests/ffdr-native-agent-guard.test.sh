@@ -39,7 +39,7 @@ for pm in claude-fable-5-1 fable FABLE Claude-Fable-5-1 'claude-fable-5-1[1m]'; 
   ck "Fable parent by model ($pm, on jyen.tech): every non-Fable child, an empty model and a missing model key are denied" 'all deny jyen.tech "$pm" $NF "" @'
 done
 ck "Fable parent by model: a Fable child at explicit high is allowed (fable, claude-fable-5-1, Claude-Fable-5-1)" 'all allow jyen.tech claude-fable-5-1 fable claude-fable-5-1 Claude-Fable-5-1'
-ck "Fable parent by model: a Fable child at xhigh, max, low or without effort is still denied (unchanged)" 'for e in xhigh max low ""; do dn "$(gd jyen.tech claude-fable-5-1 fable "$e")" || exit 1; done'
+ck "Fable parent by model: a Fable child at xhigh, max, low or without effort is still denied (unchanged)" '( for e in xhigh max low ""; do dn "$(gd jyen.tech claude-fable-5-1 fable "$e")" || exit 1; done )'
 ck "Fable parent: the omitted-model deny names the launcher helper, not an account" 'o="$(gd jyen.tech claude-fable-5-1 "")"; grep -q "needs an explicit Fable model" <<<"$o" && grep -q "fable-launch.sh --helper" <<<"$o"'
 ck "Fable parent: the non-Fable deny says a non-Fable account chosen by the launcher" 'grep -q "a non-Fable account chosen by the launcher" <<<"$(gd jyen.tech claude-fable-5-1 sonnet)"'
 for pm in claude-opus-5-5 sonnet opus claude-sonnet-5-5; do
@@ -93,7 +93,7 @@ ck "an account listed in both lanes (P3: mcphost.dev) follows the model: the Fab
 # --- incomplete provenance and no provenance
 PROV="FABLE_LAUNCH_ACCOUNT is set but FABLE_LAUNCH_MODEL is empty"
 ck "account set, model unset: every Agent call is denied with the provenance reason (sonnet, Fable high, empty model, no model key)" \
-  'for c in sonnet claude-fable-5-1 "" @; do o="$(gd jyen.pm - "$c")"; dn "$o" && grep -qF "$PROV" <<<"$o" || exit 1; done'
+  '( for c in sonnet claude-fable-5-1 "" @; do o="$(gd jyen.pm - "$c")"; dn "$o" && grep -qF "$PROV" <<<"$o" || exit 1; done )'
 ck "account set, model set but empty: the same deny" 'o="$(gd mcphost.dev "" haiku)"; dn "$o" && grep -qF "$PROV" <<<"$o"'
 ck "account set, model empty: malformed input fails closed" 'dn "$(printf "not json" | env -u FABLE_LAUNCH_MODEL HOME="$T/h0" FABLE_LAUNCH_ACCOUNT=josephsyen "$G")"'
 ck "account set, model empty: jq missing fails closed" 'dn "$(pay sonnet high | env -u FABLE_LAUNCH_MODEL HOME="$T/h0" FABLE_LAUNCH_ACCOUNT=josephsyen PATH="$T/no-such-dir" "$BASH" "$G")"'

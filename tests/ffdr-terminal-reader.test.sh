@@ -106,6 +106,8 @@ K9="$(uuid)"; krow "$K9"; kent "$K9" "$(ent josephsyen nonfable claude-opus-5-5 
 K10="$(uuid)"; krow "$K10"; kent "$K10" "$(ent josephsyen nonfable claude-opus-5-5 running false | jq -c --argjson p "$KP" --argjson st "$KPS" '.claim={pid:$p,start:$st}')"; kev "$(claim "$K10" josephsyen nonfable)"
 ck "state running whose claim pid is alive with another start time (a reused pid) -> interrupted; the same pid with its start time -> running" '[ "$(koc "$K9")" = interrupted ] && [ "$(koc "$K10")" = running ]'
 kill "$KP" 2>/dev/null; wait "$KP" 2>/dev/null
+K11="$(uuid)"; krow "$K11"; kent "$K11" "$(ent josephsyen nonfable claude-opus-5-5 clean false)"; kev "$(claim "$K11" josephsyen nonfable)"; kev "$(send "$K11" 1 clean)"
+ck "clean but the latest session_end has rc 1 with state clean -> unknown (contradiction), not completed" '[ "$(koc "$K11")" = unknown ] && krd session "$K11" | jq -e ".terminal.rc==1 and (.terminal.reasons|join(\" \")|test(\"contradiction\"))" >/dev/null'
 # never-dispatched positive and its variants (fable lane on jyen.pm)
 nd(){ # SID [entry jq] [limit line] : one fresh fable run refused at start
   krow "$1" '.route="fable-high" | .model="claude-fable-5-1" | .effort="high" | .account="jyen.pm"'
@@ -128,12 +130,21 @@ ck "two launch rows (a resume) -> failed" '[ "$(koc "$N7")" = failed ]'
 N8="$(uuid)"; krow "$N8" '.route="fable-high" | .model="claude-fable-5-1" | .effort="high" | .account="jyen.pm"'; kent "$N8" "$(ent jyen.pm fable claude-fable-5-1 failed true)"
 kev "$(claim "$N8" jyen.pm fable)"; kev "$(claim "$N8" jyen.pm fable)"; kev "$(limit "$N8" jyen.pm)"; kev "$(send "$N8" 1 failed)"
 ck "two session_claim events -> failed" '[ "$(koc "$N8")" = failed ]'
+N9="$(uuid)"; krow "$N9" '.route="fable-high" | .model="claude-fable-5-1" | .effort="high" | .account="jyen.pm"'; kent "$N9" "$(ent jyen.pm fable claude-fable-5-1 failed true)"
+kev "$(claim "$N9" jyen.pm fable)"; kev "$(limit "$N9" jyen.pm)"; kev "$(send "$N9" 0 clean)"
+N10="$(uuid)"; krow "$N10" '.route="fable-high" | .model="claude-fable-5-1" | .effort="high" | .account="jyen.pm"'; kent "$N10" "$(ent jyen.pm fable claude-fable-5-1 failed true)"
+kev "$(claim "$N10" jyen.pm fable)"; kev "$(limit "$N10" jyen.pm)"; kev "$(send "$N10" 1 killed)"
+ck "the latest session_end is rc 0 clean, or rc 1 with a state other than failed, beside a failed entry -> failed, not never-dispatched" '[ "$(koc "$N9")" = failed ] && [ "$(koc "$N10")" = failed ]'
+N11="$(uuid)"; nd "$N11" . "$(limit "$N11" jyen.pm | jq -c --arg o "$(uuid)" '.native_session_id=$o')"
+N12="$(uuid)"; nd "$N12" . "$(limit "$N12" jyen.pm | jq -c --arg o "$(uuid)" '.claimed_session=$o')"
+ck "a limit event whose native_session_id (or claimed_session) is another id -> failed, not never-dispatched" '[ "$(koc "$N11")" = failed ] && [ "$(koc "$N12")" = failed ]'
 ck "provenance: two claims for one launch row is an unrouted run" 'krd session "$N8" | jq -e ".provenance.ok==false and (.provenance.reasons|join(\" \")|test(\"unrouted run\"))" >/dev/null'
 # a malformed or partial event line never yields completed or never-dispatched
 cp -r "$K" "$T/craft-bad"; printf '{"event": "session_end", "rc": 0, "sess' >>"$T/craft-bad/lanes/events.jsonl"
 ck "a partial last event line: the completed fixture reads unknown, the never-dispatched one failed (both name the line)" '[ "$(ACCOUNT_LANE_STATE="$T/craft-bad/lanes" python3 -I "$RD" --decisions "$T/craft-bad/dec.jsonl" session "$K1" | jq -r .terminal.outcome)" = unknown ] && ACCOUNT_LANE_STATE="$T/craft-bad/lanes" python3 -I "$RD" --decisions "$T/craft-bad/dec.jsonl" session "$N1" | jq -e ".terminal.outcome==\"failed\" and (.terminal.reasons|join(\" \")|test(\"1 malformed or partial\"))" >/dev/null'
 cp -r "$K" "$T/craft-mid"; sed -i '2i not json at all' "$T/craft-mid/lanes/events.jsonl"
 ck "a malformed middle event line: no completed, no never-dispatched" '[ "$(ACCOUNT_LANE_STATE="$T/craft-mid/lanes" python3 -I "$RD" --decisions "$T/craft-mid/dec.jsonl" session "$K1" | jq -r .terminal.outcome)" = unknown ] && [ "$(ACCOUNT_LANE_STATE="$T/craft-mid/lanes" python3 -I "$RD" --decisions "$T/craft-mid/dec.jsonl" session "$N1" | jq -r .terminal.outcome)" = failed ]'
+ck "a malformed middle event line: provenance not ok either (the session_claim count is not provable)" 'ACCOUNT_LANE_STATE="$T/craft-mid/lanes" python3 -I "$RD" --decisions "$T/craft-mid/dec.jsonl" session "$K1" | jq -e ".provenance.ok==false and (.provenance.reasons|join(\" \")|test(\"not provable\"))" >/dev/null && krd session "$K1" | jq -e ".provenance.ok==true" >/dev/null'
 cp -r "$K" "$T/craft-noev"; rm "$T/craft-noev/lanes/events.jsonl"
 ck "absent events.jsonl: clean and failed sessions read unknown (never completed or never-dispatched)" '[ "$(ACCOUNT_LANE_STATE="$T/craft-noev/lanes" python3 -I "$RD" --decisions "$T/craft-noev/dec.jsonl" session "$K1" | jq -r .terminal.outcome)" = unknown ] && [ "$(ACCOUNT_LANE_STATE="$T/craft-noev/lanes" python3 -I "$RD" --decisions "$T/craft-noev/dec.jsonl" session "$N1" | jq -r .terminal.outcome)" = unknown ]'
 cp -r "$K" "$T/craft-mal"; printf '{"version": 1, "sessions": [' >"$T/craft-mal/lanes/sessions.json"
@@ -199,6 +210,7 @@ kent "$AU" "$(ent josephsyen nonfable claude-opus-5-5 running false | jq -c --ar
 ck "review-ancestor: the claim of an author session is not a review ancestor" 'krd review-ancestor --pid "$(leaf w1)" | jq -e ".review_session==null" >/dev/null'
 anc c1 claude --session-id "$RV" -p x
 ck "review-ancestor: argv[0] claude carrying --session-id <review> is named" 'krd review-ancestor --pid "$(leaf c1)" | jq -e --arg s "$RV" ".review_session==\$s and (.reason|test(\"claude\"))" >/dev/null'
+ck "review-ancestor: --self equal to the review id a claude ancestor carries is not a review ancestor (the launch's own resumed id)" 'krd review-ancestor --pid "$(leaf c1)" --self "$RV" | jq -e ".review_session==null" >/dev/null'
 anc c2 /opt/bin/claude "--resume=$RV"; anc c3 claude -r "$RV"
 ck "review-ancestor: the --resume=<id> and -r <id> forms under a claude argv[0] (any path) are named" 'krd review-ancestor --pid "$(leaf c2)" | jq -e --arg s "$RV" ".review_session==\$s" >/dev/null && krd review-ancestor --pid "$(leaf c3)" | jq -e --arg s "$RV" ".review_session==\$s" >/dev/null'
 anc a1 python3 -I /x/.local/lib/account-lane.py run --session "$RV" -- /x/claude --session-id "$RV" -p x

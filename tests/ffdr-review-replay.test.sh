@@ -103,9 +103,13 @@ ck "resume of the failed review P3 (with the ack): continues with its own role a
 # --- the reader: failure, timeout or garbage refuses; a reply about another session counts as unknown
 cat >"$T/rd-fake" <<'S'
 #!/usr/bin/env python3
-# T4 fake reader (the launcher runs it as `python3 -I <file>`): review-ancestor goes to the real reader; session misbehaves by T4_RD_MODE.
+# T4 fake reader (the launcher runs it as `python3 -I <file>`): review-ancestor goes to the real reader (mode anc-null answers it with
+# null instead, without reading the log); session misbehaves by T4_RD_MODE.
 import os, sys, time
 if "review-ancestor" in sys.argv[1:]:
+    if os.environ.get("T4_RD_MODE") == "anc-null":
+        print('{"review_session": null, "pid": null, "reason": "stand-in"}')
+        sys.exit(0)
     os.execvp("python3", ["python3", "-I", os.environ["T4_RD"]] + sys.argv[1:])
 mode = os.environ.get("T4_RD_MODE", "")
 if mode == "exit":
@@ -138,5 +142,8 @@ cp "$DEC" "$T/dec.noread"; chmod 000 "$T/dec.noread"
 if [ -r "$T/dec.noread" ]; then echo "NOTE running as a user who can read mode 000 files; the unreadable-log case is not exercised"; else
   rq a2 R-F "$FX/happy.sha256" "[\"$P3\"]"; : >"$T/spy.a2"
   SKILL_ROUTING_DECISIONS="$T/dec.noread" SPYLOG="$T/spy.a2" "$L" --route-request "$T/req.a2.json" --session-id "$(uuid)" -p x 2>"$T/err.a2"; urc=$?
-  ck "present but unreadable decisions log: refused (64), nothing started" '[ "$urc" = 64 ] && [ ! -s "$T/spy.a2" ]'; fi
+  ck "present but unreadable decisions log: refused (64), nothing started; its first reader, R4.2's review-ancestor, already fails closed" '[ "$urc" = 64 ] && [ ! -s "$T/spy.a2" ] && grep -qF "nested-dispatch check failed" "$T/err.a2"'
+  rq a3 R-U "$FX/happy.sha256"; : >"$T/spy.a3"
+  SKILL_ROUTING_DECISIONS="$T/dec.noread" SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=anc-null SPYLOG="$T/spy.a3" "$L" --route-request "$T/req.a3.json" --session-id "$(uuid)" -p x 2>"$T/err.a3"; u3=$?
+  ck "with review-ancestor answered by a stand-in, R4.4's own check refuses the unreadable log for a review with no declaration (never read as no priors)" '[ "$u3" = 64 ] && [ ! -s "$T/spy.a3" ] && grep -qF "decisions log $T/dec.noread present but unreadable" "$T/err.a3"'; fi
 flr_end
