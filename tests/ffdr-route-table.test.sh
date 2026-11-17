@@ -4,7 +4,8 @@
 # Phase 2, the six dream review-echo rows (R2.4: skills.dream.review_route = opus-high, disposition O2); every other skill's review echo
 # stays as at base (the global review.route is unchanged, O1); the policy carries R1's and R2.4's shape; and the controls hold: Opus max
 # denied, a requested Fable model on an Opus class denied, an unknown model denied, max_exception still Fable max only with a ledger record,
-# review.replay validated field by field (R2.1-R2.3), an unknown review_route a policy error. Resolver + policy only: no launcher, no provider call.
+# review.replay validated field by field (R2.1-R2.3), an unknown review_route a policy error; .evidence, .version and .forbidden_efforts stay
+# the base's (PA-L2). Resolver + policy only: no launcher, no provider call.
 # Run alone: bash tests/ffdr-route-table.test.sh
 # FFDR_ROOT=<tree> checks that tree's .config/skill-routing/policy.json + .local/lib/skill-route-resolve.py (+ skill-model-policy.sh)
 # against this tree's fixture; the mutation runs and the red-at-base run use it.
@@ -85,6 +86,12 @@ ck "R1.2/R1.3 fable-high and fable-xhigh are referenced by no dream class" 'pj "
 ck "R1.3 the four classes keep evidence:true; max_exception stays fable-max-exception (evidence false)" 'pj ".skills.dream.classes | .new_vision=={\"route\":\"opus-high\",\"evidence\":true} and .prioritization=={\"route\":\"opus-high\",\"evidence\":true} and .difficult_decomposition=={\"route\":\"opus-high\",\"evidence\":true} and .consequential_uncertainty=={\"route\":\"opus-xhigh\",\"evidence\":true} and .max_exception=={\"route\":\"fable-max-exception\",\"evidence\":false}"'
 ck "R2.4 skills.dream.review_route = opus-high (a dream route: claude-opus-5-5 high); no other skill names a review_route" 'pj ".skills.dream.review_route==\"opus-high\" and .skills.dream.routes[.skills.dream.review_route]=={\"model\":\"claude-opus-5-5\",\"effort\":\"high\"} and ([.skills[]|select(has(\"review_route\"))]|length)==1"'
 ck "O1 (R1.4 withdrawn): review is as at base: route claude-fable-5-1 high; reasons, evidence and automatic unchanged" 'pj ".review=={\"automatic\":false,\"reasons\":[\"unresolved_assumption\",\"contradiction\",\"independent_verifier_required\",\"prod_money_real_user_data\",\"low_confidence_weakest_link\",\"explicit_user_request\"],\"route\":{\"model\":\"claude-fable-5-1\",\"effort\":\"high\"},\"evidence\":true}"'
+# A1300 FFDR PA-L2: the evidence grammar, the policy version and forbidden_efforts lie outside R1/R2, so they stay the base's (jq -S).
+BASE_EVF='{"evidence":{"min_refs":1,"placeholders":["none","n/a","na","tbd","todo","unknown","x","xx"],"ref_pattern":"^(ledger|file|pr|run|commit|page):[^\\s]{2,200}$"},"forbidden_efforts":["max"],"version":1}'
+ck "PA-L2: .evidence, .version and .forbidden_efforts equal the base policy's (jq -S)" '[ "$(jq -S -c "{evidence, forbidden_efforts, version}" "$POL" 2>/dev/null)" = "$BASE_EVF" ]'
+if [ -s "$T/base-policy.json" ]; then
+  ck "PA-L2: that base value is a244971's own bytes (jq -S of the base policy extracted above)" '[ "$(jq -S -c "{evidence, forbidden_efforts, version}" "$T/base-policy.json")" = "$BASE_EVF" ]'
+else echo "SKIP PA-L2 provenance (commit $BASE is not in this clone; the value above is checked)"; fi
 APPROVED_BASE="Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300"
 APPROVED_FFDR='; Fable-free Dream route: Joe 2026-11-17 "I agree with your recommendation" (A1296 amendment § Nov 17; A1300 bootstrap dc5ad9ac)'
 ck "R1.5 approved = the base text plus the Fable-free Dream route record" '[ "$(jq -r .approved "$POL" 2>/dev/null)" = "$APPROVED_BASE$APPROVED_FFDR" ]'
