@@ -24,7 +24,8 @@
 #        declares exactly them, and then one `replay` row (reasons = the declaration as compact JSON) precedes the launch row; never-dispatched
 #        priors do not block. Outcomes come from skill-route-terminal.py session under timeout 10; any reader failure refuses.
 #   R4.5 the reader sits beside the resolver (else ~/.local/lib); SKILL_ROUTE_TERMINAL overrides it only under FABLE_LAUNCH_TEST=1.
-#   R4.6 SKILL_ROUTE_POLICY and SKILL_ROUTE_LEDGER_IDS are refused outside FABLE_LAUNCH_TEST=1; SKILL_ROUTING_DECISIONS stays honoured (proof roots).
+#   R4.6 a routed launch refuses SKILL_ROUTE_POLICY and SKILL_ROUTE_LEDGER_IDS outside FABLE_LAUNCH_TEST=1 (after argument parsing; a non-routed
+#        launch ignores both, as before R4); SKILL_ROUTING_DECISIONS stays honoured (proof roots).
 set -u
 IN_ROLE="${SKILL_ROUTE_ROLE:-}"; IN_SESSION="${SKILL_ROUTE_SESSION:-}"   # R4.2/R4.3: the caller's routed role and session, before we export ours
 # Production pins the split: the account names, store and claude binary cannot be overridden from the environment.
@@ -40,9 +41,6 @@ else
   done
   for _v in ACCOUNT_LANE_STATE ACCOUNT_LANE_POLICY ACCOUNT_LANE_PY ACCOUNT_LANE_TEST ACCOUNT_LANE_NOW; do
     [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (lane state/policy are fixed)" >&2; exit 64; }
-  done
-  for _v in SKILL_ROUTE_POLICY SKILL_ROUTE_LEDGER_IDS; do   # R4.6 (F16): the routing policy and the ledger are fixed for launches
-    [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (skill-routing policy and ledger are fixed outside FABLE_LAUNCH_TEST=1)" >&2; exit 64; }
   done
   STORE="$HOME/.config/fleet-token/store"; CLAUDE_BIN="$HOME/.npm-global/bin/claude"; FABLE_ACCT=jyen.pm; BASE_ACCT=josephsyen; RR_DIR="$HOME/.cache/aide/account-rr"
   LANE_PY="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/account-lane.py"; [ -r "$LANE_PY" ] || LANE_PY="$HOME/.local/lib/account-lane.py"
@@ -89,6 +87,11 @@ dec_row() { # decision, extra jq args...
 }
 if [ -n "$ROUTE_REQ" ]; then
   ROUTED=1
+  if [ "${FABLE_LAUNCH_TEST:-0}" != 1 ]; then   # R4.6 (F16): a routed launch's routing policy and ledger are fixed, refused before anything runs
+    for _v in SKILL_ROUTE_POLICY SKILL_ROUTE_LEDGER_IDS; do
+      [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (skill-routing policy and ledger are fixed outside FABLE_LAUNCH_TEST=1)" >&2; exit 64; }
+    done
+  fi
   HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
   RESOLVER="$HERE/../lib/skill-route-resolve.py"; [ -r "$RESOLVER" ] || RESOLVER="$HOME/.local/lib/skill-route-resolve.py"
   [ "${FABLE_LAUNCH_TEST:-0}" = 1 ] && [ -n "${SKILL_ROUTE_RESOLVER:-}" ] && RESOLVER="$SKILL_ROUTE_RESOLVER"

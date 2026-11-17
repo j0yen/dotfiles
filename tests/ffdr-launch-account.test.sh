@@ -2,8 +2,9 @@
 # ffdr-launch-account.test.sh: A1300 FFDR spec r2 (test T2). Opus Dream routed launches go to the nonfable lane's primary; the reserve is
 # used only after the primary's exhaustion is observed (the real non-Fable 429 envelope), a generic 429 text never switches; no launch takes
 # the fable lane (the reserve account is also in the Fable order); each launch row records route, model, effort and account exactly; the
-# worker env carries R4.1's SKILL_ROUTE_ROLE/SESSION/SCOPE_ID; outside FABLE_LAUNCH_TEST=1 the launcher refuses SKILL_ROUTE_POLICY and
-# SKILL_ROUTE_LEDGER_IDS (R4.6) and ignores SKILL_ROUTE_TERMINAL (R4.5). The lane policy is carbon-shaped (spec r2 facts: nonfable primaries [josephsyen], reserve [mcphost.dev];
+# worker env carries R4.1's SKILL_ROUTE_ROLE/SESSION/SCOPE_ID; outside FABLE_LAUNCH_TEST=1 a routed launch refuses SKILL_ROUTE_POLICY and
+# SKILL_ROUTE_LEDGER_IDS (R4.6) and ignores SKILL_ROUTE_TERMINAL (R4.5), while a non-routed --helper launch ignores both variables as before R4
+# (PB-L1). The lane policy is carbon-shaped (spec r2 facts: nonfable primaries [josephsyen], reserve [mcphost.dev];
 # Fable order mcphost.dev, jyen.pm as in the launcher header), written here: synthetic, not the live file. Spy CLI, private lane state and
 # log (fable-launch-review_lib.sh), dummy tokens; no provider call. Run alone: bash tests/ffdr-launch-account.test.sh
 . "$(dirname "$0")/fable-launch-review_lib.sh"
@@ -66,6 +67,25 @@ ck "control: production mode without them is not refused by R4.6 (it fails later
 printf '#!/usr/bin/env python3\nopen("%s", "w").close()\nprint("{\\"review_session\\": null, \\"pid\\": null, \\"reason\\": \\"stand-in\\"}")\n' "$T/term-ran" >"$T/term-mark"; chmod +x "$T/term-mark"
 prod env SKILL_ROUTE_TERMINAL="$T/term-mark" >/dev/null 2>"$T/err.pt"; trc=$?
 ck "R4.5 production mode ignores SKILL_ROUTE_TERMINAL: the stand-in reader never runs (not refused either; nothing started)" '[ ! -e "$T/term-ran" ] && [ "$trc" != 64 ] && [ "$trc" != 0 ] && ! grep -q "override refused" "$T/err.pt" && [ ! -s "$T/spy.prod" ]'
+# A1300 FFDR PB-L1: R4.6 binds routed launches only. Each run gets a fresh private HOME that a production launch can start from: the lane policy
+# above, the dummy tokens and the spy CLI at the production paths ($HOME/.config/account-lanes, .config/fleet-token/store, .npm-global/bin/claude).
+# A non-routed --helper launch (what claude-lane-nonfable runs) with either variable set then behaves exactly as the control with neither set,
+# as before R4; a routed launch from the same kind of HOME is still refused before anything runs.
+prodh(){ local n="$1" h="$T/ph.$1"; shift; mkdir -p "$h/.config/account-lanes" "$h/.config/fleet-token/store" "$h/.npm-global/bin"
+  cp "$T/lane-policy.json" "$h/.config/account-lanes/policy.json"; cp "$T/store"/* "$h/.config/fleet-token/store/"; chmod 600 "$h/.config/fleet-token/store"/*; cp "$T/claude2" "$h/.npm-global/bin/claude"
+  : >"$T/spy.ph.$n"; env -u FABLE_LAUNCH_TEST -u FABLE_RR_DIR -u FABLE_TOKEN_STORE -u FABLE_CLAUDE_BIN -u ACCOUNT_LANE_STATE -u ACCOUNT_LANE_POLICY \
+    -u ACCOUNT_LANE_TEST -u ACCOUNT_LANE_NOW -u SKILL_ROUTE_POLICY -u SKILL_ROUTE_LEDGER_IDS -u SKILL_ROUTING_DECISIONS HOME="$h" SPYLOG="$T/spy.ph.$n" "$@" \
+    >/dev/null 2>"$T/err.ph.$n"; echo $? >"$T/rc.ph.$n"; }
+prodh h0 env "$L" --helper --model sonnet -p x
+prodh hp env SKILL_ROUTE_POLICY="$D/.config/skill-routing/policy.json" "$L" --helper --model sonnet -p x
+prodh hl env SKILL_ROUTE_LEDGER_IDS="$T/ids.txt" "$L" --helper --model sonnet -p x
+asctl(){ [ "$(cat "$T/rc.ph.$1")" = "$(cat "$T/rc.ph.h0")" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.ph.$1")" = "$(grep -o "acct=[^ ]*" "$T/spy.ph.h0")" ] && ! grep -q "override refused" "$T/err.ph.$1"; }
+ck "PB-L1 control: a production non-routed --helper launch with neither variable starts (rc 0; the spy CLI ran on the lane policy's primary)" '[ "$(cat "$T/rc.ph.h0")" = 0 ] && grep -q "^spy acct=josephsyen " "$T/spy.ph.h0" && [ "$(wc -l <"$T/spy.ph.h0")" = 1 ]'
+ck "PB-L1: the same launch with SKILL_ROUTE_POLICY set behaves as the control (starts, same rc and account, no override refusal)" 'asctl hp'
+ck "PB-L1: the same launch with SKILL_ROUTE_LEDGER_IDS set behaves as the control" 'asctl hl'
+prodh rp env SKILL_ROUTE_POLICY="$D/.config/skill-routing/policy.json" "$L" --route-request "$T/req.p.json" -p x
+prodh rl env SKILL_ROUTE_LEDGER_IDS="$T/ids.txt" "$L" --route-request "$T/req.p.json" -p x
+ck "PB-L1: from such a HOME a routed launch with either variable is still refused (64, override refused, no row, no lane state, nothing started)" '( for n in rp:SKILL_ROUTE_POLICY rl:SKILL_ROUTE_LEDGER_IDS; do [ "$(cat "$T/rc.ph.${n%%:*}")" = 64 ] && grep -qF "${n#*:} override refused" "$T/err.ph.${n%%:*}" && [ ! -e "$T/ph.${n%%:*}/.local/state" ] && [ ! -s "$T/spy.ph.${n%%:*}" ] || exit 1; done )'
 SKILL_ROUTE_TERMINAL="$T/term-mark" FABLE_CLAUDE_BIN="$T/claude2" flr_run a5 a4 -p x >/dev/null 2>&1
 ck "control: in test mode the same stand-in is the reader (it runs)" '[ -e "$T/term-ran" ]'
 ck "SKILL_ROUTING_DECISIONS stays honoured in test mode (every T2 row is in the private log)" '[ "$(jq -r "select(.task_id==\"T2-A\") | .decision" "$DEC")" = launch ]'
