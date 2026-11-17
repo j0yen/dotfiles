@@ -21,10 +21,11 @@
 #        canonical lowercase UUID); session-reuse (a fresh launch's pre-drawn id must appear in no launch row; checked under the guard lock).
 #   R4.4 unchanged-review-replay, under the guard lock after the duplicate guard: a resumed review that completed is refused; a fresh review is
 #        refused while a same task/skill/scope_id review is running or completed; failed/interrupted/unknown priors block unless review.replay
-#        declares exactly them, and then one `replay` row (reasons = the declaration as compact JSON) precedes the launch row; never-dispatched
-#        priors do not block. Outcomes come from skill-route-terminal.py session under timeout 10; any reader failure refuses.
+#        declares exactly them (one `replay` row, the declaration as compact JSON, precedes the launch row); never-dispatched priors do not block.
+#        Outcomes: skill-route-terminal.py session, timeout 10; a reader failure, a reply other than one JSON object or an outcome outside its seven refuses.
 #   R4.5 the reader sits beside the resolver (else ~/.local/lib); SKILL_ROUTE_TERMINAL overrides it only under FABLE_LAUNCH_TEST=1.
-#   R4.6 SKILL_ROUTE_POLICY and SKILL_ROUTE_LEDGER_IDS are refused outside FABLE_LAUNCH_TEST=1; SKILL_ROUTING_DECISIONS stays honoured (proof roots).
+#   R4.6 a routed launch refuses SKILL_ROUTE_POLICY and SKILL_ROUTE_LEDGER_IDS outside FABLE_LAUNCH_TEST=1 (after argument parsing; a non-routed
+#        launch ignores both, as before R4); SKILL_ROUTING_DECISIONS stays honoured (proof roots).
 set -u
 IN_ROLE="${SKILL_ROUTE_ROLE:-}"; IN_SESSION="${SKILL_ROUTE_SESSION:-}"   # R4.2/R4.3: the caller's routed role and session, before we export ours
 # Production pins the split: the account names, store and claude binary cannot be overridden from the environment.
@@ -40,9 +41,6 @@ else
   done
   for _v in ACCOUNT_LANE_STATE ACCOUNT_LANE_POLICY ACCOUNT_LANE_PY ACCOUNT_LANE_TEST ACCOUNT_LANE_NOW; do
     [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (lane state/policy are fixed)" >&2; exit 64; }
-  done
-  for _v in SKILL_ROUTE_POLICY SKILL_ROUTE_LEDGER_IDS; do   # R4.6 (F16): the routing policy and the ledger are fixed for launches
-    [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (skill-routing policy and ledger are fixed outside FABLE_LAUNCH_TEST=1)" >&2; exit 64; }
   done
   STORE="$HOME/.config/fleet-token/store"; CLAUDE_BIN="$HOME/.npm-global/bin/claude"; FABLE_ACCT=jyen.pm; BASE_ACCT=josephsyen; RR_DIR="$HOME/.cache/aide/account-rr"
   LANE_PY="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/account-lane.py"; [ -r "$LANE_PY" ] || LANE_PY="$HOME/.local/lib/account-lane.py"
@@ -89,6 +87,11 @@ dec_row() { # decision, extra jq args...
 }
 if [ -n "$ROUTE_REQ" ]; then
   ROUTED=1
+  if [ "${FABLE_LAUNCH_TEST:-0}" != 1 ]; then   # R4.6 (F16): a routed launch's routing policy and ledger are fixed, refused before anything runs
+    for _v in SKILL_ROUTE_POLICY SKILL_ROUTE_LEDGER_IDS; do
+      [ -z "${!_v:-}" ] || { echo "fable-launch: $_v override refused (skill-routing policy and ledger are fixed outside FABLE_LAUNCH_TEST=1)" >&2; exit 64; }
+    done
+  fi
   HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
   RESOLVER="$HERE/../lib/skill-route-resolve.py"; [ -r "$RESOLVER" ] || RESOLVER="$HOME/.local/lib/skill-route-resolve.py"
   [ "${FABLE_LAUNCH_TEST:-0}" = 1 ] && [ -n "${SKILL_ROUTE_RESOLVER:-}" ] && RESOLVER="$SKILL_ROUTE_RESOLVER"
@@ -236,18 +239,25 @@ if [ "$ROUTED" = 1 ]; then
   # R4.4 unchanged review replay (amends A1719 AC 5's resume-after-clean vector and AC 6): outcomes from the reader, never from argv or labels.
   if [ "$R_ROLE" = review ]; then
     [ ! -e "$DEC_LOG" ] || { [ -f "$DEC_LOG" ] && [ -r "$DEC_LOG" ]; } || route_deny "unchanged-review-replay check failed: decisions log $DEC_LOG present but unreadable or not a regular file; refusing (fail closed)"
-    # rd_outcome SID: the reader's terminal outcome (timeout 10; non-zero exit, timeout or unparsable output refuses; a reply about another
-    # session or with no known outcome counts as unknown)
+    # rd_outcome SID: the reader's terminal outcome (timeout 10). The reply must be exactly one JSON object; a non-zero exit, a timeout or any
+    # other output refuses. A reply about another session counts as unknown; any other outcome is passed on as the reader wrote it, and both
+    # checks below deny every outcome outside the reader's seven (rd_unexpected).
     rd_outcome(){
-      local o; o="$(timeout 10 python3 -I "$TERMINAL" --decisions "$DEC_LOG" session "$1" 2>/dev/null)" && printf '%s' "$o" | jq -e 'type=="object"' >/dev/null 2>&1 \
-        || route_deny "unchanged-review-replay check failed (skill-route-terminal.py session $1: non-zero exit, timeout or unparsable output); refusing (fail closed)"
-      printf '%s' "$o" | jq -r --arg s "$1" 'if .session==$s and (.terminal.outcome|IN("absent","running","interrupted","completed","never-dispatched","failed","unknown")) then .terminal.outcome else "unknown" end'
+      local o; o="$(timeout 10 python3 -I "$TERMINAL" --decisions "$DEC_LOG" session "$1" 2>/dev/null)" \
+        && printf '%s' "$o" | jq -s -e 'length==1 and (.[0]|type=="object")' >/dev/null 2>&1 \
+        || route_deny "unchanged-review-replay check failed (skill-route-terminal.py session $1: non-zero exit, timeout, or output that is not exactly one JSON object); refusing (fail closed)"
+      printf '%s' "$o" | jq -r --arg s "$1" 'if .session==$s then (.terminal | if type=="object" then .outcome else null end | if type=="string" then . else tojson end) else "unknown" end'
     }
+    rd_unexpected(){ route_deny "unchanged-review-replay check failed (skill-route-terminal.py session $1: unexpected outcome '$(printf '%s' "$2" | head -c 40 | tr -c 'a-zA-Z0-9._:-' '?')', not one of the reader's seven); refusing (fail closed)"; }
     if [ "$RESUME" = 1 ]; then
       [ -z "$R_REPLAY" ] || route_deny "stale replay declaration: review.replay on a resume (a resume continues its own session; a declaration belongs to a fresh review launch)"
       if [ -e "$DEC_LOG" ]; then
         oc="$(rd_outcome "$sid")" || exit 64   # rd_outcome's own refusal already wrote the denied row
-        [ "$oc" != completed ] || route_deny "unchanged-review-replay: review session $sid already completed; resuming it would review the same bytes again; freeze a new manifest that adds its result/findings or the disposition file"
+        case "$oc" in
+          completed) route_deny "unchanged-review-replay: review session $sid already completed; resuming it would review the same bytes again; freeze a new manifest that adds its result/findings or the disposition file" ;;
+          absent|running|interrupted|never-dispatched|failed|unknown) ;;   # other resumes continue as before
+          *) rd_unexpected "$sid" "$oc" ;;
+        esac
       fi
     else
       PRIORS=(); [ ! -e "$DEC_LOG" ] || mapfile -t PRIORS < <(jq -R -r --arg t "$R_TASK" --arg k "$R_SKILL" --arg sc "$R_SCOPE_ID" --arg me "$sid" \
@@ -258,6 +268,8 @@ if [ "$ROUTED" = 1 ]; then
         case "$oc" in
           running|completed) route_deny "unchanged-review-replay: scope_id $R_SCOPE_ID already reviewed by $psid ($oc); freeze a new manifest that adds the prior review's result/findings or the disposition file" ;;
           failed|interrupted|unknown|absent) BLOCK+=("$psid"); OUTC="$(jq -c --arg s "$psid" --arg o "$oc" '.[$s]=(if $o=="absent" then "unknown" else $o end)' <<<"$OUTC")" ;;
+          never-dispatched) ;;   # does not block
+          *) rd_unexpected "$psid" "$oc" ;;
         esac
       done
       WANT="$(printf '%s\n' "${BLOCK[@]}" | LC_ALL=C sort | jq -R -s -c 'split("\n") | map(select(length>0))')"

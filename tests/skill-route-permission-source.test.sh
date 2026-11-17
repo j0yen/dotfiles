@@ -2,6 +2,7 @@
 # skill-route-permission-source.test.sh: A1300 cont3 edit 2 — one permission_mode source (resolver echo -> launcher --permission-mode).
 # Harmless fakes only: temp dirs, fake claude spy, fake token store; no real claude, credential or network.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 R="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 p=0; f=0

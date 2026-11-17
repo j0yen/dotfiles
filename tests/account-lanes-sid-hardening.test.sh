@@ -6,6 +6,7 @@
 # no-persistence run keeps process-owned-output provenance with an honestly uncorrelated native id. Fake native child records its actual argv.
 # Temp HOME/state, dummy credentials; no provider call. AL_ROOT=<tree> replays other bytes (RED on 54a850e).
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
 FIX="$(cd "$(dirname "$0")" && pwd)/fixtures/account-lanes/native-fable-limit-observed.json"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT

@@ -2,6 +2,7 @@
 # fable-skill-spawn-gate.sh: a non-Fable Skill call to a `fable-spawn: true` skill is
 # denied with the spawn recipe; Fable/unknown/other skills allowed and marked; wired.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 H="$(dirname "$0")/../.claude/hooks/fable-skill-spawn-gate.sh"
 S="$(dirname "$0")/../.claude/settings.json"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

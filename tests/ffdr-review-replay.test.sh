@@ -3,7 +3,8 @@
 # completed prior always refuses (freeze a new manifest); failed, interrupted and unknown priors refuse unless review.replay declares exactly
 # them, and then one fourteen-field `replay` row precedes the launch row; a never-dispatched prior does not block; another scope_id never
 # blocks. A resumed completed review is refused, a resumed failed one continues; review.replay on a resume, an empty-blocking-set declaration
-# and every malformed declaration are refused; a reader failure, timeout or garbage refuses; an absent decisions log has no priors.
+# and every malformed declaration are refused; a reader failure, timeout or garbage refuses, and so does a reply of more than one JSON object
+# or an outcome outside the reader's seven, on a fresh review and on a resume (PB-L2); an absent decisions log has no priors.
 # Spy CLI, private lane state and log (fable-launch-review_lib.sh); no provider call. Run alone: bash tests/ffdr-review-replay.test.sh
 . "$(dirname "$0")/fable-launch-review_lib.sh"
 RD="$D/.local/lib/skill-route-terminal.py"; AL="$D/.local/lib/account-lane.py"; AFX="$D/tests/fixtures/account-lanes"
@@ -104,8 +105,9 @@ ck "resume of the failed review P3 (with the ack): continues with its own role a
 cat >"$T/rd-fake" <<'S'
 #!/usr/bin/env python3
 # T4 fake reader (the launcher runs it as `python3 -I <file>`): review-ancestor goes to the real reader (mode anc-null answers it with
-# null instead, without reading the log); session misbehaves by T4_RD_MODE.
-import os, sys, time
+# null instead, without reading the log); session misbehaves by T4_RD_MODE (twice: the real reader's reply printed twice; bogus: one object
+# about the asked session whose outcome is not one of the reader's seven).
+import json, os, subprocess, sys, time
 if "review-ancestor" in sys.argv[1:]:
     if os.environ.get("T4_RD_MODE") == "anc-null":
         print('{"review_session": null, "pid": null, "reason": "stand-in"}')
@@ -120,6 +122,12 @@ if mode == "garbage":
     print("not json {")
 if mode == "other":
     print('{"session":"00000000-0000-4000-8000-000000000000","terminal":{"outcome":"completed","rc":0,"reasons":[]}}')
+if mode == "twice":
+    r = subprocess.run(["python3", "-I", os.environ["T4_RD"]] + sys.argv[1:], capture_output=True, text=True)
+    sys.stdout.write(r.stdout + r.stdout)
+    sys.exit(r.returncode)
+if mode == "bogus":
+    print(json.dumps({"session": sys.argv[sys.argv.index("session") + 1], "terminal": {"outcome": "bogus", "rc": None, "reasons": []}}))
 S
 chmod +x "$T/rd-fake"; export T4_RD="$RD"
 P8="$(uuid)"; rq g0 R-G "$FX/happy.sha256"; FLR_SPY_RC=1 flr_run g0 g0 --session-id "$P8" -p x
@@ -133,6 +141,18 @@ rq gother R-G "$FX/happy.sha256"; SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=o
 ck "a reader reply about another session: the prior counts as unknown (blocks; never read as completed)" 'nolaunch gother && why gother | grep -qF "$P8 (unknown)"'
 rq greal R-G "$FX/happy.sha256"; flr_run greal greal --session-id "$(uuid)" -p x
 ck "without SKILL_ROUTE_TERMINAL the same request reads the real outcome (failed)" 'nolaunch greal && why greal | grep -qF "$P8 (failed)"'
+# A1300 FFDR PB-L2: the reply is exactly one JSON object, and both outcome checks deny every outcome outside the reader's seven. P9 completed.
+P9="$(uuid)"; rq t0 R-T "$FX/happy.sha256"; flr_run t0 t0 --session-id "$P9" -p x
+rq t1 R-T "$FX/happy.sha256"; SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=twice flr_run t1 t1 --session-id "$(uuid)" -p x
+ck "PB-L2: a two-object reply (P9's real completed reply, twice) refuses a fresh same-scope review: check failed, not exactly one JSON object" 'nolaunch t1 && why t1 | grep -qF "session $P9: non-zero exit, timeout, or output that is not exactly one JSON object"'
+rq t2 R-T "$FX/happy.sha256"; SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=twice flr_run t2 t2 --resume "$P9" -p again
+ck "PB-L2: the same two-object reply refuses a resume of P9, nothing started" 'nolaunch t2 && why t2 | grep -qF "session $P9: non-zero exit, timeout, or output that is not exactly one JSON object"'
+rq t3 R-T "$FX/happy.sha256"; SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=bogus flr_run t3 t3 --session-id "$(uuid)" -p x
+ck "PB-L2: one object whose outcome is outside the reader's seven (bogus) refuses a fresh review (the fresh-review check is exhaustive)" 'nolaunch t3 && why t3 | grep -qF "session $P9: unexpected outcome" && why t3 | grep -qF bogus'
+rq t4 R-T "$FX/happy.sha256"; SKILL_ROUTE_TERMINAL="$T/rd-fake" T4_RD_MODE=bogus flr_run t4 t4 --resume "$P9" -p again
+ck "PB-L2: the same outcome refuses a resume of P9 (the resume check is exhaustive), nothing started" 'nolaunch t4 && why t4 | grep -qF "session $P9: unexpected outcome" && why t4 | grep -qF bogus'
+rq t5 R-T "$FX/happy.sha256"; flr_run t5 t5 --session-id "$(uuid)" -p x
+ck "control: with the real reader the same fresh request is refused by P9's real outcome (completed)" 'nolaunch t5 && why t5 | grep -qF "already reviewed by $P9 (completed)"'
 
 # --- an absent decisions log has no priors (no reader call); a present but unreadable one refuses
 mkdir -p "$T/fresh"; rq a1 R-A "$FX/happy.sha256"; : >"$T/spy.a1"

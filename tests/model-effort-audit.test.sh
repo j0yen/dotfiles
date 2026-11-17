@@ -2,6 +2,7 @@
 # model-effort-audit.test.sh: deterministic drift audit (ledger A1159, routing audit A1300). Builds a fake HOME from the repo files, no provider call.
 # Run alone: bash tests/model-effort-audit.test.sh
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 R="$(cd "$(dirname "$0")/.." && pwd)"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fail=0
