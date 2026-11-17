@@ -4,6 +4,7 @@
 # reasoned exceptions only. Runs the real launcher against a spy claude (no provider call). Run alone: bash tests/fable-quota-routing.test.sh
 # FQR_ROOT=<tree> reruns the same assertions against another checkout (used to show RED on the pre-change bytes).
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11
 R="${FQR_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 L="$R/.local/bin/fable-launch.sh"; GATE="$R/.claude/hooks/fable-skill-spawn-gate.sh"; NG="$R/.claude/hooks/fable-native-agent-guard.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -59,7 +60,7 @@ rr '{"task_id":"Q4","skill":"5whysandrhyme","escalation":{"reason":"recurring_fa
 rr '{"task_id":"Q5","skill":"5whysandrhyme","escalation":{"reason":"recurring_failure","evidence":["none"]}}'; ck "route: xhigh without real evidence denied, nothing started" '[ "$(rc)" = 64 ] && [ ! -s "$SPYLOG" ]'
 g=$(gate nopin); ck "gate: skill with no effort pin defaults to high" 'grep -q -- "--effort high" <<<"$g"'
 # --- 4. native guard: Fable high allowed under jyen.pm; xhigh must go through the launcher with a reason
-ng(){ printf '{"tool_name":"Agent","tool_input":{"model":"claude-fable-5-1","effort":"%s","prompt":"x"}}' "$1" | FABLE_LAUNCH_ACCOUNT=jyen.pm "$NG"; }
+ng(){ printf '{"tool_name":"Agent","tool_input":{"model":"claude-fable-5-1","effort":"%s","prompt":"x"}}' "$1" | FABLE_LAUNCH_ACCOUNT=jyen.pm FABLE_LAUNCH_MODEL=claude-fable-5-1 "$NG"; }   # R5: the parent's lane is its launch model
 ck "native guard: fable high allowed" '[ -z "$(ng high)" ]'
 o=$(ng xhigh); ck "native guard: fable xhigh denied with the reason route named" 'grep -q "\"permissionDecision\":\"deny\"" <<<"$o" && grep -q FABLE_LAUNCH_EFFORT_REASON <<<"$o"'
 echo "pass=$p fail=$f"; [ $f = 0 ] && echo ALL PASS; exit $f

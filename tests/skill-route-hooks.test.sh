@@ -8,6 +8,7 @@ EG="$R/.claude/hooks/skill-agent-effort-guard.sh"; NG="$R/.claude/hooks/fable-na
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export SKILL_MARKER_DIR="$T/marks" FABLE_SKILLS_DIR="$T/skills" ANALYSIS_ROUTER_LOG="$T/r.jsonl"
 unset SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL FABLE_LAUNCH_ACCOUNT SKILL_ROUTE_POLICY
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (FABLE_LAUNCH_MODEL decides the guard's lane since R5)
 p=0; f=0; ck(){ if eval "$2"; then p=$((p+1)); echo "PASS $1"; else f=$((f+1)); echo "FAIL $1"; fi; }
 pg(){ jq -cn --arg p "$1" '{prompt:$p,session_id:"s1"}' | "$PG" 2>/dev/null; }
 blocked(){ printf '%s' "$1" | jq -e '.decision=="block"' >/dev/null 2>&1; }
@@ -45,7 +46,7 @@ ck "native wwhtbt sonnet/high denied" '! ag sonnet high "$W" | "$EG" >/dev/null 
 ck "native fable/max denied (no implicit Fable max)" '! ag fable max "$F" | "$EG" >/dev/null 2>&1'
 ck "native codex/gpt model denied (no implicit fallback)" '! ag gpt-5-codex high "$F" | "$EG" >/dev/null 2>&1'
 ck "unrelated native spawn untouched" 'ag sonnet medium "Implement the parser" | "$EG" >/dev/null 2>&1'
-o=$(ag sonnet medium "$W" | FABLE_LAUNCH_ACCOUNT=jyen.pm "$NG"); ck "account safeguard: sonnet child under a jyen.pm Fable parent still denied" 'printf %s "$o" | grep -q deny'
+o=$(ag sonnet medium "$W" | FABLE_LAUNCH_ACCOUNT=jyen.pm FABLE_LAUNCH_MODEL=claude-fable-5-1 "$NG"); ck "account safeguard: sonnet child under a Fable parent (jyen.pm launched on claude-fable-5-1) still denied" 'printf %s "$o" | grep -q deny && ! printf %s "$o" | grep -q FABLE_LAUNCH_MODEL'
 o=$(ag sonnet medium "$W" | "$NG"); ck "account safeguard: sonnet child under josephsyen parent allowed" '[ -z "$o" ]'
 o=$(ag fable high "$F" | "$NG"); ck "account safeguard: native Fable on josephsyen denied, names --route-request" 'printf %s "$o" | grep -q deny && printf %s "$o" | grep -q -- "--route-request"'
 ck "effort guard fails closed without helpers (skill-shaped spawn only)" '! (mkdir -p "$T/iso/.claude/hooks"; cp "$EG" "$T/iso/.claude/hooks/"; ag sonnet medium "$W" | SKILL_ROUTE_LIB=/nonexistent HOME="$T/nohome" "$T/iso/.claude/hooks/skill-agent-effort-guard.sh" >/dev/null 2>&1)'

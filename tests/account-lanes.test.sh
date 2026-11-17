@@ -3,6 +3,7 @@
 # Fake claude + SYNTHETIC labelled provider errors + dummy credentials; no real quota call, no real home/state writes.
 # AL_ROOT=<tree> replays the file against other bytes (RED on the base commit).
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
 export ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}"  # source-policy fixture; the live policy is host config, not in this repo
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -129,8 +130,8 @@ reset; sleep 30 & sp=$!; pids=""; for i in 1 2 3 4 5 6; do ( lane session-claim 
 ck "6 racing claims: exactly one winner" '[ "$(grep -c "^0$" $T/claims)" = 1 ] && [ "$(grep -c "^75$" $T/claims)" = 5 ]'; kill $sp 2>/dev/null
 # --- native child helper ---
 G="$D/.claude/hooks/fable-native-agent-guard.sh"
-o="$(echo '{"tool_name":"Agent","tool_input":{"model":"sonnet","prompt":"x"}}' | FABLE_LAUNCH_ACCOUNT=mcphost.dev "$G")"; ck "native non-Fable child under mcphost.dev parent denied" 'echo "$o" | grep -q deny'
-o="$(echo '{"tool_name":"Agent","tool_input":{"model":"claude-fable-5-1","effort":"high"}}' | FABLE_LAUNCH_ACCOUNT=mcphost.dev "$G")"; ck "native Fable high child under mcphost.dev allowed" '[ -z "$o" ]'
+o="$(echo '{"tool_name":"Agent","tool_input":{"model":"sonnet","prompt":"x"}}' | FABLE_LAUNCH_ACCOUNT=mcphost.dev FABLE_LAUNCH_MODEL=claude-fable-5-1 "$G")"; ck "native non-Fable child under a mcphost.dev parent launched on Fable denied" 'echo "$o" | grep -q deny'
+o="$(echo '{"tool_name":"Agent","tool_input":{"model":"claude-fable-5-1","effort":"high"}}' | FABLE_LAUNCH_ACCOUNT=mcphost.dev FABLE_LAUNCH_MODEL=claude-fable-5-1 "$G")"; ck "native Fable high child under a mcphost.dev parent launched on Fable allowed" '[ -z "$o" ]'
 # --- ctl account follow: never follows the fleet onto a Fable-lane-only account ---
 mkdir -p "$T/home/.config/fleet-token/store" "$T/home/.cache/fleet-dash"; cp "$T/store/mcphost.dev" "$T/home/.config/fleet-token/store/mcphost.dev"; echo '{"account":"mcphost.dev"}' > "$T/home/.cache/fleet-dash/token.json"
 AAF_TOKEN_JSON="$T/home/.cache/fleet-dash/token.json" bash "$D/.local/bin/ctl-account-follow.sh" >/dev/null 2>&1
