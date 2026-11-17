@@ -127,6 +127,7 @@
     "dream": {
       "require_class": true,
       "baseline": "deterministic",
+      "review_route": "opus-high",
       "routes": {
         "deterministic": {
           "deterministic": true
