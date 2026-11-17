@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# ffdr-route-table.test.sh: A1300 FFDR Phase 1 (spec R1 route data, test T1). The full skill-routing resolution table at head equals the
-# checked-in table generated from base a244971 (tests/fixtures/ffdr/) except exactly R1.3's four dream classes (Fable -> Opus); every
-# review echo row stays as at base (R1.4 withdrawn, disposition O1: review.route is the second-review echo of every governed skill); the
-# policy carries R1's shape; and the controls hold: Opus max denied, a requested Fable model on an Opus class denied, an unknown model
-# denied, max_exception still Fable max only with a ledger record. Resolver + policy only: no launcher, no provider call.
+# ffdr-route-table.test.sh: A1300 FFDR spec R1 route data + R2 resolver, test T1. The full skill-routing resolution table at head equals the
+# checked-in table generated from base a244971 (tests/fixtures/ffdr/) except exactly R1.3's four dream classes (Fable -> Opus) and, since
+# Phase 2, the six dream review-echo rows (R2.4: skills.dream.review_route = opus-high, disposition O2); every other skill's review echo
+# stays as at base (the global review.route is unchanged, O1); the policy carries R1's and R2.4's shape; and the controls hold: Opus max
+# denied, a requested Fable model on an Opus class denied, an unknown model denied, max_exception still Fable max only with a ledger record,
+# review.replay validated field by field (R2.1-R2.3), an unknown review_route a policy error; .evidence, .version and .forbidden_efforts stay
+# the base's (PA-L2). Resolver + policy only: no launcher, no provider call.
 # Run alone: bash tests/ffdr-route-table.test.sh
 # FFDR_ROOT=<tree> checks that tree's .config/skill-routing/policy.json + .local/lib/skill-route-resolve.py (+ skill-model-policy.sh)
 # against this tree's fixture; the mutation runs and the red-at-base run use it.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11
 D="$(cd "$(dirname "$0")/.." && pwd)"; R="${FFDR_ROOT:-$D}"
 FX="$D/tests/fixtures/ffdr"; GEN="$FX/gen-route-table.py"; BT="$FX/base-route-table.json"
 POL="$R/.config/skill-routing/policy.json"; RES="$R/.local/lib/skill-route-resolve.py"
@@ -31,7 +34,8 @@ import json, sys
 base = json.load(open(sys.argv[1]))["table"]; head = json.load(open(sys.argv[2]))["table"]
 R13 = {"new_vision": "opus-high", "prioritization": "opus-high", "difficult_decomposition": "opus-high", "consequential_uncertainty": "opus-xhigh"}
 ROUTE = {"opus-high": ("claude-opus-5-5", "high"), "opus-xhigh": ("claude-opus-5-5", "xhigh")}
-def expect(row):                                        # the base row with exactly R1.3 applied
+R24 = ("claude-opus-5-5", "high")                       # R2.4: the dream review echo follows skills.dream.review_route (opus-high)
+def expect(row):                                        # the base row with exactly R1.3 and R2.4 applied
     row = json.loads(json.dumps(row)); kinds = []; o = row["out"]
     skill, sel = row["id"].split("|", 1)
     if skill == "dream" and sel.startswith("class:") and sel[6:] in R13:
@@ -39,11 +43,13 @@ def expect(row):                                        # the base row with exac
         o["route"] = new; o["model_id"], o["effort"] = ROUTE[new]
         o["reasons"] = [r.replace("-> %s" % old, "-> %s" % new) if r.startswith("decision_class ") else r for r in o["reasons"]]
         kinds.append("r13")
+    if skill == "dream" and isinstance(o.get("review"), dict):
+        o["review"]["model_id"], o["review"]["effort"] = R24; kinds.append("r24")
     return row, kinds
 print("ids_equal", [r["id"] for r in base] == [r["id"] for r in head])
 print("requests_equal", [r["request"] for r in base] == [r["request"] for r in head])
-hb = {r["id"]: r for r in head}; n = {"r13": 0, "same": 0}; bad = {"r13": 0, "same": 0}; vac = 0
-rv = {"n": 0, "bad": 0, "fable": 0}                     # O1: the review echo rows (each governed skill x each review reason)
+hb = {r["id"]: r for r in head}; n = {"r13": 0, "r24": 0, "same": 0}; bad = {"r13": 0, "r24": 0, "same": 0}; vac = 0
+rv = {"n": 0, "bad": 0, "fable": 0}                     # O1: every other skill's review echo rows (each skill x each review reason)
 for b in base:
     e, kinds = expect(b)
     for x in (kinds or ["same"]): n[x] += 1
@@ -52,21 +58,22 @@ for b in base:
     if h != e:
         for x in (kinds or ["same"]): bad[x] += 1
         print("MISMATCH %s\n  expected %s\n  head     %s" % (b["id"], json.dumps(e["out"], sort_keys=True), json.dumps(h and h["out"], sort_keys=True)))
-    if isinstance(b["out"].get("review"), dict):
+    if isinstance(b["out"].get("review"), dict) and not b["id"].startswith("dream|"):
         hr = (h or {}).get("out", {}).get("review") or {}
         rv["n"] += 1; rv["bad"] += h != b; rv["fable"] += (hr.get("model_id"), hr.get("effort")) == ("claude-fable-5-1", "high")
-for k in ("r13", "same"):
+for k in ("r13", "r24", "same"):
     print("rows_%s %d bad_%s %d" % (k, n[k], k, bad[k]))
 print("rows_review %d bad_review %d fable_review %d" % (rv["n"], rv["bad"], rv["fable"]))
-print("nonvacuous", vac > 0 and vac == n["r13"])
+print("nonvacuous", vac > 0 and vac == n["r13"] + n["r24"])
 PY
 cv(){ awk -v k="$1" '{for(i=1;i<NF;i+=2) if($i==k) print $(i+1)}' "$T/cmp.txt" | head -1; }
 ck "head table has the base table's rows (same ids, same order): no skill, class, escalation or review reason added or lost" '[ "$(cv ids_equal)" = True ]'
 ck "every head request equals its base request (class evidence flags, exception record, permission_mode unchanged)" '[ "$(cv requests_equal)" = True ]'
 ck "R1.3: exactly four dream class rows re-route: new_vision, prioritization, difficult_decomposition -> opus-high (claude-opus-5-5 high), consequential_uncertainty -> opus-xhigh (claude-opus-5-5 xhigh)" '[ "$(cv rows_r13)" = 4 ] && [ "$(cv bad_r13)" = 0 ]'
-ck "O1 (R1.4 withdrawn): every review echo row (each governed skill x each review reason, 24) is identical to base and echoes claude-fable-5-1 high" '[ "$(cv rows_review)" = 24 ] && [ "$(cv bad_review)" = 0 ] && [ "$(cv fable_review)" = 24 ]'
-ck "every other row resolves exactly as at base (5whysandrhyme, wwhtbt, maxspeed, the other dream classes, max_exception, every review echo)" '[ "$(cv rows_same)" = 57 ] && [ "$(cv bad_same)" = 0 ]'
-ck "non-vacuous: the base table carries the Fable values R1.3 replaces (every R1.3 row differs from base)" '[ "$(cv nonvacuous)" = True ]'
+ck "R2.4: exactly the six dream review-echo rows (one per review reason) echo claude-opus-5-5 high, the rest of each row as at base" '[ "$(cv rows_r24)" = 6 ] && [ "$(cv bad_r24)" = 0 ]'
+ck "O1: every other skill's review echo row (5whysandrhyme, maxspeed, wwhtbt x each review reason, 18) is identical to base and echoes claude-fable-5-1 high" '[ "$(cv rows_review)" = 18 ] && [ "$(cv bad_review)" = 0 ] && [ "$(cv fable_review)" = 18 ]'
+ck "every other row resolves exactly as at base (5whysandrhyme, wwhtbt, maxspeed, the other dream classes, max_exception, every other review echo)" '[ "$(cv rows_same)" = 51 ] && [ "$(cv bad_same)" = 0 ]'
+ck "non-vacuous: the base table carries the Fable values R1.3 and R2.4 replace (every R1.3/R2.4 row differs from base)" '[ "$(cv nonvacuous)" = True ]'
 grep -A2 '^MISMATCH' "$T/cmp.txt" | head -30
 
 # --- the policy shape R1 names
@@ -77,7 +84,14 @@ ck "R1.2 dream routes: opus-high and opus-xhigh added" 'pj ".skills.dream.routes
 ck "R1.2 dream routes: fable-high, fable-xhigh, fable-max-exception still defined as at base (a rollback is a re-point)" 'pj ".skills.dream.routes[\"fable-high\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"high\"} and .skills.dream.routes[\"fable-xhigh\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"xhigh\"} and .skills.dream.routes[\"fable-max-exception\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"max\",\"exception\":true} and (.skills.dream.routes|length)==8"'
 ck "R1.2/R1.3 fable-high and fable-xhigh are referenced by no dream class" 'pj "[.skills.dream.classes[].route] | (index(\"fable-high\")==null and index(\"fable-xhigh\")==null)"'
 ck "R1.3 the four classes keep evidence:true; max_exception stays fable-max-exception (evidence false)" 'pj ".skills.dream.classes | .new_vision=={\"route\":\"opus-high\",\"evidence\":true} and .prioritization=={\"route\":\"opus-high\",\"evidence\":true} and .difficult_decomposition=={\"route\":\"opus-high\",\"evidence\":true} and .consequential_uncertainty=={\"route\":\"opus-xhigh\",\"evidence\":true} and .max_exception=={\"route\":\"fable-max-exception\",\"evidence\":false}"'
+ck "R2.4 skills.dream.review_route = opus-high (a dream route: claude-opus-5-5 high); no other skill names a review_route" 'pj ".skills.dream.review_route==\"opus-high\" and .skills.dream.routes[.skills.dream.review_route]=={\"model\":\"claude-opus-5-5\",\"effort\":\"high\"} and ([.skills[]|select(has(\"review_route\"))]|length)==1"'
 ck "O1 (R1.4 withdrawn): review is as at base: route claude-fable-5-1 high; reasons, evidence and automatic unchanged" 'pj ".review=={\"automatic\":false,\"reasons\":[\"unresolved_assumption\",\"contradiction\",\"independent_verifier_required\",\"prod_money_real_user_data\",\"low_confidence_weakest_link\",\"explicit_user_request\"],\"route\":{\"model\":\"claude-fable-5-1\",\"effort\":\"high\"},\"evidence\":true}"'
+# A1300 FFDR PA-L2: the evidence grammar, the policy version and forbidden_efforts lie outside R1/R2, so they stay the base's (jq -S).
+BASE_EVF='{"evidence":{"min_refs":1,"placeholders":["none","n/a","na","tbd","todo","unknown","x","xx"],"ref_pattern":"^(ledger|file|pr|run|commit|page):[^\\s]{2,200}$"},"forbidden_efforts":["max"],"version":1}'
+ck "PA-L2: .evidence, .version and .forbidden_efforts equal the base policy's (jq -S)" '[ "$(jq -S -c "{evidence, forbidden_efforts, version}" "$POL" 2>/dev/null)" = "$BASE_EVF" ]'
+if [ -s "$T/base-policy.json" ]; then
+  ck "PA-L2: that base value is a244971's own bytes (jq -S of the base policy extracted above)" '[ "$(jq -S -c "{evidence, forbidden_efforts, version}" "$T/base-policy.json")" = "$BASE_EVF" ]'
+else echo "SKIP PA-L2 provenance (commit $BASE is not in this clone; the value above is checked)"; fi
 APPROVED_BASE="Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300"
 APPROVED_FFDR='; Fable-free Dream route: Joe 2026-11-17 "I agree with your recommendation" (A1296 amendment § Nov 17; A1300 bootstrap dc5ad9ac)'
 ck "R1.5 approved = the base text plus the Fable-free Dream route record" '[ "$(jq -r .approved "$POL" 2>/dev/null)" = "$APPROVED_BASE$APPROVED_FFDR" ]'
@@ -109,4 +123,28 @@ chk "control: max_exception without an exception record denied" 2 "$DQ"',"decisi
 chk "control: max_exception with only file evidence denied (ledger record first)" 2 "$DQ"',"decision_class":"max_exception","exception":{"reason":"recorded","evidence":["file:'"$T"'/ev.md"]}}' '.error|test("ledger reference recorded first")'
 chk "control: max_exception with a placeholder ledger ref denied" 2 "$DQ"',"decision_class":"max_exception","exception":{"reason":"recorded","evidence":["ledger:tbd"]}}' '.error|test("not a real reference")'
 chk "control: max_exception with an unknown ledger id denied" 2 "$DQ"',"decision_class":"max_exception","exception":{"reason":"recorded","evidence":["ledger:A9999"]}}' '.error|test("not found in the ledger")'
+
+# --- R2 controls (Phase 2): review.replay field by field (R2.1-R2.3) and the per-skill review route (R2.4)
+U1=11111111-2222-4333-8444-555555555555; U2=00000000-aaaa-4bbb-8ccc-dddddddddddd   # given as [U1,U2]; sorted = [U2,U1]
+RV(){ printf '%s' "$DQ"',"decision_class":"new_vision","evidence_refs":'"$EV"',"review":{"reason":"contradiction","evidence":'"$EV$1"'}}'; }
+SN=',"snapshot":"/s/m.sha256"'; RPOK='{"reason":"prior reviewer died mid-run","evidence":["ledger:A1300"],"prior":["'$U1'","'$U2'"]}'
+chk "R2.1-R2.3 control: a full review.replay beside a snapshot is allowed and echoed under review.replay with prior sorted" 0 "$(RV "$SN"',"replay":'"$RPOK")" '.review.replay=={"reason":"prior reviewer died mid-run","evidence":["ledger:A1300"],"prior":["'$U2'","'$U1'"]} and .review.model_id=="claude-opus-5-5"'
+chk "R2.2 control: review.replay without review.snapshot denied" 2 "$(RV ',"replay":'"$RPOK")" '.error|test("review.replay needs review.snapshot")'
+chk "R2.1 control: review.replay with an extra key denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"],"prior":["'$U1'"],"x":1}')" '.error|test("review.replay must be an object with exactly reason, evidence and prior")'
+chk "R2.1 control: review.replay without prior denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"]}')" '.error|test("review.replay must be an object with exactly")'
+chk "R2.1 control: review.replay null denied" 2 "$(RV "$SN"',"replay":null')" '.error|test("review.replay must be an object with exactly")'
+chk "R2.1 control: review.replay.reason with 7 non-space characters denied" 2 "$(RV "$SN"',"replay":{"reason":"  abc  defg  ","evidence":["ledger:A1300"],"prior":["'$U1'"]}')" '.error|test("review.replay.reason")'
+chk "R2.1 control: review.replay.evidence with no ledger: ref denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["file:'"$T"'/ev.md"],"prior":["'$U1'"]}')" '.error|test("review.replay.evidence needs a ledger: reference")'
+chk "R2.1 control: review.replay.evidence placeholder denied (check_evidence)" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:tbd"],"prior":["'$U1'"]}')" '.error|test("review.replay.evidence evidence ref")'
+chk "R2.1 control: review.replay.prior empty denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"],"prior":[]}')" '.error|test("review.replay.prior")'
+chk "R2.1 control: review.replay.prior uppercase id denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"],"prior":["11111111-2222-4333-8444-55555555555A"]}')" '.error|test("review.replay.prior")'
+chk "R2.1 control: review.replay.prior duplicate id denied" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"],"prior":["'$U1'","'$U1'"]}')" '.error|test("review.replay.prior")'
+chk "R2.1 control: review.replay.prior id with a trailing newline denied (whole-string match)" 2 "$(RV "$SN"',"replay":{"reason":"prior reviewer died","evidence":["ledger:A1300"],"prior":["'$U1'\n"]}')" '.error|test("review.replay.prior")'
+jq '.skills.dream.review_route="opus-highest"' "$POL" >"$T/rr-unknown.json" 2>/dev/null; jq '.skills.dream.review_route="deterministic"' "$POL" >"$T/rr-det.json" 2>/dev/null
+CHK_POL="$T/rr-unknown.json" chk "R2.4 control: an unknown skills.dream.review_route is a policy error, even for a request without review" 2 "$DQ"',"decision_class":"amendment"}' '.error|test("policy review_route")'
+CHK_POL="$T/rr-det.json" chk "R2.4 control: a review_route naming a route without model and effort is a policy error" 2 "$DQ"',"decision_class":"amendment"}' '.error|test("policy review_route")'
+jq '.skills["5whysandrhyme"].review_route="fable-xhigh"' "$POL" >"$T/rr-5w.json" 2>/dev/null
+CHK_POL="$T/rr-5w.json" chk "R2.4 control: a policy copy giving 5whysandrhyme review_route fable-xhigh echoes Fable xhigh for its reviews" 0 '{"task_id":"FFDR-T1","skill":"5whysandrhyme","review":{"reason":"contradiction","evidence":'"$EV"'}}' '.review.model_id=="claude-fable-5-1" and .review.effort=="xhigh"'
+jq 'del(.skills.dream.review_route)' "$POL" >"$T/rr-none.json" 2>/dev/null
+CHK_POL="$T/rr-none.json" chk "R2.4 control: without skills.dream.review_route the dream echo falls back to the global review.route (Fable high)" 0 "$(RV "$SN")" '.review.model_id=="claude-fable-5-1" and .review.effort=="high"'
 echo "pass=$p fail=$f"; [ "$f" = 0 ] && echo ALL PASS; [ "$f" = 0 ]

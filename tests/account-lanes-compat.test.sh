@@ -4,6 +4,7 @@
 # fable-review/native-agent-guard carry text/default changes. The lane extension must keep all of it while keeping lane exhaustion, unknown-effect,
 # output-provenance and drain protections. SYNTHETIC; temp HOME/state, dummy credentials, fake CLI; no real call. AL_ROOT=<tree> replays other bytes.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
 export ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}"  # source-policy fixture; the live policy is host config, not in this repo
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -69,10 +70,10 @@ echo "== production overrides and header/duplicate behaviour"
 echo "== installed fable-native-agent-guard text and lane behaviour"
 G="$D/.claude/hooks/fable-native-agent-guard.sh"
 gin(){ printf '{"tool_name":"Agent","tool_input":{"model":"%s"}}' "$1"; }
-o=$(gin sonnet | FABLE_LAUNCH_ACCOUNT=jyen.pm bash "$G"); ck "jyen.pm parent: non-Fable child denied with the round-robin helper wording (installed)" 'grep -q "josephsyen or jyen.tech, chosen by the launcher" <<<"$o" && grep -q deny <<<"$o"'
-o=$(gin sonnet | FABLE_LAUNCH_ACCOUNT=mcphost.dev bash "$G"); ck "mcphost.dev parent: non-Fable child denied (lane extension)" 'grep -q deny <<<"$o"'
-o=$(gin claude-fable-5-1 | FABLE_LAUNCH_ACCOUNT=jyen.tech bash "$G"); ck "jyen.tech parent (installed pool): Fable child denied" 'grep -q deny <<<"$o"'
-ck "guard header documents the pool (installed A1221 text)" 'grep -q "non-Fable = {josephsyen, jyen.tech}" "$G"'
+o=$(gin sonnet | FABLE_LAUNCH_ACCOUNT=jyen.pm FABLE_LAUNCH_MODEL=claude-fable-5-1 bash "$G"); ck "Fable parent (jyen.pm, claude-fable-5-1): non-Fable child denied with the launcher helper wording, naming no account (A1300 FFDR R5)" 'grep -q "a non-Fable account chosen by the launcher" <<<"$o" && grep -q deny <<<"$o" && ! grep -qE "josephsyen|jyen[.]tech|jyen[.]pm|mcphost[.]dev" <<<"$o"'
+o=$(gin sonnet | FABLE_LAUNCH_ACCOUNT=mcphost.dev FABLE_LAUNCH_MODEL=claude-fable-5-1 bash "$G"); ck "mcphost.dev parent launched on Fable: non-Fable child denied (lane extension)" 'grep -q deny <<<"$o"'
+o=$(gin claude-fable-5-1 | FABLE_LAUNCH_ACCOUNT=jyen.tech FABLE_LAUNCH_MODEL=claude-opus-5-5 bash "$G"); ck "jyen.tech parent launched on a non-Fable model: Fable child denied" 'grep -q deny <<<"$o"'
+ck "guard header documents the provenance rule and names no account (A1300 FFDR R5)" 'grep -q "the parent.s lane comes from launch provenance" "$G" && ! grep -qE "josephsyen|jyen[.]tech|jyen[.]pm|mcphost[.]dev" "$G"'
 
 echo "== installed fable-review default launcher (f8fe) kept"
 R="$D/.local/bin/fable-review.sh"

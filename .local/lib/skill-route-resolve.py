@@ -3,9 +3,13 @@
 
 Input JSON (stdin, or `--file PATH`; never shell-interpolated):
   {task_id, skill, decision_class?, evidence_refs?, escalation?:{reason,evidence:[ref..]},
-   requested?:{model,effort}, review?:{reason,evidence:[ref..]}, permission_mode?}
+   requested?:{model,effort}, review?:{reason,evidence:[ref..],snapshot?,replay?:{reason,evidence:[ref..],prior:[sid..]}}, permission_mode?}
 A skill whose policy has `require_permission_mode` (non-empty string) is denied unless the request's permission_mode equals it.
 Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], review?, permission_mode? (echoed when the policy requires one)}
+The review echo {model_id, effort, reason, replay?} is the skill's `review_route` (a route of that skill; an unknown name is a policy
+error) or else the policy-global review.route. review.replay (A1300 FFDR R2) declares the failed/interrupted/unknown prior reviews a
+re-review of the same frozen manifest replays: exactly {reason (>= 8 non-space chars), evidence (>= 1 ledger: ref), prior (unique
+canonical lowercase UUIDs)}, only beside review.snapshot; it is echoed with prior sorted. The launcher compares prior with the blocking set.
 Exit 0 = route resolved (or skill ungoverned); exit 2 = denied (fail closed, {ok:false,error,reasons}).
 Policy: --policy PATH | $SKILL_ROUTE_POLICY | <repo>/.config/skill-routing/policy.json | ~/.config/skill-routing/policy.json.
 Skills and phases are data in the policy; adding one needs no code change.
@@ -13,6 +17,7 @@ Skills and phases are data in the policy; adding one needs no code change.
 import json, os, re, sys
 
 HOME = os.path.expanduser("~")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")   # canonical lowercase session id (fullmatch)
 
 
 class Deny(Exception):
@@ -88,6 +93,26 @@ def ledger_has(ask_id):
         raise Deny("ledger lookup unavailable; cannot verify ledger:%s (fail closed)" % ask_id)
 
 
+def check_replay(pol, rev):
+    """review.replay (A1300 FFDR R2.1-R2.3) -> its echo, prior sorted. Denied, naming the field, unless exactly {reason, evidence, prior}
+    beside a review.snapshot."""
+    rp = rev["replay"]
+    if not isinstance(rp, dict) or set(rp) != {"reason", "evidence", "prior"}:
+        raise Deny("review.replay must be an object with exactly reason, evidence and prior (got %s)" %
+                   (",".join(sorted(rp)) if isinstance(rp, dict) else type(rp).__name__))
+    if not isinstance(rev.get("snapshot"), str) or not rev["snapshot"]:
+        raise Deny("review.replay needs review.snapshot (a replay re-reviews a frozen manifest)")
+    if not isinstance(rp["reason"], str) or len(re.sub(r"\s", "", rp["reason"])) < 8:
+        raise Deny("review.replay.reason must be a string of at least 8 non-space characters")
+    check_evidence(pol, rp["evidence"], "review.replay.evidence")
+    if not any(isinstance(e, str) and e.startswith("ledger:") for e in rp["evidence"]):
+        raise Deny("review.replay.evidence needs a ledger: reference")
+    pr = rp["prior"]
+    if not isinstance(pr, list) or not pr or not all(isinstance(s, str) and UUID_RE.fullmatch(s) for s in pr) or len(set(pr)) != len(pr):
+        raise Deny("review.replay.prior must be a non-empty list of unique canonical lowercase session UUIDs")
+    return {"reason": rp["reason"], "evidence": list(rp["evidence"]), "prior": sorted(pr)}
+
+
 def resolve(pol, req):
     if not isinstance(req, dict):
         raise Deny("input must be a JSON object")
@@ -107,6 +132,12 @@ def resolve(pol, req):
         if not isinstance(have, str) or have != want:
             raise Deny("%s requires permission_mode %r (policy require_permission_mode); request carried %r" % (skill, want, have))
         pmode = have
+    rv_route = None   # A1300 FFDR R2.4: the skill's own second-review route, validated whatever the request (a bad name is a policy error)
+    if "review_route" in spol:
+        rv_route = spol["routes"].get(spol["review_route"]) if isinstance(spol["review_route"], str) else None
+        if not isinstance(rv_route, dict) or not isinstance(rv_route.get("model"), str) or not isinstance(rv_route.get("effort"), str):
+            raise Deny("%s: policy review_route %r is not a route of this skill with a model and effort (policy error, fail closed)" %
+                       (skill, spol["review_route"]))
     tid = req.get("task_id")
     if not isinstance(tid, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$", tid):
         raise Deny("task_id is required (^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$)")
@@ -186,8 +217,11 @@ def resolve(pol, req):
             raise Deny("second review denied: reason must be one of %s (no automatic second review)" % ", ".join(rp["reasons"]))
         if rp.get("evidence"):
             check_evidence(pol, rev.get("evidence"), "review")
-        check_route(pol, rp["route"]["model"], rp["route"]["effort"])
-        out["review"] = {"model_id": rp["route"]["model"], "effort": rp["route"]["effort"], "reason": rev["reason"]}
+        rr = rv_route if rv_route is not None else rp["route"]
+        check_route(pol, rr["model"], rr["effort"])
+        out["review"] = {"model_id": rr["model"], "effort": rr["effort"], "reason": rev["reason"]}
+        if "replay" in rev:
+            out["review"]["replay"] = check_replay(pol, rev)
     return out
 
 
