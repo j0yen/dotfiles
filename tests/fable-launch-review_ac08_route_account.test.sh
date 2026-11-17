@@ -8,6 +8,11 @@ flr_req au A8; flr_run a au -p x
 ck "review and author with one task, skill and decision_class both launch" '[ "$(cat $T/rc.r)" = 0 ] && [ "$(cat $T/rc.a)" = 0 ] && [ "$(flr_get r .role)" = review ] && [ "$(flr_get a .role)" = author ]'
 ck "their rows carry the same route, model and effort; each account is its nonfable round-robin slot (review 0, author 1), not chosen by role" '[ "$(flr_get r "[.route,.model,.effort]|join(\",\")")" = "$(flr_get a "[.route,.model,.effort]|join(\",\")")" ] && [ "$(flr_get r .account)" = "$(flr_nf 0)" ] && [ "$(flr_get a .account)" = "$(flr_nf 1)" ]'
 ck "the spy got the same model and effort for both, each under the account its row records" '[ "$(grep -o "acct=[^ ]*" "$T/spy.r")" = "acct=$(flr_get r .account)" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.a")" = "acct=$(flr_get a .account)" ] && grep -q -- "--model claude-opus-5-5" "$T/spy.r" && grep -q -- "--effort xhigh" "$T/spy.r" && grep -q -- "--model claude-opus-5-5" "$T/spy.a" && grep -q -- "--effort xhigh" "$T/spy.a"'
+# A1300 FFDR PA-L1: the opposite order (author first, then review) under another task. Each account is still the next round-robin slot
+# (2, then 3), so a launcher that maps role to account (review -> primaries[0], author -> primaries[1]) fails here although it fits the pair above.
+flr_req au3 A8-R; flr_run a2 au3 -p x
+SR2="$(uuid)"; flr_req rv3 A8-R "$FX/happy.sha256"; flr_run r2 rv3 --session-id "$SR2" -p x
+ck "opposite order under another task (author, then review): both launch; the author takes round-robin slot 2 and the review slot 3, each seen by the CLI" '[ "$(cat $T/rc.a2)" = 0 ] && [ "$(cat $T/rc.r2)" = 0 ] && [ "$(flr_get a2 .role)" = author ] && [ "$(flr_get r2 .role)" = review ] && [ "$(flr_get a2 .account)" = "$(flr_nf 2)" ] && [ "$(flr_get r2 .account)" = "$(flr_nf 3)" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.a2")" = "acct=$(flr_nf 2)" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.r2")" = "acct=$(flr_nf 3)" ]'
 # The conflict vectors use a scope with no prior review (A1300 FFDR O3): beside SR's completed review of happy, a same-scope launch is also
 # refused as unchanged-review-replay, so rc 64 alone would not show the conflict; the denied row must carry the resolver's conflict reason.
 flr_req rvc A8 "$FX/single.sha256"

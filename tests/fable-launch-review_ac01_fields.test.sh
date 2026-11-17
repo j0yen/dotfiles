@@ -26,4 +26,7 @@ R_ROLE=review R_SCOPE=/x R_SCOPE_ID=abc flr_req env A1d '-' '.role="review" | .s
 ck "no env var or request field sets the role (R_ROLE in env, role in request): author" '[ "$FLR_RC" = 0 ] && [ "$(flr_get env "[.role,.scope,.scope_id] | join(\"|\")")" = "author||" ]'
 S2="$(uuid)"; flr_req rel A1e review-scope/single.sha256; (cd "$FX/.." && flr_run rel rel --session-id "$S2" -p x)
 ck "relative review.snapshot resolved with readlink -f against the launcher cwd" '[ "$(cat "$T/rc.rel")" = 0 ] && [ "$(flr_get rel ".scope")" = "$(readlink -f "$FX/single.sha256")" ]'
+# A1300 FFDR PA-L1: after the review/author pair the next launches are author (obj), author (env) and review (rel). Each account is the next
+# round-robin slot, so no fixed role->account map fits both the pair above and these.
+ck "the following launches (author obj, author env, review rel) each take the next round-robin slot (2, 3, 4), whatever their role" '[ "$(flr_get obj .account)" = "$(flr_nf 2)" ] && [ "$(flr_get env .account)" = "$(flr_nf 3)" ] && [ "$(flr_get rel .account)" = "$(flr_nf 4)" ]'
 flr_end
