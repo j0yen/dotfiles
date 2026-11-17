@@ -24,11 +24,12 @@ flr_req rp A5 "$FX/prefixed.sha256"; flr_run rok rp --resume "$SR" -p again
 ck "reviewer resumed with its own scope (other prefix) proceeds as review S" '[ "$FLR_RC" = 0 ] && grep -q -- "--resume $SR" "$T/spy.rok" && [ "$(flr_get rok "[.decision,.role,.scope_id]|join(\",\")")" = "launch,review,$S" ]'
 flr_run rok2 rp --resume "$SR" --session-id "$SR" -p again
 ck "reviewer resumed beside --session-id with its own scope proceeds (model/effort rule as today: resume false)" '[ "$FLR_RC" = 0 ] && [ "$(flr_get rok2 "[.decision,.role,(.resume|tostring)]|join(\",\")")" = "launch,review,false" ]'
-# A session whose latest launch row has no role, or an unrecognized one, is an author.
+# A session whose latest launch row has no role, or an unrecognized one, is an author. The injected row repeats the session's own route,
+# model, effort and account (the same-session resume route rule reads them), so only the role differs.
 for v in none bogus; do
   flr_req "l$v" A5; flr_run "l$v" "l$v" -p x; s="$(flr_get l$v .session)"
   case $v in none) r='{}';; bogus) r='{"role":"Review","scope_id":""}';; esac
-  flr_inject "$(jq -nc --arg s "$s" --argjson r "$r" '{ts:"2026-11-02T00:00:00-08:00",decision:"launch",task_id:"A5",skill:"dream",route:"fable-xhigh",model:"claude-fable-5-1",effort:"xhigh",account:"jyen.pm",session:$s,resume:false,reasons:"fixture"} + $r')"
+  flr_inject "$(flr_get "l$v" 'select(.decision=="launch") | tojson' | jq -c --arg s "$s" --argjson r "$r" '{ts:"2026-11-02T00:00:00-08:00",decision:"launch",task_id:"A5",skill:"dream",route,model,effort,account,session:$s,resume:false,reasons:"fixture"} + $r')"
   flr_run "lr$v" rh --resume "$s" -p x; differs "lr$v"
   flr_run "la$v" "l$v" --resume "$s" -p x
   ck "latest row role $v, no snapshot: runs as an author" '[ "$FLR_RC" = 0 ] && grep -q -- "--resume $s" "$T/spy.la$v" && [ "$(flr_get la$v .role)" = author ]'

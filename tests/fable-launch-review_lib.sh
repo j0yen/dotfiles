@@ -50,6 +50,7 @@ flr_inject(){ ck "log prefix unchanged, launcher rows carry the fourteen fields 
 flr_end(){ ck "log prefix unchanged, every appended launcher row carries R1's fourteen fields" flr_appended_ok; echo "pass=$p fail=$f"; [ "$f" = 0 ] && echo ALL PASS; [ "$f" = 0 ]; }
 
 # flr_req NAME TASK [SNAPSHOT|-] [jq filter]: a dream route request (decision_class + evidence refs); SNAPSHOT adds review{reason,evidence,snapshot}.
+# The class, consequential_uncertainty, resolves to opus-xhigh (claude-opus-5-5 xhigh) since A1300 FFDR: the nonfable lane, see flr_nf.
 flr_req(){
   local s="${3:--}"
   jq -nc --arg t "$2" --arg s "$s" --arg ev "file:$T/ev.md" \
@@ -69,8 +70,12 @@ flr_bg(){ local n="$1" r="$2"; shift 2; : >"$T/spy.$n"; ( SPYLOG="$T/spy.$n" "$L
 flr_live(){ bash -c "exec -a 'claude --session-id $1' sleep 60" & FLR_LIVE=$!; FLR_BG+=("$FLR_LIVE"); sleep 0.3; }
 flr_kill(){ kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
 flr_count(){ jq -R -r --arg d "$2" 'fromjson? | objects | select(.decision==$d) | .decision' "$T/new.$1" | wc -l | tr -d ' '; }
-flr_get(){ jq -R -r "fromjson? | objects | $2" "$T/new.$1" | tail -1; }
+flr_get(){ jq -R -r "fromjson? | objects | $2" "$T/new.$1" | tail -1; }   # prints one line: end an object-valued filter in tojson
 flr_spy_empty(){ [ ! -s "$T/spy.$1" ]; }
+# flr_nf N: the account the nonfable lane's persistent round-robin (A1221) gives the N-th fresh claim (from 0) of this file's private lane
+# state when no primary is exhausted: primaries[N % length] of the lane policy in use. flr_req's dream route is Opus since A1300 FFDR,
+# a non-Fable model, so its launches take their account by this rule (a Fable route would take the fable lane's first account).
+flr_nf(){ jq -r --argjson n "$1" '.lanes.nonfable.primaries | .[$n % length]' "$ACCOUNT_LANE_POLICY"; }
 
 # The rows.jsonl scenario (R9): author launch, review launch, same-scope denied, author denied, resume denied, for task $1, run from $FX/..
 flr_rows_scenario(){

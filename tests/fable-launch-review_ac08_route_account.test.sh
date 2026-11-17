@@ -6,10 +6,10 @@ flr_begin
 SR="$(uuid)"; flr_req rv A8 "$FX/happy.sha256"; flr_run r rv --session-id "$SR" -p x
 flr_req au A8; flr_run a au -p x
 ck "review and author with one task, skill and decision_class both launch" '[ "$(cat $T/rc.r)" = 0 ] && [ "$(cat $T/rc.a)" = 0 ] && [ "$(flr_get r .role)" = review ] && [ "$(flr_get a .role)" = author ]'
-ck "their rows carry the same route, model, effort and account" '[ "$(flr_get r "[.route,.model,.effort,.account]|join(\",\")")" = "$(flr_get a "[.route,.model,.effort,.account]|join(\",\")")" ]'
-ck "the spy got the same model, effort and account for both" '[ "$(grep -o "acct=[^ ]*" "$T/spy.r")" = "$(grep -o "acct=[^ ]*" "$T/spy.a")" ] && grep -q -- "--model claude-fable-5-1" "$T/spy.r" && grep -q -- "--effort xhigh" "$T/spy.r"'
-flr_run cm rv --session-id "$(uuid)" --model claude-opus-5-5 -p x
-ck "review request with a conflicting --model: 64, nothing started" '[ "$FLR_RC" = 64 ] && flr_spy_empty cm'
+ck "their rows carry the same route, model and effort; each account is its nonfable round-robin slot (review 0, author 1), not chosen by role" '[ "$(flr_get r "[.route,.model,.effort]|join(\",\")")" = "$(flr_get a "[.route,.model,.effort]|join(\",\")")" ] && [ "$(flr_get r .account)" = "$(flr_nf 0)" ] && [ "$(flr_get a .account)" = "$(flr_nf 1)" ]'
+ck "the spy got the same model and effort for both, each under the account its row records" '[ "$(grep -o "acct=[^ ]*" "$T/spy.r")" = "acct=$(flr_get r .account)" ] && [ "$(grep -o "acct=[^ ]*" "$T/spy.a")" = "acct=$(flr_get a .account)" ] && grep -q -- "--model claude-opus-5-5" "$T/spy.r" && grep -q -- "--effort xhigh" "$T/spy.r" && grep -q -- "--model claude-opus-5-5" "$T/spy.a" && grep -q -- "--effort xhigh" "$T/spy.a"'
+flr_run cm rv --session-id "$(uuid)" --model claude-fable-5-1 -p x
+ck "review request with a conflicting --model (Fable, off the Opus route): 64, nothing started" '[ "$FLR_RC" = 64 ] && flr_spy_empty cm'
 flr_run ce rv --session-id "$(uuid)" --effort high -p x
 ck "review request with a conflicting --effort: 64, nothing started" '[ "$FLR_RC" = 64 ] && flr_spy_empty ce'
 SX="$(uuid)"; flr_live "$SX"; LX=$FLR_LIVE
