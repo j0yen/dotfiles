@@ -101,6 +101,11 @@ K7="$(uuid)"; krow "$K7"; kent "$K7" "$(ent josephsyen nonfable claude-opus-5-5 
 ck "any other state (adopted) -> unknown" '[ "$(koc "$K7")" = unknown ]'
 K8="$(uuid)"; krow "$K8"
 ck "a launch row with no sessions.json entry -> unknown" '[ "$(koc "$K8")" = unknown ] && krd session "$K8" | jq -e ".lane==null and .provenance.ok==false" >/dev/null'
+sleep 60 & KP=$!; FLR_BG+=("$KP"); KPS="$(cut -d')' -f2- "/proc/$KP/stat" | awk '{print $20}')"
+K9="$(uuid)"; krow "$K9"; kent "$K9" "$(ent josephsyen nonfable claude-opus-5-5 running false | jq -c --argjson p "$KP" --argjson st "$((KPS+1))" '.claim={pid:$p,start:$st}')"; kev "$(claim "$K9" josephsyen nonfable)"
+K10="$(uuid)"; krow "$K10"; kent "$K10" "$(ent josephsyen nonfable claude-opus-5-5 running false | jq -c --argjson p "$KP" --argjson st "$KPS" '.claim={pid:$p,start:$st}')"; kev "$(claim "$K10" josephsyen nonfable)"
+ck "state running whose claim pid is alive with another start time (a reused pid) -> interrupted; the same pid with its start time -> running" '[ "$(koc "$K9")" = interrupted ] && [ "$(koc "$K10")" = running ]'
+kill "$KP" 2>/dev/null; wait "$KP" 2>/dev/null
 # never-dispatched positive and its variants (fable lane on jyen.pm)
 nd(){ # SID [entry jq] [limit line] : one fresh fable run refused at start
   krow "$1" '.route="fable-high" | .model="claude-fable-5-1" | .effort="high" | .account="jyen.pm"'

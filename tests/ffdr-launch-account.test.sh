@@ -3,7 +3,7 @@
 # used only after the primary's exhaustion is observed (the real non-Fable 429 envelope), a generic 429 text never switches; no launch takes
 # the fable lane (the reserve account is also in the Fable order); each launch row records route, model, effort and account exactly; the
 # worker env carries R4.1's SKILL_ROUTE_ROLE/SESSION/SCOPE_ID; outside FABLE_LAUNCH_TEST=1 the launcher refuses SKILL_ROUTE_POLICY and
-# SKILL_ROUTE_LEDGER_IDS (R4.6). The lane policy is carbon-shaped (spec r2 facts: nonfable primaries [josephsyen], reserve [mcphost.dev];
+# SKILL_ROUTE_LEDGER_IDS (R4.6) and ignores SKILL_ROUTE_TERMINAL (R4.5). The lane policy is carbon-shaped (spec r2 facts: nonfable primaries [josephsyen], reserve [mcphost.dev];
 # Fable order mcphost.dev, jyen.pm as in the launcher header), written here: synthetic, not the live file. Spy CLI, private lane state and
 # log (fable-launch-review_lib.sh), dummy tokens; no provider call. Run alone: bash tests/ffdr-launch-account.test.sh
 . "$(dirname "$0")/fable-launch-review_lib.sh"
@@ -63,6 +63,11 @@ prod env SKILL_ROUTE_LEDGER_IDS="$T/ids.txt" 2>"$T/err.pl"; lrc=$?
 ck "production mode with SKILL_ROUTE_LEDGER_IDS set: 64, refused before anything runs" '[ "$lrc" = 64 ] && grep -qF "SKILL_ROUTE_LEDGER_IDS override refused" "$T/err.pl" && [ ! -e "$P/.local/state" ] && [ ! -s "$T/spy.prod" ]'
 prod env >/dev/null 2>"$T/err.p0"; crc=$?
 ck "control: production mode without them is not refused by R4.6 (it fails later, on the private HOME's missing lane policy or credential; nothing started)" '[ "$crc" != 64 ] && [ "$crc" != 0 ] && ! grep -q "override refused" "$T/err.p0" && [ ! -s "$T/spy.prod" ]'
+printf '#!/usr/bin/env python3\nopen("%s", "w").close()\nprint("{\\"review_session\\": null, \\"pid\\": null, \\"reason\\": \\"stand-in\\"}")\n' "$T/term-ran" >"$T/term-mark"; chmod +x "$T/term-mark"
+prod env SKILL_ROUTE_TERMINAL="$T/term-mark" >/dev/null 2>"$T/err.pt"; trc=$?
+ck "R4.5 production mode ignores SKILL_ROUTE_TERMINAL: the stand-in reader never runs (not refused either; nothing started)" '[ ! -e "$T/term-ran" ] && [ "$trc" != 64 ] && [ "$trc" != 0 ] && ! grep -q "override refused" "$T/err.pt" && [ ! -s "$T/spy.prod" ]'
+SKILL_ROUTE_TERMINAL="$T/term-mark" FABLE_CLAUDE_BIN="$T/claude2" flr_run a5 a4 -p x >/dev/null 2>&1
+ck "control: in test mode the same stand-in is the reader (it runs)" '[ -e "$T/term-ran" ]'
 ck "SKILL_ROUTING_DECISIONS stays honoured in test mode (every T2 row is in the private log)" '[ "$(jq -r "select(.task_id==\"T2-A\") | .decision" "$DEC")" = launch ]'
 ck "no token in stderr, spy args or any row" '! grep -q TOKEN- "$T"/err.* "$T"/spy.* "$DEC"'
 flr_end

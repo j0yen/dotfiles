@@ -2,7 +2,8 @@
 # ffdr-nested-review.test.sh: A1300 FFDR spec r2 R4.2/R4.3 (test T3). A routed launch from inside a review is refused as nested-dispatch:
 # by the inherited SKILL_ROUTE_ROLE=review, or by process identity (an ancestor holding a review session's account-lane claim, pid + start
 # time; or a claude / account-lane.py run ancestor whose argv carries a review id). A tmux-server-shaped ancestor or a driver script carrying a
-# review id is not a review ancestor; an author worker may launch reviews; the launch's own resumed id is not nested. self-review,
+# review id is not a review ancestor; an author worker may launch reviews; the launch's own resumed id is not nested; a review-ancestor
+# answer that fails or does not parse refuses (fail closed). self-review,
 # session-id-grammar and session-reuse refuse before the claim. Each refusal is one denied row, exit 64, nothing started.
 # Spy CLI, private lane state and log (fable-launch-review_lib.sh); ancestors are real processes whose argv the test sets with exec -a.
 # Run alone: bash tests/ffdr-nested-review.test.sh
@@ -83,6 +84,28 @@ FABLE_LAUNCH_ACK_UNKNOWN_EFFECT=1 nest o1 rv3 claude --resume "$SR3" :: --resume
 ck "a claude ancestor carrying the launch's own resumed review id: not nested, the resume continues" 'started o1 && grep -q -- "--resume $SR3" "$T/spy.o1"'
 nest o2 au2 claude --resume "$SR3" :: -p x
 ck "control: the same ancestor around a different (author) launch is refused" 'refused o2 "nested-dispatch: ancestor process of review session $SR3"'
+
+# --- R4.2 fail closed: a review-ancestor answer that is a non-zero exit, garbage or the wrong shape refuses. The fake reader stands in for
+# skill-route-terminal.py through SKILL_ROUTE_TERMINAL (honoured under FABLE_LAUNCH_TEST=1 only; T2 shows production ignores it).
+cat >"$T/anc-fake" <<'S'
+#!/usr/bin/env python3
+import os, sys
+if "review-ancestor" not in sys.argv[1:]:
+    sys.exit(9)
+mode = os.environ.get("T3_ANC", "")
+if mode == "exit":
+    sys.exit(3)
+if mode == "garbage":
+    print("not json {")
+if mode == "shape":
+    print('{"pid": null, "reason": "an answer without review_session"}')
+if mode == "null":
+    print('{"review_session": null, "pid": null, "reason": "fake: no review ancestor"}')
+S
+for mode in exit garbage shape; do SKILL_ROUTE_TERMINAL="$T/anc-fake" T3_ANC=$mode flr_run "f$mode" au2 -p x
+  ck "review-ancestor answer $mode: refused, nested-dispatch check failed (fail closed)" 'refused f$mode "nested-dispatch check failed"'; done
+SKILL_ROUTE_TERMINAL="$T/anc-fake" T3_ANC=null flr_run fnull au2 -p x
+ck "control: the same fake reader answering review_session null lets the author launch start" 'started fnull'
 
 # --- R4.3: self-review, id grammar, reuse
 SKILL_ROUTE_ROLE=author SKILL_ROUTE_SESSION="$SA1" flr_run s1 rv --resume "$SA1" -p x
