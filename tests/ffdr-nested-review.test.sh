@@ -3,7 +3,7 @@
 # by the inherited SKILL_ROUTE_ROLE=review, or by process identity (an ancestor holding a review session's account-lane claim, pid + start
 # time; or a claude / account-lane.py run ancestor whose argv carries a review id). A tmux-server-shaped ancestor or a driver script carrying a
 # review id is not a review ancestor; an author worker may launch reviews; the launch's own resumed id is not nested; a review-ancestor
-# answer that fails or does not parse refuses (fail closed). self-review,
+# answer that fails, does not parse or does not arrive within the 10 s bound refuses (fail closed; PB-L3). self-review,
 # session-id-grammar and session-reuse refuse before the claim. Each refusal is one denied row, exit 64, nothing started.
 # Spy CLI, private lane state and log (fable-launch-review_lib.sh); ancestors are real processes whose argv the test sets with exec -a.
 # Run alone: bash tests/ffdr-nested-review.test.sh
@@ -89,10 +89,13 @@ ck "control: the same ancestor around a different (author) launch is refused" 'r
 # skill-route-terminal.py through SKILL_ROUTE_TERMINAL (honoured under FABLE_LAUNCH_TEST=1 only; T2 shows production ignores it).
 cat >"$T/anc-fake" <<'S'
 #!/usr/bin/env python3
-import os, sys
+import os, sys, time
 if "review-ancestor" not in sys.argv[1:]:
     sys.exit(9)
 mode = os.environ.get("T3_ANC", "")
+if mode == "sleep":
+    time.sleep(15)
+    mode = "null"
 if mode == "exit":
     sys.exit(3)
 if mode == "garbage":
@@ -104,6 +107,9 @@ if mode == "null":
 S
 for mode in exit garbage shape; do SKILL_ROUTE_TERMINAL="$T/anc-fake" T3_ANC=$mode flr_run "f$mode" au2 -p x
   ck "review-ancestor answer $mode: refused, nested-dispatch check failed (fail closed)" 'refused f$mode "nested-dispatch check failed"'; done
+# A1300 FFDR PB-L3: a reader that hangs (sleeps 15 s, then would answer null) is cut off by the launcher's 10 s bound.
+s0=$(date +%s); SKILL_ROUTE_TERMINAL="$T/anc-fake" T3_ANC=sleep flr_run fsleep au2 -p x; s1=$(date +%s)
+ck "review-ancestor hangs: refused after the 10 s bound (9 <= elapsed < 15 s), nested-dispatch check failed, nothing started" 'refused fsleep "nested-dispatch check failed" && [ $((s1-s0)) -ge 9 ] && [ $((s1-s0)) -lt 15 ]'
 SKILL_ROUTE_TERMINAL="$T/anc-fake" T3_ANC=null flr_run fnull au2 -p x
 ck "control: the same fake reader answering review_session null lets the author launch start" 'started fnull'
 
