@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ffdr-route-table.test.sh: A1300 FFDR Phase 1 (spec R1 route data, test T1). The full skill-routing resolution table at head equals the
-# checked-in table generated from base a244971 (tests/fixtures/ffdr/) except exactly R1.3's four dream classes (Fable -> Opus) and the
-# R1.4 review echo; the policy carries R1's shape; and the controls hold: Opus max denied, a requested Fable model on an Opus class denied,
-# an unknown model denied, max_exception still Fable max only with a ledger record. Resolver + policy only: no launcher, no provider call.
+# checked-in table generated from base a244971 (tests/fixtures/ffdr/) except exactly R1.3's four dream classes (Fable -> Opus); every
+# review echo row stays as at base (R1.4 withdrawn, disposition O1: review.route is the second-review echo of every governed skill); the
+# policy carries R1's shape; and the controls hold: Opus max denied, a requested Fable model on an Opus class denied, an unknown model
+# denied, max_exception still Fable max only with a ledger record. Resolver + policy only: no launcher, no provider call.
 # Run alone: bash tests/ffdr-route-table.test.sh
 # FFDR_ROOT=<tree> checks that tree's .config/skill-routing/policy.json + .local/lib/skill-route-resolve.py (+ skill-model-policy.sh)
 # against this tree's fixture; the mutation runs and the red-at-base run use it.
@@ -30,8 +31,7 @@ import json, sys
 base = json.load(open(sys.argv[1]))["table"]; head = json.load(open(sys.argv[2]))["table"]
 R13 = {"new_vision": "opus-high", "prioritization": "opus-high", "difficult_decomposition": "opus-high", "consequential_uncertainty": "opus-xhigh"}
 ROUTE = {"opus-high": ("claude-opus-5-5", "high"), "opus-xhigh": ("claude-opus-5-5", "xhigh")}
-REVIEW = ("claude-opus-5-5", "high")                      # R1.4 review.route
-def expect(row):                                        # the base row with exactly R1.3 and R1.4 applied
+def expect(row):                                        # the base row with exactly R1.3 applied
     row = json.loads(json.dumps(row)); kinds = []; o = row["out"]
     skill, sel = row["id"].split("|", 1)
     if skill == "dream" and sel.startswith("class:") and sel[6:] in R13:
@@ -39,12 +39,11 @@ def expect(row):                                        # the base row with exac
         o["route"] = new; o["model_id"], o["effort"] = ROUTE[new]
         o["reasons"] = [r.replace("-> %s" % old, "-> %s" % new) if r.startswith("decision_class ") else r for r in o["reasons"]]
         kinds.append("r13")
-    if isinstance(o.get("review"), dict):
-        o["review"]["model_id"], o["review"]["effort"] = REVIEW; kinds.append("r14")
     return row, kinds
 print("ids_equal", [r["id"] for r in base] == [r["id"] for r in head])
 print("requests_equal", [r["request"] for r in base] == [r["request"] for r in head])
-hb = {r["id"]: r for r in head}; n = {"r13": 0, "r14": 0, "same": 0}; bad = {"r13": 0, "r14": 0, "same": 0}; vac = 0
+hb = {r["id"]: r for r in head}; n = {"r13": 0, "same": 0}; bad = {"r13": 0, "same": 0}; vac = 0
+rv = {"n": 0, "bad": 0, "fable": 0}                     # O1: the review echo rows (each governed skill x each review reason)
 for b in base:
     e, kinds = expect(b)
     for x in (kinds or ["same"]): n[x] += 1
@@ -53,17 +52,21 @@ for b in base:
     if h != e:
         for x in (kinds or ["same"]): bad[x] += 1
         print("MISMATCH %s\n  expected %s\n  head     %s" % (b["id"], json.dumps(e["out"], sort_keys=True), json.dumps(h and h["out"], sort_keys=True)))
-for k in ("r13", "r14", "same"):
+    if isinstance(b["out"].get("review"), dict):
+        hr = (h or {}).get("out", {}).get("review") or {}
+        rv["n"] += 1; rv["bad"] += h != b; rv["fable"] += (hr.get("model_id"), hr.get("effort")) == ("claude-fable-5-1", "high")
+for k in ("r13", "same"):
     print("rows_%s %d bad_%s %d" % (k, n[k], k, bad[k]))
-print("nonvacuous", vac > 0 and vac == n["r13"] + n["r14"])
+print("rows_review %d bad_review %d fable_review %d" % (rv["n"], rv["bad"], rv["fable"]))
+print("nonvacuous", vac > 0 and vac == n["r13"])
 PY
-cv(){ awk -v k="$1" '$1==k{print $2} $3==k{print $4}' "$T/cmp.txt" | head -1; }
+cv(){ awk -v k="$1" '{for(i=1;i<NF;i+=2) if($i==k) print $(i+1)}' "$T/cmp.txt" | head -1; }
 ck "head table has the base table's rows (same ids, same order): no skill, class, escalation or review reason added or lost" '[ "$(cv ids_equal)" = True ]'
 ck "every head request equals its base request (class evidence flags, exception record, permission_mode unchanged)" '[ "$(cv requests_equal)" = True ]'
 ck "R1.3: exactly four dream class rows re-route: new_vision, prioritization, difficult_decomposition -> opus-high (claude-opus-5-5 high), consequential_uncertainty -> opus-xhigh (claude-opus-5-5 xhigh)" '[ "$(cv rows_r13)" = 4 ] && [ "$(cv bad_r13)" = 0 ]'
-ck "R1.4: every review echo (each governed skill x each review reason) is claude-opus-5-5 high, the rest of each row as at base" '[ "$(cv rows_r14)" = 24 ] && [ "$(cv bad_r14)" = 0 ]'
-ck "every other row resolves exactly as at base (5whysandrhyme, wwhtbt, maxspeed, the other dream classes, max_exception)" '[ "$(cv rows_same)" = 33 ] && [ "$(cv bad_same)" = 0 ]'
-ck "non-vacuous: the base table carries the Fable values R1 replaces (every R1.3/R1.4 row differs from base)" '[ "$(cv nonvacuous)" = True ]'
+ck "O1 (R1.4 withdrawn): every review echo row (each governed skill x each review reason, 24) is identical to base and echoes claude-fable-5-1 high" '[ "$(cv rows_review)" = 24 ] && [ "$(cv bad_review)" = 0 ] && [ "$(cv fable_review)" = 24 ]'
+ck "every other row resolves exactly as at base (5whysandrhyme, wwhtbt, maxspeed, the other dream classes, max_exception, every review echo)" '[ "$(cv rows_same)" = 57 ] && [ "$(cv bad_same)" = 0 ]'
+ck "non-vacuous: the base table carries the Fable values R1.3 replaces (every R1.3 row differs from base)" '[ "$(cv nonvacuous)" = True ]'
 grep -A2 '^MISMATCH' "$T/cmp.txt" | head -30
 
 # --- the policy shape R1 names
@@ -74,7 +77,7 @@ ck "R1.2 dream routes: opus-high and opus-xhigh added" 'pj ".skills.dream.routes
 ck "R1.2 dream routes: fable-high, fable-xhigh, fable-max-exception still defined as at base (a rollback is a re-point)" 'pj ".skills.dream.routes[\"fable-high\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"high\"} and .skills.dream.routes[\"fable-xhigh\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"xhigh\"} and .skills.dream.routes[\"fable-max-exception\"]=={\"model\":\"claude-fable-5-1\",\"effort\":\"max\",\"exception\":true} and (.skills.dream.routes|length)==8"'
 ck "R1.2/R1.3 fable-high and fable-xhigh are referenced by no dream class" 'pj "[.skills.dream.classes[].route] | (index(\"fable-high\")==null and index(\"fable-xhigh\")==null)"'
 ck "R1.3 the four classes keep evidence:true; max_exception stays fable-max-exception (evidence false)" 'pj ".skills.dream.classes | .new_vision=={\"route\":\"opus-high\",\"evidence\":true} and .prioritization=={\"route\":\"opus-high\",\"evidence\":true} and .difficult_decomposition=={\"route\":\"opus-high\",\"evidence\":true} and .consequential_uncertainty=={\"route\":\"opus-xhigh\",\"evidence\":true} and .max_exception=={\"route\":\"fable-max-exception\",\"evidence\":false}"'
-ck "R1.4 review.route = claude-opus-5-5 high; reasons, evidence and automatic unchanged" 'pj ".review=={\"automatic\":false,\"reasons\":[\"unresolved_assumption\",\"contradiction\",\"independent_verifier_required\",\"prod_money_real_user_data\",\"low_confidence_weakest_link\",\"explicit_user_request\"],\"route\":{\"model\":\"claude-opus-5-5\",\"effort\":\"high\"},\"evidence\":true}"'
+ck "O1 (R1.4 withdrawn): review is as at base: route claude-fable-5-1 high; reasons, evidence and automatic unchanged" 'pj ".review=={\"automatic\":false,\"reasons\":[\"unresolved_assumption\",\"contradiction\",\"independent_verifier_required\",\"prod_money_real_user_data\",\"low_confidence_weakest_link\",\"explicit_user_request\"],\"route\":{\"model\":\"claude-fable-5-1\",\"effort\":\"high\"},\"evidence\":true}"'
 APPROVED_BASE="Joe, Discord #general, 2026-11-08 ('approved build it now'); ledger A1300"
 APPROVED_FFDR='; Fable-free Dream route: Joe 2026-11-17 "I agree with your recommendation" (A1296 amendment § Nov 17; A1300 bootstrap dc5ad9ac)'
 ck "R1.5 approved = the base text plus the Fable-free Dream route record" '[ "$(jq -r .approved "$POL" 2>/dev/null)" = "$APPROVED_BASE$APPROVED_FFDR" ]'

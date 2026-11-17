@@ -13,5 +13,5 @@
       rm -rf "$X"
 
 - Rows (61): for each governed skill, its baseline request, every class and every escalation reason (evidence `ledger:A1300`; the `max_exception` class carries a recorded exception with a ledger reference), then every review reason on the skill's first model-routed row. The generator's docstring defines each request. A row keeps the request, the resolver's exit code and its output, denied rows included.
-- `tests/ffdr-route-table.test.sh` regenerates this file from the base commit when the commit is in the clone and requires the two byte-identical. It then compares the head table with this one: the only differences allowed are spec R1.3's four dream classes and the R1.4 review echo.
+- `tests/ffdr-route-table.test.sh` regenerates this file from the base commit when the commit is in the clone and requires the two byte-identical. It then compares the head table with this one: the only differences allowed are spec R1.3's four dream classes. Every review echo row must equal this table's (R1.4 was withdrawn by disposition O1).
 - The fixture belongs to this base commit. A different base needs a new fixture generated the same way.
