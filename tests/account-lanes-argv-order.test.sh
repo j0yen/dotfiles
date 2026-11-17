@@ -4,6 +4,7 @@
 # like --model/--resume/--effort/--session-id cannot change account, session, effort or pins). A fake child records its argv; this proves only what
 # the launcher hands the child, not how the native CLI parses it. Temp HOME/state, dummy credentials; no provider call. AL_ROOT=<tree> replays.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 REALSTATE="$HOME/.local/state/account-lanes"; before_real="$(ls -la "$REALSTATE" 2>&1 | md5sum)"

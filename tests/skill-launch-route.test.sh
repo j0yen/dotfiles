@@ -2,6 +2,7 @@
 # skill-launch-route.test.sh: managed launcher (fable-launch.sh --route-request) for adaptive skill routing, ledger A1300.
 # Spy claude; no provider call, no real credential. Run alone: bash tests/skill-launch-route.test.sh
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 D="$(cd "$(dirname "$0")/.." && pwd)"; L="$D/.local/bin/fable-launch.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/store"; printf 'TOKEN-JOSEPH-xxxxxxxx' >"$T/store/josephsyen"; printf 'TOKEN-TECH-zzzzzzzz' >"$T/store/jyen.tech"; printf 'TOKEN-PM-yyyyyyyy' >"$T/store/jyen.pm"; chmod 600 "$T/store"/*

@@ -3,6 +3,7 @@
 # fake claude; no real quota call. AL_ROOT=<tree> replays this file on other bytes (RED on c071fcc).
 # Message fixtures: OBSERVED-IN-NOTES = shapes quoted in operator notes (secondhand, not captured here); SYNTHETIC = written for this test.
 set -u
+unset SKILL_ROUTE_ROLE SKILL_ROUTE_SESSION SKILL_ROUTE_SCOPE_ID SKILL_ROUTE_TASK_ID SKILL_ROUTE_SKILL SKILL_ROUTE_ROUTE SKILL_ROUTE_EFFORT FABLE_LAUNCH_ACCOUNT FABLE_LAUNCH_MODEL   # A1300 FFDR F11 (PB-L4)
 D="${AL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"; L="$D/.local/bin/fable-launch.sh"; P="$D/.local/lib/account-lane.py"
 export ACCOUNT_LANE_POLICY="${ACCOUNT_LANE_POLICY:-$D/tests/fixtures/account-lanes/policy.test.json}"  # source-policy fixture; the live policy is host config, not in this repo
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
