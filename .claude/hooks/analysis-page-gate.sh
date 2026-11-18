@@ -148,8 +148,9 @@ model_once() {
     timeout "$left" bash -c 'tail -n 2000 -- "$1" 2>/dev/null | grep -F -- "$2" | "$3" -R -c "fromjson? // empty" 2>/dev/null | "$3" -s -r --arg id "$2" "$4" 2>/dev/null' \
         _ "$TR" "$TOOL_USE_ID" "$JQ" "$MODEL_FILTER"
 }
-MODEL=$(model_once)
+MODEL=$(model_once) REREAD=""
 if [ -z "$MODEL" ] && [ "$ANY_FRESH" = 1 ] && [ -z "$NOREAD" ]; then
+    REREAD=", re-read for up to 2 s"
     while [ -z "$MODEL" ] && [ "$(elapsed_us)" -lt "$REREAD_US" ]; do
         sleep 0.1
         MODEL=$(model_once)
@@ -159,7 +160,7 @@ MODEL_LC=$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')
 if [ -n "$MODEL" ]; then TURN="turn model: $MODEL (found in the $WHERE transcript $TR)"
 elif [ -n "$NOREAD" ]; then TURN="turn model: unknown ($NOREAD)"
 elif [ ! -f "$TR" ] || [ ! -r "$TR" ]; then TURN="turn model: unknown (the $WHERE transcript $TR does not exist or is unreadable)"
-else TURN="turn model: unknown (tool_use $TOOL_USE_ID is not in the last 2000 lines of the $WHERE transcript $TR, re-read for up to 2 s)"; fi
+else TURN="turn model: unknown (tool_use $TOOL_USE_ID is not in the last 2000 lines of the $WHERE transcript $TR$REREAD)"; fi
 
 for t in "${TARGETS[@]}"; do
     need=$(skill_for "$t")
