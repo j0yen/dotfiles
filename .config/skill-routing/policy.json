@@ -58,7 +58,23 @@
         "fable-xhigh": {
           "model": "claude-fable-5-1",
           "effort": "xhigh"
+        },
+        "opus-high": {
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        },
+        "opus-xhigh": {
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         }
+      },
+      "alternates": {
+        "fable-high": [
+          "opus-high"
+        ],
+        "fable-xhigh": [
+          "opus-xhigh"
+        ]
       },
       "classes": {
         "baseline": {
@@ -98,7 +114,23 @@
         "fable-xhigh": {
           "model": "claude-fable-5-1",
           "effort": "xhigh"
+        },
+        "opus-high": {
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        },
+        "opus-xhigh": {
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         }
+      },
+      "alternates": {
+        "fable-high": [
+          "opus-high"
+        ],
+        "fable-xhigh": [
+          "opus-xhigh"
+        ]
       },
       "classes": {
         "straightforward_reversible": {
