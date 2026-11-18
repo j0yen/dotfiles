@@ -6,6 +6,7 @@ D="$(dirname "$0")/.."
 G="$D/.claude/hooks/analysis-page-gate.sh"; M="$D/.claude/hooks/skill-marker.sh"; S="$D/.claude/settings.json"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export ANALYSIS_WIKI_DIR="$T/wiki" SKILL_MARKER_DIR="$T/marks" FABLE_SKILLS_DIR="$T/skills"
+export SKILL_ROUTING_DECISIONS="$T/decisions.jsonl"; : >"$SKILL_ROUTING_DECISIONS"   # A1300 E13 R5: the gate reads launch rows; never the real log
 mkdir -p "$T/wiki/answers" "$T/wiki/decisions" "$T/skills/5whysandrhyme" "$T/skills/wwhtbt"
 A="$T/wiki/answers/2026-10-24-x-five-whys-rhyme.md"; DP="$T/wiki/decisions/2026-10-24-plan-wwhtbt.md"
 fail=0

@@ -28,19 +28,29 @@ unset FABLE_LAUNCH_EFFORT_REASON
 run --model claude-fable-5-1 --effort turbo -p x;  ck "launcher: unknown effort refused" '[ "$(rc)" = 64 ] && [ ! -s "$SPYLOG" ]'
 run --model claude-fable-5-1 --effort high --effort high -p x; ck "launcher: duplicate --effort still refused" '[ "$(rc)" = 64 ]'
 run --model claude-sonnet-5-5 --effort medium -p x; ck "launcher: non-Fable stays on josephsyen, effort untouched" '[ "$(rc)" = 0 ] && grep -q -- "--effort medium" "$SPYLOG" && ! grep -q TOKEN- "$SPYLOG"'
-# --- 2. skill sources: pins and recipes read back
+# --- 2. skill sources: no pins (the routing policy names model and effort, A1300 E13 R5) and the example request read back
+AF="$(cd "$(dirname "$0")/.." && pwd)/tests/fixtures/analysis-route"   # A1300 E13: vendored f9066716 resolver + policy (missing or changed = FAIL)
+printf 'A1300\n' >"$T/e13-ids.txt"; echo e >"$T/e13-ev.md"
+# e13_alt SK REQ: the head policy's listed alternate for the request's class route, as route model effort; e13_base REQ: rc on f9066716's bytes
+e13_alt(){ jq -r --arg s "$1" --slurpfile q "$2" '.skills[$s] as $k | ($k.classes[$q[0].decision_class].route) as $r | ($k.alternates[$r][0] // empty) as $a
+  | select($a != null) | "\($a) \($k.routes[$a].model) \($k.routes[$a].effort)"' "$R/.config/skill-routing/policy.json" 2>/dev/null; }
+e13_base(){ [ "$(sha256sum <"$AF/f9066716-skill-route-resolve.py" | cut -c1-64)" = 088dd2ec89627541dda79ff08bc03d72b99d2a609a24aa62629fa487cb46d055 ] \
+  && [ "$(sha256sum <"$AF/f9066716-policy.json" | cut -c1-64)" = a5b27682b5787d4b12edc77e0e228e26d2cb2255d5c429a0345be859836bd388 ] || { echo 99; return; }
+  env -u SKILL_ROUTE_POLICY HOME="$T" SKILL_ROUTE_LEDGER_IDS="$T/e13-ids.txt" python3 -I "$AF/f9066716-skill-route-resolve.py" --policy "$AF/f9066716-policy.json" --file "$1" >/dev/null 2>&1; echo $?; }
 for sk in 5whysandrhyme wwhtbt; do
   sf="$R/.claude/skills/$sk/SKILL.md"
   fm=$(awk 'NR==1&&$0!="---"{exit} NR==1{next} $0=="---"{exit} {print}' "$sf")
-  ck "$sk: frontmatter effort high" 'grep -qx "effort: high" <<<"$fm"'
+  ck "$sk: frontmatter has no model: or effort: key" '! grep -qE "^(model|effort):" <<<"$fm"'
   ck "$sk: body no longer declares xhigh the default" '! grep -q "approved xhigh as the default" "$sf" && ! grep -q "Pins: .*effort: xhigh" "$sf"'
-  ck "$sk: xhigh/max documented as reasoned exception with the reason recorded first" 'grep -q "FABLE_LAUNCH_EFFORT_REASON" "$sf" && grep -qi "exception" "$sf"'
-  ck "$sk: still no unconditional second review" 'grep -q "default: no second Fable launch" "$sf" && grep -q "review_reason:" "$sf"'
-  # execute the recipe the skill tells a caller to run, against the real launcher
-  cmd=$(grep -o 'fable-launch.sh --model claude-fable-5-1 --effort [a-z]* -p' "$sf" | head -1)
-  ck "$sk: recipe launches at high" '[ -n "$cmd" ] && grep -q -- "--effort high" <<<"$cmd"'
-  # shellcheck disable=SC2086
-  run ${cmd#fable-launch.sh } x; ck "$sk: recipe executes on the real launcher (rc 0, high)" '[ "$(rc)" = 0 ] && grep -q -- "--effort high" "$SPYLOG"'
+  ck "$sk: xhigh/max documented as escalation and exception" 'grep -qi "escalation" "$sf" && grep -qi "exception" "$sf"'
+  ck "$sk: still no unconditional second review" 'grep -q "default: no second launch" "$sf" && grep -q "review_reason:" "$sf"'
+  # execute the one example request the skill tells a caller to copy, against the real launcher; the f9066716 resolver must deny it
+  grep '^{"task_id"' "$sf" | sed -e "s|<TASK_ID>|FQR-E13-$sk|g" -e "s|<LEDGER_REF>|ledger:A1300|g" -e "s|<FILE_REF>|file:$T/e13-ev.md|g" >"$T/e13-$sk.json"
+  alt=$(e13_alt "$sk" "$T/e13-$sk.json"); read -r a_route a_model a_effort <<<"${alt:-- - -}"
+  ck "$sk: recipe is fable-launch.sh --route-request; one example request line, JSON once filled, asking the policy's listed alternate" 'grep -q "fable-launch.sh --route-request" "$sf" && [ "$(grep -c "^{\"task_id\"" "$sf")" = 1 ] && [ -n "$alt" ] && jq -e --arg r "$a_route" --arg m "$a_model" --arg e "$a_effort" ".requested=={route:\$r,model:\$m,effort:\$e}" "$T/e13-$sk.json" >/dev/null 2>&1'
+  : >"$SPYLOG"; SKILL_ROUTE_POLICY="$R/.config/skill-routing/policy.json" SKILL_ROUTE_LEDGER_IDS="$T/e13-ids.txt" "$L" --route-request "$T/e13-$sk.json" --session-id "$(cat /proc/sys/kernel/random/uuid)" -p x 2>"$T/err"; echo $? >"$T/rc"
+  ck "$sk: example request executes on the real launcher; the spy sees the alternate's model and effort ($a_model $a_effort)" '[ "$(rc)" = 0 ] && grep -q -- "--model $a_model" "$SPYLOG" && grep -q -- "--effort $a_effort" "$SPYLOG" && ! grep -qi fable <<<"$a_model"'
+  ck "$sk: the same request exits 2 on the vendored f9066716 resolver and policy" '[ "$(e13_base "$T/e13-$sk.json")" = 2 ]'
 done
 # --- 3. spawn gate: recipe effort follows the skill pin; default high when unpinned
 mkdir -p "$T/skills/wwhtbt" "$T/skills/nopin"
