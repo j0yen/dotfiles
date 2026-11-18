@@ -3,13 +3,21 @@
 
 Input JSON (stdin, or `--file PATH`; never shell-interpolated):
   {task_id, skill, decision_class?, evidence_refs?, escalation?:{reason,evidence:[ref..]},
-   requested?:{model,effort}, review?:{reason,evidence:[ref..],snapshot?,replay?:{reason,evidence:[ref..],prior:[sid..]}}, permission_mode?}
+   requested?:{route?,model,effort}, review?:{reason,evidence:[ref..],snapshot?,replay?:{reason,evidence:[ref..],prior:[sid..]}}, permission_mode?}
 A skill whose policy has `require_permission_mode` (non-empty string) is denied unless the request's permission_mode equals it.
-Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], review?, permission_mode? (echoed when the policy requires one)}
+Output JSON on stdout: {ok, governed, model_id, effort, route, reasons[], alternate_of?, review?, permission_mode? (echoed when the policy requires one)}
 The review echo {model_id, effort, reason, replay?} is the skill's `review_route` (a route of that skill; an unknown name is a policy
 error) or else the policy-global review.route. review.replay (A1300 FFDR R2) declares the failed/interrupted/unknown prior reviews a
 re-review of the same frozen manifest replays: exactly {reason (>= 8 non-space chars), evidence (>= 1 ledger: ref), prior (unique
 canonical lowercase UUIDs)}, only beside review.snapshot; it is echoed with prior sorted. The launcher compares prior with the blocking set.
+Requestable alternates (A1300 E13 R1/R2/R4): a skill's `alternates` maps a Fable route of the skill to a non-empty list of its non-Fable
+routes at the same effort. It is validated whatever the request, right after the skill lookup: a malformed list denies every request for
+the skill, naming alternates. Let R be the route the request resolves to without `requested` (baseline, class or escalation). A
+requested.route naming a member of alternates[R], with requested.model and requested.effort both equal to that member's, selects it: the
+output's route, model_id and effort become the member's, reasons gain "requested alternate <alt> for <R>" and alternate_of = R. A
+requested.route equal to R keeps today's check; any other requested.route, or one that is not a string, is denied for every governed skill.
+Without requested.route nothing changes: a requested model and effort never select an alternate. With an alternate selected, the review
+echo is the skill's review_route (denied when that route is Fable) or else the alternate's own model and effort.
 Exit 0 = route resolved (or skill ungoverned); exit 2 = denied (fail closed, {ok:false,error,reasons}).
 Policy: --policy PATH | $SKILL_ROUTE_POLICY | <repo>/.config/skill-routing/policy.json | ~/.config/skill-routing/policy.json.
 Skills and phases are data in the policy; adding one needs no code change.
@@ -76,6 +84,52 @@ def check_evidence(pol, refs, what):
                 raise Deny("%s evidence ledger id %r not found in the ledger" % (what, val))
 
 
+def is_nonfable(pol, model):
+    """A1300 E13 R2: a policy model whose entry has a string family other than fable and whose id names no fable (any case)."""
+    m = pol["models"].get(model) if isinstance(model, str) else None
+    return isinstance(m, dict) and isinstance(m.get("family"), str) and m["family"] != "fable" and "fable" not in model.lower()
+
+
+def check_alternates(pol, skill, spol):
+    """A1300 E13 R2: the skill's `alternates` ({fable route: [non-Fable routes at its effort]}), or {} when the key is absent.
+    Any malformed entry is a policy error that denies the request whatever it asks (fail closed), naming alternates."""
+    if "alternates" not in spol:
+        return {}
+    alts, routes = spol["alternates"], spol["routes"]
+    def bad(why):
+        raise Deny("%s: policy alternates %s (policy error, fail closed)" % (skill, why))
+    def plain(n):  # a route of this skill that is neither deterministic code nor a recorded exception
+        return isinstance(n, str) and isinstance(routes.get(n), dict) and not routes[n].get("deterministic") and not routes[n].get("exception")
+    if not isinstance(alts, dict):
+        bad("must be an object mapping a route of the skill to a list of its routes (got %s)" % type(alts).__name__)
+    for key, mem in alts.items():
+        if not plain(key):
+            bad("key %r is not a route of this skill, or is a deterministic or exception route" % key)
+        kr = routes[key]
+        km = pol["models"].get(kr.get("model")) if isinstance(kr.get("model"), str) else None
+        if not isinstance(km, dict) or km.get("family") != "fable":
+            bad("key %r is not a route whose model's family is fable" % key)
+        if not isinstance(mem, list) or not mem or not all(isinstance(n, str) for n in mem) or len(set(mem)) != len(mem):
+            bad("value of %r must be a non-empty list of unique route names" % key)
+        for n in mem:
+            if n == key:
+                bad("member %r equals its key" % n)
+            if n not in routes:
+                bad("member %r of %r is not a route of this skill" % (n, key))
+            if not plain(n):
+                bad("member %r of %r is a deterministic or exception route" % (n, key))
+            r = routes[n]
+            if not is_nonfable(pol, r.get("model")):
+                bad("member %r of %r needs a model entry with a string family other than fable and an id naming no fable (got %r)"
+                    % (n, key, r.get("model")))
+            eff = r.get("effort")
+            if not isinstance(eff, str) or eff in pol.get("forbidden_efforts", []) or eff not in pol["models"][r["model"]].get("efforts", []):
+                bad("member %r of %r has a forbidden or unsupported effort %r" % (n, key, eff))
+            if eff != kr.get("effort"):
+                bad("member %r of %r has effort %r but its key has %r (an alternate never changes the effort)" % (n, key, eff, kr.get("effort")))
+    return alts
+
+
 def ledger_has(ask_id):
     """Read-only lookup. Tests point SKILL_ROUTE_LEDGER_IDS at a file of ids; otherwise `wm-asks asks query` (argv list, no shell)."""
     ids = os.environ.get("SKILL_ROUTE_LEDGER_IDS")
@@ -123,8 +177,9 @@ def resolve(pol, req):
     if spol is None:
         return {"ok": True, "governed": False, "model_id": None, "effort": None, "route": None,
                 "reasons": ["skill %s is not governed by skill-routing policy" % skill]}
+    alts = check_alternates(pol, skill, spol)   # A1300 E13 R2: before everything else the skill asks, so a bad list denies every request
     pmode = None
-    if "require_permission_mode" in spol:  # checked first, before route and class
+    if "require_permission_mode" in spol:  # checked before route and class
         want = spol["require_permission_mode"]
         if not isinstance(want, str) or not want:
             raise Deny("%s: policy require_permission_mode must be a non-empty string (fail closed)" % skill)
@@ -193,6 +248,7 @@ def resolve(pol, req):
                 "route": route, "task_id": tid, "skill": skill, "reasons": reasons + ["deterministic code, no model launch"]}
     check_route(pol, r["model"], r["effort"], exception=bool(exc))
     reqd = req.get("requested")
+    alt = None   # A1300 E13 R1: the listed alternate the request selected, if any
     if reqd is not None:
         if not isinstance(reqd, dict):
             raise Deny("requested must be an object {model,effort}")
@@ -201,11 +257,40 @@ def resolve(pol, req):
         if "effort" in reqd and (not isinstance(reqd["effort"], str) or reqd["effort"] in pol.get("forbidden_efforts", [])
                                  or not any(reqd["effort"] in m["efforts"] for m in pol["models"].values())):
             raise Deny("unknown or forbidden effort %r" % (reqd["effort"],))
-        if reqd.get("model", r["model"]) != r["model"] or reqd.get("effort", r["effort"]) != r["effort"]:
+        if "route" in reqd:   # A1300 E13 R1: requested.route is the only selector of an alternate; absent = the rule below, unchanged
+            want, listed = reqd["route"], alts.get(route, [])
+            if not isinstance(want, str):
+                raise Deny("requested.route must be a string naming the resolved route %s or one of its listed alternates (alternates[%s]: %s); got %s"
+                           % (route, route, ", ".join(listed) or "none", json.dumps(want)))
+            if want != route:
+                if want not in listed:
+                    raise Deny("requested.route %r is neither the resolved route %s nor one of its listed alternates (alternates[%s]: %s)"
+                               % (want, route, route, ", ".join(listed) or "none"))
+                a = spol["routes"][want]
+                for k in ("model", "effort"):
+                    if k not in reqd:
+                        raise Deny("requested.route %s (an alternate of %s) needs requested.%s %s as well: an alternate is asked by route, model and effort together"
+                                   % (want, route, k, a[k]))
+                off = [k for k in ("model", "effort") if reqd[k] != a[k]]
+                if off:
+                    raise Deny("%s does not match the requested alternate %s (%s/%s)"
+                               % (" and ".join("requested.%s %s" % (k, reqd[k]) for k in off), want, a["model"], a["effort"]))
+                check_route(pol, a["model"], a["effort"])
+                alt = want
+        if alt is None and (reqd.get("model", r["model"]) != r["model"] or reqd.get("effort", r["effort"]) != r["effort"]):
             raise Deny("requested %s/%s does not match the resolved route %s/%s" %
                        (reqd.get("model", "-"), reqd.get("effort", "-"), r["model"], r["effort"]))
+    alt_of = None
+    if alt is not None:
+        if rv_route is not None and not is_nonfable(pol, rv_route["model"]):   # A1300 E13 F37: no Fable label on a non-Fable run
+            raise Deny("%s: requested alternate %s is not Fable, but the skill's review_route %r names Fable model %s; its review echo would label this run Fable (policy conflict, fail closed)"
+                       % (skill, alt, spol["review_route"], rv_route["model"]))
+        reasons.append("requested alternate %s for %s" % (alt, route))
+        alt_of, route, r = route, alt, spol["routes"][alt]
     out = {"ok": True, "governed": True, "model_id": r["model"], "effort": r["effort"],
            "route": route, "task_id": tid, "skill": skill, "reasons": reasons}
+    if alt_of is not None:
+        out["alternate_of"] = alt_of
     if pmode is not None:  # the one permission_mode source: the launcher passes exactly this value as --permission-mode
         out["permission_mode"] = pmode
     if exc:
@@ -217,7 +302,10 @@ def resolve(pol, req):
             raise Deny("second review denied: reason must be one of %s (no automatic second review)" % ", ".join(rp["reasons"]))
         if rp.get("evidence"):
             check_evidence(pol, rev.get("evidence"), "review")
-        rr = rv_route if rv_route is not None else rp["route"]
+        if alt_of is not None and rv_route is None:   # A1300 E13 R4: an alternate run is reviewed on its own model and effort
+            rr = {"model": r["model"], "effort": r["effort"]}
+        else:
+            rr = rv_route if rv_route is not None else rp["route"]
         check_route(pol, rr["model"], rr["effort"])
         out["review"] = {"model_id": rr["model"], "effort": rr["effort"], "reason": rev["reason"]}
         if "replay" in rev:
