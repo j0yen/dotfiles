@@ -7,10 +7,8 @@ description: >
   its cheapest falsifier (step 1 / AC 1), a backward rhyme against past five-whys pages, and files
   the page to ~/Notes/wiki/decisions/. A product feature then goes to /dream with the page as seed.
   Backward sibling for failures: /5whysandrhyme.
-model: fable
-effort: high
 fable-spawn: true
-last_updated: 2026-10-24
+last_updated: 2026-11-18
 ---
 
 # wwhtbt
@@ -20,13 +18,24 @@ about the WWIT analysis for future features?" Five whys explains a failure backw
 the end-state forward and catches the assumption that will fail before the work is spent on it.
 Invoking this skill is Joe's explicit request to file the answer to the vault.
 
-From a non-Fable session, run it as a separate Fable process on jyen.pm, never a native Agent (A1169, Joe 11-07):
-`~/.local/bin/fable-launch.sh --model claude-fable-5-1 --effort high -p "Invoke the <skill> skill (Skill tool) ... <context>"` via Bash
-(⚙ fable-native-agent-guard.sh denies native model=fable Agents on josephsyen and any non-Fable native Agent under a jyen.pm Fable parent;
-non-Fable helpers of a Fable parent run as `fable-launch.sh --helper --model <sonnet|haiku> -p ...`). The caller's prompt cache stays warm. Helpers this skill spawns
-(haiku runners, one sonnet verifier, a justified Fable review if any) never spawn further agents.
+The routing policy chooses the model and effort: Fable is its default for this skill's consequential classes, and a listed non-Fable alternate runs only when the launch request names it in requested.route with its model and effort.
 
-Effort default is high (Joe approved the fable-quota routing addendum 2026-11-08, A1300): Fable high for strategy / cross-system plans; Sonnet medium for a straightforward reversible plan. Synthesis is the one Fable launch; retrieval and timelines stay Haiku/code; factual verification stays Sonnet medium. xhigh or max is a reasoned exception only: a named unresolved reasoning gap or an explicit Joe request, with the evidence and the reason recorded in the ledger BEFORE launch (managed route: `--route-request` escalation{reason,evidence}; plain launch: `FABLE_LAUNCH_EFFORT_REASON="ledger:<id> <reason>"`). No retry count or worker cap is implied; this is model selection only.
+Run it through the managed launcher, never inline and never as a native Agent (A1169, A1300): write a request file, pre-draw a
+session id (`cat /proc/sys/kernel/random/uuid`), then via Bash
+`~/.local/bin/fable-launch.sh --route-request <request file> --session-id <pre-drawn id> -p "Invoke the wwhtbt skill (Skill tool, skill: wwhtbt, args: <question>). Context + evidence: <paste>. Return the page path, lint result and verdict lines."`
+The launcher resolves the route from `.config/skill-routing/policy.json`, records the launch row the page gate binds the page to, and
+takes the account from the selected model. Example request for this skill's consequential class, asking its listed alternate
+(`<LEDGER_REF>` is a `ledger:` reference, `<FILE_REF>` a `file:` reference; without `requested` the policy's default route runs):
+
+```json
+{"task_id":"<TASK_ID>","skill":"wwhtbt","decision_class":"unresolved_consequential","evidence_refs":["<LEDGER_REF>","<FILE_REF>"],"requested":{"route":"opus-xhigh","model":"claude-opus-5-5","effort":"xhigh"}}
+```
+
+(⚙ fable-skill-spawn-gate.sh denies an inline call outside the managed worker; fable-native-agent-guard.sh keeps native helpers on
+their parent's account lane; helpers of a launched parent run as `fable-launch.sh --helper --model <sonnet|haiku> -p ...`.) The caller's
+prompt cache stays warm. Helpers this skill spawns (haiku runners, one sonnet verifier, a justified review if any) never spawn further agents.
+
+Effort (Joe approved the quota routing addendum 2026-11-08, A1300): the policy's high route for strategy / cross-system plans; Sonnet medium for a straightforward reversible plan, the baseline. Synthesis is the one launch; retrieval and timelines stay Haiku/code; factual verification stays Sonnet medium. xhigh comes only from an evidenced class or escalation (`decision_class` with `evidence_refs`, or `escalation{reason,evidence}`, recorded in the ledger BEFORE launch); max is only the policy's recorded exception and is no route of this skill. No retry count or worker cap is implied; this is model selection only.
 
 ## Steps
 
@@ -53,21 +62,23 @@ Effort default is high (Joe approved the fable-quota routing addendum 2026-11-08
    `<mechanism> — ⚙ <path or PR> — owner <seat> — state <LIVE | SPEC | …>`.
 
 6. **File the page.** `~/Notes/wiki/decisions/<YYYY-MM-DD>-<slug>-wwhtbt.md`, frontmatter
-   `title`, `date`, `asked_by`, `answered_by`, `status: draft for Fable regrade`. Sections in order:
+   `title`, `date`, `asked_by`, `answered_by`, `status: draft for <model> regrade` (`<model>` = the model
+   this run's launch row records). Sections in order:
    `# End-state`, `# Leaves`, `# Weakest link`, `# Backward rhyme`, `# Mechanisms`.
    Run `~/.claude/skills/wwhtbt/scripts/lint-page.sh <page>`; it must exit 0.
 
-7. **Review only when justified (default: no second Fable launch).** The synthesis is the one Fable launch.
-   A second Fable review turn runs only for a recorded reason: `prod_money_real_user_data`,
+7. **Review only when justified (default: no second launch).** The synthesis is the one launch.
+   A second review turn runs only for a recorded reason: `prod_money_real_user_data`,
    `unresolved_assumption` / `contradiction` / `low_confidence_weakest_link`,
    `independent_verifier_required`, or `explicit_user_request`. Write the reason (and evidence refs)
    into the page (`review_reason:` front-matter line) and the ledger row FIRST; with no recorded
    reason, skip this step and set `status: unreviewed-by-design`. Resolve the route with
-   `skill-route-resolve.py` (`review: {reason, evidence}`), then ONE turn via
-   `~/.local/bin/fable-launch.sh --route-request <file> -p "<prompt>"` (never a native Agent), tool calls forbidden, page inline:
+   `skill-route-resolve.py` (`review: {reason, evidence}`); a run that asked for an alternate asks the same
+   `requested` for its review. Then ONE turn via
+   `~/.local/bin/fable-launch.sh --route-request <file> --session-id <pre-drawn id> -p "<prompt>"` (never a native Agent), tool calls forbidden, page inline:
    "Grade each leaf's label, the weakest link and the falsifier: AGREE / DISAGREE + one line.
    Is a leaf missing? Missing fact → NEEDS-READ <exact read>." Apply each DISAGREE as an
-   `## Amendments after Fable regrade` section; set `status: reviewed`.
+   `## Amendments after <model> regrade` section (`<model>` = the review launch's model); set `status: reviewed`.
 
 8. **Hand-off.** A product feature → `/dream` with the page path as the seed; the vision's WWHTBT
    section cites this page instead of re-deriving it. A plan → its step 1 is the falsifier.

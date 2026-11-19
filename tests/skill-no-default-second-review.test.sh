@@ -15,7 +15,7 @@ for sk in 5whysandrhyme wwhtbt; do
   f="$R/.claude/skills/$sk/SKILL.md"
   [ -f "$f" ] || { no "$sk SKILL.md in repo"; continue; }
   # default path: the only unconditional fable-launch step is the synthesis; review step is conditional
-  grep -q "No second Fable launch\|default: no second Fable launch" "$f" && ok "$sk states default no second launch" || no "$sk states default no second launch"
+  grep -q "No second launch by default\|default: no second launch" "$f" && ok "$sk states default no second launch" || no "$sk states default no second launch"
   grep -q "One Fable review turn" "$f" && no "$sk no unconditional 'One Fable review turn' step" || ok "$sk no unconditional review step"
   grep -qi "sends it to one Fable review turn" "$f" && no "$sk description not forcing review" || ok "$sk description not forcing review"
   grep -q "review_reason:" "$f" && grep -q "explicit_user_request" "$f" && ok "$sk justified-review reasons recorded first" || no "$sk justified-review reasons recorded first"
