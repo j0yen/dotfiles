@@ -485,6 +485,17 @@ t_l2_offset_aware_order(){
   out=$(obs $W/f.json); rc=$?
   r=$(echo "$out" | field "([(s['authorization'],'UTC offset' in s['reason']) for s in d['starts']],d['result'])")
   [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l2-naive-decision-ts-unknown || bad l2-naive-decision-ts-unknown "$r rc=$rc"
+  # mixed formats at the governing revision: an offset-aware allowed row and a refusal without a UTC offset (older bytes)
+  # cannot be ordered against each other or the claim: UNKNOWN, never allowed on the orderable row alone
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r --worker w1 >/dev/null
+  printf '%s\n' '{"ts":"'"$(date +%Y-%m-%dT%H:%M:%S)"'","task_id":"A2","actor":"ctl","priority_class":3,"class_label":"discretionary","computed_priority_class":3,"task_rev":1,"worker":null,"higher_priority_candidates":["S9"],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"refused","decision_reason":"x","source":"fixture"}' >> "$CTL_OQ_STATE/decisions.jsonl"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'UTC offset' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l2-mixed-format-same-rev-unknown || bad l2-mixed-format-same-rev-unknown "$r rc=$rc"
 }
 
 names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking f1_unlogged_start_detected f2_refused_then_started_detected f3_declared_class_not_authority genuine_priority_and_repair_allowed f4_valid_exception_not_bypass f5_refuse_active_logged active_healthy_claim_bound start_identity_unknown_cases malformed_decision_log_is_unknown observe_outage_no_replay wm_asks_events_interface d1_owner_scopes_candidates d1_observe_revalidates_scope d2_closed_claim_read_from_ledger d2_refusal_evidence_states d2_status_schema_refused t1_decide_not_open_refused t1_queue_start_check t1_unbound_decisions_unknown l3_worker_with_at l2_offset_aware_order"
