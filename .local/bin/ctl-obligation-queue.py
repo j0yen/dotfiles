@@ -366,9 +366,14 @@ def assess_starts(c, args, decisions, malformed):
         elif problem:
             verdict("unknown", problem)
         else:
-            gov = [d for d in decs if d.get("outcome") in ("allowed", "refused") and d.get("task_rev") is not None
-                   and d["task_rev"] == st["claim_rev"] - 1 and at_or_before(d.get("ts"), st["claim_ts"]) is True]
-            if gov:
+            same = [d for d in decs if d.get("outcome") in ("allowed", "refused") and d.get("task_rev") is not None
+                    and d["task_rev"] == st["claim_rev"] - 1]
+            unordered = [d for d in same if at_or_before(d.get("ts"), st["claim_ts"]) is None]
+            gov = [d for d in same if at_or_before(d.get("ts"), st["claim_ts"]) is True]
+            if unordered:
+                verdict("unknown", "decision ts %r has no UTC offset; its order against the claim cannot be established" % unordered[-1].get("ts"),
+                        d=unordered[-1])
+            elif gov:
                 d = gov[-1]
                 if d["outcome"] == "refused":
                     verdict("bypass", "the decision at rev %s refused %s; claimed at rev %s" % (d["task_rev"], aid, st["claim_rev"]),
@@ -409,9 +414,6 @@ def assess_starts(c, args, decisions, malformed):
                 elif any(d.get("task_rev") is not None and d["task_rev"] != st["claim_rev"] - 1 for d in allowed):
                     d = allowed[-1]
                     verdict("unknown", "revision changed: decision read rev %s, claim event is rev %s" % (d.get("task_rev"), st["claim_rev"]), d=d)
-                elif any(at_or_before(d.get("ts"), st["claim_ts"]) is None for d in allowed):
-                    d = [d for d in allowed if at_or_before(d.get("ts"), st["claim_ts"]) is None][-1]
-                    verdict("unknown", "decision ts %r has no UTC offset; its order against the claim cannot be established" % d.get("ts"), d=d)
                 else:
                     verdict("unknown", "every allowing decision for %s was recorded after the claim" % aid, d=allowed[-1])
     return starts
