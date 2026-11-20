@@ -119,7 +119,7 @@ reset() { rm -f "$T/wmd.argv" "$T/reverted" "$T/r2"; rm -rf "$T/trial-logs"; uns
 reset; mkdb 0 0 2; mkt true; cp "$APPROVE_TRIALS" "$T/trials.snap"
 out=$(A --trial-close tc keep 2>&1); rc=$?
 [ $rc = 5 ] && cmp -s "$APPROVE_TRIALS" "$T/trials.snap" && [ "$(stubn)" = 0 ] && [ "$(field tc state)" = open ] && pass "8ca0 replay (0/0/2 graded): keep exit 5, state open, stub not called, bytes unchanged" || bad "8ca0 replay rc=$rc: $out"
-[ "$(printf '%s\n' "$out" | grep -c '^arm ')" = 3 ] && printf '%s\n' "$out" | grep -qx 'arm r7: 2/20 Fable-graded of 20 rows in 2026-10-26T00:00:00-07:00..2026-10-29T00:00:00-07:00' \
+[ "$(printf '%s\n' "$out" | grep -c '^arm ')" = 3 ] && printf '%s\n' "$out" | grep -qx 'arm r7: 2/20 graded of 20 rows in 2026-10-26T00:00:00-07:00..2026-10-29T00:00:00-07:00' \
   && [ "$(printf '%s\n' "$out" | tail -n1)" = "not measured: only 'unmeasured' (runs the revert) or 'extend' (once)" ] && pass "refusal: one line per arm + the closing line" || bad "refusal text: $out"
 out=$(A --trial-close tc revert 2>&1); rc=$?
 [ $rc = 5 ] && cmp -s "$APPROVE_TRIALS" "$T/trials.snap" && [ "$(stubn)" = 0 ] && pass "revert on the same counts: exit 5, nothing written" || bad "revert unmeasured rc=$rc"
@@ -142,8 +142,47 @@ out=$(A --trial-close tc keep 2>&1); rc=$?
 # rows that must not count: auto-resolve, UNGRADED, tag test, tag legacy, before started, after ends
 reset; mkdb 19 20 20 noise; mkt true; cp "$APPROVE_TRIALS" "$T/trials.snap"
 out=$(A --trial-close tc keep 2>&1); rc=$?
-[ $rc = 5 ] && cmp -s "$APPROVE_TRIALS" "$T/trials.snap" && [ "$(stubn)" = 0 ] && printf '%s\n' "$out" | grep -q '^arm controller: 19/20 Fable-graded of 24 rows in ' \
+[ $rc = 5 ] && cmp -s "$APPROVE_TRIALS" "$T/trials.snap" && [ "$(stubn)" = 0 ] && printf '%s\n' "$out" | grep -q '^arm controller: 19/20 graded of 24 rows in ' \
   && pass "19 graded + auto-resolve/UNGRADED/test/legacy/before-start/after-end rows: keep refused (19/20 of 24 rows)" || bad "noise rc=$rc: $out"
+
+# 5c. (A388) grader stamps: the legacy fable-regrader and the no-Fable regrader stamp both count; exact tokens only; the model field is not read
+# (unchanged); UNGRADED / test / legacy rules are unchanged. mkstamp <regrade-json for 20 controller rows | split> ; rb and r7 get 20 fable-regrader rows each.
+mkstamp() {
+  rm -f "$WM_DECIDE_DB"
+  python3 -I -c 'import sqlite3,sys,json
+db,spec=sys.argv[1:]; con=sqlite3.connect(db); con.execute("create table decisions (id text, ts text, agent text, kind text, tags text, regrade text)")
+old=json.dumps({"by":"fable-regrader","verdict":"CONFIRM"}); n=0
+def add(ts,agent,tags,rg):
+    global n; n+=1; con.execute("insert into decisions values (?,?,?,?,?,?)",("d-%d"%n,ts,agent,"plan",json.dumps(tags),rg))
+d=json.loads(spec); rows=d["rows"]; tags=d.get("tags",[])
+for i in range(20): add("2026-10-27T0%d:%02d:00-07:00"%(i%9,i), "controller", tags, json.dumps(rows[i % len(rows)]))
+for a in ("rb","r7"):
+    for i in range(20): add("2026-10-27T0%d:%02d:00-07:00"%(i%9,i), a, [], old)
+con.commit()' "$WM_DECIDE_DB" "$1"
+}
+stamp_case() {   # stamp_case LABEL SPEC WANT(0|5) MSG
+  reset; mkstamp "$2"; mkt true; cp "$APPROVE_TRIALS" "$T/trials.snap"
+  out=$(A --trial-close tc keep 2>&1); rc=$?
+  if [ "$3" = 0 ]; then
+    [ $rc = 0 ] && [ "$(field tc state)" = kept ] && [ "$(pj tc 'r["closes"][0]["counts"]["controller"]["graded"]')" = 20 ] && pass "$1: $4" || bad "$1 rc=$rc: $out"
+  else
+    [ $rc = 5 ] && cmp -s "$APPROVE_TRIALS" "$T/trials.snap" && [ "$(stubn)" = 0 ] && printf '%s\n' "$out" | grep -q '^arm controller: 0/20 graded of 20 rows in ' && pass "$1: $4" || bad "$1 rc=$rc: $out"
+  fi
+}
+stamp_case t1 '{"rows":[{"by":"regrader","verdict":"CONFIRM","model":"claude-opus-5-5"}]}' 0 "20 regrader grades count (keep measured)"
+stamp_case t2 '{"rows":[{"by":"fable-regrader","verdict":"CORRECT"},{"by":"regrader","verdict":"CONFIRM"}]}' 0 "10 fable-regrader + 10 regrader grades count together"
+stamp_case t3 '{"rows":[{"by":"fable-regrader","verdict":"CONFIRM","model":"claude-fable-5-1"}]}' 0 "historical fable-regrader + claude-fable-5-1 grades still count"
+stamp_case t4 '{"rows":[{"by":"regrader","verdict":"ESCALATE"}]}' 0 "a regrader ESCALATE is a grade (any non-UNGRADED verdict, unchanged)"
+stamp_case t5 '{"rows":[{"by":"regrader","verdict":"CONFIRM","model":"claude-fable-5-1"}]}' 0 "the model field is not read (unchanged)"
+stamp_case t6 '{"rows":[{"by":"regrader","verdict":"UNGRADED"}]}' 5 "regrader UNGRADED never counts"
+stamp_case t7 '{"rows":[{"by":"regrader","verdict":""}]}' 5 "regrader with an empty verdict never counts"
+stamp_case t8 '{"rows":[{"by":"regrader","verdict":"CONFIRM"}],"tags":["test"]}' 5 "regrader rows tagged test never count"
+stamp_case t9 '{"rows":[{"by":"regrader","verdict":"CONFIRM"}],"tags":["legacy"]}' 5 "regrader rows tagged legacy never count"
+j=0
+for by in '"Regrader"' '"regrader "' '" fable-regrader"' '"FABLE-REGRADER"' '"regrader fable-regrader"' '"fable"' '"regrader-x"' '"auto-resolve"' '""' 'null' '["regrader"]' '{"x":1}' '7'; do
+  j=$((j + 1)); stamp_case t10-$j '{"rows":[{"by":'"$by"',"verdict":"CONFIRM"}]}' 5 "malformed grader stamp $by never counts"
+done
+stamp_case t11 '{"rows":[{"verdict":"CONFIRM"}]}' 5 "a grade with no by never counts"
 
 # unmeasured runs the revert whatever the counts
 reset; mkdb 0 0 2; mkt "touch $T/reverted"

@@ -220,7 +220,27 @@ overwrite_case x2a "$(RGJ fable-regrader CONFIRM 2026-10-24T12:00:00-07:00)" "$(
 overwrite_case x2b "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" "$(RGJ fable-regrader CONFIRM 2026-10-24T12:30:00-07:00)" bad ok "(x2b) X2: CORRECT -> CONFIRM (later grade time, by=fable-regrader): the second is accepted"
 overwrite_case x2c "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" '{"verdict": "CONFIRM", "ts": "2026-10-24T12:30:00-07:00"}' bad bad "(x2c) X2: CORRECT -> CONFIRM with by missing: still refused"
 overwrite_case x2d "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" "$(RGJ r7 CONFIRM 2026-10-24T12:30:00-07:00)" bad bad "(x2d) X2: CORRECT -> CONFIRM by another agent (r7): still refused"
+overwrite_case a388-x2e "$(RGJ regrader CONFIRM 2026-10-24T12:00:00-07:00)" "$(RGJ regrader CORRECT 2026-10-24T12:30:00-07:00)" ok bad "(x2e, A388) regrader CONFIRM -> CORRECT between two merges: the second is refused"
+overwrite_case a388-x2f "$(RGJ fable-regrader CORRECT 2026-10-24T12:00:00-07:00)" "$(RGJ regrader CONFIRM 2026-10-24T12:30:00-07:00)" bad ok "(x2f, A388) a historical fable-regrader CORRECT rewritten by a later regrader CONFIRM: the column value is read, as before"
 waive_case k16 $REPO $PR "$(wv "$WOK" '"regrade":{"verdict":"CORRECT","by":"r7"}')" bad:regrade-agent "(k16) a CORRECT from a non-regrader is refused (agent checked first)"
+# (a388-k21..k24, A388) the grader stamp set: the legacy `fable-regrader` and the no-Fable `regrader` stamp both satisfy the waiver's grade-author check;
+# exact tokens only (case, spaces, lists, prefixes refuse); the model field is not read (unchanged); every other waiver rule is unchanged.
+check "${ADV_REGRADER_AGENTS-}" "fable-regrader regrader" "(k21g) grammar: ADV_REGRADER_AGENTS is exactly the two grader stamps"
+check "$(grep -c "^ADV_REGRADER_AGENT=" "$here/.local/lib/adv-grammar.sh")" 0 "(k21h) grammar: the single-stamp ADV_REGRADER_AGENT is gone (one definition, no second list)"
+waive_case a388-k21 $REPO $PR "$(wv "$WOK" '"regrade":{"by":"regrader"}')" ok "(k21) a CONFIRM regrade stamped regrader (no-Fable grader) is accepted"
+waive_case a388-k21b $REPO $PR "$(wv "$WOK" '"regrade":{"by":"regrader","model":"claude-opus-5-5"}')" ok "(k21b) regrader + model claude-opus-5-5: accepted"
+waive_case a388-k21c $REPO $PR "$(wv "$WOK" '"regrade":{"by":"fable-regrader","model":"claude-fable-5-1"}')" ok "(k21c) a historical fable-regrader + claude-fable-5-1 grade: still accepted"
+waive_case a388-k21d $REPO $PR "$(wv "$WOK" '"regrade":{"by":"fable-regrader","model":"claude-opus-5-5"}')" ok "(k21d) the model field is not read (unchanged): fable-regrader + opus accepted"
+waive_case a388-k21e $REPO $PR "$(wv "$WOK" '"regrade":{"by":"regrader","model":"claude-fable-5-1"}')" ok "(k21e) the model field is not read (unchanged): regrader + fable accepted (the producer refuses Fable)"
+i=0
+for by in '"Regrader"' '"regrader "' '" regrader"' '"fable-regrader "' '"FABLE-REGRADER"' '"regrader fable-regrader"' '"regrader,fable-regrader"' '"fable"' '"regrader-x"' '"re-grader"' '""' 'null' '["regrader"]' '{"by":"regrader"}' '7'; do
+  i=$((i + 1))
+  waive_case a388-k22-$i $REPO $PR "$(wv "$WOK" '"regrade":{"by":'"$by"'}')" bad:regrade-agent "(k22-$i) a malformed grader stamp $by is refused"
+done
+waive_case a388-k23 $REPO $PR "$(wv "$WOK" '"regrade":{"by":"regrader","verdict":"CORRECT"}')" bad:regrade-not-confirm "(k23) a regrader CORRECT is refused (verdict rule unchanged)"
+waive_case a388-k23b $REPO $PR "$(wv "$WOK" '"regrade":{"by":"regrader","ts":"2026-10-24T10:00:00-07:00"}')" bad:regrade-ts "(k23b) a regrader CONFIRM earlier than the waiver row is refused (ts rule unchanged)"
+waive_case a388-k24 $REPO $PR "$(wv "$WOK" '"agent":"r7","regrade":{"by":"regrader"}')" bad:agent "(k24) a regrader CONFIRM does not admit an r7-authored waiver (admission unchanged)"
+waive_case a388-k24b $REPO $PR "$(wv "$WOK" '"via":"runner","regrade":{"by":"regrader"}')" bad:via "(k24b) a regrader CONFIRM does not admit via=runner (admission unchanged)"
 case_run k10 $REPO $PR '[]'; : > "$tmp/calls"; RB_MERGE_ADV_WAIVE=d-20261024-000000-r7-ffff WM_DECIDE_STATE="$tmp/st-k10" bash "$wrap" "$V" $PR $REPO >/dev/null 2>"$tmp/err"; rc=$?
 check "$rc:$(merged):$(grep -cx "ADV-WAIVER-BAD - $REPO#$PR" "$tmp/err")" "4:0:1" "(k10) a waiver id that is not in the ledger is refused"
 
