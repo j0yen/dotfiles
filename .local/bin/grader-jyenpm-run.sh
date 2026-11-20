@@ -11,7 +11,8 @@
 # model_usage_equality, binding 1), and `wm-decide regrade --model claude-fable-5-1 --dry-run` must be refused (rc 2, "refuses Fable model")
 # with no model call. An engine without that contract (live-gs-931bed9, a partial install, a rollback) fails closed with 78. The real run gets
 # the explicit `--model claude-opus-5-5`. A caller --model or --max-batches (an overall batch ceiling; use --drain) is refused.
-# Exit: 64 Fable argument / caller --model / --max-batches, 66 no credential for the account, 75 lane exhausted / policy unreadable,
+# Review b0e9b031 F4: only the exact invocation `regrade [--backlog] [--include-tooling] [--limit N] --drain` passes (argparse prefixes refused).
+# Exit: 64 Fable argument / caller --model / --max-batches / not the approved invocation, 66 no credential for the account, 75 lane exhausted / policy unreadable,
 # 77 GJ_ACCOUNT refused, 78 engine is not the pinned grader binding; else wm-decide's rc.
 # Test knobs (tests only): GJ_STORE, GJ_WMD, GJ_LANE_TOOL.
 set -u
@@ -28,6 +29,27 @@ for arg in "$@"; do
     --model|--model=*) echo "grader-jyenpm-run: refusing caller $arg: the wrapper binds the grader model ($GRADER_MODEL)" >&2; exit 64;;
   esac
 done
+# exact allow-list (review b0e9b031 F4/N3): the engine's argparse takes unambiguous prefixes (--max -> --max-batches, --mo -> --model), so only the
+# exact approved grader invocation passes, before any engine run or account read: `regrade` first, then only --backlog, --include-tooling,
+# --limit N (N = 1-9 then digits; the engine checks its range) and --drain, which is required. Anything else is refused with 64.
+gj_refuse() {
+  echo "grader-jyenpm-run: refusing $1: the approved grader invocation is 'regrade [--backlog] [--include-tooling] [--limit N] --drain'" \
+       "(no overall batch ceiling, no caller --model, no other option or subcommand)" >&2; exit 64
+}
+[ "${1:-}" = regrade ] || gj_refuse "subcommand '${1:-}'"
+gj_drain=0; i=2
+while [ "$i" -le "$#" ]; do
+  a="${!i}"
+  case "$a" in
+    --backlog|--include-tooling) ;;
+    --drain) gj_drain=1 ;;
+    --limit) i=$((i + 1)); v="${!i:-}"; [[ "$v" =~ ^[1-9][0-9]*$ ]] || gj_refuse "--limit '$v'" ;;
+    --limit=*) [[ "${a#--limit=}" =~ ^[1-9][0-9]*$ ]] || gj_refuse "'$a'" ;;
+    *) gj_refuse "'$a'" ;;
+  esac
+  i=$((i + 1))
+done
+[ "$gj_drain" = 1 ] || gj_refuse "a call without --drain"
 # engine preflight (F2): the binding the engine reports, then its actual Fable refusal; no token in the environment, no account read yet
 got="$(env -u WM_DECIDE_TOKEN_FILE "$WMD" regrade --binding 2>/dev/null)"; brc=$?
 norm="$(printf '%s' "$got" | jq -cS . 2>/dev/null)"

@@ -87,7 +87,7 @@ grep -qi "non-Fable lane account" "$T/sel.stderr" && ! grep -qi "Fable lane acco
   && ok "1h preflight order: --binding, then the Fable refusal probe, then one real run" || bad "1h engine calls: $(tr '\n' '|' < "$T/log")"
 
 # 2. wm-decide's rc is returned
-run rcpass FAKE_RC=3 -- regrade --limit 50
+run rcpass FAKE_RC=3 -- "${GOOD[@]}"
 [ "$(rc rcpass)" = 3 ] && ok "2 wm-decide rc returned" || bad "2 rc=$(rc rcpass)"
 
 # 3. every nonfable primary exhausted, no reserve: refuse 75, wm-decide never runs, no fallback to the Fable-lane account
@@ -152,6 +152,34 @@ for e in old fablebind xhigh nodrain badjson extrakey noprobe wrongmsg; do
   [ "$(rc pf)" = 78 ] && [ ! -e "$T/out" ] && [ -z "$(lanestate)" ] && ! grep -q "DUMMY" "$T/pf.stdout" "$T/pf.stderr" \
     && ok "11 engine '$e' refused (78): no run, no account-lane state touched" || bad "11 '$e' rc=$(rc pf) out=$([ -e "$T/out" ] && cat "$T/out") state=$(lanestate) $(cat "$T/pf.stderr")"
   [ "$e" = old ] && { [ "$(wc -l < "$T/log")" = 1 ] && ok "11b old engine: only the --binding preflight ran" || bad "11b old engine calls: $(tr '\n' '|' < "$T/log")"; }
+done
+
+# 12. (review b0e9b031 F4/N3) the engine's argparse accepts unambiguous prefixes (--max -> --max-batches, --mo -> --model): the wrapper passes only
+# the exact approved invocation. Every abbreviated or hostile form, with and without --drain, is refused (64) before any engine run or account read.
+rm -rf "$T/state"; mkdir -p "$T/state"
+for a in "--max 2" "--max-b=2" "--max-batch 2" "--max-bat 2" "--max-ba=3" "--ma 2" "--m 2" "--max-batches 2" "--max-batches=2" \
+         "--mo claude-haiku-5-5" "--mod=claude-opus-5-5" "--drai" "--backlog=1" "--include-tooling=yes" "--dry-run" "--since 2026-01-01" \
+         "--reset-breaker" "--binding" "--bind" "-h" "--class seat" "--limit abc" "--limit 0" "--limit 050" "--limit" "--limit --max" "--limit=" "-- --max-batches 2" "--"; do
+  for d in with without; do
+    if [ "$d" = with ]; then run hz -- regrade --backlog --include-tooling --drain $a; else run hz -- regrade --backlog --include-tooling $a; fi
+    [ "$(rc hz)" = 64 ] && [ ! -e "$T/out" ] && [ ! -s "$T/log" ] && [ -z "$(lanestate)" ] && ! grep -q "lane account" "$T/hz.stderr" \
+      && ok "12 '$a' ($d --drain) refused (64): no engine run, no account read" || bad "12 '$a' ($d --drain) rc=$(rc hz) log=$(tr '\n' '|' < "$T/log" 2>/dev/null) state=$(lanestate) $(cat "$T/hz.stderr")"
+  done
+done
+run he -- regrade --drain ""
+[ "$(rc he)" = 64 ] && [ ! -e "$T/out" ] && [ ! -s "$T/log" ] && [ -z "$(lanestate)" ] && ok "12 an empty argument refused (64)" || bad "12 empty argument rc=$(rc he)"
+for args in "list --json" "regrade" "regrade --backlog --include-tooling --limit 50" "regrade regrade --drain" "-- regrade --drain" "verdict --drain" "--drain regrade"; do
+  run hs -- $args
+  [ "$(rc hs)" = 64 ] && [ ! -e "$T/out" ] && [ ! -s "$T/log" ] && [ -z "$(lanestate)" ] && ok "12b '$args' refused (64): no engine run, no account read" || bad "12b '$args' rc=$(rc hs) $(cat "$T/hs.stderr")"
+done
+
+# 13. the exact approved forms still pass, with the explicit binding model appended last; the 99z ExecStart arguments are read from the drop-in itself
+z99="$D/.config/systemd/user/swarm-decide-regrade.service.d/99z-grader-release-f8fe.conf"
+zargs="$(sed -n 's|^ExecStart=%h/.local/bin/grader-jyenpm-run.sh ||p' "$z99")"
+[ -n "$zargs" ] && ok "13 99z ExecStart arguments read from the drop-in: $zargs" || bad "13 no ExecStart arguments in $z99"
+for args in "regrade --drain" "regrade --backlog --include-tooling --limit 50 --drain" "regrade --drain --limit=50 --backlog" "$zargs"; do
+  run al -- $args
+  [ "$(rc al)" = 0 ] && [ "$(got args)" = "$args --model claude-opus-5-5" ] && ok "13 '$args' accepted, run as given plus --model claude-opus-5-5" || bad "13 '$args' rc=$(rc al) args=$(got args) $(cat "$T/al.stderr")"
 done
 
 echo "COUNTS: pass=$pass fail=$fail"

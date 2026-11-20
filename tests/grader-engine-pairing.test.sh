@@ -68,10 +68,11 @@ wrap "$W" "$SD_BASE" "$T/p1" p1 -- "${GOOD[@]}"
   && ok "P1 new wrapper + base engine: 78, no model call, engine state byte-identical" || bad "P1 rc=$(rc p1) calls=$(calls "$T/p1") $(cat "$T/p1.err")"
 
 # P1b. the review's F2 reproduction: args the base engine fully understands (no --drain). The pre-round-3 wrapper let this request claude-fable-5-1.
+# Since review b0e9b031 F4 the wrapper's exact allow-list refuses a call without --drain (64) before the engine preflight even runs.
 newstate "$T/p1b" 2; before="$(listing "$T/p1b")"
 wrap "$W" "$SD_BASE" "$T/p1b" p1b -- regrade --backlog --include-tooling --limit 1
-[ "$(rc p1b)" = 78 ] && [ "$(calls "$T/p1b")" = 0 ] && [ "$(listing "$T/p1b")" = "$before" ] \
-  && ok "P1b new wrapper + base engine, legacy args: 78, no model call (models requested: none)" || bad "P1b rc=$(rc p1b) calls=$(calls "$T/p1b") models=$(models_called "$T/p1b")"
+[ "$(rc p1b)" = 64 ] && [ "$(calls "$T/p1b")" = 0 ] && [ "$(listing "$T/p1b")" = "$before" ] \
+  && ok "P1b new wrapper + base engine, legacy args: refused (64), no model call (models requested: none)" || bad "P1b rc=$(rc p1b) calls=$(calls "$T/p1b") models=$(models_called "$T/p1b")"
 
 # P2. new wrapper + base engine + an explicit Fable argument: 64 before the engine is touched
 wrap "$W" "$SD_BASE" "$T/p1" p2 -- regrade --model claude-fable-5-1 --backlog
@@ -101,10 +102,13 @@ wrap "$W" "$SD_BASE" "$T/p3" p4 -- "${GOOD[@]}"
 [ "$(rc p4)" = 78 ] && [ "$(calls "$T/p3")" = 3 ] && [ "$(listing "$T/p3")" = "$before4" ] \
   && ok "P4 rollback to the base engine with a new pending row: 78, no call, state byte-identical (rollback = stop grading)" || bad "P4 rc=$(rc p4) calls=$(calls "$T/p3")"
 
-# P5. new wrapper + head engine, dry-run: names the binding model, no call
+# P5. dry-run: the head engine names the binding model with no call; through the wrapper a dry-run is not the approved invocation (F4 allow-list: 64)
 newstate "$T/p5" 2
+env -i PYTHONDONTWRITEBYTECODE=1 PATH=/usr/local/bin:/usr/bin:/bin HOME="$H" WM_DECIDE_STATE="$T/p5/state" WM_DECIDE_LEDGER="$T/p5/ledger.md" WM_DECIDE_CLAUDE="$FAKE" \
+  "$SD_HEAD/bin/wm-decide" regrade --dry-run --backlog --include-tooling --limit 50 > "$T/p5d.out" 2>&1
 wrap "$W" "$SD_HEAD" "$T/p5" p5 -- regrade --dry-run --backlog --include-tooling --limit 50
-[ "$(rc p5)" = 0 ] && grep -q "^dry-run: model claude-opus-5-5," "$T/p5.out" && [ "$(calls "$T/p5")" = 0 ] && ok "P5 dry-run through the new wrapper: model claude-opus-5-5, no call" || bad "P5 rc=$(rc p5) $(head -2 "$T/p5.out") $(cat "$T/p5.err")"
+grep -q "^dry-run: model claude-opus-5-5," "$T/p5d.out" && [ "$(rc p5)" = 64 ] && [ "$(calls "$T/p5")" = 0 ] && ! grep -q "lane account" "$T/p5.err" \
+  && ok "P5 head engine dry-run: model claude-opus-5-5, no call; the same dry-run through the wrapper: refused (64) before any account read" || bad "P5 rc=$(rc p5) $(head -2 "$T/p5d.out") $(cat "$T/p5.err")"
 
 # P6. the head engine refuses the drain ceiling combination and a non-binding model directly (wrapper bypassed)
 newstate "$T/p6" 2
@@ -113,6 +117,26 @@ env -i PYTHONDONTWRITEBYTECODE=1 PATH=/usr/local/bin:/usr/bin:/bin HOME="$H" WM_
 env -i PYTHONDONTWRITEBYTECODE=1 PATH=/usr/local/bin:/usr/bin:/bin HOME="$H" WM_DECIDE_STATE="$T/p6/state" WM_DECIDE_LEDGER="$T/p6/ledger.md" WM_DECIDE_CLAUDE="$FAKE" \
   "$SD_HEAD/bin/wm-decide" regrade --backlog --model "us.anthropic.claude-fable-5-1" > /dev/null 2> "$T/p6b.err"; r6b=$?
 [ "$r6:$r6b:$(calls "$T/p6")" = "2:2:0" ] && ok "P6 head engine direct: --drain+--max-batches and a provider-form Fable id refused (rc 2), no call" || bad "P6 $r6:$r6b:$(calls "$T/p6")"
+
+# P9. (review b0e9b031 F4/N3) real wrapper + head engine: every form argparse maps to --max-batches or --model, and every other hostile form, with and
+# without --drain, is refused (64) before any engine run, account read or select, state or provider call. The approved 99z form still drains.
+lanes() { (cd "$T/lanes" && find . -printf '%p %s %T@\n' | sort | sha256sum); }
+newstate "$T/p9" 5
+for a in "--max 2" "--max-b=2" "--max-batch 2" "--max-bat 2" "--max-batches 2" "--max-batches=2" "--ma 2" "--mo claude-haiku-5-5" "--mod=claude-opus-5-5" \
+         "-- --max-batches 2" "--dry-run" "--drai" "--limit 01"; do
+  for d in with without; do
+    l0="$(lanes)"; s0="$(listing "$T/p9")"
+    if [ "$d" = with ]; then wrap "$W" "$SD_HEAD" "$T/p9" p9 -- regrade --backlog --include-tooling --limit 1 --drain $a; else wrap "$W" "$SD_HEAD" "$T/p9" p9 -- regrade --backlog --include-tooling --limit 1 $a; fi
+    [ "$(rc p9)" = 64 ] && [ "$(calls "$T/p9")" = 0 ] && [ "$(lanes)" = "$l0" ] && [ "$(listing "$T/p9")" = "$s0" ] && ! grep -q "lane account" "$T/p9.err" \
+      && ok "P9 '$a' ($d --drain) through wrapper + head engine: 64, no call, no account read/select, state unchanged" || bad "P9 '$a' ($d --drain) rc=$(rc p9) calls=$(calls "$T/p9") $(cat "$T/p9.err")"
+  done
+done
+for args in "list --json" "regrade regrade --drain" "verdict --drain"; do
+  l0="$(lanes)"; wrap "$W" "$SD_HEAD" "$T/p9" p9b -- $args
+  [ "$(rc p9b)" = 64 ] && [ "$(calls "$T/p9")" = 0 ] && [ "$(lanes)" = "$l0" ] && ok "P9b '$args': 64 before any account read" || bad "P9b '$args' rc=$(rc p9b) $(cat "$T/p9b.err")"
+done
+wrap "$W" "$SD_HEAD" "$T/p9" p9c -- regrade --backlog --include-tooling --limit 1 --drain
+[ "$(rc p9c)" = 0 ] && [ "$(calls "$T/p9")" = 5 ] && [ "$(models_called "$T/p9")" = claude-opus-5-5 ] && ok "P9c the approved form drains the same 5 rows (5 calls, claude-opus-5-5 only)" || bad "P9c rc=$(rc p9c) calls=$(calls "$T/p9") $(tail -3 "$T/p9c.err")"
 
 if [ -n "${OLD_WRAP:-}" ]; then
   # P7. partial install, engine first: OLD wrapper + head engine with the old 99z args: never Fable (the engine binds Opus), legacy finite batches
