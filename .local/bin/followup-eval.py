@@ -26,6 +26,7 @@ a new id, a changed revision, a changed disposition or a lapsed next_check is a 
 Env: WM_ASKS_BIN FOLLOWUP_STATE_DIR FOLLOWUP_OUTBOX FOLLOWUP_DELIVER_CMD FOLLOWUP_WORKER_ALIVE_CMD FOLLOWUP_NOW.
 """
 import argparse, datetime, fcntl, hashlib, json, os, re, subprocess, sys
+import signal, time
 
 KNOWN = ("rb", "r7", "ctl", "aide")
 PROSE = re.compile(r"waits-on=|\bPID\b|\bACK\b", re.I)
@@ -436,7 +437,21 @@ def cmd_action(a):
     print(json.dumps(out))
 
 
+def _replay_num(name, default):
+    try:
+        v = float(os.environ.get(name) or default)
+    except ValueError:
+        v = float(default)
+    return v if v > 0 else float(default)
+
+
 def cmd_replay():
+    # A1307 (2026-11-14): bounded and signal-safe. The unit runs under TimeoutStartSec=300 s and a run wrote the outbox
+    # only at its end, so the SIGTERM at 300 s discarded every delivery of the run and the same leading entries rang
+    # again every 5 minutes (3,502 undelivered since 11-08). Now deliveries stop at FOLLOWUP_REPLAY_BUDGET_S (default
+    # 240 s) or on SIGTERM/SIGINT/SIGHUP, the entries not reached are carried unchanged, and the file is written in every
+    # exit path (also after an exception), so each run makes durable progress and no entry is lost or duplicated.
+    # The run summary goes to stderr and to <state_dir>/replay.last.json.
     sd = state_dir(); ob = outbox_path(sd)
     if not os.path.exists(ob):
         return
@@ -448,28 +463,65 @@ def cmd_replay():
                 dc = c; break
     if not dc:
         return
+    budget = _replay_num("FOLLOWUP_REPLAY_BUDGET_S", 240); per = _replay_num("FOLLOWUP_REPLAY_PER_S", 60)
+    t0 = time.monotonic(); stop = {"sig": None}
+
+    def _stop(signum, frame):
+        stop["sig"] = signum
+    prev = {}
+    for sg in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            prev[sg] = signal.signal(sg, _stop)
+        except (ValueError, OSError):
+            pass
+    n = {"pending": 0, "delivered": 0, "failed": 0, "carried": 0, "budget_s": budget, "signal": None, "elapsed_s": None, "ts": None}
     fh = locked(sd); lines = []
     raw = open(ob, "rb").read(); n0 = len(raw)   # deliver.sh appends sent-part records to this file while we hold the lock: keep whatever lands after n0
     env = dict(os.environ, FOLLOWUP_LOCK_HELD="1"); sup = superseded_ids(ob)
-    for line in raw.decode("utf-8", "replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            e = json.loads(line)
-        except ValueError:
-            lines.append(line); continue
-        if e.get("delivered") is False and not e.get("resolved") and (str(e.get("id")), str(e.get("rev", 0)), str(e.get("fp")), str(e.get("ts"))) not in sup:
+    src = raw.decode("utf-8", "replace").splitlines(); i = 0
+    try:
+        while i < len(src):
+            line = src[i].strip()
+            if not line:
+                i += 1; continue
             try:
-                if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=300, env=env).returncode == 0:
-                    e["delivered"] = True
-            except (OSError, subprocess.TimeoutExpired):
+                e = json.loads(line)
+            except ValueError:
+                lines.append(line); i += 1; continue
+            if e.get("delivered") is False and not e.get("resolved") and (str(e.get("id")), str(e.get("rev", 0)), str(e.get("fp")), str(e.get("ts"))) not in sup:
+                n["pending"] += 1
+                left = budget - (time.monotonic() - t0)
+                if stop["sig"] is not None or left <= 0:
+                    n["carried"] += 1   # not reached this run: carried unchanged, delivered by a later run
+                else:
+                    try:
+                        if subprocess.run([dc], input=line, text=True, capture_output=True, timeout=max(1.0, min(per, left)), env=env).returncode == 0:
+                            e["delivered"] = True; n["delivered"] += 1
+                        else:
+                            n["failed"] += 1
+                    except (OSError, subprocess.TimeoutExpired):
+                        n["failed"] += 1
+            lines.append(json.dumps(e, separators=(",", ":"))); i += 1
+    finally:
+        for rest in src[i:]:   # non-empty only when the loop raised: the entries it did not finish are carried verbatim
+            rest = rest.strip()
+            if rest:
+                lines.append(rest)
+        tail = open(ob, "rb").read()[n0:].decode("utf-8", "replace")
+        atomic_write(ob, "\n".join(lines) + ("\n" if lines else "") + tail)
+        fh.close()
+        for sg, h in prev.items():
+            try:
+                signal.signal(sg, h)
+            except (ValueError, OSError):
                 pass
-        lines.append(json.dumps(e, separators=(",", ":")))
-    tail = open(ob, "rb").read()[n0:].decode("utf-8", "replace")
-    atomic_write(ob, "\n".join(lines) + ("\n" if lines else "") + tail)
-    fh.close()
-
+        n["signal"] = stop["sig"]; n["elapsed_s"] = round(time.monotonic() - t0, 1); n["ts"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        summary = json.dumps({"replay": n}, separators=(",", ":"))
+        try:
+            atomic_write(os.path.join(sd, "replay.last.json"), summary + "\n")
+        except OSError:
+            pass
+        print(summary, file=sys.stderr)
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("cmd", choices=("eval", "new", "emit", "replay", "reason", "suggestion", "resolve", "action")); ap.add_argument("--seat")
