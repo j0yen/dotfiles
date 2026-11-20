@@ -47,7 +47,9 @@ row "$ID" $TS controller note "CONFIRM tree $T8";                               
 row "$ID" $TS controller verdict "confirm tree $T8";                                    refused "lower-case confirm" not-confirm "$ID"; clear
 row "$ID" $TS controller verdict "NO: CONFIRM tree $T8";                                refused "what does not START with CONFIRM" not-confirm "$ID"; clear
 row "$ID" $TS controller verdict "CONFIRM the patch sha 36f357d0 only";                 refused "sha not named" sha-not-named "$ID"; clear
-row "$ID" $TS controller verdict "CONFIRM tree ${T8}9 and ${H8}a";                      refused "an 8-hex prefix of a longer hex run is not a name" sha-not-named "$ID"; clear
+# the appended digit must differ from the real next sha digit, else T8+digit is a genuine 9-hex prefix of the tree (and H8+digit of the commit) and names HEAD (sha varies per run)
+X1=$([ "${TREE:8:1}" = 9 ] && echo 8 || echo 9); X2=$([ "${HEAD_SHA:8:1}" = a ] && echo b || echo a)
+row "$ID" $TS controller verdict "CONFIRM tree ${T8}$X1 and ${H8}$X2";                      refused "an 8-hex prefix of a longer hex run is not a name" sha-not-named "$ID"; clear
 # LPLX: any 8-to-40 hex prefix of the commit or tree sha, as a whole lowercase token, names HEAD (and "Do NOT push"/"superseded" read the same way)
 # checkok <name> <id>: --check prints exactly CHECK-OK sha=<8> host=local, rc 0
 checkok() {
