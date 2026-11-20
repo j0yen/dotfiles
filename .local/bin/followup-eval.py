@@ -23,9 +23,11 @@ Disposition per obligation: verified | claimed | blocked | ready | overdue-ack |
 Actionable = ready | overdue-ack | stale-worker | expired blocker | verifier-pending. A fingerprint (id|rev|disposition|kind|next_check) is delivered once;
 a new id, a changed revision, a changed disposition or a lapsed next_check is a new fingerprint. State: $FOLLOWUP_STATE_DIR/{fingerprints.json,outbox.jsonl,lock}
 (one flock serialises check, outbox append, fingerprint write and replay; files are replaced by rename).
+--nowait (new, suggestion, emit, replay): try the store lock once, never wait (the Stop hook's synchronous path, rv6 F6-3). new prints {"locked":true,"new":[]} and writes
+nothing; the others exit 75 having written nothing, so the caller retries blocking and detached (suggestion) or leaves it to the durable consumer (replay).
 Env: WM_ASKS_BIN FOLLOWUP_STATE_DIR FOLLOWUP_OUTBOX FOLLOWUP_DELIVER_CMD FOLLOWUP_WORKER_ALIVE_CMD FOLLOWUP_NOW.
 """
-import argparse, datetime, fcntl, hashlib, json, os, re, subprocess, sys
+import argparse, base64, datetime, fcntl, hashlib, html, json, os, re, subprocess, sys, unicodedata, urllib.parse
 import signal, time
 
 KNOWN = ("rb", "r7", "ctl", "aide")
@@ -49,7 +51,17 @@ def ts(v):
     return ""
 
 
+_ALIVE = {}
+
+
 def alive(w):
+    """Worker liveness, probed once per distinct handle per run (same answer for every claim the handle holds; fewer tmux/pgrep forks on a large ledger)."""
+    if w not in _ALIVE:
+        _ALIVE[w] = _alive(w)
+    return _ALIVE[w]
+
+
+def _alive(w):
     if not w:
         return False
     cmd = os.environ.get("FOLLOWUP_WORKER_ALIVE_CMD")
@@ -114,14 +126,136 @@ def _ancestors(tok):
     return out
 
 
+# stderr_hint redaction: every pattern is anchored at a token/run start (lookbehind) and takes its run atomically (lookahead capture), so each character is
+# scanned a bounded number of times: cost is linear in the line, with no backtracking over a shared run (F5-2). Decoding is bounded (F5-1).
+_KW = r"bearer|basic|authorization|token|key|password|passwd|secret|pass|pwd|cred|auth|session|jwt"
+_KW_END = r"bearer|basic|authorization|token|key|password|passwd|secret"
+_VALUE = r"(?:(?:basic|bearer)\s+)?(?:\"[^\"]*\"?|'[^']*'?|\S+)"
+_NAME_EQ = re.compile(r"(?i)(?<![\w-])(?=[\w-]*?(?:" + _KW + r"))(?=([\w-]+))\1\\*[\"']?\s*[=:]\s*" + _VALUE)   # \\* = JSON-in-JSON escaped quote before the separator (F6-5)
+_NAME_SP = re.compile(r"(?i)(?<!\w)(?=\w*?(?:" + _KW_END + r")(?!\w))(?=(\w+))\1(?:\s+|\+)" + _VALUE)   # \+ = form-encoded space (F6-5)
+_B64 = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{8,}={0,2}")
+_KW_FIRST = re.compile(r"(?i)" + _KW)
+_KW_END_AT = re.compile(r"(?i)(?:" + _KW_END + r")$")
+_QUERY = re.compile(r"(?i)([?&])([\w.-]*)=[^&\s]*")
+_QUERY_KW = re.compile(r"(?i)token|key|secret|pass|pwd|sig|auth|cred|code|session|sid|jwt|otp|ticket|nonce|bearer")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")   # CSI / two-byte escape sequences inside a name must not split it (F7-7); linear: the three classes are disjoint
+_JPAIR = re.compile(r'(?i)("(?:name|key)"\s*:\s*"([^"]{0,200})"\s*,\s*"value"\s*:\s*)"[^"]*"')   # {"name":"api_token","value":"V"} (F7-7)
+_JPAIR_R = re.compile(r'(?i)("value"\s*:\s*)"[^"]*"(\s*,\s*"(?:name|key)"\s*:\s*"([^"]{0,200})")')
+# look-alike letters (Cyrillic / Greek) folded to Latin so a homoglyph-spelled credential name still matches (F7-7). A small fixed table, not a full confusables map: other scripts stay a named residual.
+_CONF = str.maketrans({"\u0430": "a", "\u0441": "c", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0445": "x", "\u0443": "y", "\u0456": "i", "\u0458": "j", "\u0455": "s",
+                       "\u0501": "d", "\u051b": "q", "\u051d": "w", "\u04bb": "h", "\u04cf": "l", "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K", "\u041c": "M",
+                       "\u041d": "H", "\u041e": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03b1": "a",
+                       "\u03c1": "p", "\u03ba": "k", "\u03c4": "t", "\u03c5": "u", "\u03c7": "x"})
+_ESC = re.compile(r"\\u([0-9A-Fa-f]{4})|\\x([0-9A-Fa-f]{2})|\\U([0-9A-Fa-f]{8})")
+
+
+def _name_eq(m):
+    run = m.group(1)
+    k = _KW_FIRST.search(run)
+    return run[:k.end()] + "=<redacted>"
+
+
+def _name_sp(m):
+    run = m.group(1)
+    k = _KW_END_AT.search(run)
+    return run[:k.end()] + "=<redacted>"
+
+
+def _query(m):
+    return m.group(0) if not _QUERY_KW.search(m.group(2)) else m.group(1) + m.group(2) + "=<redacted>"
+
+
+def _esc(m):
+    n = int(m.group(1) or m.group(2) or m.group(3), 16)
+    return chr(n) if n < 0xD800 or 0xE000 <= n <= 0x10FFFF else "\ufffd"
+
+
+def _b64(m):
+    """A base64 / base64url run that decodes to a credential-name assignment (token=..., password: ...) is redacted whole (F6-5); one decode and one linear search per run."""
+    run = m.group(0).rstrip("=")
+    try:
+        t = base64.b64decode(run.replace("-", "+").replace("_", "/") + "=" * (-len(run) % 4)).decode("utf-8", "replace")
+    except ValueError:
+        return m.group(0)
+    return "<redacted>" if (_NAME_EQ.search(t) or _NAME_SP.search(t)) else m.group(0)
+
+
+def _jpair(m):
+    return m.group(1) + '"<redacted>"' if _KW_FIRST.search(m.group(2)) else m.group(0)
+
+
+def _jpair_r(m):
+    return m.group(1) + '"<redacted>"' + m.group(2) if _KW_FIRST.search(m.group(3)) else m.group(0)
+
+
+def _fold(t):
+    """NFKD with combining marks dropped (e + U+0301 -> e), look-alike letters folded, recomposed (NFC, so Hangul survives). Chunked: stops once 20000 characters exist, so a
+    run of characters that expand (U+FDFA = 18) costs a bounded amount whatever the line length (F7-7: the NFKC expansion control was sized below its worst case)."""
+    out, n = [], 0
+    for i in range(0, len(t), 1000):
+        c = unicodedata.normalize("NFC", "".join(ch for ch in unicodedata.normalize("NFKD", t[i:i + 1000]) if not unicodedata.combining(ch))).translate(_CONF)
+        out.append(c); n += len(c)
+        if n >= 20000:
+            break
+    return "".join(out)
+
+
+def _printable(line):
+    return "".join(c if c.isprintable() else (" " if c == "\t" else "") for c in line)
+
+
+def _decoded(line):
+    """Bounded decoding: at most 3 passes of HTML entity / percent / \\u / \\x unescape plus NFKC (full-width letters), each pass linear and capped at 20000 chars
+    (NFKC can expand). None when the text is still changing after the last pass (deeply nested encoding): the caller withholds it rather than guess."""
+    def one(t):
+        return _printable(_fold(_ESC.sub(_esc, urllib.parse.unquote(html.unescape(t), errors="replace"))))[:20000]
+    for _ in range(3):
+        d = one(line)
+        if d == line:
+            return line
+        line = d
+    d = one(line)
+    return line if d == line else None
+
+
+def stderr_hint(text):
+    """Advisory first stderr line of a failed ledger query: control chars dropped, percent/\\u-escaped names decoded (bounded), secret-shaped runs redacted by
+    linear-time patterns, 160 chars max. Text only: never changes the fail-closed verdict."""
+    for line in (text or "").splitlines():
+        line = _printable(_ANSI.sub("", line)).strip()[:20000]
+        if not line:
+            continue
+        line = _decoded(line)
+        if line is None:
+            return "<encoded text withheld>"
+        line = re.sub(r"://[^/@\s]+@", "://<redacted>@", line)
+        line = _QUERY.sub(_query, line)
+        line = re.sub(r"(?i)\b(set-cookie|cookie)\s*[=:].*$", r"\1=<redacted>", line)
+        line = re.sub(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*$", "-----BEGIN PRIVATE KEY-----<redacted>", line)
+        line = re.sub(r"(?<![\w-])(ssh-[a-z0-9]+|ecdsa-sha2-[\w-]+)\s+\S+", r"\1 <redacted>", line)
+        line = _JPAIR.sub(_jpair, line)
+        line = _JPAIR_R.sub(_jpair_r, line)
+        line = _NAME_EQ.sub(_name_eq, line)
+        line = _NAME_SP.sub(_name_sp, line)
+        line = re.sub(r"(?<![\w-])eyJ[\w-]*\.[\w-]+(?:\.[\w-]*)?", "<redacted>", line)
+        line = _B64.sub(_b64, line)
+        line = re.sub(r"(?<!\S)(-u|--user|--proxy-user)(?:\s+|=)[^\s:]*:\S*", r"\1 <redacted>", line)
+        line = re.sub(r"(?<!\S)-p(?=\S)\S+", "-p<redacted>", line)
+        line = re.sub(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "<redacted-email>", line)
+        line = re.sub(r"\b(sk-|ghp_|gho_|xox)[A-Za-z0-9_-]+|\b[A-Za-z0-9+/_=-]{32,}", "<redacted>", line)
+        return line[:160]
+    return ""
+
+
 def read_ledger():
     bin_ = os.environ.get("WM_ASKS_BIN", "wm-asks")
     try:
-        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, timeout=20)
+        p = subprocess.run([bin_, "asks", "query", "--status", "open", "--json"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, "ledger command failed: %s" % type(e).__name__
     if p.returncode != 0:
-        return None, "ledger query exit %d" % p.returncode
+        hint = stderr_hint(p.stderr)
+        return None, "ledger query exit %d%s" % (p.returncode, ": " + hint if hint else "")
     try:
         rows = json.loads(p.stdout)
     except ValueError:
@@ -246,10 +380,20 @@ def atomic_write(path, text):
     os.replace(tmp, path)
 
 
+class StoreBusy(Exception):
+    """--nowait and another process holds the store lock (rv6 F6-3): the caller reports contention instead of waiting."""
+
+
+NOWAIT = False
+
+
 def locked(sd):
     os.makedirs(sd, exist_ok=True)
     fh = open(os.path.join(sd, "lock"), "w")
-    fcntl.flock(fh, fcntl.LOCK_EX)
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | (fcntl.LOCK_NB if NOWAIT else 0))   # a try, not a timeout: nothing is written when the lock is busy
+    except BlockingIOError:
+        fh.close(); raise StoreBusy()
     return fh
 
 
@@ -289,15 +433,17 @@ def cmd_new(seat):
             seen = {}
     except (OSError, ValueError):
         seen = {}
-    new, stamp = [], datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    new, stamp, lines = [], datetime.datetime.now().astimezone().isoformat(timespec="seconds"), []
     for o in obl:
         if o["fp"] in seen:
             continue
-        with open(outbox_path(sd), "a") as ob:   # outbox first: a failed write leaves the fingerprint unrecorded, so the next run re-escalates
-            ob.write(json.dumps(dict(o, seat=seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
-        seen[o["fp"]] = stamp
-        atomic_write(fp_path, json.dumps(seen, sort_keys=True))
+        seen[o["fp"]] = stamp   # recorded in memory only: the file is written once after the outbox (F7-5: one rewrite per run, not one per obligation = quadratic at 1,000 rows)
+        lines.append(json.dumps(dict(o, seat=seat, ts=stamp, delivered=False), separators=(",", ":")) + "\n")
         new.append(o)
+    if new:
+        with open(outbox_path(sd), "a") as ob:   # outbox first: a failed write leaves the fingerprints unrecorded, so the next run re-escalates
+            ob.write("".join(lines))
+        atomic_write(fp_path, json.dumps(seen, sort_keys=True))
     fh.close()
     print(json.dumps({"new": new, "reason": reason(new) if new else "", "error": why or None}))
 
@@ -528,9 +674,24 @@ def main():
     for n in ("id", "rev", "kind", "fp", "detail", "owner", "due", "approval", "action"):
         ap.add_argument("--" + n)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--nowait", action="store_true", help="try the store lock without waiting; new prints {locked:true}, the others exit 75 having written nothing")
     a = ap.parse_args()
+    global NOWAIT
+    NOWAIT = a.nowait
     if a.cmd not in ("emit", "suggestion", "resolve", "action"):
         a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
+    if a.seat == "ops":   # ops = preferred name of ctl (A1296 rev181): one seat row, one owner set, one ledger query; INTENDED widening: ops now sees the whole ctl set incl. the ctl/aide/unknown-owner catch-all (review F6), no new seat
+        a.seat = "ctl"
+    try:
+        dispatch(a)
+    except StoreBusy:
+        if a.cmd == "new":
+            print(json.dumps({"new": [], "reason": "", "error": None, "locked": True}))
+        else:
+            sys.exit(75)
+
+
+def dispatch(a):
     if a.cmd == "eval":
         rows, why = read_ledger()
         print(json.dumps({"dispositions": (evaluate(a.seat, rows, now_min()) if rows is not None else []) + read_followups(a.seat), "error": why or None}))
