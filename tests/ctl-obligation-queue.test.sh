@@ -256,6 +256,12 @@ t_start_identity_unknown_cases(){
   chk unk-events-malformed "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,$C)], 'events':{'A1':'garbage'}}"
   chk unk-no-claim-event "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,$C)], 'events':{'A1':[]}}"
   chk unk-stamp-mismatch "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,$C)], 'events':{'A1':[CE('A1',2,'w1','$T',stamp='w1@2026-01-01T00:00')]}}"
+  # A1289 fix2: the UNKNOWN for an events outage names the canonical events source as the cause (not a substituted event)
+  for v in "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,$C)]}" "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,$C)], 'events':{'A1':'garbage'}}"; do
+    pyfx $W/f.json "$v"
+    r=$(obs $W/f.json | field "[('canonical events' in u['reason'], u['claim_rev']) for u in d['unknown']]")
+    [ "$r" = "[(True, None)]" ] && ok unk-events-reason-named || bad unk-events-reason-named "$r"
+  done
 }
 t_malformed_decision_log_is_unknown(){
   pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,claim='w1@2026-11-07T10:00')], 'events':{'A1':[CE('A1',2,'w1','2026-11-07T10:00:00')]}}"
