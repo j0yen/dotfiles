@@ -1,30 +1,44 @@
 #!/usr/bin/env python3
 """ctl-obligation-queue: obligation-aware work selection (task A1289).
 
-Reads the canonical open asks (wm-asks asks query --json --status open) and, if
-available, wm-decide followups; classifies each obligation by priority class and
-readiness; records start decisions in an append-only jsonl; observes claimed starts
-against those decisions.
+Reads ONE canonical snapshot of every ask (wm-asks asks query --json --status all:
+open and closed rows, each with status, owner, rev and claim) and, if available,
+wm-decide followups; classifies each OPEN obligation by priority class and readiness;
+records start decisions in an append-only jsonl; observes claimed starts on open and
+closed asks against those decisions. A row whose status is neither open nor closed is
+an unknown schema: the source is refused (exit 4).
 
 decide: the priority class is computed from the canonical row and its dependencies
 (the same classifier as queue); --class is the caller's declaration, recorded as
 class_label and never used as authority (class_supported says whether the row facts
-support it). Every decision is recorded, including REFUSE and REFUSE-ACTIVE, with
-the row revision read (task_rev) and the optional --worker that will claim the task.
+support it). The higher-priority candidates are scoped by the task's canonical owner
+(recorded as candidate_owner), never by the caller-declared --actor, which is recorded
+as an unauthenticated label only. Every decision is recorded, including REFUSE and
+REFUSE-ACTIVE, with an offset-aware ts, the row revision read (task_rev) and the
+optional --worker that will claim the task. A task that is not open (closed or absent
+from the ledger) is refused.
 
 observe: the start evidence is the existing canonical claim, read through
 `wm-asks asks query` (claim, rev) and `wm-asks asks events ID --json` (op=claim:
-rev, ts, worker). Each claimed open ask is bound to the latest decision recorded for
-the same task at the revision just before its claim event, at or before the claim
-time, and for the same worker when the decision named one. Result per start:
+rev, ts, worker). The claim stamp is worker@YYYY-MM-DDTHH:MM (the worker token may
+itself contain '@'). Each claimed ask, open or closed, is bound to the latest decision
+recorded for the same task at the revision just before its claim event, at or before
+the claim instant (both timestamps offset-aware; a ts without a UTC offset cannot be
+ordered and stays UNKNOWN), and for the same worker when the decision named one. A
+bound class-gated decision whose candidate scope is not the canonical owner is
+re-checked: owner-scope-mismatch bypass when higher-priority work of the owner is ready
+(computed at observe time), else UNKNOWN. Result per start:
 allowed | valid-exception | dependency-repair (bound), bypass (unlogged-start: no
 decision for the task; refused-then-started: the governing decision refused;
 forged-class: a legacy allowed decision that trusted a declared class the row does
-not support while higher-priority work was ready), or unknown (claim evidence cannot
-be bound: events unavailable/malformed, no or duplicate claim event, stamp mismatch,
-changed revision, unrelated worker, decision after the claim, legacy decision without
-task_rev, malformed decision log). Valid exceptions and refusals are listed
-separately and are not bypasses. A claim is not proof of useful execution: worker
+not support while higher-priority work was ready; owner-scope-mismatch), or unknown
+(claim evidence cannot be bound: events unavailable/malformed, no or duplicate claim
+event, non-canonical claim stamp, stamp mismatch, changed revision, unrelated worker,
+decision after the claim, decision ts without UTC offset, legacy decision without
+task_rev, candidate scope not the owner with no ready higher work, malformed decision
+log). Valid exceptions and refusals are listed separately and are not bypasses; each
+refusal states the claim state actually read (canonical claim present | no canonical
+claim | UNKNOWN when the task is not in the ledger read). A claim is not proof of useful execution: worker
 liveness and useful effect stay UNKNOWN (see MISSING_PRODUCER); a start without a
 canonical claim is not observable here.
 
@@ -50,6 +64,7 @@ DISCRETIONARY = re.compile(r"\b(discretionary|nice[- ]to[- ]have|optional|new id
 BLOCKER_WORDS = re.compile(r"\b(blocked|waiting (?:on|for)|waits? on|stuck|depends on)\b", re.I)
 TOKEN = re.compile(r"waits-on=([A-Za-z0-9_]+):(\S+)")
 CLAIM = re.compile(r"\bclaim=(\S+)")
+STAMP = re.compile(r"^(?P<worker>[^\s|]+)@(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2})$")   # asks.claim(): worker@YYYY-MM-DDTHH:MM
 NOTBEFORE = re.compile(r"not[-_]before=(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?)")
 CLASS_NAMES = {"safety": 1, "unblocker": 1, "overdue": 2, "discretionary": 3}
 
@@ -77,11 +92,11 @@ def load_source(args):
         except Exception as e:
             die_source("fixture %s: %s" % (fx, e))
         args._fixture = d
-        return d["asks"], d.get("followups"), norm_ts(args.now) or d.get("now") or now, "fixture"
+        return checked_rows(d["asks"]), d.get("followups"), norm_ts(args.now) or d.get("now") or now, "fixture"
     cmd = (os.environ.get("CTL_OQ_WM_ASKS") if args.test else None) or "wm-asks"
     args._wm_asks = cmd
     try:
-        r = subprocess.run([cmd, "asks", "query", "--json", "--status", "open"],
+        r = subprocess.run([cmd, "asks", "query", "--json", "--status", "all"],
                            capture_output=True, text=True, timeout=120)
     except Exception as e:
         die_source("%s: %s" % (cmd, e))
@@ -92,6 +107,7 @@ def load_source(args):
         assert isinstance(asks, list) and all(isinstance(a, dict) and "ask_id" in a for a in asks)
     except Exception as e:
         die_source("unparseable ledger output: %s" % e)
+    asks = checked_rows(asks)
     fu = None
     try:
         f = subprocess.run(["wm-decide", "followups", "--json"], capture_output=True, text=True, timeout=120)
@@ -102,7 +118,16 @@ def load_source(args):
     return asks, fu, now, "wm-asks"
 
 
-def classify(asks, now):
+def checked_rows(rows):
+    """Every canonical row must state status open|closed (asks._public); anything else is an unknown schema: refuse."""
+    bad = sorted({str(a.get("status")) for a in rows if a.get("status") not in ("open", "closed")})
+    if bad:
+        die_source("ledger row status %s is neither open nor closed (unknown schema)" % ",".join(bad))
+    return rows
+
+
+def classify(rows, now):
+    asks = [a for a in rows if a["status"] == "open"]       # only open asks are scheduled
     open_ids = set()
     for a in asks:
         open_ids.add(a["ask_id"])
@@ -184,6 +209,15 @@ def classify(asks, now):
         out["queue"].append(base)
     out["queue"].sort(key=lambda x: (x["class"], x["due"] or "9999", x["ask_id"]))
     out["_unblockers"] = {k: v for k, v in unblockers.items()}
+    # closed asks: never scheduled; a claimed one is still a start to assess (claims are not released on close)
+    out["_closed_claimed"], out["_ledger_ids"] = [], {a["ask_id"]: a["status"] for a in rows}
+    for a in rows:
+        if a["status"] == "closed":
+            cm = CLAIM.search((a.get("what") or "").split(" | ")[0])
+            claim = a.get("claim") or (cm.group(1) if cm else None)
+            if claim:
+                out["_closed_claimed"].append({"ask_id": a["ask_id"], "row_id": a.get("row_id"), "owner": a.get("owner"),
+                                               "rev": a.get("rev"), "claim": claim})
     return out
 
 
@@ -211,8 +245,23 @@ def read_decisions(args, with_malformed=False):
     return (rows, bad) if with_malformed else rows
 
 
-def ts19(s):
-    return str(s or "").replace(" ", "T")[:19]
+def aware(s):
+    """offset-aware datetime, or None when the ts is missing, unparseable or has no UTC offset."""
+    try:
+        t = datetime.datetime.fromisoformat(str(s).replace(" ", "T"))
+    except (TypeError, ValueError):
+        return None
+    return t if t.utcoffset() is not None else None
+
+
+def at_or_before(a, b):
+    """True/False when both instants are offset-aware; None when the order cannot be established."""
+    x, y = aware(a), aware(b)
+    return None if x is None or y is None else x <= y
+
+
+def now_ts():
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def load_claim_events(args, aid):
@@ -261,20 +310,23 @@ def is_dependency_repair(c, tid):
         x.get("row_id") == tid for x in c["queue"] + c["blocked"] if x["row_id"] in c["_unblockers"])
 
 
-def higher_candidates(c, tid, actor, any_owner=False):
-    return [x["ask_id"] for x in c["queue"] if x["class"] < 3 and x["ask_id"] != tid and (any_owner or x["owner"] == actor)]
+def higher_candidates(c, tid, owner, any_owner=False):
+    """ready class-1/2 asks other than tid; scoped to the canonical owner of tid (callers pass the row's owner, never --actor)."""
+    return [x["ask_id"] for x in c["queue"] if x["class"] < 3 and x["ask_id"] != tid and (any_owner or x["owner"] == owner)]
 
 
 def assess_starts(c, args, decisions, malformed):
     """Bind every claimed open ask to the decisions log through its canonical claim event."""
     idx, starts = task_index(c), []
     stamps = {}
-    for x in c["active"]:
+    claimed = [dict(x, ask_status="open") for x in c["active"]] + [dict(x, ask_status="closed") for x in c.get("_closed_claimed", [])]
+    for x in claimed:
         stamps.setdefault(x["claim"], []).append(x["ask_id"])
-    for x in c["active"]:
+    for x in claimed:
         aid, claim = x["ask_id"], x["claim"]
-        worker = str(claim).split("@", 1)[0]
-        st = {"ask_id": aid, "owner": x["owner"], "claim": claim, "worker": worker, "row_rev": x.get("rev"),
+        sm = STAMP.match(str(claim))
+        worker = sm.group("worker") if sm else None
+        st = {"ask_id": aid, "ask_status": x["ask_status"], "owner": x["owner"], "claim": claim, "worker": worker, "row_rev": x.get("rev"),
               "claim_rev": None, "claim_ts": None, "authorization": None, "kind": None, "reason": None,
               "decision_ts": None, "decision_task_rev": None, "worker_liveness": "UNKNOWN", "useful_effect": "UNKNOWN"}
         starts.append(st)
@@ -282,12 +334,16 @@ def assess_starts(c, args, decisions, malformed):
         ev, why = load_claim_events(args, aid)
         if ev is None:
             problem = why
+        elif not sm:
+            problem = "claim stamp %r is not the canonical worker@YYYY-MM-DDTHH:MM" % claim
         elif not ev:
             problem = "no canonical claim event for claim %s" % claim
         elif len(ev) > 1:
             problem = "duplicate start identity: %d claim events" % len(ev)
         elif ev[0]["claim"] != claim or ev[0]["worker"] != worker:
             problem = "claim event %s does not match the current claim %s" % (ev[0]["claim"], claim)
+        elif aware(ev[0]["ts"]) is None:
+            problem = "claim event ts %r has no UTC offset; its order against decisions cannot be established" % ev[0]["ts"]
         else:
             st["claim_rev"], st["claim_ts"] = ev[0]["rev"], ev[0]["ts"]
         if not problem and len(stamps[claim]) > 1:
@@ -311,7 +367,7 @@ def assess_starts(c, args, decisions, malformed):
             verdict("unknown", problem)
         else:
             gov = [d for d in decs if d.get("outcome") in ("allowed", "refused") and d.get("task_rev") is not None
-                   and d["task_rev"] == st["claim_rev"] - 1 and ts19(d.get("ts")) <= ts19(st["claim_ts"])]
+                   and d["task_rev"] == st["claim_rev"] - 1 and at_or_before(d.get("ts"), st["claim_ts"]) is True]
             if gov:
                 d = gov[-1]
                 if d["outcome"] == "refused":
@@ -323,15 +379,26 @@ def assess_starts(c, args, decisions, malformed):
                     verdict("valid-exception", "bound to a valid recorded priority exception", d=d)
                 elif d.get("dependency_repair"):
                     verdict("dependency-repair", "bound to an allowed dependency-repair decision", d=d)
+                elif d.get("computed_priority_class") == 3 and d.get("candidate_owner", d.get("actor")) not in ("*", st["owner"]):
+                    scope = d.get("candidate_owner", d.get("actor"))
+                    t = idx.get(aid)
+                    now_c = higher_candidates(c, aid, st["owner"]) if t and t["class"] == 3 and not is_dependency_repair(c, aid) else []
+                    if now_c:
+                        verdict("bypass", "decision scoped higher-priority candidates to %r, not the canonical owner %r; ready higher-priority "
+                                "work of %s now (computed at observe time): %s" % (scope, st["owner"], st["owner"], ",".join(now_c[:15])),
+                                "owner-scope-mismatch", d)
+                    else:
+                        verdict("unknown", "decision scoped higher-priority candidates to %r, not the canonical owner %r; it cannot "
+                                "certify the start" % (scope, st["owner"]), d=d)
                 else:
                     verdict("allowed", "bound to an allowed decision with no actionable higher-priority candidate", d=d)
             else:
                 legacy = [d for d in allowed if d.get("task_rev") is None and "computed_priority_class" not in d
-                          and ts19(d.get("ts")) <= ts19(st["claim_ts"])]
+                          and at_or_before(d.get("ts"), st["claim_ts"]) is not False]
                 t = idx.get(aid)
                 forged = [d for d in legacy if d.get("class_label") != "discretionary" and not d.get("dependency_repair")]
                 if forged and t and t["class"] == 3 and not is_dependency_repair(c, aid) and \
-                        higher_candidates(c, aid, forged[-1].get("actor")):
+                        higher_candidates(c, aid, st["owner"]):
                     verdict("bypass", "legacy decision trusted declared class %s; the row computes class 3 and higher-priority "
                             "work is ready now (computed at observe time)" % forged[-1].get("class_label"), "forged-class", forged[-1])
                 elif legacy:
@@ -342,6 +409,9 @@ def assess_starts(c, args, decisions, malformed):
                 elif any(d.get("task_rev") is not None and d["task_rev"] != st["claim_rev"] - 1 for d in allowed):
                     d = allowed[-1]
                     verdict("unknown", "revision changed: decision read rev %s, claim event is rev %s" % (d.get("task_rev"), st["claim_rev"]), d=d)
+                elif any(at_or_before(d.get("ts"), st["claim_ts"]) is None for d in allowed):
+                    d = [d for d in allowed if at_or_before(d.get("ts"), st["claim_ts"]) is None][-1]
+                    verdict("unknown", "decision ts %r has no UTC offset; its order against the claim cannot be established" % d.get("ts"), d=d)
                 else:
                     verdict("unknown", "every allowing decision for %s was recorded after the claim" % aid, d=allowed[-1])
     return starts
@@ -358,8 +428,9 @@ def fu_summary(fu):
 def snapshot(args):
     asks, fu, now, source = load_source(args)
     c = classify(asks, now)
-    c.update({"now": now, "source": source, "open_total": len(asks),
-              "overdue_total": sum(1 for a in asks if norm_ts(a.get("due")) and norm_ts(a.get("due")) <= now),
+    op = [a for a in asks if a["status"] == "open"]
+    c.update({"now": now, "source": source, "open_total": len(op), "closed_total": len(asks) - len(op),
+              "overdue_total": sum(1 for a in op if norm_ts(a.get("due")) and norm_ts(a.get("due")) <= now),
               "followups": fu_summary(fu)})
     return c
 
@@ -367,7 +438,9 @@ def snapshot(args):
 def cmd_queue(args):
     c = snapshot(args)
     decisions, bad = read_decisions(args, with_malformed=True)
-    for x, s in zip(c["active"], assess_starts(c, args, decisions, bad)):
+    sx = {s["ask_id"]: s for s in assess_starts(c, args, decisions, bad)}
+    for x in c["active"]:
+        s = sx[x["ask_id"]]
         x["start_check"] = s["authorization"] + (":" + s["kind"] if s["kind"] else "")
     pub = {k: v for k, v in c.items() if not k.startswith("_")}
     if args.json:
@@ -426,7 +499,8 @@ def cmd_decide(args):
     declared = CLASS_NAMES[args.cls]
     t = task_index(c).get(tid)
     cls = t["class"] if t else None
-    base = {"ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "task_id": tid, "actor": actor,
+    owner = t and t["owner"]
+    base = {"ts": now_ts(), "task_id": tid, "actor": actor, "candidate_owner": ("*" if args.any_owner else owner) if t else None,
             "priority_class": cls, "class_label": args.cls, "declared_priority_class": declared,
             "computed_priority_class": cls, "computed_class_reason": t and t["class_reason"],
             "class_supported": bool(t) and declared >= cls, "rationale": args.rationale,
@@ -439,7 +513,8 @@ def cmd_decide(args):
             f.write(json.dumps(rec) + "\n")
 
     if t is None:
-        why = "%s is not an open row in the canonical ledger; its priority cannot be computed" % tid
+        why = "%s is not an open row in the canonical ledger (%s); its priority cannot be computed" % (
+            tid, "closed" if c["_ledger_ids"].get(tid) == "closed" else "absent: no ask with this id in the ledger read")
         record(dict(base, higher_priority_candidates=[], dependency_repair=False, exception=None, exception_valid=False,
                     outcome="refused", decision_reason=why, source=c["source"], ledger_now=c["now"]))
         print("REFUSE: %s" % why)
@@ -453,7 +528,7 @@ def cmd_decide(args):
     is_unblocker = is_dependency_repair(c, tid)
     cands = []
     if cls == 3 and not is_unblocker:
-        cands = higher_candidates(c, tid, actor, args.any_owner)
+        cands = higher_candidates(c, tid, owner, args.any_owner)
     exc = None
     fields = [args.exception_reason, args.exception_owner, args.exception_approval, args.exception_review_trigger]
     if any(fields):
@@ -483,14 +558,15 @@ def cmd_observe(args):
     decisions, bad = read_decisions(args, with_malformed=True)
     starts = assess_starts(c, args, decisions, bad)
     claimed = {s["ask_id"] for s in starts}
-    out = {"result": None, "result_scope": "claim-evidenced starts on open asks only", "source": c["source"], "now": c["now"],
+    out = {"result": None, "result_scope": "claim-evidenced starts on open and closed asks only", "source": c["source"], "now": c["now"],
            "starts": starts,
            "bypasses": [s for s in starts if s["authorization"] == "bypass"],
            "unknown": [s for s in starts if s["authorization"] == "unknown"],
            "valid_exceptions": [d for d in decisions if d.get("outcome") == "allowed" and d.get("exception_valid")
                                 and d.get("higher_priority_candidates")],
            "refusals": [dict(d, start_evidence="canonical claim present" if d["task_id"] in claimed else
-                             "no canonical claim (a start without a claim is not observable)")
+                             ("no canonical claim (a start without a claim is not observable)" if d["task_id"] in c["_ledger_ids"] else
+                              "UNKNOWN: %s is not in the canonical ledger read; its claim state is not established" % d["task_id"]))
                         for d in decisions if d.get("outcome") in ("refused", "refused-active")],
            "decision_log": {"rows": len(decisions), "malformed": bad},
            "missing_producer": MISSING_PRODUCER}
