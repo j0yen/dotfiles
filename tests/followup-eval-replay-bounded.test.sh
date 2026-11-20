@@ -35,6 +35,7 @@ OB="$FOLLOWUP_STATE_DIR/outbox.jsonl"; LAST="$FOLLOWUP_STATE_DIR/replay.last.jso
 cat >"$base/deliver.sh" <<'D'
 #!/usr/bin/env bash
 in="$(cat)"; id="$(jq -r .id <<<"$in" 2>/dev/null)"
+[ -n "${ATT_LOG:-}" ] && printf '%s\n' "$id" >>"$ATT_LOG"
 [ -n "${START_MARK:-}" ] && : >"$START_MARK"
 [ -n "${HANG_ON:-}" ] && [ "$id" = "$HANG_ON" ] && exec sleep "${HANG_S:-6}"
 sleep "${FAKE_SLEEP:-0.3}"
@@ -173,14 +174,16 @@ read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
 
 # 9. a hanging deliverer is bounded by FOLLOWUP_REPLAY_PER_S: A2 hangs (20 s, exit 0, if allowed), PER_S=1, budget 30 -> the run ends in well under 20 s,
 #    (assertions are A2-specific plus conservation: under heavy load PER_S=1 may also kill a normal stub delivery, which is then a failed entry, never a delivery)
-#    A2 is counted failed and stays delivered:false (a timeout is never recorded as a delivery), the other entries go out
-mk; s=$(now); HANG_ON=A2 HANG_S=20 FAKE_SLEEP=0 FOLLOWUP_REPLAY_PER_S=1 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null; rc=$?; el=$(ms "$s")
+#    A2 is counted failed and stays delivered:false (a timeout is never recorded as a delivery), and every entry after it (FAIL3 A4 A7) is still
+#    ATTEMPTED: the stub records each attempt in ATT_LOG before any sleep/hang, so head-of-line starvation behind one hanging entry (the rest
+#    counted failed without an attempt; review 223ff409 RR-1, mutant y6) fails here even when load makes a later delivery time out
+mk; rm -f "$base/att9"; s=$(now); ATT_LOG="$base/att9" HANG_ON=A2 HANG_S=20 FAKE_SLEEP=0 FOLLOWUP_REPLAY_PER_S=1 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null; rc=$?; el=$(ms "$s")
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
-[ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A2)" = False ] && ! grep -qx A2 "$DLOG" && [ "$c" = 0 ] && [ "$f" -ge 2 ] && [ $((d + f + c)) = 6 ] && [ "$dl" = $(( $(wc -l <"$DLOG") + 1 )) ] && [ "$(flag FAIL3)" = False ]
-r=$?; chk "9: PER_S=1 bounds a hanging delivery (20 s if allowed): ${el} ms < 15000, A2 failed, delivered:false and never sent; every send flagged; d+f+c=6, carried 0 (d=$d f=$f c=$c sends=$(paste -sd, "$DLOG") A2=$(flag A2))" "$r"
+[ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A2)" = False ] && ! grep -qx A2 "$DLOG" && [ "$c" = 0 ] && [ "$f" -ge 2 ] && [ $((d + f + c)) = 6 ] && [ "$dl" = $(( $(wc -l <"$DLOG") + 1 )) ] && [ "$(flag FAIL3)" = False ] && grep -qx FAIL3 "$base/att9" && grep -qx A4 "$base/att9" && grep -qx A7 "$base/att9"
+r=$?; chk "9: PER_S=1 bounds a hanging delivery (20 s if allowed): ${el} ms < 15000, A2 failed, delivered:false and never sent; FAIL3 A4 A7 attempted after the timeout; every send flagged; d+f+c=6, carried 0 (d=$d f=$f c=$c sends=$(paste -sd, "$DLOG") attempted=$(paste -sd, "$base/att9" 2>/dev/null) A2=$(flag A2))" "$r"
 
 # 10. the budget bounds a delivery even when PER_S is larger: budget 2, PER_S 30, A0 (the first entry, ~0 s elapsed) hangs -> killed near 2 s, failed,
-#     the rest carried. With ~0 s elapsed this cannot tell remaining budget from total budget; check 11 case d exercises time already elapsed.
+#     the rest carried. With ~0 s elapsed this cannot tell remaining budget from total budget; check 11 cases d and e exercise time already elapsed.
 mk; s=$(now); HANG_ON=A0 HANG_S=20 FAKE_SLEEP=0 FOLLOWUP_REPLAY_PER_S=30 FOLLOWUP_REPLAY_BUDGET_S=2 python3 -I "$EV" replay 2>/dev/null; rc=$?; el=$(ms "$s")
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
 [ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A0)" = False ] && [ "$d" = 0 ] && [ "$f" = 1 ] && [ "$c" = 5 ]
@@ -189,7 +192,10 @@ r=$?; chk "10: budget (2 s, first entry, ~0 s elapsed) bounds the delivery below
 # 11. exact per-entry timeout argument (in-process, controlled clock, delivery call recorded, nothing executed): timeout = max(1, min(PER_S, left))
 #     a) budget 0.2, 0.15 s already used -> left 0.05 -> 1.0 (the 1 s floor)   b) budget 2, PER_S 30, nothing used -> 2.0 (budget below PER_S)
 #     c) budget 30, PER_S 1 -> 1.0 (FOLLOWUP_REPLAY_PER_S honoured)
-#     d) budget 5, PER_S 30, 3.0 s already used -> left 2.0 -> 2.0 (the REMAINING budget, not the total 5, bounds the delivery; review 18bb FD-1)
+#     d) budget 5, PER_S 30, 3.0 s used inside locked() (the lock wait, before the loop) -> left 2.0 -> 2.0 (the REMAINING budget, not the total 5,
+#        bounds the delivery, and the budget clock starts before the lock; review 18bb FD-1, mutants x1 and x14)
+#     e) budget 5, PER_S 30, nothing used before the loop, two entries, the FIRST delivery takes 3.0 s -> timeouts 5.0 then 2.0 (left is recomputed
+#        per entry from the time earlier deliveries used, not frozen at lock time; review 223ff409 RR-2, mutant x13)
 o11="$(python3 -I - "$EV" "$OB" <<'P' 2>&1
 import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("fe", sys.argv[1]); fe = importlib.util.module_from_spec(spec); spec.loader.exec_module(fe)
@@ -211,10 +217,19 @@ for name, budget, per, used in (("a", "0.2", "60", 0.15), ("b", "2", "30", 0.0),
     fe.subprocess.run = lambda *a, **k: (seen.append(k.get("timeout")), Done())[1]
     fe.cmd_replay(); fe.locked = real_locked
     out.append("%s=%s" % (name, seen[0] if seen else "none"))
+# e) budget 5, PER_S 30, nothing used before the loop; the FIRST delivery takes 3 s -> the second delivery is bounded by the 2 s left
+open(ob, "w").write("".join(json.dumps({"id": "Te%d" % k, "rev": 1, "fp": "te%d" % k, "ts": "t", "seat": "ctl", "delivered": False}) + "\n" for k in range(2)))
+os.environ["FOLLOWUP_REPLAY_BUDGET_S"] = "5"; os.environ["FOLLOWUP_REPLAY_PER_S"] = "30"
+clock = {"t": 100.0}; seen = []
+fe.time.monotonic = lambda: clock["t"]
+def run_e(*a, **k):
+    seen.append(k.get("timeout")); clock["t"] += 3.0; return Done()
+fe.subprocess.run = run_e; fe.cmd_replay()
+out.append("e=" + ",".join(str(x) for x in seen))
 print(" ".join(out))
 P
 )"
-[ "$(tail -1 <<<"$o11")" = "a=1.0 b=2.0 c=1.0 d=2.0" ]; r=$?; chk "11: per-entry timeout = max(1, min(PER_S, left)): floor a=1.0, budget-below-PER_S b=2.0, PER_S c=1.0, remaining-after-3s-elapsed d=2.0 (got $(tail -1 <<<"$o11" | cut -c1-80))" "$r"
+[ "$(tail -1 <<<"$o11")" = "a=1.0 b=2.0 c=1.0 d=2.0 e=5.0,2.0" ]; r=$?; chk "11: per-entry timeout = max(1, min(PER_S, left)): floor a=1.0, budget-below-PER_S b=2.0, PER_S c=1.0, remaining-after-3s-in-lock d=2.0, remaining-after-3s-earlier-delivery e=5.0,2.0 (got $(tail -1 <<<"$o11" | cut -c1-100))" "$r"
 
 # 12. in-process: the outbox rewrite happens while the store lock is still held, and the caller's SIGTERM/SIGINT/SIGHUP handlers are restored
 mk; o12="$(FAKE_SLEEP=0 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I - "$EV" <<'P' 2>&1
