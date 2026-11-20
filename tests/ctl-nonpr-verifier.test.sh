@@ -27,7 +27,7 @@ X
 cat > "$T/fable-launch" <<'X'
 #!/usr/bin/env bash
 # stub claude: no network. Reads the prompt (arg after -p), writes the row the session would record, and the result line.
-touch "$FX/session-ran"
+touch "$FX/session-ran"; printf '%s\n' "$@" > "$FX/fl-args"
 [ -z "${STUB_LEAK:-}" ] || echo "oops sk-ant-oat01-AAAAAAAAAAAAAAAAAAAA"
 p=""; while [ $# -gt 0 ]; do [ "$1" = -p ] && { p="$2"; break; }; shift; done
 R="$(printf '%s\n' "$p" | sed -n 's/^5\. Write one line to \(.*\): VERDICT=.*/\1/p')"
@@ -156,5 +156,30 @@ grep -q 'store/jyen.pm\|store/mcphost.dev' "$FX/sd-args" && bad "jyen.pm/mcphost
 newfx rb "$CHK"; I >/dev/null
 STUB_LEAK=1 Lc >/dev/null 2>&1; rc=$?
 { [ "$rc" = 10 ] && ! grep -rq 'sk-ant-' "$RUN_DIR"; } && ok "token-shaped output: refused (10), output removed" || bad "leak rc=$rc"
+
+
+# 14. A1284 cap-path fix: the generated unit carries no finite runtime/memory cap (effectively infinity) and no cap reaches the child session
+newfx rb "$CHK"; I >/dev/null; Lc >/dev/null 2>&1
+capbad=""
+grep -qE 'RuntimeMaxSec=1800|MemoryMax=2G' "$FX/sd-args" && capbad="$capbad [old finite cap present]"
+for want in RuntimeMaxSec=infinity MemoryMax=infinity TasksMax=infinity; do grep -qxF -- "$want" "$FX/sd-args" || capbad="$capbad [missing $want]"; done
+grep -E '^(RuntimeMaxSec|MemoryMax|MemoryHigh|TasksMax|CPUQuota|TimeoutStopSec|LimitAS)=' "$FX/sd-args" | grep -vE '=infinity$' | grep -q . && capbad="$capbad [non-infinity cap]"
+grep -qiE 'max-turns|max-budget|timeout|ulimit' "$FX/fl-args" && capbad="$capbad [cap flag reaches the child session]"
+[ -z "$capbad" ] && ok "generated unit: RuntimeMaxSec/MemoryMax/TasksMax = infinity, no finite cap, none passed to the child" || bad "caps:$capbad"
+# 15. the unit gets a non-login PATH that holds the supported HOME bin dir
+grep -qxF -- "PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" "$FX/sd-args" && ok "unit environment pins PATH with HOME/.local/bin" || bad "unit PATH not pinned: $(grep -n '^PATH=' "$FX/sd-args")"
+# 16. production mode pins absolute wm-asks/wm-decide under the supported HOME; non-login PATH finds them; prompt and readback share the binding
+H="$T/home"; mkdir -p "$H/.local/bin"
+printf '#!/usr/bin/env bash\necho "$0" > "%s/wma-called"; cat "%s/asks.json"\n' "$T" "$T/fx" > "$H/.local/bin/wm-asks"; chmod +x "$H/.local/bin/wm-asks"
+newfx rb "$CHK"; cp "$FX/asks.json" "$T/asks.json"
+printf '#!/usr/bin/env bash\necho "$0" > "%s/wma-called"; cat "%s/asks.json"\n' "$T" "$T" > "$H/.local/bin/wm-asks"
+env -i HOME="$H" PATH=/usr/bin:/bin "$S" issue A9 >/dev/null 2>&1; irc=$?
+out="$(env -i HOME="$H" PATH=/usr/bin:/bin "$S" launch A9 --target-check --check-sha "$SHA" --dry-run 2>&1)"; rc=$?
+[ "$irc" = 0 ] && [ "$rc" = 0 ] && [ "$(cat "$T/wma-called" 2>/dev/null)" = "$H/.local/bin/wm-asks" ] && ok "production mode, non-login PATH: wm-asks resolved by absolute HOME path" || bad "prod abs wm-asks irc=$irc rc=$rc called=$(cat "$T/wma-called" 2>/dev/null) out=$out"
+P="$(ls "$H"/.cache/ctl-nonpr/runs/ctl-nonpr-A9-*/prompt.txt 2>/dev/null | head -1)"
+{ [ -n "$P" ] && grep -qF -- "$H/.local/bin/wm-decide record" "$P" && ! grep -qE '(^|[ "])wm-decide record' "$P"; } && ok "generated prompt records via the absolute wm-decide path" || bad "prompt wm-decide binding: $P"
+{ grep -qF '"$WMD" list' "$S" && grep -qF '$WMD record' "$S"; } && ok "prompt and readback both bind to WMD" || bad "binding drift in script"
+rc=0; env -i HOME="$H" PATH=/usr/bin:/bin WMD=/tmp/x "$S" issue A9 >/dev/null 2>&1 || rc=$?
+[ "$rc" = 64 ] && ok "production mode still refuses a WMD override (64)" || bad "WMD override rc=$rc"
 
 echo "$n checks, $fail failed"; [ "$fail" = 0 ]

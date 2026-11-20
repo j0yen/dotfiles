@@ -14,7 +14,8 @@
 # or --test without the env, is refused (exit 64). `launch` needs a lease from a prior `issue` (exit 6) and --check-sha (exit 2).
 # Session sandbox (systemd-run): ProtectHome=read-only, ReadWritePaths = run dir + ledger state dir + account-rr dir, NoNewPrivileges, PrivateTmp,
 # ~/.ssh ~/.git-credentials ~/.config/{wm-sudo,gh} inaccessible, ~/.config/fleet-token reduced to the josephsyen + jyen.tech store files,
-# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 and a private CLAUDE_CONFIG_DIR. Exit 10 = a token-shaped string was found in the session output.
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, a private CLAUDE_CONFIG_DIR and a pinned PATH ($HOME/.local/bin first). The unit carries no runtime/memory/task cap
+# (RuntimeMaxSec/MemoryMax/TasksMax = infinity). Production wm-asks/wm-decide are the absolute $HOME/.local/bin paths; the prompt and the readback both use them. Exit 10 = a token-shaped string was found in the session output.
 set -u
 ARGS=(); TESTFLAG=0
 for _a in "$@"; do if [ "$_a" = --test ]; then TESTFLAG=1; else ARGS+=("$_a"); fi; done
@@ -27,7 +28,7 @@ else
   for _v in WMA WMD FABLE_LAUNCH SD_RUN LEASE_DIR RUN_DIR NOW; do
     [ -z "${!_v:-}" ] || { echo "ctl-nonpr-verifier: $_v override refused (test-only)" >&2; exit 64; }
   done
-  WMA=wm-asks; WMD=wm-decide; FL="$HOME/.local/bin/fable-launch.sh"; SDR=systemd-run
+  WMA="$HOME/.local/bin/wm-asks"; WMD="$HOME/.local/bin/wm-decide"; FL="$HOME/.local/bin/fable-launch.sh"; SDR=systemd-run
   LEASE_DIR="$HOME/.cache/ctl-nonpr/leases"; RUN_DIR="$HOME/.cache/ctl-nonpr/runs"; NOW="$(date +%s)"
 fi
 TTL=1800
@@ -119,8 +120,8 @@ mkdir -p "$DIR/claude-home" "$HOME/.cache/aide/account-rr" || die 70 "cannot cre
 SB=(-p ProtectHome=read-only -p "ReadWritePaths=$DIR $HOME/.local/state/swarm-decide $HOME/.cache/aide/account-rr" -p NoNewPrivileges=yes -p PrivateTmp=yes
     -p "InaccessiblePaths=-$HOME/.ssh -$HOME/.git-credentials -$HOME/.config/wm-sudo -$HOME/.config/gh"
     -p "TemporaryFileSystem=$HOME/.config/fleet-token:ro" -p "BindReadOnlyPaths=$HOME/.config/fleet-token/store/josephsyen $HOME/.config/fleet-token/store/jyen.tech"
-    -E CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 -E "CLAUDE_CONFIG_DIR=$DIR/claude-home")
-"$SDR" --user --wait --collect --unit="$unit" -p MemoryMax=2G -p RuntimeMaxSec=1800 "${SB[@]}" -p "StandardOutput=file:$DIR/session.log" -p "StandardError=append:$DIR/session.log" \
+    -E CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 -E "CLAUDE_CONFIG_DIR=$DIR/claude-home" -E "PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin")
+"$SDR" --user --wait --collect --unit="$unit" -p MemoryMax=infinity -p RuntimeMaxSec=infinity -p TasksMax=infinity "${SB[@]}" -p "StandardOutput=file:$DIR/session.log" -p "StandardError=append:$DIR/session.log" \
   "$FL" --helper --model sonnet --effort medium -p "$prompt" --allowedTools "Bash Read Grep Glob" --disallowedTools "Edit Write NotebookEdit" > "$DIR/run.out" 2>&1 \
   || die 1 "verifier unit $unit failed (see $DIR/session.log)"
 # a token-shaped string anywhere in the session output: drop the output and refuse
