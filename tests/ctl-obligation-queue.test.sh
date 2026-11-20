@@ -514,7 +514,115 @@ t_l2_offset_aware_order(){
   [ "$r" = "([('unknown', None, True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l2-naive-claim-event-ts-unknown || bad l2-naive-claim-event-ts-unknown "$r rc=$rc"
 }
 
-names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking f1_unlogged_start_detected f2_refused_then_started_detected f3_declared_class_not_authority genuine_priority_and_repair_allowed f4_valid_exception_not_bypass f5_refuse_active_logged active_healthy_claim_bound start_identity_unknown_cases malformed_decision_log_is_unknown observe_outage_no_replay wm_asks_events_interface d1_owner_scopes_candidates d1_observe_revalidates_scope d2_closed_claim_read_from_ledger d2_refusal_evidence_states d2_status_schema_refused t1_decide_not_open_refused t1_queue_start_check t1_unbound_decisions_unknown l3_worker_with_at l2_offset_aware_order"
+# --- A1289 fix2 review b1f93951 FIX (section 7, tests only; tool bytes unchanged; SYNTHETIC fixtures only) ---
+naive(){ date -d "${1:-now}" +%Y-%m-%dT%H:%M:%S; }   # PR315 decision ts format: local time WITHOUT a UTC offset
+legacy_row(){ # task actor class_label ts : a PR315-format allowed row (no task_rev, no computed class, naive ts)
+  printf '%s\n' '{"ts":"'"$4"'","task_id":"'"$1"'","actor":"'"$2"'","priority_class":1,"class_label":"'"$3"'","rationale":"r","higher_priority_candidates":[],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"allowed","decision_reason":"no actionable higher-priority candidate","source":"wm-asks","ledger_now":"2026-11-07T12:00"}'
+}
+t_r2_naive_legacy_forged_owner_busy(){
+  # R2-05: a naive PR315-format legacy row (the format of the retained 2026-11-14T15:06:01 record) stays covered.
+  mkdir -p "$CTL_OQ_STATE"; legacy_row A2 hermes unblocker "$(naive '-2 minutes')" > "$CTL_OQ_STATE/decisions.jsonl"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w2@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w2','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('bypass', 'forged-class')], 'BYPASS')" ] && [ $rc = 6 ] && ok r2-naive-legacy-forged-owner-busy || bad r2-naive-legacy-forged-owner-busy "$r rc=$rc"
+  # same naive row shape, the actor's (ctl) work is ready but the canonical owner (rb) is idle: legacy UNKNOWN, never actor-scoped BYPASS
+  legacy_row R3 ctl unblocker "$(naive '-2 minutes')" > "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore',rev=2,claim='w2@'+'$T'[:16])], 'events':{'R3':[CE('R3',2,'w2','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'legacy' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok r2-naive-legacy-owner-idle-unknown || bad r2-naive-legacy-owner-idle-unknown "$r rc=$rc"
+  # naive PR315-format row on a class-2 task: legacy UNKNOWN naming the legacy cause (naive twin of t1-legacy-unbound-unknown)
+  legacy_row A1 ctl overdue "$(naive '-2 minutes')" > "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A1':[CE('A1',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'legacy' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok r2-naive-legacy-unbound-unknown || bad r2-naive-legacy-unbound-unknown "$r rc=$rc"
+}
+t_r2_closed_text_only_claim(){
+  # R2-06: a closed ask whose only claim is the TSV-era `claim=` text (no claim column, no claim event) is still an assessed start
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','DONE','claim=w5@2026-11-07T10:00 | discretionary: tidy notes',rev=3,status='closed')], 'events':{'A2':[]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(b['ask_id'],b['kind'],b['ask_status'],b['claim']) for b in d['bypasses']],d['result'])")
+  [ "$r" = "([('A2', 'unlogged-start', 'closed', 'w5@2026-11-07T10:00')], 'BYPASS')" ] && [ $rc = 6 ] && ok r2-closed-text-claim-assessed || bad r2-closed-text-claim-assessed "$r rc=$rc"
+}
+t_r2_any_owner(){
+  # R2-02: --any-owner widens the candidate scope to every owner and records '*'; R2-01: an allowed '*' decision binds CLEAN
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore')]}"
+  q $W/f.json decide R3 --class discretionary --rationale r --any-owner >/dev/null; rc=$?
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['candidate_owner']=='*' and d['higher_priority_candidates']==['S1','A1'] and d['outcome']=='refused'" 2>/dev/null && [ $rc = 3 ] && ok r2-any-owner-refuses-other-owner-work || bad r2-any-owner-refuses-other-owner-work "rc=$rc $(lastdec)"
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[R('R3','rb','2026-11-09T11:00','discretionary: rb chore'), R('C9','ctl','2026-11-20T09:00','discretionary: later')]}"
+  q $W/f.json decide R3 --class discretionary --rationale r --any-owner --worker w3 >/dev/null; rc=$?
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['candidate_owner']=='*' and d['higher_priority_candidates']==[] and d['outcome']=='allowed'" 2>/dev/null && [ $rc = 0 ] && ok r2-any-owner-allowed-recorded || bad r2-any-owner-allowed-recorded "rc=$rc $(lastdec)"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('R3','rb','2026-11-09T11:00','discretionary: rb chore',rev=2,claim='w3@'+'$T'[:16]), R('C9','ctl','2026-11-20T09:00','discretionary: later')], 'events':{'R3':[CE('R3',2,'w3','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('allowed', None)], 'CLEAN')" ] && [ $rc = 0 ] && ok r2-any-owner-star-binds-clean || bad r2-any-owner-star-binds-clean "$r rc=$rc"
+}
+t_r2_owner_scope_observe(){
+  # R2-14: ctl decides an rb-owned class-3 task while ctl is busy: scope = candidate_owner rb, the start is observed CLEAN
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore')]}"
+  q $W/f.json decide R3 --class discretionary --rationale r --worker w3 >/dev/null; rc=$?
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['actor']=='ctl' and d['candidate_owner']=='rb' and d['outcome']=='allowed'" 2>/dev/null && [ $rc = 0 ] && ok r2-ctl-decides-rb-task-allowed || bad r2-ctl-decides-rb-task-allowed "rc=$rc $(lastdec)"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore',rev=2,claim='w3@'+'$T'[:16])], 'events':{'R3':[CE('R3',2,'w3','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('allowed', None)], 'CLEAN')" ] && [ $rc = 0 ] && ok r2-ctl-decided-rb-task-observed-clean || bad r2-ctl-decided-rb-task-observed-clean "$r rc=$rc"
+  # R2-04: the observe re-check of a mis-scoped decision counts only the canonical owner's ready work; a non-owner's (ctl) ready
+  # work while the owner (rb) is idle gives UNKNOWN, never BYPASS
+  T0=$(clk)
+  printf '%s\n' '{"ts":"'"$T0"'","task_id":"R3","actor":"nobody","priority_class":3,"class_label":"discretionary","computed_priority_class":3,"task_rev":1,"worker":null,"higher_priority_candidates":[],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"allowed","decision_reason":"x","source":"fixture"}' > "$CTL_OQ_STATE/decisions.jsonl"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore',rev=2,claim='w3@'+'$T'[:16])], 'events':{'R3':[CE('R3',2,'w3','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'cannot certify' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok r2-recheck-ignores-non-owner-work || bad r2-recheck-ignores-non-owner-work "$r rc=$rc"
+}
+t_r2_missing_status_refused(){
+  # R2-12: a canonical row without a status key is an unknown schema: rc 4, never scheduled as open
+  python3 - $W/f.json <<'PY4'
+import json,sys
+r={"ask_id":"S1","row_id":"d-S1","owner":"ctl","due":"2026-11-01T09:00","what":"security: x","check":"c","key":"k","claim":None,"waits_on":[],"ready":False,"rev":1}
+json.dump({"now":"2026-11-07T12:00","followups":[],"asks":[r]},open(sys.argv[1],"w"))
+PY4
+  for cmd in queue observe; do
+    out=$(q $W/f.json $cmd --json 2>&1); rc=$?
+    [ $rc = 4 ] && echo "$out" | grep -q 'neither open nor closed' && ok r2-missing-status-$cmd-rc4 || bad r2-missing-status-$cmd-rc4 "rc=$rc out=$out"
+  done
+}
+t_r2_same_rev_latest_governs(){
+  # R2-23: at the governing revision the LATEST decision in file order governs: allowed (valid exception) then refused -> BYPASS
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r --worker w1 --exception-reason x --exception-owner ctl --exception-approval "approvals #0" --exception-review-trigger t >/dev/null
+  q $W/f.json decide A2 --class discretionary --rationale r >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('bypass', 'refused-then-started')], 'BYPASS')" ] && [ $rc = 6 ] && ok r2-allowed-then-refused-bypass || bad r2-allowed-then-refused-bypass "$r rc=$rc"
+  # paired control: refused then allowed (valid exception) at the same revision -> the start is the valid exception
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r >/dev/null
+  q $W/f.json decide A2 --class discretionary --rationale r --worker w1 --exception-reason x --exception-owner ctl --exception-approval "approvals #0" --exception-review-trigger t >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('valid-exception', None)], 'CLEAN')" ] && [ $rc = 0 ] && ok r2-refused-then-allowed-exception || bad r2-refused-then-allowed-exception "$r rc=$rc"
+}
+t_r2_closed_total(){
+  # R2-08: the snapshot reports closed rows separately from open rows
+  pyfx $W/f.json "{'asks':[$BASE, R('C1','ctl','DONE','prod fix',rev=5,status='closed'), R('C2','rb','DONE','x',rev=3,status='closed')]}"
+  r=$(q $W/f.json queue --json | field "(d['open_total'],d['closed_total'])")
+  [ "$r" = "(2, 2)" ] && ok r2-closed-total || bad r2-closed-total "$r"
+}
+
+names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking f1_unlogged_start_detected f2_refused_then_started_detected f3_declared_class_not_authority genuine_priority_and_repair_allowed f4_valid_exception_not_bypass f5_refuse_active_logged active_healthy_claim_bound start_identity_unknown_cases malformed_decision_log_is_unknown observe_outage_no_replay wm_asks_events_interface d1_owner_scopes_candidates d1_observe_revalidates_scope d2_closed_claim_read_from_ledger d2_refusal_evidence_states d2_status_schema_refused t1_decide_not_open_refused t1_queue_start_check t1_unbound_decisions_unknown l3_worker_with_at l2_offset_aware_order r2_naive_legacy_forged_owner_busy r2_closed_text_only_claim r2_any_owner r2_owner_scope_observe r2_missing_status_refused r2_same_rev_latest_governs r2_closed_total"
 if [ $# = 0 ]; then echo $names; exit 0; fi
 for n in "$@"; do "t_$n" || fail=1; done
 exit $fail
