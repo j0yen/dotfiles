@@ -41,20 +41,20 @@ refused() {
   b=$(tip "$br"); out=$(bash "$wrap" --confirm "$id" --repo "$REPO" --branch "$br" ${XA[@]+"${XA[@]}"} 2>&1); rc=$?; a=$(tip "$br")
   if [ $rc = 2 ] && [ "$(printf '%s\n' "$out" | wc -l)" = 1 ] && [[ "$out" == "REFUSED $want"* ]] && [ "$b" = "$a" ]; then ok "$name -> REFUSED $want, origin ref unchanged"; else bad "$name: rc=$rc out='$out' ref $b -> $a (want REFUSED $want)"; fi
 }
+other_hex() { [ "$1" = 0 ] && echo 1 || echo 0; }   # a hex digit different from $1, so <8hex><digit> is never a prefix of the sha (the commit sha changes every run)
 clear;                                                                                  refused "no row" no-row "$ID"
 row "$ID" $TS rb verdict "CONFIRM tree $T8";                                            refused "row by the wrong agent" wrong-agent "$ID"; clear
 row "$ID" $TS controller note "CONFIRM tree $T8";                                       refused "kind not verdict" kind-not-verdict "$ID"; clear
 row "$ID" $TS controller verdict "confirm tree $T8";                                    refused "lower-case confirm" not-confirm "$ID"; clear
 row "$ID" $TS controller verdict "NO: CONFIRM tree $T8";                                refused "what does not START with CONFIRM" not-confirm "$ID"; clear
 row "$ID" $TS controller verdict "CONFIRM the patch sha 36f357d0 only";                 refused "sha not named" sha-not-named "$ID"; clear
-row "$ID" $TS controller verdict "CONFIRM tree ${T8}9 and ${H8}a";                      refused "an 8-hex prefix of a longer hex run is not a name" sha-not-named "$ID"; clear
+row "$ID" $TS controller verdict "CONFIRM tree ${T8}$(other_hex "${TREE:8:1}") and ${H8}$(other_hex "${HEAD_SHA:8:1}")"; refused "an 8-hex prefix of a longer hex run is not a name" sha-not-named "$ID"; clear
 # LPLX: any 8-to-40 hex prefix of the commit or tree sha, as a whole lowercase token, names HEAD (and "Do NOT push"/"superseded" read the same way)
 # checkok <name> <id>: --check prints exactly CHECK-OK sha=<8> host=local, rc 0
 checkok() {
   local out rc; out=$(bash "$wrap" --confirm "$2" --repo "$REPO" --branch "$B" --check 2>&1); rc=$?
   if [ $rc = 0 ] && [ "$out" = "CHECK-OK sha=$H8 host=local" ]; then ok "$1 -> CHECK-OK"; else bad "$1: rc=$rc out='$out'"; fi
 }
-other_hex() { [ "$1" = 0 ] && echo 1 || echo 0; }   # a hex digit different from $1
 P12=${TREE:0:12}; C12=${HEAD_SHA:0:12}; D1=$(other_hex "${TREE:8:1}"); D2=$(other_hex "${TREE:12:1}")
 LATER=d-20261024-101000-controller-1111; LATER_TS=2026-10-24T10:10:00-07:00
 clear; row "$ID" $TS controller verdict "CONFIRM commit $C12";                                  checkok "lplx (a) 12-hex commit prefix" "$ID"
