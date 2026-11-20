@@ -13,7 +13,10 @@ rm -rf "$(dirname "$GRAND_LOOP_DEMAND_LOG")" "$(dirname "$GRAND_LOOP_DEMAND_MD_C
 
 install_out="$(run_demand install)"
 assert_contains "$install_out" "install: done" "install reports done"
-assert_contains "$(cat "$systemctl_calls")" "--user enable --now grand-loop-demand.timer" "install's systemctl calls reach the test stand-in, never the live user manager"
+# Review 034ad5b9 DC-F1: the exact call sequence, so a dropped daemon-reload or an added live call (restart, start, ...) turns this red.
+want_calls=$'--user daemon-reload\n--user enable --now grand-loop-demand.timer'
+[ "$(cat "$systemctl_calls")" = "$want_calls" ] && echo "ok - install's systemctl calls are exactly daemon-reload + enable --now timer, all to the test stand-in" \
+  || { echo "NOT OK - install's systemctl calls differ from the exact two-line sequence: '$(cat "$systemctl_calls")'"; fail=1; }
 
 [ -d "$(dirname "$GRAND_LOOP_DEMAND_LOG")" ] && echo "ok - log directory created" || { echo "NOT OK - log directory missing"; fail=1; }
 [ -d "$(dirname "$GRAND_LOOP_DEMAND_MD_CACHE")" ] && echo "ok - mcphost-deploy cache directory created" || { echo "NOT OK - cache directory missing"; fail=1; }

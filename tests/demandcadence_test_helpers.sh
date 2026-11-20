@@ -56,6 +56,9 @@ demandcadence_setup() {
   export FAKE_SYSTEMCTL_CALLS="$systemctl_calls"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "${FAKE_SYSTEMCTL_CALLS:?}"\nexit 0\n' > "$bin/systemctl"
   chmod +x "$bin/systemctl"
+  # Review 034ad5b9 DC-F2: a call by absolute path (/usr/bin/systemctl) or after a PATH reset bypasses the stand-in, so the user-manager
+  # address itself points at paths that do not exist: such a call fails to connect instead of reaching the live manager.
+  export XDG_RUNTIME_DIR="$work/no-user-runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$work/no-user-bus"
 
   agorabus_calls="$work/agorabus-calls"
   : > "$agorabus_calls"
