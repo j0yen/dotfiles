@@ -129,17 +129,18 @@ t_row_dependency_closed_not_blocking(){
 pyfx(){ # file python-dict-expression; helpers R(...) row and CE(...) canonical claim event
   python3 - "$1" "$2" <<'PY2'
 import json,sys
-def R(i,o,d,w,rev=1,claim=None,waits=None):
-    return {"ask_id":i,"row_id":"d-"+i,"owner":o,"due":d,"what":w,"check":"c","key":"k","status":"open","claim":claim,"waits_on":waits or [],"ready":False,"rev":rev}
+def R(i,o,d,w,rev=1,claim=None,waits=None,status="open"):
+    return {"ask_id":i,"row_id":"d-"+i,"owner":o,"due":d,"what":w,"check":"c","key":"k","status":status,"claim":claim,"waits_on":waits or [],"ready":False,"rev":rev}
 def CE(i,rev,worker,ts,stamp=None,op="claim"):
-    return {"seq":rev,"ask_id":i,"rev":rev,"ts":ts+"-08:00","actor":worker,"op":op,"detail":json.dumps({"claim":stamp or "%s@%s"%(worker,ts[:16]),"worker":worker},sort_keys=True)}
+    # canonical event ts carries its UTC offset (store.now().isoformat()); a bare local time is given the fixture's -08:00
+    return {"seq":rev,"ask_id":i,"rev":rev,"ts":ts if len(ts)>19 else ts+"-08:00","actor":worker,"op":op,"detail":json.dumps({"claim":stamp or "%s@%s"%(worker,ts[:16]),"worker":worker},sort_keys=True)}
 d=eval(sys.argv[2]); d.setdefault("now","2026-11-07T12:00"); d.setdefault("followups",[])
 json.dump(d,open(sys.argv[1],"w"))
 PY2
 }
 obs(){ q "$1" observe --json; }           # prints JSON; rc is observe's
 field(){ python3 -c "import json,sys;d=json.loads(sys.stdin.read() or '{}');print($1)" 2>/dev/null; }
-clk(){ date +%Y-%m-%dT%H:%M:%S; }
+clk(){ date +%Y-%m-%dT%H:%M:%S%:z; }   # offset-aware local time, as the canonical ledger writes it
 BASE='R("S1","ctl","2026-11-01T09:00","security: rotate leaked credential"), R("A1","ctl","2026-11-01T09:00","ship the foo report")'
 
 t_f1_unlogged_start_detected(){
@@ -297,9 +298,190 @@ SH
   r=$(echo "$out" | field "([(b['ask_id'],b['kind'],b['worker'],b['claim_rev']) for b in d['bypasses']],d['result'])")
   [ "$r" = "([('A2', 'unlogged-start', 'w2', 2)], 'BYPASS')" ] && [ $rc = 6 ] && ok iface-unlogged-bypass || bad iface-unlogged-bypass "$r rc=$rc out=$out"
   grep -qx 'asks events A2 --json' $W/bin/calls.log && ok iface-events-call || bad iface-events-call "$(cat $W/bin/calls.log)"
+  # A1289 fix2 D2: one consistent canonical snapshot over open AND closed asks (existing supported --status all)
+  grep -qx 'asks query --json --status all' $W/bin/calls.log && ok iface-query-status-all || bad iface-query-status-all "$(cat $W/bin/calls.log)"
 }
 
-names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking f1_unlogged_start_detected f2_refused_then_started_detected f3_declared_class_not_authority genuine_priority_and_repair_allowed f4_valid_exception_not_bypass f5_refuse_active_logged active_healthy_claim_bound start_identity_unknown_cases malformed_decision_log_is_unknown observe_outage_no_replay wm_asks_events_interface"
+# --- A1289 fix2 (reviewfix1 D1, D2, T1, L2, L3; SYNTHETIC fixtures only; not live runtime acceptance) ---
+standin(){ # dir all-rows-json events-py-dict : SYNTHETIC wm-asks answering the two supported query calls truthfully
+  mkdir -p "$1"; python3 - "$1" "$2" "$3" <<'PY3'
+import json,sys
+d,rows,ev=sys.argv[1],json.loads(sys.argv[2]),eval(sys.argv[3])
+op=[r for r in rows if r.get("status")=="open"]
+b=['#!/bin/sh','echo "$*" >> "%s/calls.log"'%d,
+   'if [ "$*" = "asks query --json --status all" ]; then cat <<\'EOF\'',json.dumps(rows),'EOF','exit 0; fi',
+   'if [ "$*" = "asks query --json --status open" ]; then cat <<\'EOF\'',json.dumps(op),'EOF','exit 0; fi']
+for k,v in ev.items():
+    b+=['if [ "$*" = "asks events %s --json" ]; then cat <<\'EOF\''%k,json.dumps(v),'EOF','exit 0; fi']
+b+=['echo "[]"; exit 0']   # canonical events() returns [] for an id without events
+open(d+"/wm-asks","w").write("\n".join(b)+"\n")
+PY3
+  chmod +x "$1/wm-asks"; : > "$1/calls.log"
+}
+qs(){ CTL_OQ_WM_ASKS="$1/wm-asks" python3 "$Q" --test --now 2026-11-07T12:00 "${@:2}"; }
+lastdec(){ tail -1 "$CTL_OQ_STATE/decisions.jsonl" 2>/dev/null; }
+PYR='import json
+def R(i,o,d,w,rev=1,claim=None,waits=None,status="open"):
+    return {"ask_id":i,"row_id":"d-"+i,"owner":o,"due":d,"what":w,"check":"c","key":"k","status":status,"claim":claim,"waits_on":waits or [],"ready":False,"rev":rev}
+def CE(i,rev,worker,ts,stamp=None,op="claim"):
+    return {"seq":rev,"ask_id":i,"rev":rev,"ts":ts if len(ts)>19 else ts+"-08:00","actor":worker,"op":op,"detail":json.dumps({"claim":stamp or "%s@%s"%(worker,ts[:16]),"worker":worker},sort_keys=True)}'
+rows(){ python3 -c "$PYR
+print(json.dumps([$1]))"; }
+evs(){ python3 -c "$PYR
+print(repr($1))"; }
+
+t_d1_owner_scopes_candidates(){
+  # D1: the canonical task owner, never the caller-declared --actor, scopes the higher-priority candidates.
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r --actor nobody >/dev/null; rc=$?
+  [ $rc = 3 ] && ok d1-forged-actor-refused || bad d1-forged-actor-refused "rc=$rc"
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['actor']=='nobody' and d['candidate_owner']=='ctl' and d['higher_priority_candidates']==['S1','A1'] and d['outcome']=='refused'" 2>/dev/null && ok d1-owner-scope-recorded || bad d1-owner-scope-recorded "$(lastdec)"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w2@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w2','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  k=$(echo "$out" | field "([b['kind'] for b in d['bypasses'] if b['ask_id']=='A2'],d['result'])")
+  [ "$k" = "(['refused-then-started'], 'BYPASS')" ] && [ $rc = 6 ] && ok d1-forged-actor-start-detected || bad d1-forged-actor-start-detected "$k rc=$rc"
+  # paired positive: an rb-owned discretionary task is gated by rb's ready work, not by the deciding seat's (ctl) work
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[$BASE, R('R3','rb','2026-11-09T11:00','discretionary: rb chore')]}"
+  q $W/f.json decide R3 --class discretionary --rationale r >/dev/null; rc=$?
+  [ $rc = 0 ] && ok d1-other-owner-allowed || bad d1-other-owner-allowed "rc=$rc"
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['candidate_owner']=='rb' and d['higher_priority_candidates']==[] and d['actor']=='ctl'" 2>/dev/null && ok d1-other-owner-scope || bad d1-other-owner-scope "$(lastdec)"
+}
+t_d1_observe_revalidates_scope(){
+  # D1: observe re-checks the candidate scope of a bound decision against the canonical owner (a decision written by
+  # the fix1 bytes or appended by hand with actor != owner and no candidate_owner cannot certify the start).
+  mk(){ # actor fixture-asks
+    mkdir -p "$CTL_OQ_STATE"; T0=$(clk)
+    printf '%s\n' '{"ts":"'"$T0"'","task_id":"A2","actor":"'"$1"'","priority_class":3,"class_label":"discretionary","declared_priority_class":3,"computed_priority_class":3,"computed_class_reason":"discretionary marker","class_supported":true,"rationale":"r","task_rev":1,"worker":null,"higher_priority_candidates":[],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"allowed","decision_reason":"no actionable higher-priority candidate","source":"fixture","ledger_now":"2026-11-07T12:00"}' > "$CTL_OQ_STATE/decisions.jsonl"
+    T=$(clk)
+    pyfx $W/f.json "{'asks':[$2 R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w2@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w2','$T')]}}"
+    out=$(obs $W/f.json); rc=$?
+    echo "$out" | field "([(s['authorization'],s['kind']) for s in d['starts']],d['result'])"
+  }
+  r=$(mk nobody "$BASE,"); rc=$?
+  [ "$r" = "([('bypass', 'owner-scope-mismatch')], 'BYPASS')" ] && ok d1-observe-actor-scope-bypass || bad d1-observe-actor-scope-bypass "$r"
+  r=$(mk nobody ""); [ "$r" = "([('unknown', None)], 'UNKNOWN')" ] && ok d1-observe-actor-scope-unknown || bad d1-observe-actor-scope-unknown "$r"
+  r=$(mk ctl "$BASE,"); [ "$r" = "([('allowed', None)], 'CLEAN')" ] && ok d1-observe-owner-actor-control || bad d1-observe-owner-actor-control "$r"
+}
+t_d2_closed_claim_read_from_ledger(){
+  # D2: observe reads one canonical snapshot over open and closed asks (asks query --json --status all); a refused task
+  # that was claimed and has since closed stays covered, and its refusal is never described as "no canonical claim".
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r >/dev/null; rc=$?
+  [ $rc = 3 ] && ok d2-refused-first || bad d2-refused-first "rc=$rc"
+  T=$(clk)
+  standin $W/sb "$(rows "R('S1','ctl','2026-11-01T09:00','security: rotate leaked credential'), R('A1','ctl','2026-11-01T09:00','ship the foo report'), R('A2','ctl','DONE','discretionary: tidy notes',rev=4,claim='w2@'+'$T'[:16],status='closed')")" \
+    "$(evs "{'A2':[CE('A2',2,'w2','$T'), CE('A2',3,'w2','$T',op='accept'), CE('A2',4,'w2','$T',op='resolve')]}")"
+  out=$(qs $W/sb observe --json); rc=$?
+  r=$(echo "$out" | field "([(b['ask_id'],b['kind'],b.get('ask_status')) for b in d['bypasses']],d['result'])")
+  [ "$r" = "([('A2', 'refused-then-started', 'closed')], 'BYPASS')" ] && [ $rc = 6 ] && ok d2-closed-claimed-start-covered || bad d2-closed-claimed-start-covered "$r rc=$rc"
+  e=$(echo "$out" | field "[x['start_evidence'] for x in d['refusals'] if x['task_id']=='A2']")
+  [ "$e" = "['canonical claim present']" ] && ok d2-closed-refusal-evidence || bad d2-closed-refusal-evidence "$e"
+  out=$(qs $W/sb queue --json); rc=$?
+  r=$(echo "$out" | field "(d['open_total'],[x['ask_id'] for x in d['queue']+d['active']])")
+  [ "$r" = "(2, ['S1', 'A1'])" ] && [ $rc = 0 ] && ok d2-closed-not-scheduled || bad d2-closed-not-scheduled "$r rc=$rc"
+}
+t_d2_refusal_evidence_states(){
+  # every refusal states the canonical claim state actually read: present | no canonical claim | UNKNOWN (not in the ledger)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes'), R('A3','ctl','2026-11-09T11:00','discretionary: other')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r >/dev/null
+  q $W/f.json decide A3 --class discretionary --rationale r >/dev/null
+  q $W/f.json decide A77 --class discretionary --rationale r >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[$BASE, R('A2','ctl','2026-11-09T11:00','discretionary: tidy notes',rev=2,claim='w2@'+'$T'[:16]), R('A3','ctl','2026-11-09T11:00','discretionary: other')], 'events':{'A2':[CE('A2',2,'w2','$T')]}}"
+  e=$(obs $W/f.json | field "sorted((x['task_id'],x['start_evidence'].split(' ')[0]) for x in d['refusals'])")
+  [ "$e" = "[('A2', 'canonical'), ('A3', 'no'), ('A77', 'UNKNOWN:')]" ] && ok d2-refusal-evidence-read || bad d2-refusal-evidence-read "$e"
+}
+t_d2_status_schema_refused(){
+  # a canonical row whose status is neither open nor closed is an unknown schema: refuse (rc 4), never classify it
+  standin $W/sm "$(rows "R('S1','ctl','2026-11-01T09:00','security: x',status='weird')")" "{}"
+  out=$(qs $W/sm queue --json 2>&1); rc=$?
+  [ $rc = 4 ] && echo "$out" | grep -qi 'canonical source unavailable' && ok d2-unknown-status-refused || bad d2-unknown-status-refused "rc=$rc out=$out"
+}
+t_t1_decide_not_open_refused(){
+  # r01: decide on an ask that is absent or closed is refused and recorded, never allowed
+  standin $W/sn "$(rows "R('A1','ctl','2026-11-01T09:00','ship the foo report'), R('C1','ctl','DONE','prod fix',rev=5,status='closed')")" "{}"
+  qs $W/sn decide A77 --class overdue --rationale r >/dev/null; rc=$?
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['task_id']=='A77' and d['outcome']=='refused' and 'absent' in d['decision_reason']" 2>/dev/null && [ $rc = 3 ] && ok t1-absent-refused || bad t1-absent-refused "rc=$rc $(lastdec)"
+  qs $W/sn decide C1 --class safety --rationale r >/dev/null; rc=$?
+  lastdec | python3 -c "import json,sys;d=json.loads(sys.stdin.read());assert d['task_id']=='C1' and d['outcome']=='refused' and 'closed' in d['decision_reason']" 2>/dev/null && [ $rc = 3 ] && ok t1-closed-refused || bad t1-closed-refused "rc=$rc $(lastdec)"
+}
+t_t1_queue_start_check(){
+  # r02: queue shows each active claim's start check (bound start allowed; unlogged start bypass)
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment')]}"
+  q $W/f.json decide A1 --class overdue --rationale r --worker w1 >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,claim='w1@'+'$T'[:16]), R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='w2@'+'$T'[:16])], 'events':{'A1':[CE('A1',2,'w1','$T')],'A2':[CE('A2',2,'w2','$T')]}}"
+  r=$(q $W/f.json queue --json | field "sorted((x['ask_id'],x.get('start_check')) for x in d['active'])")
+  [ "$r" = "[('A1', 'allowed'), ('A2', 'bypass:unlogged-start')]" ] && ok t1-queue-start-check || bad t1-queue-start-check "$r"
+}
+t_t1_unbound_decisions_unknown(){
+  # r04: a legacy allowed decision (no task_rev, PR315 format) on a class-2 task cannot be bound: UNKNOWN, never allowed
+  T0=$(clk); mkdir -p "$CTL_OQ_STATE"
+  printf '%s\n' '{"ts":"'"$T0"'","task_id":"A1","actor":"ctl","priority_class":2,"class_label":"overdue","rationale":"r","higher_priority_candidates":[],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"allowed","decision_reason":"no actionable higher-priority candidate","source":"fixture","ledger_now":"2026-11-07T12:00"}' > "$CTL_OQ_STATE/decisions.jsonl"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A1':[CE('A1',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'legacy' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok t1-legacy-unbound-unknown || bad t1-legacy-unbound-unknown "$r rc=$rc"
+  # r05: a decision on a ledger row that carried no rev has no task_rev: UNKNOWN, never allowed
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=None)]}"
+  q $W/f.json decide A1 --class overdue --rationale r --worker w1 >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A1','ctl','2026-11-01T09:00','overdue commitment',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A1':[CE('A1',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'no task_rev' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok t1-no-task-rev-unknown || bad t1-no-task-rev-unknown "$r rc=$rc"
+}
+t_l3_worker_with_at(){
+  # L3: canonical claim() accepts any worker token without whitespace or '|'; stamp is worker@YYYY-MM-DDTHH:MM
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x')]}"
+  q $W/f.json decide A2 --class discretionary --rationale r --worker seat@host >/dev/null
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='seat@host@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'seat@host','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['worker'],s['authorization']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('seat@host', 'allowed')], 'CLEAN')" ] && [ $rc = 0 ] && ok l3-worker-with-at-bound || bad l3-worker-with-at-bound "$r rc=$rc"
+  # a claim stamp that is not worker@YYYY-MM-DDTHH:MM is not a canonical start identity: UNKNOWN
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='seat@host')], 'events':{'A2':[CE('A2',2,'seat','$T',stamp='seat@host')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([s['authorization'] for s in d['starts']],d['result'])")
+  [ "$r" = "(['unknown'], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l3-noncanonical-stamp-unknown || bad l3-noncanonical-stamp-unknown "$r rc=$rc"
+}
+t_l2_offset_aware_order(){
+  # L2: decisions record an offset-aware ts; order against the claim event is compared as aware instants.
+  for tz in Asia/Tokyo UTC; do
+    rm -f "$CTL_OQ_STATE/decisions.jsonl"
+    pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x')]}"
+    TZ=$tz q $W/f.json decide A2 --class discretionary --rationale r --worker w1 >/dev/null
+    lastdec | python3 -c "import json,sys,datetime;d=json.loads(sys.stdin.read());assert datetime.datetime.fromisoformat(d['ts']).utcoffset() is not None" 2>/dev/null && ok l2-ts-offset-$tz || bad l2-ts-offset-$tz "$(lastdec)"
+    T=$(TZ=America/Los_Angeles date -d '+60 seconds' +%Y-%m-%dT%H:%M:%S%:z)   # the claim really happens 60 s later, ledger in PST
+    pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+    r=$(TZ=America/Los_Angeles obs $W/f.json | field "([s['authorization'] for s in d['starts']],d['result'])")
+    [ "$r" = "(['allowed'], 'CLEAN')" ] && ok l2-mixed-zone-bound-$tz || bad l2-mixed-zone-bound-$tz "$r"
+  done
+  # ledger writes UTC, decider PST, the claim really happened 30 min BEFORE the decision: never bound as allowed
+  rm -f "$CTL_OQ_STATE/decisions.jsonl"
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x')]}"
+  TZ=America/Los_Angeles q $W/f.json decide A2 --class discretionary --rationale r --worker w1 >/dev/null
+  T=$(TZ=UTC date -d '-30 minutes' +%Y-%m-%dT%H:%M:%S%:z)
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+  out=$(TZ=America/Los_Angeles obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([s['authorization'] for s in d['starts']],d['result'])")
+  [ "$r" = "(['unknown'], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l2-utc-ledger-claim-before-decision || bad l2-utc-ledger-claim-before-decision "$r rc=$rc"
+  # a bound-format decision whose ts has no UTC offset (fix1 format) cannot be ordered against the claim: UNKNOWN
+  T0=$(date +%Y-%m-%dT%H:%M:%S); mkdir -p "$CTL_OQ_STATE"
+  printf '%s\n' '{"ts":"'"$T0"'","task_id":"A2","actor":"ctl","priority_class":3,"class_label":"discretionary","computed_priority_class":3,"task_rev":1,"worker":"w1","higher_priority_candidates":[],"dependency_repair":false,"exception":null,"exception_valid":false,"outcome":"allowed","decision_reason":"x","source":"fixture"}' > "$CTL_OQ_STATE/decisions.jsonl"
+  T=$(clk)
+  pyfx $W/f.json "{'asks':[R('A2','ctl','2026-11-09T11:00','discretionary: x',rev=2,claim='w1@'+'$T'[:16])], 'events':{'A2':[CE('A2',2,'w1','$T')]}}"
+  out=$(obs $W/f.json); rc=$?
+  r=$(echo "$out" | field "([(s['authorization'],'UTC offset' in s['reason']) for s in d['starts']],d['result'])")
+  [ "$r" = "([('unknown', True)], 'UNKNOWN')" ] && [ $rc = 7 ] && ok l2-naive-decision-ts-unknown || bad l2-naive-decision-ts-unknown "$r rc=$rc"
+}
+
+names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking f1_unlogged_start_detected f2_refused_then_started_detected f3_declared_class_not_authority genuine_priority_and_repair_allowed f4_valid_exception_not_bypass f5_refuse_active_logged active_healthy_claim_bound start_identity_unknown_cases malformed_decision_log_is_unknown observe_outage_no_replay wm_asks_events_interface d1_owner_scopes_candidates d1_observe_revalidates_scope d2_closed_claim_read_from_ledger d2_refusal_evidence_states d2_status_schema_refused t1_decide_not_open_refused t1_queue_start_check t1_unbound_decisions_unknown l3_worker_with_at l2_offset_aware_order"
 if [ $# = 0 ]; then echo $names; exit 0; fi
 for n in "$@"; do "t_$n" || fail=1; done
 exit $fail
