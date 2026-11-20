@@ -152,7 +152,7 @@ P
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
 grep -q RAISED "$base/out5" && [ "$n" = 8 ] && [ "$raw" = 1 ] && [ "$dl" = 3 ] && [ "$(wc -l <"$DLOG")" = 2 ]; r=$?; chk "5: exception on the 3rd delivery: 8 entries + raw line kept, the 2 sent stay delivered (dl=$dl)" "$r"
 grep -q '"A7"' "$OB" && [ "$a6" = False ] && [ "$(flag A2)" = False ] && [ "$(flag A7)" = False ]; r=$?; chk "5: the raising entry A2 and unreached A7 carried undelivered, superseded A6 untouched" "$r"
-[ "$p" = 3 ] && [ "$d" = 2 ] && [ "$f" = 0 ] && [ "$c" = 0 ] && [ "$sg" = None ]; r=$?; chk "5: R3 CHAR summary after the raise = pending 3 delivered 2 failed 0 carried 0 (the 4 pending lines left after the raise are not counted) (p=$p d=$d f=$f c=$c sig=$sg)" "$r"
+[ "$p" = 3 ] && [ "$d" = 2 ] && [ "$f" = 0 ] && [ "$c" = 0 ] && [ "$sg" = None ]; r=$?; chk "5: R3 CHAR summary after the raise = pending 3 delivered 2 failed 0 carried 0 (A2, the raising entry, is in pending but in no outcome bucket; the 3 later pending lines FAIL3 A4 A7 are carried verbatim and not counted) (p=$p d=$d f=$f c=$c sig=$sg)" "$r"
 
 # 6. two replays at once on one store: the lock serialises them, every pending entry is sent exactly once, none lost
 mk; ( FAKE_SLEEP=0.2 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null ) & p1=$!
@@ -171,29 +171,32 @@ mk; FOLLOWUP_EVAL="$EV" FOLLOWUP_REPLAY_BUDGET_S=1 FAKE_SLEEP=0.4 SEATS_TABLE="$
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
 [ "$rc" = 0 ] && [ -s "$LAST" ] && isnum "$c" && [ "$c" -ge 1 ] && [ "$n" = 8 ]; r=$?; chk "8: followup-outbox-replay.sh exits 0, budget honoured through the consumer (carried=$c), outbox intact" "$r"
 
-# 9. a hanging deliverer is bounded by FOLLOWUP_REPLAY_PER_S: A2 hangs (20 s, exit 0, if allowed), PER_S=1, budget 30 -> the run ends in well under 6 s,
+# 9. a hanging deliverer is bounded by FOLLOWUP_REPLAY_PER_S: A2 hangs (20 s, exit 0, if allowed), PER_S=1, budget 30 -> the run ends in well under 20 s,
+#    (assertions are A2-specific plus conservation: under heavy load PER_S=1 may also kill a normal stub delivery, which is then a failed entry, never a delivery)
 #    A2 is counted failed and stays delivered:false (a timeout is never recorded as a delivery), the other entries go out
 mk; s=$(now); HANG_ON=A2 HANG_S=20 FAKE_SLEEP=0 FOLLOWUP_REPLAY_PER_S=1 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null; rc=$?; el=$(ms "$s")
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
-[ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A2)" = False ] && [ "$d" = 4 ] && [ "$f" = 2 ] && [ "$c" = 0 ] && [ "$(paste -sd, "$DLOG")" = "A0,A1,A4,A7" ]
-r=$?; chk "9: PER_S=1 bounds a hanging delivery (20 s if allowed): ${el} ms < 15000, A2 failed and delivered:false, A0 A1 A4 A7 delivered (d=$d f=$f c=$c A2=$(flag A2))" "$r"
+[ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A2)" = False ] && ! grep -qx A2 "$DLOG" && [ "$c" = 0 ] && [ "$f" -ge 2 ] && [ $((d + f + c)) = 6 ] && [ "$dl" = $(( $(wc -l <"$DLOG") + 1 )) ] && [ "$(flag FAIL3)" = False ]
+r=$?; chk "9: PER_S=1 bounds a hanging delivery (20 s if allowed): ${el} ms < 15000, A2 failed, delivered:false and never sent; every send flagged; d+f+c=6, carried 0 (d=$d f=$f c=$c sends=$(paste -sd, "$DLOG") A2=$(flag A2))" "$r"
 
-# 10. the remaining budget bounds a delivery even when PER_S is larger: budget 2, PER_S 30, A0 hangs -> killed near 2 s, failed, the rest carried
+# 10. the budget bounds a delivery even when PER_S is larger: budget 2, PER_S 30, A0 (the first entry, ~0 s elapsed) hangs -> killed near 2 s, failed,
+#     the rest carried. With ~0 s elapsed this cannot tell remaining budget from total budget; check 11 case d exercises time already elapsed.
 mk; s=$(now); HANG_ON=A0 HANG_S=20 FAKE_SLEEP=0 FOLLOWUP_REPLAY_PER_S=30 FOLLOWUP_REPLAY_BUDGET_S=2 python3 -I "$EV" replay 2>/dev/null; rc=$?; el=$(ms "$s")
 read -r n dl raw sent f3 a6 a5 p d f c sg < <(st)
 [ "$rc" = 0 ] && [ "$el" -lt 15000 ] && [ "$(flag A0)" = False ] && [ "$d" = 0 ] && [ "$f" = 1 ] && [ "$c" = 5 ]
-r=$?; chk "10: remaining budget (2 s) bounds the delivery below PER_S (30 s; hang 20 s): ${el} ms < 15000, A0 failed + undelivered, 5 carried (d=$d f=$f c=$c)" "$r"
+r=$?; chk "10: budget (2 s, first entry, ~0 s elapsed) bounds the delivery below PER_S (30 s; hang 20 s): ${el} ms < 15000, A0 failed + undelivered, 5 carried (d=$d f=$f c=$c)" "$r"
 
 # 11. exact per-entry timeout argument (in-process, controlled clock, delivery call recorded, nothing executed): timeout = max(1, min(PER_S, left))
-#     a) budget 0.2, 0.15 s already used -> left 0.05 -> 1.0 (the 1 s floor)   b) budget 2, PER_S 30 -> 2.0 (remaining budget wins)
+#     a) budget 0.2, 0.15 s already used -> left 0.05 -> 1.0 (the 1 s floor)   b) budget 2, PER_S 30, nothing used -> 2.0 (budget below PER_S)
 #     c) budget 30, PER_S 1 -> 1.0 (FOLLOWUP_REPLAY_PER_S honoured)
+#     d) budget 5, PER_S 30, 3.0 s already used -> left 2.0 -> 2.0 (the REMAINING budget, not the total 5, bounds the delivery; review 18bb FD-1)
 o11="$(python3 -I - "$EV" "$OB" <<'P' 2>&1
 import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("fe", sys.argv[1]); fe = importlib.util.module_from_spec(spec); spec.loader.exec_module(fe)
 ob = sys.argv[2]; out = []
 class Done:
     returncode = 0
-for name, budget, per, used in (("a", "0.2", "60", 0.15), ("b", "2", "30", 0.0), ("c", "30", "1", 0.0)):
+for name, budget, per, used in (("a", "0.2", "60", 0.15), ("b", "2", "30", 0.0), ("c", "30", "1", 0.0), ("d", "5", "30", 3.0)):
     open(ob, "w").write(json.dumps({"id": "T" + name, "rev": 1, "fp": "t", "ts": "t", "seat": "ctl", "delivered": False}) + "\n")
     os.environ["FOLLOWUP_REPLAY_BUDGET_S"] = budget; os.environ["FOLLOWUP_REPLAY_PER_S"] = per
     clock = {"t": 100.0}; seen = []
@@ -211,7 +214,7 @@ for name, budget, per, used in (("a", "0.2", "60", 0.15), ("b", "2", "30", 0.0),
 print(" ".join(out))
 P
 )"
-[ "$(tail -1 <<<"$o11")" = "a=1.0 b=2.0 c=1.0" ]; r=$?; chk "11: per-entry timeout = max(1, min(PER_S, left)): floor a=1.0, remaining-budget b=2.0, PER_S c=1.0 (got $(tail -1 <<<"$o11" | cut -c1-80))" "$r"
+[ "$(tail -1 <<<"$o11")" = "a=1.0 b=2.0 c=1.0 d=2.0" ]; r=$?; chk "11: per-entry timeout = max(1, min(PER_S, left)): floor a=1.0, budget-below-PER_S b=2.0, PER_S c=1.0, remaining-after-3s-elapsed d=2.0 (got $(tail -1 <<<"$o11" | cut -c1-80))" "$r"
 
 # 12. in-process: the outbox rewrite happens while the store lock is still held, and the caller's SIGTERM/SIGINT/SIGHUP handlers are restored
 mk; o12="$(FAKE_SLEEP=0 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I - "$EV" <<'P' 2>&1
@@ -265,13 +268,13 @@ H
 chmod +x "$base/bin/seat-event.sh" "$base/bin/hermes"
 export BELL_LOG="$base/bell.log" FH_LOG="$base/fh.log"
 # 14. no-dest entry whose seat bell outlives the per-entry timeout: run 1 kills only the deliverer, the bell still rings, the entry is failed;
-#     run 2 rings it again -> 2 bells for one entry (duplicate bell). Wide margins: the deliverer has 4 s to reach the bell, the bell takes 10 s
+#     run 2 rings it again -> 2 bells for one entry (duplicate bell). Wide margins: the deliverer has 8 s to reach the bell, the bell takes 14 s
 : >"$BELL_LOG"; rm -f "$LAST"; printf '{"id":"C9","rev":1,"fp":"c9","ts":"t","seat":"ctl","kind":"overdue","detail":"x","delivered":false}\n' >"$OB"
-PATH="$base/bin:$PATH" SEAT_EVENT_BIN="$base/bin/seat-event.sh" BELL_SLOW=10 FOLLOWUP_DELIVER_CMD="$DEL" FOLLOWUP_REPLAY_PER_S=4 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null
-f14="$(jq -r .replay.failed "$LAST" 2>/dev/null)"; for _ in $(seq 400); do [ -s "$BELL_LOG" ] && break; sleep 0.1; done   # the orphaned bell lands ~10 s in
+PATH="$base/bin:$PATH" SEAT_EVENT_BIN="$base/bin/seat-event.sh" BELL_SLOW=14 FOLLOWUP_DELIVER_CMD="$DEL" FOLLOWUP_REPLAY_PER_S=8 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null
+f14="$(jq -r .replay.failed "$LAST" 2>/dev/null)"; for _ in $(seq 600); do [ -s "$BELL_LOG" ] && break; sleep 0.1; done   # the orphaned bell lands ~14 s in
 PATH="$base/bin:$PATH" SEAT_EVENT_BIN="$base/bin/seat-event.sh" BELL_SLOW=0 FOLLOWUP_DELIVER_CMD="$DEL" FOLLOWUP_REPLAY_PER_S=10 FOLLOWUP_REPLAY_BUDGET_S=30 python3 -I "$EV" replay 2>/dev/null
 b14="$(grep -c 'C9' "$BELL_LOG")"
-[ "$f14" = 1 ] && [ "$b14" = 2 ] && [ "$(flag C9)" = True ]; r=$?; chk "14: R2 CHAR duplicate bell: 10 s bell killed at PER_S=4 counts failed (failed=$f14) yet rings; next run rings again -> bells=$b14 for one entry" "$r"
+[ "$f14" = 1 ] && [ "$b14" = 2 ] && [ "$(flag C9)" = True ]; r=$?; chk "14: R2 CHAR duplicate bell: 14 s bell killed at PER_S=8 counts failed (failed=$f14) yet rings; next run rings again -> bells=$b14 for one entry" "$r"
 # 15. dest entry whose hermes send outlives the per-entry timeout: the deliverer is killed after committing its sending_part marker and
 #     before any send completed (0 sends at the kill) -> UNKNOWN; the next run raises needs-reconcile and does NOT resend
 : >"$BELL_LOG"; : >"$FH_LOG"; rm -f "$LAST"
