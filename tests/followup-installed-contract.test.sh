@@ -6,6 +6,8 @@
 #   - followup-stop-nowait.sh fu_stop_new: a busy store passes the Stop with a .stoplock marker; an evaluator failure keeps the marker with `evalfail <code>`;
 #   - ops is an alias of ctl; a failed ledger read is reported with a redacted stderr hint (no secret text), never as "none owed";
 #   - new appends all new obligations in one write; a repeated Stop on the unchanged ledger is silent.
+#   - the timer consumer followup-outbox-replay.sh (installed 0b0a91c1) replays the outbox AND then refreshes each seats.tsv seat's owed-now
+#     prompt-context cache (owed-now.sh refresh --seat S -> $OWED_NOW_STATE/<seat>.ups-cache.json); a failing refresh never fails the replay (exit 0).
 # Fake wm-asks / wm-decide, private HOME and state dir; no ledger, no network, no credential files read (the "secrets" are literal fixture text).
 # FU_TREE=<dir> runs the same checks against another tree (RED on a8b910d, the H2 replay head without the pkg2 layer).
 # shellcheck disable=SC2319  # r=$? after a [ ] condition is the intended capture (messages may run command substitutions)
@@ -84,6 +86,18 @@ rm -rf "$FOLLOWUP_STATE_DIR"; mkdir -p "$FOLLOWUP_STATE_DIR"
 strace -f -e trace=openat -o "$base/st" python3 -I "$EV" new --seat ctl >/dev/null 2>&1 || python3 -I "$EV" new --seat ctl >/dev/null 2>&1
 n="$(grep -c '"seat":"ctl"' "$FOLLOWUP_OUTBOX" 2>/dev/null)"; opens="$(grep -c 'outbox.jsonl.*O_APPEND' "$base/st" 2>/dev/null)"
 [ "$n" = 4 ] && { [ ! -s "$base/st" ] || [ "$opens" = 1 ]; }; r=$?; chk "6: 4 new obligations queued with one outbox append (lines=$n appends=${opens:-n/a})" "$r"
+
+# 7. the third installed consumer: followup-outbox-replay.sh = replay, then one owed-now refresh per seats.tsv seat (best-effort, exit 0)
+rm -rf "$FOLLOWUP_STATE_DIR" "$OWED_NOW_STATE"; mkdir -p "$FOLLOWUP_STATE_DIR"; { row W1; } | jq -sc . >"$FU_ASKS"
+printf '#!/usr/bin/env bash\ncat >>"%s"\n' "$base/delivered7.log" >"$base/deliver7"; chmod +x "$base/deliver7"
+printf '{"id":"W0","rev":1,"fp":"w0","ts":"t","seat":"ctl","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
+printf 'ctl\t-\t-\nrb\t-\t-\n# comment\n' >"$base/seats7.tsv"
+FOLLOWUP_DELIVER_CMD="$base/deliver7" SEATS_TABLE="$base/seats7.tsv" bash "$T/.local/bin/followup-outbox-replay.sh" >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -q '"W0"' "$base/delivered7.log" 2>/dev/null && [ -s "$OWED_NOW_STATE/ctl.ups-cache.json" ] && [ -s "$OWED_NOW_STATE/rb.ups-cache.json" ]
+r=$?; chk "7: followup-outbox-replay.sh: rc 0, outbox entry W0 delivered, then owed-now caches refreshed for ctl and rb (ctl=$([ -s "$OWED_NOW_STATE/ctl.ups-cache.json" ] && echo yes || echo no) rb=$([ -s "$OWED_NOW_STATE/rb.ups-cache.json" ] && echo yes || echo no))" "$r"
+rm -rf "$OWED_NOW_STATE"; printf '{"id":"W1","rev":1,"fp":"w1","ts":"t","seat":"ctl","delivered":false}\n' >"$FOLLOWUP_OUTBOX"
+FU_ASKS_FAIL=3 FOLLOWUP_DELIVER_CMD="$base/deliver7" SEATS_TABLE="$base/seats7.tsv" bash "$T/.local/bin/followup-outbox-replay.sh" >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -q '"W1"' "$base/delivered7.log" 2>/dev/null; r=$?; chk "7: with the ledger failing, the refresh step does not fail the replay (rc=$rc, W1 delivered)" "$r"
 
 echo "followup-installed-contract: pass=$pass fail=$fail"
 [ "$fail" = 0 ]
