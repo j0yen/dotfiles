@@ -223,7 +223,7 @@ clear; reset_tip; row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; XA=()
 out=$(bash "$wrap" --confirm "$CT" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
 [ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && grep -q " pushed $CT " "$RB_LAND_PUSH_LOG" && ok "ctl (a) agent=ctl CONFIRM naming the tree -> pushed to the fixture remote" || bad "ctl (a) rc=$rc out=$out"
 reset_tip; clear
-for a in rb aide r7 hermes verifier; do row "$CT" $CT_TS $a verdict "CONFIRM tree $T8"; refused "ctl (b) agent=$a CONFIRM" wrong-agent "$CT"; clear; done
+for a in rb r7 aide coder verifier unknown hermes-x Hermes HERMES; do row "$CT" $CT_TS $a verdict "CONFIRM tree $T8"; refused "ctl (b) agent=$a CONFIRM" wrong-agent "$CT"; clear; done
 row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "WITHDRAWN: $CT";    refused "ctl (c) later agent=ctl WITHDRAWN of an agent=ctl CONFIRM" withdrawn "$CT"; clear
 row "$ID" $TS controller verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "WITHDRAWN: $ID";  refused "ctl (c) later agent=ctl WITHDRAWN of an agent=controller CONFIRM" withdrawn "$ID"; clear
 row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ctl verdict "Do NOT push $T8";    refused "ctl (d) later agent=ctl Do NOT push" do-not-push "$CT"; clear
@@ -231,6 +231,48 @@ row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS ct
 row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_CT" $LATER_CT_TS rb verdict "WITHDRAWN: $CT"
 out=$(bash "$wrap" --confirm "$CT" --repo "$T/wt" --branch "$B" --check 2>&1); [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "ctl: a later agent=rb WITHDRAWN row is not a controller row" || bad "ctl: later rb row: $out"
 clear; reset_tip
+# director seat (Hermes sole permanent director, approved 2026-11-14 fleet-coordination-simplification amendment): agent=hermes is an accepted confirmer AND an accepted veto row;
+# the legacy {controller,ctl} set stays; every other actor still refuses; the set is hard-coded (no env/flag adds an agent)
+HM=d-20261120-020000-hermes-a3b3; HM_TS=2026-11-20T02:00:00-07:00; LATER_HM=d-20261120-021000-hermes-4444; LATER_HM_TS=2026-11-20T02:10:00-07:00
+clear; reset_tip; row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; XA=()
+out=$(bash "$wrap" --confirm "$HM" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(tip $B)" = "$HEAD_SHA" ] && grep -q " pushed $HM " "$RB_LAND_PUSH_LOG" && ok "hermes (a) agent=hermes CONFIRM naming the tree -> pushed to the fixture remote" || bad "hermes (a) rc=$rc out=$out"
+reset_tip; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM commit $C12"; checkok "hermes (a2) commit-prefix CONFIRM" "$HM"; clear
+row "$HM" $HM_TS hermes note "CONFIRM tree $T8";                                          refused "hermes (b) missing kind: kind=note" kind-not-verdict "$HM"; clear
+row "$HM" $HM_TS hermes verdict "confirm tree $T8";                                       refused "hermes (b) lower-case confirm" not-confirm "$HM"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree deadbeef";                                  refused "hermes (b) wrong head: row names another sha" sha-not-named "$HM"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8" "'{\"verdict\":\"CORRECT\"}'";           refused "hermes (b) regrade CORRECT" regrade-correct "$HM"; clear
+clear;                                                                                    refused "hermes (b) unknown canonical: no row" no-row "$HM"
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8";                                       refused "hermes (b) main is protected" branch-protected "$HM" main; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; row "$LATER_HM" $LATER_HM_TS hermes verdict "WITHDRAWN: $HM"
+refused "hermes (c) later agent=hermes WITHDRAWN of a hermes CONFIRM" withdrawn "$HM"; clear
+row "$CT" $CT_TS ctl verdict "CONFIRM tree $T8"; row "$LATER_HM" $LATER_HM_TS hermes verdict "WITHDRAWN: $CT"
+refused "hermes (c) later agent=hermes WITHDRAWN of a ctl CONFIRM" withdrawn "$CT"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; row d-20261120-021500-ctl-6666 2026-11-20T02:15:00-07:00 ctl verdict "WITHDRAWN: $HM"
+refused "hermes (c) later agent=ctl WITHDRAWN of a hermes CONFIRM" withdrawn "$HM"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; row "$LATER_HM" $LATER_HM_TS hermes verdict "Do NOT push $T8"
+refused "hermes (d) later agent=hermes Do NOT push" do-not-push "$HM"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; row "$LATER_HM" $LATER_HM_TS hermes verdict "CONFIRM $B tree 0badc0de"
+refused "hermes (e) later agent=hermes CONFIRM of another sha for the branch (superseded)" superseded "$HM"; clear
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"; row "$LATER_HM" $LATER_HM_TS rb verdict "WITHDRAWN: $HM"
+out=$(bash "$wrap" --confirm "$HM" --repo "$T/wt" --branch "$B" --check 2>&1); [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "hermes: a later agent=rb WITHDRAWN row is not a veto" || bad "hermes: later rb row: $out"
+for a in aide coder unknown r7; do row "d-20261120-022000-$a-5555" 2026-11-20T02:20:00-07:00 $a verdict "WITHDRAWN: $HM"; done
+out=$(bash "$wrap" --confirm "$HM" --repo "$T/wt" --branch "$B" --check 2>&1); [ "$out" = "CHECK-OK sha=$H8 host=local" ] && ok "hermes: later aide/coder/unknown/r7 WITHDRAWN rows are not vetoes" || bad "hermes: later non-set rows: $out"
+clear
+# non-ff with a hermes row: origin gets a commit HEAD lacks -> non-ff, nothing pushed
+row "$HM" $HM_TS hermes verdict "CONFIRM tree $T8"
+git -C "$T" clone -q origin.git hmother 2>/dev/null; ( cd "$T/hmother" && git checkout -q "$B" 2>/dev/null; echo hz > hz && git -c user.name=t -c user.email=t@t add hz && git -c user.name=t -c user.email=t@t commit -qm hz && git push -q origin HEAD:refs/heads/$B )
+refused "hermes (f) non-ff" non-ff "$HM"; reset_tip; clear
+# no env/flag adds an agent: an agent env var or flag is ignored / refused, set is the hard-coded one
+row "$ID" $TS rb verdict "CONFIRM tree $T8"
+out=$(RB_LAND_PUSH_AGENTS="rb" CONTROLLER_AGENTS="rb" DIRECTOR_AGENTS="rb" CONFIRM_AGENTS="rb" bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" 2>&1); rc=$?
+[ $rc = 2 ] && [[ "$out" == "REFUSED wrong-agent"* ]] && ok "no env adds an agent (RB_LAND_PUSH_AGENTS/CONTROLLER_AGENTS/DIRECTOR_AGENTS/CONFIRM_AGENTS ignored)" || bad "env override: rc=$rc out=$out"
+out=$(bash "$wrap" --confirm "$ID" --repo "$T/wt" --branch "$B" --allow-agent rb 2>&1); rc=$?
+[ $rc != 0 ] && ok "no --allow-agent flag exists (refused rc=$rc)" || bad "--allow-agent accepted"
+reset_tip; clear
+# director set is exactly {hermes}; confirm set = legacy + director
+[ "$(sed -n 's/^DIRECTOR_AGENTS="\(.*\)"$/\1/p' "$wrap")" = hermes ] && ok "DIRECTOR_AGENTS is exactly 'hermes'" || bad "DIRECTOR_AGENTS drift"
 # (f) no-drift: the controller set in the script == controller + the names the live swarm-decide schema aliases to controller
 SCHEMA="${SWARM_DECIDE_SCHEMA:-$HOME_REAL/.local/share/swarm-decide/live/current/schema/decision.schema.json}"
 if [ -r "$SCHEMA" ]; then
