@@ -48,6 +48,14 @@ demandcadence_setup() {
   mkdir -p "$bin"
   ln -s "$FIXTURES/fake-mcphost-deploy" "$bin/mcphost-deploy"
   ln -s "$FIXTURES/fake-agorabus" "$bin/agorabus"
+  # `grand-loop-demand.sh install` runs `systemctl --user daemon-reload` and `enable --now grand-loop-demand.timer`. Without a stand-in
+  # those reach the LIVE user manager: on 11-20 00:15 a ryzen7 full-suite run re-started the held grand-loop-demand.timer and
+  # reloaded the live manager twice per run (A1289). This recorder answers instead and logs each call to $FAKE_SYSTEMCTL_CALLS.
+  systemctl_calls="$work/systemctl-calls"
+  : > "$systemctl_calls"
+  export FAKE_SYSTEMCTL_CALLS="$systemctl_calls"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "${FAKE_SYSTEMCTL_CALLS:?}"\nexit 0\n' > "$bin/systemctl"
+  chmod +x "$bin/systemctl"
 
   agorabus_calls="$work/agorabus-calls"
   : > "$agorabus_calls"

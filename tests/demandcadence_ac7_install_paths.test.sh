@@ -13,6 +13,7 @@ rm -rf "$(dirname "$GRAND_LOOP_DEMAND_LOG")" "$(dirname "$GRAND_LOOP_DEMAND_MD_C
 
 install_out="$(run_demand install)"
 assert_contains "$install_out" "install: done" "install reports done"
+assert_contains "$(cat "$systemctl_calls")" "--user enable --now grand-loop-demand.timer" "install's systemctl calls reach the test stand-in, never the live user manager"
 
 [ -d "$(dirname "$GRAND_LOOP_DEMAND_LOG")" ] && echo "ok - log directory created" || { echo "NOT OK - log directory missing"; fail=1; }
 [ -d "$(dirname "$GRAND_LOOP_DEMAND_MD_CACHE")" ] && echo "ok - mcphost-deploy cache directory created" || { echo "NOT OK - cache directory missing"; fail=1; }
