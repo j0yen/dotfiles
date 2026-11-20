@@ -5,6 +5,9 @@ H="$(dirname "$0")/../.claude/hooks/aside-followup-stop.sh"; S="$(dirname "$0")/
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export ASIDE_STOP_LOG="$T/fires.log" ASIDE_OPEN_ASKS="$T/open-asks.tsv"
 fail=0
+# canonical open ledger stub (the retired TSV is no longer read): A1 is open and owned by rb; the former CLOSED row A2 is absent from the open query.
+# NOTE typed-binding narrowing (R3-3, disclosed in the hook header and tests/pkg2-advisory-hooks.test.sh F4-6): the stub row now carries the typed "key" because a sentence binds an open row only by ask_id / typed key / scope, never by a unit named in free what/check text; the assertions below are unchanged
+printf '#!/bin/bash\n[ "$1 $2" = "asks query" ] && echo "[{\\"ask_id\\":\\"A1\\",\\"owner\\":\\"rb\\",\\"what\\":\\"open row about rb-seat-tick.timer due Sun\\",\\"key\\":\\"rb-seat-tick.timer\\"}]"\n' >"$T/wm-asks"; chmod +x "$T/wm-asks"; export ASIDE_WM_ASKS_BIN="$T/wm-asks"
 printf '# header\nA1\topen row about rb-seat-tick.timer due Sun\n# CLOSED\nA2\tclosed row about old-thing.service\n' >"$ASIDE_OPEN_ASKS"
 run(){ jq -nc --arg m "$1" --argjson a "${2:-false}" '{last_assistant_message:$m,stop_hook_active:$a,session_id:"s"}' | WM_SEAT=rb "$H"; }
 blocks(){ printf '%s' "$1" | jq -e '.decision=="block"' >/dev/null 2>&1; }

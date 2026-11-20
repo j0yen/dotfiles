@@ -19,10 +19,13 @@ ck "changed rev blocks once" "$(blk)" block
 ck "changed rev then passes" "$(blk)" pass
 U='{"hook_event_name":"UserPromptSubmit","session_id":"u1"}'
 up(){ [ -n "$(printf '%s' "$U" | bash "$H" hook)" ] && echo emit || echo quiet; }
+# critical-path reduction (A1296): a prompt reads the seat's cached rows, written by the producer (`owed-now.sh refresh`); the fixture runs the producer where the ledger changes. Assertions below are unchanged.
+bash "$H" refresh --seat ctl
 ck "prompt 1 recites a new owed fingerprint" "$(up)" emit
 ck "prompt 2 unchanged fingerprint is quiet" "$(up)" quiet
 ck "prompt 3 unchanged fingerprint is quiet" "$(up)" quiet
 echo '[{"ask_id":"T1","rev":3,"owner":"ctl","due":"2026-11-08T09:00","what":"x"},{"ask_id":"T2","rev":1,"owner":"ctl","due":"2026-11-08T10:00","what":"y"}]' >"$FX_ASKS"
+bash "$H" refresh --seat ctl   # producer run after the ledger fixture changed
 ck "prompt with a changed row set recites once" "$(up)" emit
 ck "prompt after that is quiet again" "$(up)" quiet
 printf '#!/bin/bash\nexit 7\n' >"$W/asks.sh"

@@ -28,7 +28,8 @@ shared_new() {  # A1346: the shared evaluator (one fingerprint file with owed-no
   local ev new reason   # R4 (A1346): a missing evaluator returns silently here by design; owed-now.sh reports it once per session on the same Stop chain (tests/followup-evaluator-missing.test.sh)
   ev="$(. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh" 2>/dev/null; fu_eval_bin)" && [ -n "$ev" ] || return 0
   . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-lib.sh"
-  new="$(fu_new_obligations "$seat")"; fu_outbox_replay
+  . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/followup-stop-nowait.sh" 2>/dev/null || return 0   # F7-1: no wait on the store lock, no inline delivery (outbox = followup-outbox-replay.timer)
+  fu_stop_new "$seat" "${sid:-nosid}"; new="$FU_STOP_NEW"
   if jq -e 'select(.kind=="ledger-unreadable")' <<<"$new" >/dev/null 2>&1; then flog "ALLOW ledger unreadable: $(jq -r 'select(.kind=="ledger-unreadable") | .detail' <<<"$new" | head -1)"; new="$(jq -c 'select(.kind!="ledger-unreadable")' <<<"$new")"; fi   # an unreadable ledger fails open here and is logged; the other consumers report it
   [ -n "$new" ] || return 0
   reason="$(fu_block_reason "$new")"; flog "BLOCK-NEW $(jq -r '.id' <<<"$new" | paste -sd, -)"
@@ -48,6 +49,7 @@ stop)
   [ -n "$seat" ] || exit 0
   in="$(cat 2>/dev/null)"
   command -v jq >/dev/null 2>&1 || exit 0
+  sid="$(jq -r '.session_id // empty' <<<"$in" 2>/dev/null)"
   [ "$(jq -r '.stop_hook_active // false' <<<"$in" 2>/dev/null)" = true ] && exit 0
   if ! fetch; then flog "ALLOW wm-decide unavailable: $WHY"; exit 0; fi
   ids="$(oldest5)"
