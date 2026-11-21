@@ -5,7 +5,7 @@
 # director-event-consumer.test.sh with two ledger-fidelity edits, marked "FIDELITY" below.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-C="$HERE/.local/bin/director-event-consumer.py"
+C="${DIRECTOR_CONSUMER_UNDER_TEST:-$HERE/.local/bin/director-event-consumer.py}"  # env override lets a discriminator point the test at another consumer
 mkdir -p "$HOME/.cache/director-scratch"; T="$(mktemp -d "$HOME/.cache/director-scratch/t.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 fails=0; passes=0
 ok(){ echo "PASS $1"; passes=$((passes+1)); }
@@ -34,7 +34,7 @@ if a[:2] == ["asks", "claim"]:
     r = db[a[2]]; w = a[a.index("--worker")+1]
     # FIDELITY 2: asks.py claim() refuses ANY second claim ("already claimed ... no second claim"), even by the same worker name
     if r.get("claim"): sys.exit(1)
-    r["claim"] = w; r["rev"] += 1; save(); sys.exit(0)
+    r["claim"] = w + "@2026-11-21T00:00:00-08:00"; r["rev"] += 1; save(); sys.exit(0)
 if a[:2] == ["asks", "update"]:
     r = db[a[2]]; r.setdefault("notes", []).append(a[a.index("--append")+1]); r["rev"] += 1; save(); sys.exit(0)
 sys.exit(2)
@@ -76,56 +76,76 @@ PY
 claim_of(){ python3 -c 'import json,os,sys; print(json.load(open(os.environ["STUB"]+"/db.json"))[sys.argv[1]]["claim"])' "$1"; }
 # complete a run through the consumer's own complete command (receipt + state=completed; the ledger claim is left as written)
 done_run(){ printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/$1.effect"; python3 "$C" complete "$1" --effect "$DIRECTOR_STATE/runs/$1.effect" >/dev/null 2>&1; }
-# world: A200 ready at rev 5 with binding B1 closed, claimed + launched + completed by its OWN consumer run ready-A200-5
+# world: A200 ready at rev 5 with waits_on [A901] closed (ready=true), claimed + launched + completed by its OWN consumer run ready-A200-5
 own_completed(){
-  fresh "$1"; sets A200 '{"ready":true,"rev":5,"bindings":[{"id":"B1","closed":true}]}'; run recover
+  fresh "$1"; sets A200 '{"ready":true,"rev":5,"waits_on":["A901"]}'; run recover
   done_run ready-A200-5
-  W5="director-ready-A200-5.c0"
+  W5="director-ready-A200-5.c0@2026-11-21T00:00:00-08:00"
   R5="$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)"; J5="$(cat $DIRECTOR_STATE/runs/ready-A200-5.json)"
 }
 
 # ---- precondition: the fixture really is the real-ledger state (claim held by the own completed run, never null)
 own_completed 1
 chk "setup: own run ready-A200-5 launched once and completed, receipt written" '[ "$(cnt director-run-ready-A200-5-a1 launch.log)" = 1 ] && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/ready-A200-5.json && [ -e $DIRECTOR_STATE/runs/ready-A200-5.receipt.json ]'
-chk "setup: ledger claim is still the consumer-written own worker (bare stub form $W5), not null" '[ "$(claim_of A200)" = "$W5" ]'
+chk "setup: ledger claim is still the consumer-written own worker (stamped worker@ts form $W5), not null" '[ "$(claim_of A200)" = "$W5" ]'
 
-# ---- case 1: newly satisfied closes-after binding set at a new revision, claim STILL HELD => exactly one fresh run per set
-sets A200 '{"rev":6,"ready":true,"bindings":[{"id":"B1","closed":true},{"id":"B2","closed":true}]}'; run recover
-chk "case1a: new binding set at rev 6 with the own claim held => exactly one run for ready-A200-6" '[ "$(cnt director-run-ready-A200-6 launch.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 2 ]'
-chk "case1a: the ledger claim is unchanged, still the original own worker (the real ledger refuses a second claim)" '[ "$(claim_of A200)" = "$W5" ]'
+# ---- case 1: newly satisfied closes-after waits_on set at a new revision, claim STILL HELD => exactly one fresh run per set
+# (the claim's own rev bump 5->6 is separate from a new set, which arrives through update at rev 7, then rev 8)
+sets A200 '{"rev":7,"ready":true,"waits_on":["A901","A902"]}'; run recover
+chk "case1a: new waits_on set at rev 7 with the own claim held => exactly one run for ready-A200-7" '[ "$(cnt director-run-ready-A200-7 launch.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 2 ]'
+chk "setup: the ledger claim is unchanged, still the original own stamped worker (the real ledger refuses a second claim)" '[ "$(claim_of A200)" = "$W5" ]'
+chk "case1a: the new run adopted the held claim (run file carries the stamped own claim)" 'grep -q "\"claim\": \"$W5\"" $DIRECTOR_STATE/runs/ready-A200-7.json'
 chk "case1a: rev-5 receipt and run file untouched, ready-A200-5 never relaunched" '[ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.json)" = "$J5" ] && [ "$(cnt director-run-ready-A200-5 launch.log)" = 1 ]'
-run recover; run recover
-chk "case1a: repeated recover at rev 6 still one run" '[ "$(cnt director-run launch.log)" = 2 ]'
-done_run ready-A200-6
-sets A200 '{"rev":7,"ready":true,"bindings":[{"id":"B1","closed":true},{"id":"B2","closed":true},{"id":"B3","closed":true}]}'; run recover
-chk "case1b: a later satisfied set at rev 7 => one more run (ready-A200-7), three total, earlier keys never relaunched" '[ "$(cnt director-run-ready-A200-7 launch.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 3 ] && [ "$(cnt director-run-ready-A200-5 launch.log)" = 1 ] && [ "$(cnt director-run-ready-A200-6 launch.log)" = 1 ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ]'
+touch "$STUB/active"; run recover; run recover
+chk "case1a: repeated recover at rev 7 still one run" '[ "$(cnt director-run launch.log)" = 2 ]'
+done_run ready-A200-7; rm -f "$STUB/active"
+sets A200 '{"rev":8,"ready":true,"waits_on":["A901","A902","A903"]}'; run recover
+chk "case1b: a later satisfied set at rev 8 => one more run (ready-A200-8), three total, earlier keys never relaunched" '[ "$(cnt director-run-ready-A200-8 launch.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 3 ] && [ "$(cnt director-run-ready-A200-5 launch.log)" = 1 ] && [ "$(cnt director-run-ready-A200-7 launch.log)" = 1 ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ]'
 
 # ---- case 2: a NEW director-action event key for the row, claim held by the own completed run => exactly one run for that key
 own_completed 2
 sets A200 '{"ready":false,"rev":6}'; ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run
 chk "case2: new event key evt-0300 => exactly one run (director-run-evt-0300), not claim-conflict" '[ "$(cnt director-run-evt-0300 launch.log)" = 1 ] && ! grep -q "claim-conflict" $DIRECTOR_STATE/runs/evt-0300.json'
-run; run recover
+touch "$STUB/active"; run; run recover
 chk "case2: duplicate delivery and recover add no second run for evt-0300; rev-5 artefacts untouched" '[ "$(cnt director-run-evt-0300 launch.log)" = 1 ] && [ "$(cnt director-run-ready-A200-5 launch.log)" = 1 ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ]'
 
-# ---- case 3: a revision with NO new binding and no event => nothing starts (no claim call, no launch)
+# ---- control C0: the claim's own rev bump is not a new binding: own completed claim, ready still true at the post-claim rev, same waits_on => no rerun
+own_completed 7; run recover; run recover
+chk "control C0: own completed claim, ready still true at the post-claim rev, same bindings => no rerun" '[ "$(cnt director-run launch.log)" = 1 ]'
+
+# ---- case 3: a revision with NO new waits_on and no event => nothing starts (no claim call, no launch)
 own_completed 3
-: > "$STUB/calls.log"; sets A200 '{"rev":6,"ready":false}'; run recover; run recover
-chk "case3: non-binding revision (ready stays false) => no claim call, no launch" '[ "$(cnt "asks claim" calls.log)" = 0 ] && [ "$(cnt director-run launch.log)" = 1 ]'
-sets A200 '{"rev":7}'; run recover
+: > "$STUB/calls.log"; sets A200 '{"rev":7,"ready":true}'; run recover; run recover
+chk "case3: non-binding revision (ready true, same waits_on) => no claim call, no launch" '[ "$(cnt "asks claim" calls.log)" = 0 ] && [ "$(cnt director-run launch.log)" = 1 ]'
+sets A200 '{"rev":8}'; run recover
 chk "case3: a further bare revision => still nothing; one launch total, own receipt untouched" '[ "$(cnt "asks claim" calls.log)" = 0 ] && [ "$(cnt director-run launch.log)" = 1 ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ]'
+
+# ---- control R4-2: an own claim whose run is NOT completed-with-receipt must not be adopted (unknown effect => reconcile-required, modelled as in
+# director-event-consumer.test.sh 186-191: BEGIN with no END). "stuck" is not modelled: see report (no consumer path leaves a stuck run holding an own claim).
+unknown_world(){ fresh "$1"; sets A200 '{"ready":true,"rev":5,"waits_on":["A901"]}'; run recover
+  printf 'BEGIN push-config\n' > "$DIRECTOR_STATE/runs/ready-A200-5.effect"; run recover; run recover; }
+unknown_world 8
+chk "setup: own run ready-A200-5 is reconcile-required, claim held" 'grep -q "\"state\": \"reconcile-required\"" $DIRECTOR_STATE/runs/ready-A200-5.json && [ "$(claim_of A200)" = "$W5" ]'
+L8="$(cnt director-run launch.log)"
+sets A200 '{"rev":7}'; ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run; run recover
+chk "control R4-2a: own claim, run reconcile-required, new DIRECTOR-ACTION event => no run (ask-busy)" '[ "$(cnt director-run-evt-0300 launch.log)" = 0 ] && [ "$(cnt director-run launch.log)" = "$L8" ] && ! grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/evt-0300.json'
+unknown_world 9
+L9="$(cnt director-run launch.log)"
+sets A200 '{"rev":7,"ready":true,"waits_on":["A901","A902"]}'; run recover; run recover
+chk "control R4-2b: own claim, run reconcile-required, new waits_on set => no run" '[ "$(cnt director-run-ready-A200-7 launch.log)" = 0 ] && [ "$(cnt director-run launch.log)" = "$L9" ]'
 
 # ---- case 4a: claim held by a LIVE (not completed) run => no new run (ask-busy)
 fresh 4; sets A200 '{"ready":true,"rev":5}'; run recover; touch "$STUB/active"
-sets A200 '{"rev":6,"bindings":[{"id":"B2","closed":true}]}'; ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run; run recover
+sets A200 '{"rev":6,"waits_on":["A901","A902"]}'; ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run; run recover
 chk "case4a: live own run (state launched, not completed) holds the claim => no second run, one launch total" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt director-run-evt-0300 launch.log)" = 0 ] && [ "$(cnt director-run-ready-A200-6 launch.log)" = 0 ]'
 chk "case4a: the event waits as ask-busy" 'grep -q "\"state\": \"ask-busy\"" $DIRECTOR_STATE/runs/evt-0300.json'
 
 # ---- case 4b: claim held by a worker that is NOT this row's own completed consumer run => claim-conflict / no run
-fresh 5; sets A200 '{"claim":"someone-else@x","ready":true,"rev":6,"bindings":[{"id":"B2","closed":true}]}'
+fresh 5; sets A200 '{"claim":"someone-else@x","ready":true,"rev":6,"waits_on":["A901","A902"]}'
 ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run; run recover
 chk "case4b: foreign claim someone-else@x => no run for the event or the ready key, claim-conflict" '[ ! -e $STUB/launch.log ] && grep -q "\"state\": \"claim-conflict\"" $DIRECTOR_STATE/runs/evt-0300.json'
 fresh 6; ev "DIRECTOR-ACTION ask=A100 event=evt-0001 x"; run; done_run evt-0001
-sets A200 '{"claim":"director-evt-0001.c0","ready":true,"rev":6,"bindings":[{"id":"B2","closed":true}]}'
+sets A200 '{"claim":"director-evt-0001.c0","ready":true,"rev":6,"waits_on":["A901","A902"]}'
 ev "DIRECTOR-ACTION ask=A200 event=evt-0300 follow-up"; run; run recover
 chk "case4b: claim is another ask's COMPLETED consumer run (director-evt-0001.c0 belongs to A100) => not own, no run for A200" '[ "$(cnt director-run-evt-0300 launch.log)" = 0 ] && [ "$(cnt director-run-ready-A200 launch.log)" = 0 ] && grep -q "\"state\": \"claim-conflict\"" $DIRECTOR_STATE/runs/evt-0300.json'
 
