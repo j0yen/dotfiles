@@ -117,14 +117,14 @@ if [ "$dry" = 1 ]; then echo "DRY-RUN prompt: $DIR/prompt.txt"; exit 0; fi
 prompt="$(cat "$DIR/prompt.txt")"
 mkdir -p "$DIR/claude-home" "$HOME/.cache/aide/account-rr" || die 70 "cannot create session dirs"
 SB=(-p ProtectHome=read-only -p "ReadWritePaths=$DIR $HOME/.local/state/swarm-decide $HOME/.cache/aide/account-rr" -p NoNewPrivileges=yes -p PrivateTmp=yes
-    -p "InaccessiblePaths=-$HOME/.ssh -$HOME/.git-credentials -$HOME/.config/wm-sudo -$HOME/.config/gh"
+    -p "InaccessiblePaths=-$HOME/.ssh -$HOME/.git-credentials -$HOME/.config/wm-sudo -$HOME/.config/gh -$HOME/.claude/projects"
     -p "TemporaryFileSystem=$HOME/.config/fleet-token:ro" -p "BindReadOnlyPaths=$HOME/.config/fleet-token/store/josephsyen $HOME/.config/fleet-token/store/jyen.tech"
     -E CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 -E "CLAUDE_CONFIG_DIR=$DIR/claude-home")
 "$SDR" --user --wait --collect --unit="$unit" -p MemoryMax=2G -p RuntimeMaxSec=1800 "${SB[@]}" -p "StandardOutput=file:$DIR/session.log" -p "StandardError=append:$DIR/session.log" \
   "$FL" --helper --model sonnet --effort medium -p "$prompt" --allowedTools "Bash Read Grep Glob" --disallowedTools "Edit Write NotebookEdit" > "$DIR/run.out" 2>&1 \
   || die 1 "verifier unit $unit failed (see $DIR/session.log)"
 # a token-shaped string anywhere in the session output: drop the output and refuse
-if grep -rqE 'sk-ant-[A-Za-z0-9_-]{8,}|CLAUDE_CODE_OAUTH_TOKEN=[^ ]{8,}' "$DIR" 2>/dev/null; then rm -f "$DIR/session.log" "$DIR/run.out" "$DIR/check.out"; die 10 "token-shaped string found in session output; outputs removed, no verdict taken"; fi
+if grep -rqE 'sk-ant-[A-Za-z0-9_-]{8,}|CLAUDE_CODE_OAUTH_TOKEN=[^ ]{8,}' "$DIR" 2>/dev/null; then find "$DIR" -mindepth 1 ! -name prompt.txt -delete 2>/dev/null; die 10 "token-shaped string found in session output; outputs removed, no verdict taken"; fi
 
 # ---- re-read the row the session wrote ----
 [ -s "$R" ] || die 8 "session wrote no $R"

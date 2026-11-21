@@ -91,7 +91,8 @@ t_unavailable_source_fails_visibly(){
   out=$(CTL_OQ_WM_ASKS="$W/bin/wm-asks" python3 "$Q" --test queue 2>&1); rc=$?
   if [ $rc = 4 ] && echo "$out" | grep -qi 'canonical source unavailable'; then ok unavailable; else bad unavailable "rc=$rc out=$out"; fi
   fixture $W/f.json "$(row A1 ctl 2026-11-01T09:00 'x')"
-  src=$(CTL_OQ_FIXTURE="$W/f.json" python3 "$Q" queue --json 2>/dev/null | jq_ "d['source']")
+  printf '#!/bin/sh\necho "[]"\n' >$W/bin/wm-asks; cp $W/bin/wm-asks $W/bin/wm-decide
+  src=$(PATH="$W/bin:$PATH" CTL_OQ_FIXTURE="$W/f.json" python3 "$Q" queue --json 2>/dev/null | jq_ "d['source']")
   [ "$src" = wm-asks ] && ok no-fixture-without-test || bad no-fixture-without-test "source=$src"
   if grep -qi 'tsv' "$Q"; then bad no-tsv-fallback "script mentions a tsv"; else ok no-tsv-fallback; fi
 }
@@ -121,6 +122,6 @@ t_row_dependency_closed_not_blocking(){
 }
 
 names="safety_beats_discretionary authorized_overdue_beats_discretionary blocked_higher_allows_independent dependency_repair_allowed active_worker_not_duplicated future_checkpoint_does_not_hide explicit_not_before_respected valid_exception_auditable unavailable_source_fails_visibly big_backlog_no_global_freeze blocker_without_structure_is_triage_defect row_dependency_closed_not_blocking"
-if [ $# = 0 ]; then echo $names; exit 0; fi
+[ $# = 0 ] && set -- $names
 for n in "$@"; do "t_$n" || fail=1; done
 exit $fail
