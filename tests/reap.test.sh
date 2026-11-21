@@ -55,6 +55,18 @@ grep -q 'git -C .* worktree prune' "$base/calls" && grep -q 'entry=t-wt' "$base/
 mkdir "$base/old/stale2"; touch -d '10 days ago' "$base/old/stale2"
 REAP_DRY_RUN=1 REAP_RETENTION=$base/ret.json REAP_HOST=h1 REAP_STATE_DIR=$base/state bash "$reap" >/dev/null 2>&1
 [ -d "$base/old/stale2" ] && pass "dry run keeps files" || bad "dry run"
+# exclude globs keep old claude-* dirs, reap other old dirs; --dry-run lists and removes nothing
+mkdir -p "$base/ex"; mkdir "$base/ex/claude-1000" "$base/ex/other"; touch -d '10 days ago' "$base/ex/claude-1000" "$base/ex/other"
+cat > "$base/ex.json" <<EOF2
+{"entries":[{"id":"t-ex","kind":"dir-age","path":"$base/ex","age_h":24,"cap_mb":100,"exclude":["claude-*"],"hosts":["h1"]}]}
+EOF2
+: > "$base/journal"
+REAP_RETENTION=$base/ex.json REAP_HOST=h1 REAP_STATE_DIR=$base/state bash "$reap" --dry-run >"$base/dry.out" 2>&1
+[ -d "$base/ex/other" ] && [ -d "$base/ex/claude-1000" ] && grep -q 'would-remove=.*/other' "$base/dry.out" && ! grep -q 'would-remove=.*claude' "$base/dry.out" && grep -q 'entry=t-ex host=h1 reaped=1 excluded=1 .*dry_run=1' "$base/journal" && pass "--dry-run lists, removes nothing, dry_run=1 receipt" || bad "--dry-run flag"
+: > "$base/journal"
+REAP_RETENTION=$base/ex.json REAP_HOST=h1 REAP_STATE_DIR=$base/state bash "$reap" >/dev/null 2>&1
+[ ! -e "$base/ex/other" ] && [ -d "$base/ex/claude-1000" ] && grep -q 'entry=t-ex host=h1 reaped=1 excluded=1' "$base/journal" && ! grep -q dry_run "$base/journal" && pass "exclude glob keeps old claude-x, reaps other" || bad "exclude"
+grep -q '"exclude": \["claude-\*"\]' "$here/../.config/fleet/gen/retention.json" && pass "cache-tmp excludes claude-*" || bad "cache-tmp exclude"
 # shipped contract parses and units exist
 python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]));assert all('id' in e and 'kind' in e and e['hosts'] for e in d['entries'])" "$here/../.config/fleet/gen/retention.json" && pass "retention.json valid" || bad "retention.json"
 [ -f "$here/../.config/systemd/user/reap.timer" ] && grep -q 'reap.sh' "$here/../.config/systemd/user/reap.service" && pass "unit pair" || bad "units"

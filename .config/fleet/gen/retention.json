@@ -1,9 +1,9 @@
 {
-  "_doc": "L6 retention contract (A239). One entry per scratch/target/verifier/worktree/failed-unit path. kind: dir-age (delete top-level children older than age_h, alarm when size stays above cap_mb), failed-units (reset-failed user units that failed longer ago than age_h), worktree-prune (git worktree prune in each listed repo). hosts: reap.sh runs an entry only on a listed host (hostname -s). path may start with ~ or $HOME.",
+  "_doc": "L6 retention contract (A239). One entry per scratch/target/verifier/worktree/failed-unit path. kind: dir-age (delete top-level children older than age_h, alarm when size stays above cap_mb), failed-units (reset-failed user units that failed longer ago than age_h), worktree-prune (git worktree prune in each listed repo). hosts: reap.sh runs an entry only on a listed host (hostname -s). exclude: optional shell globs on the child basename, matched children are never reaped (live claude-<uid> session dirs). path may start with ~ or $HOME.",
   "entries": [
     {"id": "data-tmp", "kind": "dir-age", "path": "/mnt/data/tmp", "age_h": 72, "cap_mb": 20480, "hosts": ["redbaron"]},
     {"id": "jsy-data-tmp", "kind": "dir-age", "path": "/mnt/data/jsy/tmp", "age_h": 72, "cap_mb": 20480, "hosts": ["redbaron"]},
-    {"id": "cache-tmp", "kind": "dir-age", "path": "~/.cache/tmp", "age_h": 72, "cap_mb": 10240, "hosts": ["carbon", "redbaron"]},
+    {"id": "cache-tmp", "kind": "dir-age", "path": "~/.cache/tmp", "age_h": 72, "cap_mb": 10240, "exclude": ["claude-*"], "hosts": ["carbon", "redbaron"]},
     {"id": "aide-verifier", "kind": "dir-age", "path": "~/.local/state/aide-verifier", "age_h": 48, "cap_mb": 2048, "hosts": ["carbon", "redbaron"]},
     {"id": "failed-units", "kind": "failed-units", "age_h": 24, "hosts": ["carbon", "redbaron"]},
     {"id": "worktree-prune", "kind": "worktree-prune", "repos": ["~/dotfiles", "~/wintermute/wm-build"], "hosts": ["carbon", "redbaron"]}
