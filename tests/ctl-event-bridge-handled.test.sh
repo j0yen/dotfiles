@@ -12,8 +12,9 @@ for id in e1 e2; do echo "{\"id\":\"$id\",\"event\":{\"event\":\"inbox\"},\"crea
 run() { env -i HOME="$T" PATH="$PATH" BR_DIR="$T/br" RT_DIR="$T/rt" bash "$B" "$@"; }
 run ack e1 >/dev/null; chk "ack <id> exits 0" $?
 [ -e "$T/rt/handled/e1" ] && [ ! -e "$T/rt/handled/e2" ]; chk "ack <id> writes only that receipt (handled/ created)" $?
-run ack --all >/dev/null
-[ -e "$T/rt/handled/e2" ]; chk "ack --all writes the receipt for the remaining id" $?
+run ack --all >/dev/null 2>&1; [ $? = 1 ] && [ ! -e "$T/rt/handled/e2" ]; chk "ack --all skips an id with no consumer evidence (no receipt, exit 1)" $?
+run ack e2 >/dev/null
+[ -e "$T/rt/handled/e2" ]; chk "ack <id> writes the receipt for the remaining id" $?
 [ -z "$(ls -A "$T/rt/handled" | grep '^\.')" ]; chk "no temp files left behind" $?
 run ack nope >/dev/null 2>&1; [ $? = 1 ] && [ ! -e "$T/rt/handled/nope" ]; chk "unknown id: exit 1, no receipt" $?
 echo "ctl-event-bridge-handled test: $([ $f = 0 ] && echo ALL PASS || echo FAILURES)"; exit $f
