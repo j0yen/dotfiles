@@ -213,6 +213,27 @@ printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"
 python3 "$C" complete evt-0001 --effect "$DIRECTOR_STATE/runs/evt-0001.effect" >/dev/null 2>&1
 : > "$STUB/calls.log"; run recover; run recover; run recover
 chk "completed receipt: no relaunch, no claim, no note across recovers" '[ "$(cnt director-run launch.log)" = 1 ] && [ "$(cnt "asks \(claim\|update\)" calls.log)" = 0 ]'
+
+# own completed claim rerun per ready-<ask>-<rev> key (E15)
+fresh 16
+rdy(){ python3 - "$1" "$2" <<PY
+import json,os,sys
+p=os.environ["STUB"]+"/db.json"; d=json.load(open(p)); r=d["A200"]
+r["claim"]=None; r["ready"]=True; r["rev"]=int(sys.argv[1]); json.dump(d,open(p,"w"))
+PY
+}
+rdy 5 x; run recover
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/ready-A200-5.effect"
+python3 "$C" complete ready-A200-5 --effect "$DIRECTOR_STATE/runs/ready-A200-5.effect" >/dev/null 2>&1
+R5="$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)"; J5="$(cat $DIRECTOR_STATE/runs/ready-A200-5.json)"
+chk "rerun key: ready A200 rev 5 claimed and launched once, then completed" '[ "$(cnt "asks claim A200 .* --expect-rev 5" calls.log)" = 1 ] && [ "$(cnt director-run-ready-A200-5-a1 launch.log)" = 1 ] && grep -q "\"state\": \"completed\"" $DIRECTOR_STATE/runs/ready-A200-5.json'
+rdy 6 x; run recover
+chk "rerun key: same row ready at rev 6 => one new claim (--expect-rev 6), one new launch for ready-A200-6" '[ "$(cnt "asks claim A200 .* --expect-rev 6" calls.log)" = 1 ] && [ "$(cnt "asks claim A200" calls.log)" = 2 ] && [ "$(cnt director-run-ready-A200-6-a1 launch.log)" = 1 ] && [ "$(cnt director-run launch.log)" = 2 ]'
+chk "rerun key: rev-5 receipt and run file untouched, ready-A200-5 never relaunched" '[ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.receipt.json)" = "$R5" ] && [ "$(cat $DIRECTOR_STATE/runs/ready-A200-5.json)" = "$J5" ] && [ "$(cnt director-run-ready-A200-5 launch.log)" = 1 ]'
+printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/ready-A200-6.effect"
+python3 "$C" complete ready-A200-6 --effect "$DIRECTOR_STATE/runs/ready-A200-6.effect" >/dev/null 2>&1
+rdy 6 x; run recover; run recover
+chk "rerun key: returned ready again still at rev 6 => no new claim, no new launch" '[ "$(cnt "asks claim A200" calls.log)" = 2 ] && [ "$(cnt director-run launch.log)" = 2 ]'
 fresh 16; ev "$M x"; run
 printf 'BEGIN s1\nEND s1\nDONE\n' > "$DIRECTOR_STATE/runs/evt-0001.effect"; run recover
 chk "crash after DONE before receipt: receipt written from the ledger, no relaunch" '[ "$(cnt director-run launch.log)" = 1 ] && [ -e $DIRECTOR_STATE/runs/evt-0001.receipt.json ]'
