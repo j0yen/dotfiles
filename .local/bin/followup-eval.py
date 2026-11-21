@@ -193,12 +193,43 @@ def read_followups(seat):
     return out
 
 
+def read_nodest_unowned():
+    """nodest_unowned outbox markers (followup-deliver.sh: wm-asks asks query / asks add failed) with no later nodest_owned / nodest_settled for the same key, older than NODEST_UNOWNED_MIN minutes."""
+    recs, done = [], set()
+    try:
+        for line in open(outbox_path(state_dir()), encoding="utf-8", errors="replace"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("key"):
+                if r.get("nodest_unowned") is True:
+                    recs.append(r)
+                elif r.get("nodest_owned") is True or r.get("nodest_settled") is True:
+                    done.add(r["key"])
+    except OSError:
+        return []
+    out, lim = [], int(os.environ.get("NODEST_UNOWNED_MIN", "10"))
+    for r in recs:
+        try:
+            age = (datetime.datetime.now().astimezone() - datetime.datetime.fromisoformat(r["ts"])).total_seconds() / 60
+        except (KeyError, ValueError, TypeError):
+            age = lim
+        if r["key"] in done or age < lim:
+            continue
+        out.append({"id": str(r.get("id")), "rev": r.get("rev", 0), "disposition": "blocked", "kind": "nodest-unowned", "owner": r.get("seat", ""), "next_check": "", "due": "",
+                    "detail": "seat bell failed and wm-asks could not create the owning row (key %s); restore wm-asks, then replay" % r["key"], "actionable": True,
+                    "fp": "%s|nodest-unowned|%s" % (r["key"], r.get("ts"))})
+    return out
+
+
 NEXT = {
     "correction-owed": "record the applying row for the verdict (wm-decide record/verdict) or a MOOT row naming why",
     "dead-worker": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
     "lease-expired": "re-dispatch the work, then re-claim with a live worker handle (wm-asks asks claim <id> --worker <tmux-session|pid-token>)",
     "stale-revision": "re-claim at the current revision (wm-asks asks claim <id> --worker <live worker>)",
     "verifier-pending": "run the required verifier and record a PASS acceptance before the ending action",
+    "nodest-unowned": "restore wm-asks (wm-asks asks query --json works), then run followup-eval.py replay so the owning row is created",
     "ledger-unreadable": "repair the canonical ledger query (wm-asks asks query --status open --json)",
     "dependency-cleared": "dispatch it to a worker now (wm-asks asks claim <id> --worker <live worker>)",
 }
@@ -453,7 +484,7 @@ def main():
         a.seat = a.seat or os.environ.get("WM_SEAT", "ctl")
     if a.cmd == "eval":
         rows, why = read_ledger()
-        print(json.dumps({"dispositions": (evaluate(a.seat, rows, now_min()) if rows is not None else []) + read_followups(a.seat), "error": why or None}))
+        print(json.dumps({"dispositions": (evaluate(a.seat, rows, now_min()) if rows is not None else []) + read_followups(a.seat) + read_nodest_unowned(), "error": why or None}))
     elif a.cmd == "new":
         cmd_new(a.seat)
     elif a.cmd == "emit":
