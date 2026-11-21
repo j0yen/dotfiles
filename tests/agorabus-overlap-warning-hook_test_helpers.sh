@@ -33,5 +33,8 @@ overlap_setup() {
   cwd="$work/proj"; mkdir -p "$cwd"
 }
 
-# run_hook [hook args…] — feeds a UserPromptSubmit payload with our cwd.
-run_hook() { printf '{"cwd":"%s","prompt":"hi"}' "$cwd" | "$HOOK" "$@"; }
+# run_hook [hook args…] — feeds a UserPromptSubmit payload with our cwd. The
+# rule tests (AC1-AC4) lift the hook's 100 ms query deadline so a slow fake
+# spawn on a loaded host cannot drop a canned answer; AC6 keeps the real
+# deadline (it calls the hook itself, without this variable).
+run_hook() { printf '{"cwd":"%s","prompt":"hi"}' "$cwd" | AGORABUS_OVERLAP_DEADLINE_MS=10000 "$HOOK" "$@"; }
