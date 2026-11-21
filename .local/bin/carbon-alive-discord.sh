@@ -6,7 +6,8 @@
 # Webhook file: ${CARBON_ALIVE_WEBHOOK_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/carbon-alive/webhook.url}, same contract
 # as the cloud watchdog's Discord delivery (orch/hub /opt/cloud-watchdog/cloudwatchdog/delivery.py): a regular file
 # (not a symlink), mode exactly 0600, owned by the running uid, non-empty, at most 4096 bytes, URL starts with https://.
-# Posts {"content": "<at> [REPLAY <replay_at>] <one-line summary + readings>"} (at most 2000 chars, truncated) with
+# Posts {"content": "<at> [REPLAY <replay_at>] <one-line summary + readings>", "allowed_mentions": {"parse": []}} (content
+# at most 2000 chars, truncated; the empty parse list means @everyone, @here and <@id> in the text ping nobody) with
 # curl: the text starts with the alert's `at` time (UTC ISO) and, when carbon-alive.sh replays an entry an earlier run
 # queued (`replay_at` set), the word REPLAY and the replay time, so an alert sent after a delivery outage never reads as
 # current. The URL goes to curl in a 0600 temp config file (-K), never on an argv, and is never printed: curl's own
@@ -62,7 +63,7 @@ text = (f"{head} carbon-alive[{a.get('host', '?')}] {kind}: state={a.get('state'
            else " | previous: " + " ".join(f"{k}={v}" for k, v in a["previous"].items())))
 text = " ".join(text.split())
 if len(text) > 2000: text = text[:1999] + "…"
-print(json.dumps({"content": text}))
+print(json.dumps({"content": text, "allowed_mentions": {"parse": []}}))
 PY
 )" || exit 2
 
