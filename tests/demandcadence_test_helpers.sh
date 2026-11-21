@@ -48,6 +48,17 @@ demandcadence_setup() {
   mkdir -p "$bin"
   ln -s "$FIXTURES/fake-mcphost-deploy" "$bin/mcphost-deploy"
   ln -s "$FIXTURES/fake-agorabus" "$bin/agorabus"
+  # `grand-loop-demand.sh install` runs `systemctl --user daemon-reload` and `enable --now grand-loop-demand.timer`. Without a stand-in
+  # those reach the LIVE user manager: on 11-20 00:15 a ryzen7 full-suite run re-started the held grand-loop-demand.timer and
+  # reloaded the live manager twice per run (A1289). This recorder answers instead and logs each call to $FAKE_SYSTEMCTL_CALLS.
+  systemctl_calls="$work/systemctl-calls"
+  : > "$systemctl_calls"
+  export FAKE_SYSTEMCTL_CALLS="$systemctl_calls"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "${FAKE_SYSTEMCTL_CALLS:?}"\nexit 0\n' > "$bin/systemctl"
+  chmod +x "$bin/systemctl"
+  # Review 034ad5b9 DC-F2: a call by absolute path (/usr/bin/systemctl) or after a PATH reset bypasses the stand-in, so the user-manager
+  # address itself points at paths that do not exist: such a call fails to connect instead of reaching the live manager.
+  export XDG_RUNTIME_DIR="$work/no-user-runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$work/no-user-bus"
 
   agorabus_calls="$work/agorabus-calls"
   : > "$agorabus_calls"
