@@ -2,7 +2,7 @@
 # tests/ledgerday_ac8_selftest_suite_green.test.sh — PRD-token-ledger-day-buckets
 # AC8 (P1, test_prefix: ledgerday): given the selftest fixture set, when the
 # dotfiles selftest runs, then the ledgerday cases are named and green.
-# Operationalized here as: every sibling ledgerday_ac{1..7} test file runs
+# Operationalized here as: every sibling ledgerday_ac{1..7,9} test file runs
 # clean (exit 0, no "NOT OK" lines) when invoked the same way the dotfiles
 # test sweep invokes any *.test.sh file — `bash <file>` from the repo root.
 # Run with:
@@ -19,7 +19,7 @@ for f in "$here"/ledgerday_ac*.test.sh; do
   siblings+=("$f")
 done
 
-assert_eq "${#siblings[@]}" "7" "seven other ledgerday_ac* cases are present (AC1-7)"
+assert_eq "${#siblings[@]}" "8" "eight other ledgerday_ac* cases are present (AC1-7, AC9)"
 
 for f in "${siblings[@]}"; do
   base="$(basename "$f")"

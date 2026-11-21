@@ -9,7 +9,18 @@
 # TOKEN_LEDGER_JSONL_ROOT=$FAKE_SSH_HOSTS_DIR/<host> and
 # TOKEN_LEDGER_LOCAL_HOST=<host> — i.e. this fixture exercises the same
 # --emit-local-records code path a real remote host would run, just without
-# a network hop.
+# a network hop. Leading NAME=value words before the command (the
+# orchestrator passes TOKEN_LEDGER_EMIT_DEADLINE=<SSH_TIMEOUT> that way) are
+# applied as the remote environment, as a remote shell would. Any host named
+# in $FAKE_SSH_SLOW_HOSTS also gets TOKEN_LEDGER_TEST_PER_FILE_SLEEP=infinity
+# (ledgerday_ac9: a remote emit that cannot finish inside its budget).
+# Any host named in $FAKE_SSH_DETACH_HOSTS runs the command the way a real
+# remote does: in its own session (outside the local `timeout`'s process
+# group, so killing this client leaves it running), its stdout behind a
+# relay that dies with this client, its stderr to $FAKE_SSH_REMOTE_STDERR.
+# $FAKE_SSH_LOG, when set, gets one line per call: host, remote session id
+# (or -), then the NAME=value words sent. Each host gets its own
+# XDG_RUNTIME_DIR under the caller's (its own emit lock, as on a real host).
 set -uo pipefail
 
 host=""
@@ -31,9 +42,37 @@ for f in ${FAKE_SSH_FAIL_HOSTS:-}; do
   [ "$f" = "$host" ] && exit 1
 done
 
-# rest[0] is the remote command name ("token-ledger") — drop it, exec the
+# leading NAME=value words are the remote command's environment
+envs=()
+sent=()
+while [ "${#rest[@]}" -gt 0 ] && [[ "${rest[0]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+  envs+=("${rest[0]}"); sent+=("${rest[0]}"); rest=("${rest[@]:1}")
+done
+for f in ${FAKE_SSH_SLOW_HOSTS:-}; do
+  [ "$f" = "$host" ] && envs+=("TOKEN_LEDGER_TEST_PER_FILE_SLEEP=infinity")
+done
+
+# each host is its own machine: its own runtime dir, so its own emit lock
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  mkdir -p "$XDG_RUNTIME_DIR/fake-ssh-$host"
+  envs=("XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR/fake-ssh-$host" "${envs[@]}")
+fi
+
+# rest[0] is now the remote command name ("token-ledger") — drop it, exec the
 # real binary directly with whatever args followed.
 args=("${rest[@]:1}")
-TOKEN_LEDGER_JSONL_ROOT="$FAKE_SSH_HOSTS_DIR/$host" \
-TOKEN_LEDGER_LOCAL_HOST="$host" \
-  exec "$TOKEN_LEDGER_BIN" "${args[@]}"
+for f in ${FAKE_SSH_DETACH_HOSTS:-}; do
+  [ "$f" = "$host" ] || continue
+  # a background job of this script is no group leader: setsid does not fork, so $! is the session id
+  setsid env "${envs[@]}" TOKEN_LEDGER_JSONL_ROOT="$FAKE_SSH_HOSTS_DIR/$host" TOKEN_LEDGER_LOCAL_HOST="$host" \
+    "$TOKEN_LEDGER_BIN" "${args[@]}" > >(cat) 2>"$FAKE_SSH_REMOTE_STDERR" &
+  remote=$!
+  [ -n "${FAKE_SSH_LOG:-}" ] && printf '%s\t%s\t%s\n' "$host" "$remote" "${sent[*]}" >>"$FAKE_SSH_LOG"
+  wait "$remote"
+  exit $?
+done
+[ -n "${FAKE_SSH_LOG:-}" ] && printf '%s\t-\t%s\n' "$host" "${sent[*]}" >>"$FAKE_SSH_LOG"
+exec env "${envs[@]}" \
+  TOKEN_LEDGER_JSONL_ROOT="$FAKE_SSH_HOSTS_DIR/$host" \
+  TOKEN_LEDGER_LOCAL_HOST="$host" \
+  "$TOKEN_LEDGER_BIN" "${args[@]}"
