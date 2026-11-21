@@ -787,7 +787,7 @@ def own_completed_claim(claim, ask):
 
 def last_consumed_set(ask, claim):
     """The waits_on set recorded by the latest run (highest claimed_rev) that claimed or adopted this ask's claim; None if none recorded."""
-    best = None
+    best = None     # deliberate: runs in ANY state count, so a rev bump while an adopted run is live compares against that run's set
     for n in sorted(os.listdir(RUNS)):
         if n.endswith(".json") and not n.endswith(".receipt.json"):
             o = load_run(n[:-5])
@@ -872,6 +872,14 @@ def _process(eid, ask):
         cur = row.get("claim")
         # E15 R6: the claim is held by this ask's own completed run (never released): adopt it, no second `asks claim`
         adopt = bool(cur) and claim_worker(cur) != worker and own_completed_claim(cur, ask)
+        if adopt and r.get("source") == "ready":
+            # a ready record saved in a RETRY state and replayed later re-applies poll_ready's test: same (or no recorded) set = no rerun
+            last = last_consumed_set(ask, cur)
+            if last is None or waits_set(row) == last:
+                r["state"] = "superseded"
+                save_run(r)
+                decide(event_id=eid, ask=ask, decision="non-binding", reason="waits-on-consumed", rev=rev, event_rev=r.get("event_rev"))
+                return
         if cur and claim_worker(cur) != worker and not adopt:
             if str(cur).startswith("director-") and live_run_for_claim(cur):
                 set_wait(r, "ask-busy", prev, claim=cur)
