@@ -20,6 +20,18 @@
 #       NDJSON. The exact same binary runs this mode over ssh on each
 #       remote fleet host — that's how the orchestrator on one node reads
 #       another node's data without duplicating the extraction logic.
+#       One emit at a time per host: it takes `flock -n` on
+#       ${XDG_RUNTIME_DIR:-/tmp}/token-ledger-emit.<euid>.lock (never under
+#       $STATE_DIR) and a second one exits 75 at once. Files are read by up to
+#       `nproc` parallel workers and printed in find order, byte-identical to
+#       a one-file-at-a-time read. The orchestrator passes its own
+#       SSH_TIMEOUT as TOKEN_LEDGER_EMIT_DEADLINE (`timeout` ends only the
+#       local ssh client); between files the emit checks that deadline, its
+#       live parent (/proc/self/stat field 4) and its stdout, and stops with
+#       its workers killed: exit 76 = deadline spent, 74 = parent gone or
+#       stdout closed (143/129/130 = SIGTERM/SIGHUP/SIGINT). Every nonzero
+#       exit is one stderr line, and the orchestrator lists that host under
+#       `missing` for the window, as for any failed ssh.
 #       Every record carries `role` (what the tokens bought), derived once
 #       per JSONL FILE from the file's path, the seat table and the first
 #       user text — nothing but the JSONL files and $SEATS_TABLE is read:
@@ -81,6 +93,11 @@
 # the summary's yesterday/today split), SEATS_TABLE (seat table whose col 3
 # is the seat's SID; default ~/.claude/state/seats.tsv), TOKEN_BUDGET_WEIGHTED (unset or 0
 # => "budget off" status, per CLAUDE.md 2026-09-12 removal of the daily cap).
+# Emit mode also reads TOKEN_LEDGER_EMIT_DEADLINE (whole seconds; set by the
+# orchestrator, unset = no deadline), XDG_RUNTIME_DIR (lock dir) and TMPDIR
+# (its scratch dir, removed on exit), and the test-only seam
+# TOKEN_LEDGER_TEST_PER_FILE_SLEEP (a `sleep` argument run in every worker
+# before its file; honoured only when set, only in emit mode).
 set -uo pipefail
 
 STATE_DIR="${TOKEN_LEDGER_STATE_DIR:-$HOME/.cache/token-ledger}"
@@ -122,16 +139,32 @@ JQ_EXTRACT='select(.type=="assistant" and .message.usage != null and .message.id
 # one whitespace-collapsed line. Skips harness-injected text (command echoes,
 # system reminders, task notifications); content is a string or an array
 # whose first real .type=="text" element counts.
-JQ_FIRST_TEXT='select(.type=="user")
+# The value is exactly gsub("\\s+"; " ") | sub("^ "; "") | .[0:4000] of that
+# text, but jq's gsub is quadratic in its match count (a 1.5 MB first prompt
+# cost minutes of CPU), so collapsed_head collapses 4001-codepoint chunks only
+# until more than 4000 collapsed chars exist (a run split across two chunks
+# collapses to one space: the second chunk's leading space is dropped), and
+# only the first qualifying text is collapsed. A non-string text element is an
+# error for the line, as it was when every element went through gsub.
+JQ_FIRST_TEXT='def collapsed_head:
+    if length <= 4001 then gsub("\\s+"; " ")
+    else explode as $cp
+      | [0, ""]
+      | until(.[0] >= ($cp | length) or (.[1] | length) > 4000;
+          ($cp[.[0]:.[0] + 4001] | implode | gsub("\\s+"; " ")) as $c
+          | [.[0] + 4001, .[1] + (if (.[1] | endswith(" ")) and ($c | startswith(" ")) then $c[1:] else $c end)])
+      | .[1]
+    end;
+  select(.type=="user")
   | ((.message.content // "")
      | if type=="string" then [.]
        elif type=="array" then [.[] | select(type=="object" and .type=="text") | .text]
        else [] end)
-  | map(select(type=="string"
-       and (startswith("<command-name") or startswith("<local-command")
+  | if any(.[]; type != "string") then error("non-string text element") else . end
+  | first(.[] | select((startswith("<command-name") or startswith("<local-command")
             or startswith("<system-reminder") or startswith("<task-notification")) | not)
-       | gsub("\\s+"; " ") | sub("^ "; "") | select(length > 0))
-  | .[0] // empty | .[0:4000]'
+       | collapsed_head | sub("^ "; "") | select(length > 0))
+  | .[0:4000]'
 
 # jq filter: one compaction-summary line -> {kind:"compact", id:uuid, ts}.
 # Marker (confirmed on real transcripts): a type=="user" line carrying
@@ -244,31 +277,168 @@ file_role_prior() {
   echo "${r:-interactive}"
 }
 
+# Emit-mode exit codes; each is printed as one stderr line. The orchestrator
+# marks a host missing on any nonzero exit through ssh, so a refused or cut-short
+# emit is never read as a complete one.
+EMIT_RC_ORPHANED=74   # parent gone (reparented) or stdout closed: nobody reads the records
+EMIT_RC_BUSY=75       # another --emit-local-records on this host holds the emit lock
+EMIT_RC_DEADLINE=76   # TOKEN_LEDGER_EMIT_DEADLINE seconds spent before every file was read
+EMIT=0                # 1 in --emit-local-records mode (gather_raw then checks deadline, parent and stdout)
+EMIT_DEADLINE=""      # whole seconds from TOKEN_LEDGER_EMIT_DEADLINE; "" = no deadline
+EMIT_PPID0=""         # this shell's parent when emit mode started
+EMIT_NOTE=""          # the stderr line for a nonzero emit exit
+GATHER_TMP=""         # per-file outputs of the running gather_raw
+
+# read_ppid -> SELF_PPID = this shell's live parent, field 4 of /proc/self/stat.
+# Read by the shell itself (never inside $(...), whose /proc/self is a subshell);
+# $PPID keeps the original parent after a reparent, the stat field does not.
+read_ppid() {
+  local st _state
+  SELF_PPID=""
+  read -r st < /proc/self/stat || return 1
+  st="${st##*) }"   # comm may contain spaces or ')'; the fields after the last ") " are fixed
+  read -r _state SELF_PPID _ <<<"$st"
+}
+
+# kill_tree PID -> PID and all its descendants get SIGTERM and are added to
+# KILLED. Each process is stopped before its children are listed, so none can
+# fork past the sweep.
+KILLED=()
+kill_tree() {
+  local c
+  kill -STOP "$1" 2>/dev/null || return 0
+  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$1" 2>/dev/null
+  kill -CONT "$1" 2>/dev/null
+  KILLED+=("$1")
+}
+
+# gone PID -> true once PID has exited (absent, or a zombie: its fds, the emit
+# lock among them, are already closed)
+gone() {
+  local st
+  { read -r st < "/proc/$1/stat"; } 2>/dev/null || return 0
+  st="${st##*) }"
+  [ "${st%% *}" = Z ]
+}
+
+# running_jobs -> RUNNING = pids of this shell's running background jobs. The
+# jobs builtin runs in this shell (a file, not $(...), so no subshell has to
+# report the parent's job table); a job still listed is not yet reaped, so its
+# pid is still its own.
+RUNNING=()
+running_jobs() {
+  jobs -rp > "$GATHER_TMP/.running"
+  mapfile -t RUNNING < "$GATHER_TMP/.running"
+}
+
+# emit_check -> 0 to go on; else EMIT_NOTE is set and the emit exit code returned.
+# A changed parent is checked first: it is the more specific cause when both hold.
+emit_check() {
+  read_ppid
+  if [ "$SELF_PPID" != "$EMIT_PPID0" ]; then
+    EMIT_NOTE="emit parent $EMIT_PPID0 gone (parent now ${SELF_PPID:-unknown}); stopped before every file was read"
+    return "$EMIT_RC_ORPHANED"
+  fi
+  if [ -n "$EMIT_DEADLINE" ] && [ "$SECONDS" -ge "$EMIT_DEADLINE" ]; then
+    EMIT_NOTE="emit deadline ${EMIT_DEADLINE}s (TOKEN_LEDGER_EMIT_DEADLINE) spent before every file was read"
+    return "$EMIT_RC_DEADLINE"
+  fi
+  return 0
+}
+
+# emit_end RC -> kills every remaining worker tree and the deadline timer and
+# returns only once all of them have exited (so the lock they inherited is
+# free), removes $GATHER_TMP, prints EMIT_NOTE (if any) as one stderr line,
+# exits RC. Cleanup runs before the stderr write: with no reader that write
+# can kill the shell.
+emit_end() {
+  local p
+  trap - TERM HUP INT
+  if [ -n "$GATHER_TMP" ]; then
+    running_jobs
+    for p in "${RUNNING[@]}"; do kill_tree "$p"; done
+  fi
+  wait 2>/dev/null
+  for p in "${KILLED[@]}"; do until gone "$p"; do :; done; done
+  [ -n "$GATHER_TMP" ] && rm -rf -- "$GATHER_TMP"
+  [ -n "$EMIT_NOTE" ] && printf 'token-ledger: %s (exit %s)\n' "$EMIT_NOTE" "$1" >&2
+  exit "$1"
+}
+
+# emit_file FILE OUT -> FILE's records, role-tagged (see header), into OUT.
+# Runs as one background worker per file; the jq replaces the worker shell.
+emit_file() {
+  local f="$1" role since=0 prior sidf
+  role="$(file_role "$f")"
+  prior="$role"; sidf="$(basename -- "$f" .jsonl)"
+  if [[ "$role" == seat:aide:* ]] && [[ "$f" != */subagents/* ]] && [ "${SINCE_BY_SID[$sidf]:-0}" -gt 0 ] 2>/dev/null; then
+    since="${SINCE_BY_SID[$sidf]}"; prior="$(file_role_prior "$f")"
+  fi
+  # test-only seam (ledgerday_ac9): a slow emit; honoured only in emit mode and only when set
+  if [ "$EMIT" = 1 ] && [ -n "${TOKEN_LEDGER_TEST_PER_FILE_SLEEP:-}" ]; then sleep "$TOKEN_LEDGER_TEST_PER_FILE_SLEEP"; fi
+  exec jq -c --arg host "$LOCAL_HOST" --arg role "$role" --arg prior "$prior" --argjson since "$since" \
+    "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role: (if \$since > 0 and ((.ts | sub(\"\\\\.[0-9]+\"; \"\") | try fromdateiso8601 catch \$since) < \$since) then \$prior else \$role end)}" -- "$f" > "$2" 2>/dev/null
+}
+
 # gather_raw SINCE -> this host's own raw (non-deduped) records as NDJSON,
 # tagged host=$LOCAL_HOST. The mtime prefilter only skips whole files that
 # could not possibly hold anything in range; the real per-record window
 # filter happens later, centrally, after dedup (a message's true final
 # line decides both its day and whether it's in scope).
+# One background worker per file (emit_file), at most `nproc` at once; each
+# writes $GATHER_TMP/<n> and the outputs are printed in find order as they
+# finish, so the stream is byte-identical to reading the files one by one.
+# In emit mode every wake-up (a worker or the deadline timer ending) runs
+# emit_check, and a failed write to stdout counts as stdout closed; either
+# returns the emit exit code at once (emit_end then kills the workers).
 gather_raw() {
   local since="$1" cutoff_epoch
   cutoff_epoch="$(date -u -d "$since - 1 day" +%s 2>/dev/null || echo 0)"
   load_seats
   load_aide_sids
-  local f role sidf since prior
-  while IFS= read -r -d '' f; do
-    role="$(file_role "$f")"
-    since=0; prior="$role"; sidf="$(basename -- "$f" .jsonl)"
-    if [[ "$role" == seat:aide:* ]] && [[ "$f" != */subagents/* ]] && [ "${SINCE_BY_SID[$sidf]:-0}" -gt 0 ] 2>/dev/null; then
-      since="${SINCE_BY_SID[$sidf]}"; prior="$(file_role_prior "$f")"
+  local -a files=() pids=()
+  local f n i=0 next=0 k nmax run running
+  while IFS= read -r -d '' f; do files+=("$f"); done \
+    < <(find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null)
+  n=${#files[@]}
+  nmax="$(nproc 2>/dev/null)"
+  [[ "$nmax" =~ ^[1-9][0-9]*$ ]] || nmax=1
+  while [ "$next" -lt "$n" ]; do
+    if [ "$EMIT" = 1 ]; then emit_check || return; fi
+    running_jobs
+    run=" ${RUNNING[*]} "
+    # print every finished output that is next in find order
+    while [ "$next" -lt "$i" ] && [[ "$run" != *" ${pids[next]} "* ]]; do
+      wait "${pids[next]}" 2>/dev/null
+      if ! cat -- "$GATHER_TMP/$next" && [ "$EMIT" = 1 ]; then
+        EMIT_NOTE="stdout closed (write failed); stopped before every record was written"
+        return "$EMIT_RC_ORPHANED"
+      fi
+      rm -f -- "$GATHER_TMP/$next"
+      next=$((next + 1))
+    done
+    running=0
+    for ((k = next; k < i; k++)); do
+      [[ "$run" == *" ${pids[k]} "* ]] && running=$((running + 1))
+    done
+    if [ "$i" -lt "$n" ] && [ "$running" -lt "$nmax" ]; then
+      emit_file "${files[i]}" "$GATHER_TMP/$i" </dev/null >/dev/null 2>&1 &
+      pids[i]=$!
+      i=$((i + 1))
+    elif [ "$next" -lt "$n" ]; then
+      wait -n 2>/dev/null
     fi
-    jq -c --arg host "$LOCAL_HOST" --arg role "$role" --arg prior "$prior" --argjson since "$since" \
-      "(($JQ_EXTRACT), ($JQ_COMPACT)) | . + {host:\$host, role: (if \$since > 0 and ((.ts | sub(\"\\\\.[0-9]+\"; \"\") | try fromdateiso8601 catch \$since) < \$since) then \$prior else \$role end)}" -- "$f" 2>/dev/null
-  done < <(find "$JSONL_ROOT" -type f -name '*.jsonl' -newermt "@$cutoff_epoch" -print0 2>/dev/null)
+  done
+  return 0
 }
 
 # --emit-local-records is handled first and standalone: it never touches
 # $STATE_DIR, never talks to other hosts, and is what runs (via ssh, same
 # binary) on every OTHER fleet host when this script is the orchestrator.
+# Non-overlap: flock -n on $EMIT_LOCK, else exit EMIT_RC_BUSY at once.
+# Lifetime: TOKEN_LEDGER_EMIT_DEADLINE (the orchestrator's own SSH_TIMEOUT),
+# a live-parent check and the stdout write; see the exit codes above.
 if [ "${1:-}" = "--emit-local-records" ]; then
   shift
   since_arg=""
@@ -280,8 +450,30 @@ if [ "${1:-}" = "--emit-local-records" ]; then
     esac
   done
   [ -n "$since_arg" ] || die "--emit-local-records requires --since"
+  EMIT=1
+  read_ppid   # before the lock: once the lock is held, the starting parent is on record
+  EMIT_PPID0="$SELF_PPID"
+  EMIT_LOCK="${XDG_RUNTIME_DIR:-/tmp}/token-ledger-emit.$EUID.lock"
+  { exec {emit_lock_fd}>>"$EMIT_LOCK"; } 2>/dev/null || die "cannot open emit lock $EMIT_LOCK"
+  flock -n "$emit_lock_fd"
+  case $? in
+    0) ;;
+    1) printf 'token-ledger: another --emit-local-records holds %s (exit %s)\n' "$EMIT_LOCK" "$EMIT_RC_BUSY" >&2
+       exit "$EMIT_RC_BUSY" ;;
+    *) die "flock failed on emit lock $EMIT_LOCK" ;;
+  esac
+  trap 'EMIT_NOTE="terminated (SIGTERM)"; emit_end 143' TERM
+  trap 'EMIT_NOTE="hung up (SIGHUP)"; emit_end 129' HUP
+  trap 'EMIT_NOTE="interrupted (SIGINT)"; emit_end 130' INT
+  GATHER_TMP="$(mktemp -d "${TMPDIR:-/tmp}/token-ledger-emit.XXXXXX")" || die "cannot create a scratch dir"
+  if [[ "${TOKEN_LEDGER_EMIT_DEADLINE:-}" =~ ^[1-9][0-9]*$ ]]; then
+    EMIT_DEADLINE="$TOKEN_LEDGER_EMIT_DEADLINE"
+    sleep "$EMIT_DEADLINE" >/dev/null 2>&1 &   # deadline timer: its end wakes gather_raw's wait -n
+  elif [ -n "${TOKEN_LEDGER_EMIT_DEADLINE:-}" ]; then
+    printf 'token-ledger: ignoring TOKEN_LEDGER_EMIT_DEADLINE=%s (not whole seconds)\n' "$TOKEN_LEDGER_EMIT_DEADLINE" >&2
+  fi
   gather_raw "$since_arg"
-  exit 0
+  emit_end "$?"
 fi
 
 since=""
@@ -385,6 +577,8 @@ trap 'rm -rf "$work"' EXIT
 records_file="$work/records.ndjson"
 : > "$records_file"
 
+GATHER_TMP="$work/gather"
+mkdir -p "$GATHER_TMP"
 gather_raw "$since" >> "$records_file"
 
 missing_hosts=()
@@ -392,7 +586,10 @@ reachable_hosts=("$LOCAL_HOST")
 for h in $HOSTS_STR; do
   [ "$h" = "$LOCAL_HOST" ] && continue
   hf="$work/remote-$h.ndjson"
+  # the remote gets this same SSH_TIMEOUT as its own deadline: `timeout` ends only
+  # the local ssh client, so the remote emit stops itself (an older remote ignores it)
   if timeout "$SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" \
+       "TOKEN_LEDGER_EMIT_DEADLINE=$(printf '%q' "$SSH_TIMEOUT")" \
        '"$HOME/.local/bin/token-ledger"' --emit-local-records --since "$since" > "$hf" 2>/dev/null; then
     cat -- "$hf" >> "$records_file"
     reachable_hosts+=("$h")

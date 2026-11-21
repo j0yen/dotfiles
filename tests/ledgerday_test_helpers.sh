@@ -27,15 +27,17 @@ assert() { # $1=cond $2=description
 }
 
 # ledgerday_setup — creates $work (removed on EXIT), $state (empty
-# TOKEN_LEDGER_STATE_DIR), $jsonl (empty TOKEN_LEDGER_JSONL_ROOT), and
-# exports the single-host defaults every AC that doesn't care about the
-# fleet/ssh path can just run against.
+# TOKEN_LEDGER_STATE_DIR), $jsonl (empty TOKEN_LEDGER_JSONL_ROOT), $work/run
+# (XDG_RUNTIME_DIR, so the --emit-local-records lock never meets a live emit
+# on this host), and exports the single-host defaults every AC that doesn't
+# care about the fleet/ssh path can just run against.
 ledgerday_setup() {
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' EXIT
   state="$work/state"
   jsonl="$work/jsonl"
-  mkdir -p "$state" "$jsonl"
+  mkdir -p "$state" "$jsonl" "$work/run"
+  export XDG_RUNTIME_DIR="$work/run"
   export TOKEN_LEDGER_STATE_DIR="$state"
   export TOKEN_LEDGER_JSONL_ROOT="$jsonl"
   export TOKEN_LEDGER_HOSTS="carbon"
