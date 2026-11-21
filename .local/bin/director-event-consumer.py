@@ -762,6 +762,41 @@ def live_run_for_claim(claim):
     return False
 
 
+def waits_set(row):
+    """The row's closes-after set (waits_on) as a sorted list of ask ids; a list or a comma/space separated string."""
+    raw = row.get("waits_on") or []
+    if isinstance(raw, str):
+        raw = raw.replace(",", " ").split()
+    return sorted(set(str(x) for x in raw))
+
+
+def own_completed_claim(claim, ask):
+    """E15 R6: the ledger claim (stamped <worker>@<ts>; the real ledger never releases it) is held by a run of THIS ask in this
+    state dir whose record is completed with its receipt and carries that exact claim. Legacy bare or foreign claims: False."""
+    if not claim or "@" not in str(claim):
+        return False
+    w = claim_worker(claim)
+    for n in sorted(os.listdir(RUNS)):
+        if n.endswith(".json") and not n.endswith(".receipt.json"):
+            o = load_run(n[:-5])
+            if (o and o.get("ask") == ask and o.get("worker") == w and o["state"] == "completed" and o.get("claim") == claim
+                    and os.path.exists(os.path.join(RUNS, n[:-5] + ".receipt.json"))):
+                return True
+    return False
+
+
+def last_consumed_set(ask, claim):
+    """The waits_on set recorded by the latest run (highest claimed_rev) that claimed or adopted this ask's claim; None if none recorded."""
+    best = None
+    for n in sorted(os.listdir(RUNS)):
+        if n.endswith(".json") and not n.endswith(".receipt.json"):
+            o = load_run(n[:-5])
+            if (o and o.get("ask") == ask and "consumed_waits_on" in o and claim_worker(o.get("claim")) == claim_worker(claim)
+                    and (best is None or (o.get("claimed_rev") or 0) > best[0])):
+                best = (o.get("claimed_rev") or 0, o["consumed_waits_on"])
+    return best[1] if best else None
+
+
 def sibling_open(r):
     for n in sorted(os.listdir(RUNS)):
         if n.endswith(".json") and not n.endswith(".receipt.json") and n[:-5] != r["event_id"]:
@@ -835,7 +870,9 @@ def _process(eid, ask):
                 decide(event_id=eid, ask=ask, decision="revision-mismatch", event_rev=r.get("event_rev"), rev=rev)
                 return
         cur = row.get("claim")
-        if cur and claim_worker(cur) != worker:
+        # E15 R6: the claim is held by this ask's own completed run (never released): adopt it, no second `asks claim`
+        adopt = bool(cur) and claim_worker(cur) != worker and own_completed_claim(cur, ask)
+        if cur and claim_worker(cur) != worker and not adopt:
             if str(cur).startswith("director-") and live_run_for_claim(cur):
                 set_wait(r, "ask-busy", prev, claim=cur)
                 return
@@ -855,7 +892,7 @@ def _process(eid, ask):
             if blocked:
                 set_wait(r, "scope-wait", prev, scope=blocked[0], holder=blocked[1])
                 return
-        if claim_worker(cur) != worker:
+        if claim_worker(cur) != worker and not adopt:
             rc, _, _ = sh(ASKS + ["asks", "claim", ask, "--worker", worker, "--by", "hermes", "--expect-rev", str(rev)])
             if rc != 0:
                 release_scopes(r)
@@ -876,13 +913,14 @@ def _process(eid, ask):
                 return
         back = asks_query("--ids", ask)
         got = back[0].get("claim") if back else None
-        if claim_worker(got) != worker:
+        if (got != cur) if adopt else (claim_worker(got) != worker):      # adopted: the readback must be the held stamped claim itself
             release_scopes(r)
             r["state"], r["claim"] = "claim-conflict", got
             save_run(r)
             decide(event_id=eid, ask=ask, decision="claim-conflict", claim=got)
             return
         r["claim"], r["claimed_rev"] = got, rev
+        r["consumed_waits_on"] = waits_set(row)     # the closes-after set this run consumed (poll_ready compares the next one to it)
         r["state"] = "claimed"
         r.pop("last_incident", None)
         r["claimed"] = now()
@@ -1000,8 +1038,13 @@ def poll_ready():
     ready_poll_ok()
     for row in rows:
         ask, rev = str(row.get("ask_id", "")), row.get("rev")
-        if row.get("claim") or row.get("status", "open") != "open":
+        if row.get("status", "open") != "open":
             continue
+        if row.get("claim"):
+            # E15 R6: an own completed claim reruns only on a waits_on set differing from the last one consumed (a rev bump alone never)
+            last = last_consumed_set(ask, row["claim"]) if own_completed_claim(row["claim"], ask) else None
+            if last is None or waits_set(row) == last:
+                continue
         eid = "ready-%s-%s" % (ask, rev)
         old = load_run(eid)
         if old is not None and old["state"] not in RETRY_STATES:
