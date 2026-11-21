@@ -24,12 +24,13 @@ ADV_BRIEF_RE='briefs?[/=:]'
 # Waiver: RB_MERGE_ADV_WAIVE=<d-id> of a row of kind ADV_WAIVE_KIND recorded BY ADV_WAIVE_AGENT (the ledger `agent` column the recorder sets from --agent; ctl rows carry
 # agent=controller, never ctl; an agent= token typed inside `what` never counts) with ledger `via` == ADV_WAIVE_VIA (the controller's seat-tick sweep), whose what holds
 # ADV-WAIVE <owner/name>#<pr> for THIS PR and a future until=<ISO-8601 with a time part>, AND whose Fable grade says CONFIRM. The grade lives in the waiver row itself (one value per row,
-# rewritten in place by swarm-decide-regrade): its `regrade` JSON column must have by == ADV_REGRADER_AGENT, verdict == ADV_REGRADE_OK and a `ts` STRICTLY later (epoch compare) than the row's ts;
+# rewritten in place by swarm-decide-regrade): its `regrade` JSON column must have by == one of the space-separated ADV_REGRADER_AGENTS (exact token: the legacy
+# `fable-regrader` stamp of historical grades and the `regrader` stamp of the A388 no-Fable grader), verdict == ADV_REGRADE_OK and a `ts` STRICTLY later (epoch compare) than the row's ts;
 # `graded_at` is the outcome-pass time (later than ts on every real regraded row), so it is only a column probe: a ledger without `regrade` or `graded_at` refuses (reason old-schema).
 ADV_WAIVE_KIND='other'
 ADV_WAIVE_AGENT='controller'
 ADV_WAIVE_VIA='seat-tick'
-ADV_REGRADER_AGENT='fable-regrader'
+ADV_REGRADER_AGENTS='fable-regrader regrader'   # A388: was ADV_REGRADER_AGENT='fable-regrader'; the model field is not read (unchanged)
 ADV_REGRADE_OK='CONFIRM'
 ADV_WAIVE_RE_FMT='ADV-WAIVE @REPO@#@PR@([^0-9]|$)'
 ADV_UNTIL_RE='until=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}:?[0-9]{2})?)'
