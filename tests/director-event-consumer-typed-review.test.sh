@@ -21,11 +21,13 @@ HEAD1=$(printf 'e%.0s' $(seq 40)); HEAD2=$(printf 'f%.0s' $(seq 40))
 # reviewer launcher stub: <unit> <root> <session> <prompt>; records the launch, creates the root with process.json (as the real wrapper does first)
 cat > "$T/rlaunch" <<'SH'
 #!/usr/bin/env bash
-echo "$1 $3" >> "$STUB/rlaunch.log"; mkdir -p "$2"; cp "$4" "$STUB/last-review-prompt.md"; cp "$4" "$STUB/prompt-$1.md"
+mkdir -p "$(dirname "$2")"; mkdir "$2" || exit 17          # the root is claimed atomically, as the real launch script does
+echo "$1 $3" >> "$STUB/rlaunch.log"; cp "$4" "$STUB/last-review-prompt.md"; cp "$4" "$STUB/prompt-$1.md"
 [ -e "$STUB/rlaunch-fail" ] && exit 1
 echo '{"pid": 4242}' > "$2/process.json"; echo "$1" > "$STUB/live-$1"
 if [ -e "$STUB/auto-verdict" ]; then
   head=$(cat "$STUB/auto-verdict"); printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[{"id":"F1","severity":"major","text":"needs a discriminating test"}]}\n' "$head" "$3" > "$2/verdict.json"
+  printf '{"session_id":"%s","is_error":false,"result":"done"}\n' "$3" > "$2/result.json"; echo rc=0 > "$2/status.txt"
 fi
 exit 0
 SH
@@ -34,11 +36,25 @@ cat > "$T/rprobe" <<'PY'
 #!/usr/bin/env python3
 import base64, json, os, sys
 S = os.environ["STUB"]; unit, root = sys.argv[1], sys.argv[2]
+if sys.argv[3:] == ["--tombstone"]:
+    open(S + "/tombstone.log", "a").write(unit + "\n")
+    os.makedirs(os.path.dirname(root), exist_ok=True)
+    try:
+        os.mkdir(root)
+    except FileExistsError:
+        sys.exit(1)
+    open(os.path.join(root, "abandoned"), "w").close(); sys.exit(0)
 open(S + "/rprobe.log", "a").write(unit + "\n")
 if os.path.exists(S + "/probe-unknown"): sys.exit(3)
-st = "live" if os.path.exists(S + "/live-" + unit) else ("dead" if os.path.isdir(root) else "absent")
-v = os.path.join(root, "verdict.json")
-print(json.dumps({"unit": st, "process": os.path.exists(os.path.join(root, "process.json")), "status": None,
+ab = os.path.exists(os.path.join(root, "abandoned"))
+st = "live" if os.path.exists(S + "/live-" + unit) else ("dead" if os.path.isdir(root) and not ab else "absent")
+v, rj, sf = os.path.join(root, "verdict.json"), os.path.join(root, "result.json"), os.path.join(root, "status.txt")
+res = None
+if os.path.exists(rj):
+    raw = open(rj, "rb").read(); j = json.loads(raw) if raw.strip() else {}
+    import hashlib; res = {"session": j.get("session_id"), "is_error": j.get("is_error"), "sha256": hashlib.sha256(raw).hexdigest()}
+print(json.dumps({"unit": st, "process": os.path.exists(os.path.join(root, "process.json")), "root": os.path.isdir(root), "result": res,
+                  "status": open(sf).read().strip() if os.path.exists(sf) else None,
                   "verdict_b64": base64.b64encode(open(v, "rb").read()).decode() if os.path.exists(v) else None}))
 PY
 cat > "$T/legacy-launcher" <<'SH'
@@ -106,6 +122,7 @@ cnt(){ local n; n="$(grep -c -- "${2:-.}" "$STUB/$1" 2>/dev/null)"; echo "${n:-0
 state_of(){ sq "SELECT state FROM asks WHERE ask_id='$1'"; }
 act(){ sq "SELECT ask_id FROM action_meta ORDER BY rowid DESC LIMIT 1"; }
 rec(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]))' "$DIRECTOR_STATE/typed/typed-$1.json" "$2" 2>/dev/null; }
+native_ok(){ printf '{"session_id":"%s","is_error":false,"result":"done"}\n' "$2" > "$1/result.json"; echo rc=0 > "$1/status.txt"; }   # <root> <launched session>: the native invocation's own terminal
 blk(){ python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("blocked") or {}).get("why"))' "$DIRECTOR_STATE/typed/typed-$1.json" 2>/dev/null; }
 gate_open(){ python3 - "$@" <<'PY'
 import os, sqlite3, sys
@@ -145,7 +162,7 @@ chk "T1 launch effect done with the reviewer session" '[ "$(sq "SELECT state FRO
 chk "T1 legacy launcher never ran" '[ "$(cnt legacy-launch.log)" = 0 ]'
 chk "T1 prompt names the exact head and binding" 'grep -q "$HEAD1" "$STUB/last-review-prompt.md" && grep -q "$BID" "$STUB/last-review-prompt.md"'
 S1=$(rec $A session); U1=$(rec $A unit); R1=$(rec $A root)
-printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[{"id":"F1","severity":"major","text":"x"}]}\n' "$HEAD1" "$S1" > "$R1/verdict.json"; rm -f "$STUB/live-$U1"
+printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[{"id":"F1","severity":"major","text":"x"}]}\n' "$HEAD1" "$S1" > "$R1/verdict.json"; native_ok "$R1" "$S1"; rm -f "$STUB/live-$U1"
 run
 chk "T1 review result recorded: verifying" '[ "$(state_of $A)" = verifying ]'
 chk "T1 one review-result event naming the reviewer session" '[ "$(sq "SELECT COUNT(*) FROM ask_events WHERE ask_id='"'"'$A'"'"' AND op='"'"'review-result'"'"' AND detail LIKE '"'"'%$S1%'"'"'")" = 1 ]'
@@ -204,9 +221,9 @@ fresh 7; cutover; ingest >/dev/null; A=$(act); run
 S1=$(rec $A session); U1=$(rec $A unit); rm -f "$STUB/live-$U1"; run
 chk "T7 second launch, same action, new session" '[ "$(cnt rlaunch.log)" = 2 ] && [ "$(rec $A session)" != "$S1" ] && [ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ]'
 S2=$(rec $A session); R2=$(rec $A root); U2=$(rec $A unit)
-printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S1" > "$R2/verdict.json"; rm -f "$STUB/live-$U2"; run
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S1" > "$R2/verdict.json"; native_ok "$R2" "$S2"; rm -f "$STUB/live-$U2"; run
 chk "T7 a verdict carrying the stale session is not recorded" '[ "$(state_of $A)" = running ]'
-printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $A session)" > "$(rec $A root)/verdict.json"; rm -f "$STUB/live-$(rec $A unit)"; run
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $A session)" > "$(rec $A root)/verdict.json"; native_ok "$(rec $A root)" "$(rec $A session)"; rm -f "$STUB/live-$(rec $A unit)"; run
 chk "T7 the current session's verdict is recorded" '[ "$(state_of $A)" = verifying ]'
 
 echo "== T8 superseded: a newer gated head cancels the older ready action; only the newer one launches"
@@ -222,7 +239,7 @@ chk "T9 once the newer head is ingested: the older run ends superseded, the newe
 echo "== T10 fence mid-flight: epoch moved to none -> the result is not recorded, no relaunch"
 fresh 10; cutover; ingest >/dev/null; A=$(act); run
 wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
-printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $A session)" > "$(rec $A root)/verdict.json"; rm -f "$STUB/live-$(rec $A unit)"; run
+printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $A session)" > "$(rec $A root)/verdict.json"; native_ok "$(rec $A root)" "$(rec $A session)"; rm -f "$STUB/live-$(rec $A unit)"; run
 chk "T10 fenced: still running, one launch, no review result" '[ "$(state_of $A)" = running ] && [ "$(cnt rlaunch.log)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM ask_events WHERE op='"'"'review-result'"'"'")" = 0 ]'
 
 echo "== T11 known-bad controls: a passive inbox file, a bare outbox bell and a hand-authored typed task execute nothing"
@@ -255,7 +272,7 @@ fresh 15; cutover; ingest >/dev/null; OLD=$(act); run
 chk "T15 older launched" '[ "$(state_of $OLD)" = running ] && [ "$(cnt rlaunch.log)" = 1 ]'
 builder gate "$HEAD2" 904; ingest >/dev/null; NEW=$(act); run
 chk "T15 older still running (never cancelled under its consumer), newer launched" '[ "$(state_of $OLD)" = running ] && [ "$(state_of $NEW)" = running ] && [ "$(cnt rlaunch.log)" = 2 ]'
-printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $OLD session)" > "$(rec $OLD root)/verdict.json"; rm -f "$STUB/live-$(rec $OLD unit)"; run
+printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$(rec $OLD session)" > "$(rec $OLD root)/verdict.json"; native_ok "$(rec $OLD root)" "$(rec $OLD session)"; rm -f "$STUB/live-$(rec $OLD unit)"; run
 chk "T15 older review result recorded for its own head" '[ "$(state_of $OLD)" = verifying ] && [ "$(sq "SELECT COUNT(*) FROM ask_events WHERE ask_id='"'"'$OLD'"'"' AND op='"'"'review-result'"'"' AND detail LIKE '"'"'%$HEAD1%'"'"'")" = 1 ]'
 chk "T15 no relaunch of either" '[ "$(cnt rlaunch.log)" = 2 ]'
 
@@ -466,8 +483,89 @@ S=$(rec $A session); U=$(rec $A unit); RT=$(rec $A root)
 wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback" >/dev/null; run
 chk "T34 fenced while rolled back" '[ "$(blk $A)" = fenced ]'
 cutover 2
-printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S" > "$RT/verdict.json"; rm -f "$STUB/live-$U"; run; run
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S" > "$RT/verdict.json"; native_ok "$RT" "$S"; rm -f "$STUB/live-$U"; run; run
 chk "T34 after re-cutover (epoch 3): result recorded, record re-adopted at epoch 3, one launch" '[ "$(state_of $A)" = verifying ] && [ "$(rec $A epoch)" = 3 ] && [ "$(cnt rlaunch.log)" = 1 ] && grep -q "\"decision\": \"re-adopted\"" "$DIRECTOR_STATE/decisions.jsonl" 2>/dev/null'
+
+# IR1-F5: a review result needs the native invocation's own clean terminal for the launched session, not only a verdict.json naming it
+echo "== T36 a verdict without the native terminal, or with a failed one, is not recorded (relaunch); a clean native terminal records"
+fresh 36; cutover; ingest >/dev/null; A=$(act); run
+S1=$(rec $A session); R1=$(rec $A root); U1=$(rec $A unit)
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S1" > "$R1/verdict.json"; rm -f "$STUB/live-$U1"; run
+chk "T36 verdict.json with the right session but no result.json/status: not recorded, relaunched" '[ "$(state_of $A)" = running ] && [ "$(cnt rlaunch.log)" = 2 ]'
+S2=$(rec $A session); R2=$(rec $A root); U2=$(rec $A unit)
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S2" > "$R2/verdict.json"; native_ok "$R2" "$S2"; echo rc=1 > "$R2/status.txt"; rm -f "$STUB/live-$U2"; run
+chk "T36 native exit rc=1: not recorded, relaunched" '[ "$(state_of $A)" = running ] && [ "$(cnt rlaunch.log)" = 3 ]'
+S3=$(rec $A session); R3=$(rec $A root); U3=$(rec $A unit)
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S3" > "$R3/verdict.json"; native_ok "$R3" "$S3"; rm -f "$STUB/live-$U3"; run
+chk "T36 clean native terminal: recorded, the review-result event carries the native session and status" '[ "$(state_of $A)" = verifying ] && wmd intake action --ask $A | python3 -c "import json,sys; d=json.load(sys.stdin); n=[json.loads(e[\"detail\"]) for e in d[\"events\"] if e[\"op\"]==\"review-result\"][0][\"native\"]; sys.exit(0 if n[\"session\"]==sys.argv[1] and n[\"status\"]==\"rc=0\" and n[\"is_error\"] is False else 1)" "$S3"'
+
+# IR1-F5/F6 through the REAL launch and probe scripts: the fake ssh runs the remote command locally; fake systemd-run/systemctl keep a unit's life in
+# $STUB/fsd; the fake model launcher writes verdict.json and its JSON terminal (HARNESS, test-only PATH shims, no production seam)
+mkdir -p "$T/fb"
+cat > "$T/fb/ssh" <<'PY'
+#!/usr/bin/env python3
+import os, subprocess, sys
+a = sys.argv[1:]; opts = []
+while a and a[0].startswith("-"):
+    o = a.pop(0); opts.append(o)
+    if o in ("-o", "-F", "-i", "-p", "-l", "-J") and a:
+        opts.append(a.pop(0))
+host = a.pop(0) if a else ""
+if "-G" in opts:
+    print("hostname " + host.rsplit("@", 1)[-1]); print("user jsy"); sys.exit(0)
+open(os.environ["STUB"] + "/ssh-argv.log", "a").write(host + " " + " ".join(a) + "\n")
+env = dict(os.environ, PATH=os.path.dirname(os.path.abspath(__file__)) + ":" + os.environ["PATH"])
+sys.exit(subprocess.run(a, env=env).returncode)
+PY
+cat > "$T/fb/systemd-run" <<'SH'
+#!/usr/bin/env bash
+unit=""; wd=""; cmd=()
+while [ $# -gt 0 ]; do case "$1" in --user|--collect) shift;; --unit) unit="$2"; shift 2;; --property=*) shift;; --working-directory=*) wd="${1#*=}"; shift;; *) cmd=("$@"); break;; esac; done
+[ -e "$STUB/sdrun-fail" ] && exit 1
+mkdir -p "$STUB/fsd"; echo active > "$STUB/fsd/$unit"; echo "$unit" >> "$STUB/sdrun.log"
+( cd "$wd" && setsid "${cmd[@]}" </dev/null >/dev/null 2>&1; rm -f "$STUB/fsd/$unit" ) &
+exit 0
+SH
+cat > "$T/fb/systemctl" <<'SH'
+#!/usr/bin/env bash
+p=""; for x in "$@"; do [ "$prev" = "-p" ] && p="$x"; prev="$x"; done; unit="${!#}"
+if [ -e "$STUB/fsd/$unit" ]; then case "$p" in ActiveState) echo active;; LoadState) echo loaded;; esac
+else case "$p" in ActiveState) echo inactive;; LoadState) echo not-found;; esac; fi
+SH
+cat > "$T/fake-fable" <<'SH'
+#!/usr/bin/env bash
+s=""; while [ $# -gt 0 ]; do [ "$1" = "--session-id" ] && s="$2"; shift; done; cat > /dev/null
+echo "$s" >> "$STUB/fable.log"
+printf '{"verdict":"FIX","reviewed_head":"%s","reviewer_session":"%s","findings":[{"id":"F1","severity":"minor","text":"x"}]}\n' "$(cat "$STUB/auto-verdict")" "$s" > verdict.json
+printf '{"session_id":"%s","is_error":false,"result":"done"}\n' "$s"; exit 0
+SH
+chmod 755 "$T/fb/ssh" "$T/fb/systemd-run" "$T/fb/systemctl" "$T/fake-fable"
+realrun(){ env -u DIRECTOR_REVIEW_LAUNCH_CMD -u DIRECTOR_REVIEW_PROBE_CMD DIRECTOR_REVIEW_ROUTE="$T/route-real.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1; }
+realroute(){ printf '{"host":"reviewhost.invalid","root":"%s","launcher":["%s"],"model":"claude-opus-5-5","effort":"high","ssh":["%s"]}\n' "$T/rr$1" "$T/fake-fable" "$T/fb/ssh" > "$T/route-real.json"; }
+units_done(){ for i in $(seq 100); do [ -z "$(ls -A "$STUB/fsd" 2>/dev/null)" ] && return 0; sleep 0.1; done; return 1; }
+pend(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pending"][sys.argv[2]])' "$DIRECTOR_STATE/typed/typed-$1.json" "$2"; }
+
+echo "== T37 real launch and probe scripts: a clean native terminal records; an in-flight launch is UNKNOWN; a missing root is tombstoned so a late launcher starts nothing"
+fresh 37; cutover; ingest >/dev/null; A=$(act); realroute 37; echo "$HEAD1" > "$STUB/auto-verdict"
+realrun; units_done; realrun
+chk "T37 real scripts: launched once over ssh, launch.rc written, the native terminal recorded the result" '[ "$(cnt sdrun.log)" = 1 ] && [ "$(cat "$(rec $A root)/launch.rc")" = rc=0 ] && [ "$(state_of $A)" = verifying ]'
+fresh 37b; cutover; ingest >/dev/null; A=$(act); realroute 37b; echo "$HEAD1" > "$STUB/auto-verdict"
+DIRECTOR_CRASH_AT=typed-after-begin realrun
+RT1=$(pend $A root); mkdir -p "$RT1"; echo '{}' > "$RT1/invocation.json"        # a launcher still in flight: root and invocation, no launch.rc, no unit
+realrun
+chk "T37 in-flight launch: UNKNOWN (reconcile-required), nothing launched" '[ "$(rec $A state)" = reconcile-required ] && [ "$(cnt sdrun.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = unknown ]'
+fresh 37c; cutover; ingest >/dev/null; A=$(act); realroute 37c; echo "$HEAD1" > "$STUB/auto-verdict"
+DIRECTOR_CRASH_AT=typed-after-begin realrun
+U1=$(pend $A unit); RT1=$(pend $A root); realrun; units_done
+chk "T37 missing root: tombstoned (abandoned), attempt 1 settled failed, attempt 2 launched" '[ -e "$RT1/abandoned" ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"' ORDER BY created LIMIT 1")" = failed ] && [ "$(cnt sdrun.log)" = 1 ] && [ "$(rec $A attempt)" = 2 ]'
+DIRECTOR_REVIEW_ROUTE="$T/route-real.json" DIRECTOR_REVIEW_ROOT= python3 - "$C" "$U1" "$RT1" <<'PY' > "$T/late.txt" 2>&1
+import importlib.util as u, sys, tempfile
+s = u.spec_from_file_location("c", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+p = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False); p.write("late"); p.close()
+print("late-rc", m.review_launch(sys.argv[2], sys.argv[3], "late-session", p.name))
+PY
+units_done
+chk "T37 the late launcher of attempt 1 finds the root taken and starts nothing" 'grep -q "late-rc [1-9]" "$T/late.txt" && [ "$(cnt sdrun.log)" = 1 ] && ! grep -q late-session "$STUB/fable.log"'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]

@@ -1294,7 +1294,7 @@ TYPED_ADMIT = ("seen", "held", "canonical-unavailable", "builder-unknown", "buil
 BUILDER_WAIT_CODES = ("not-terminal", "gate-not-pass", "stale-terminal", "prd-missing", "head-unbound")
 SUPERSEDED_CODES = ("action-superseded", "binding-superseded", "obligation-closed", "state-cancelled", "state-verifying", "state-accepted", "state-blocked")
 FENCE_CODES = ("class-not-cut-over", "epoch-mismatch", "fence-claim")
-RETRY_RESULT_CODES = ("head-mismatch", "session-mismatch", "result-malformed", "reviewer-not-distinct")
+RETRY_RESULT_CODES = ("head-mismatch", "session-mismatch", "result-malformed", "reviewer-not-distinct", "native-terminal-mismatch")
 REVIEW_ROUTE = os.environ.get("DIRECTOR_REVIEW_ROUTE") or os.path.join(PW_HOME, ".config/wintermute/review-route.json")
 CLAIM_REV_RE = re.compile(r"\brev ([0-9]+)\b")
 
@@ -1441,9 +1441,12 @@ def review_launch(unit, root, session, prompt_path):
              "%s --model %s --effort %s --session-id %s --strict-mcp-config --mcp-config empty-mcp.json --tools %s --allowedTools %s --output-format json -p "
              "< prompt.md > result.json 2> stderr.log\necho \"rc=$?\" > status.txt\n") % (q(rt.get("task") or "A1296"), launcher, q(rt["model"]), q(rt["effort"]), q(session), q(tools), q(tools))
     inv = json.dumps({"unit": unit, "session": session, "model": rt["model"], "effort": rt["effort"], "launcher": rt["launcher"], "host": rt["host"], "ts": now()})
-    script = ("set -eu\nroot=%s\nmkdir -p \"$root\"\ncd \"$root\"\nprintf %%s %s | base64 -d > prompt.md\nprintf '%%s\\n' '{\"mcpServers\":{}}' > empty-mcp.json\n"
-              "printf '%%s\\n' %s > invocation.json\nprintf %%s %s | base64 -d > run.sh\n"
-              "systemd-run --user --unit %s --collect --property=KillMode=process --working-directory=\"$root\" /bin/bash \"$root/run.sh\" >/dev/null\n") % (
+    # the root is claimed atomically (plain mkdir): a root that already exists (an earlier launch, or the consumer's tombstone) is never reused, and
+    # launch.rc is written the moment systemd-run returns, so the probe can tell "launch in flight" (UNKNOWN) from "never started" (absent)
+    script = ("set -eu\nroot=%s\nmkdir -p \"$(dirname \"$root\")\"\nmkdir \"$root\"\ncd \"$root\"\nprintf %%s %s | base64 -d > prompt.md\nprintf '%%s\\n' '{\"mcpServers\":{}}' > empty-mcp.json\n"
+              "printf '%%s\\n' %s > invocation.json\nprintf %%s %s | base64 -d > run.sh\nrc=0\n"
+              "systemd-run --user --unit %s --collect --property=KillMode=process --working-directory=\"$root\" /bin/bash \"$root/run.sh\" >/dev/null || rc=$?\n"
+              "printf 'rc=%%s\\n' \"$rc\" > launch.rc\nexit \"$rc\"\n") % (
         q(root), q(base64.b64encode(open(prompt_path, "rb").read()).decode()), q(inv), q(base64.b64encode(runsh.encode()).decode()), q(unit))
     rc, _, _ = sh_in(route_transport(rt, ["bash", "-s"]), script)
     return rc
@@ -1457,13 +1460,35 @@ def show(p):
     if r.returncode != 0:
         sys.exit(3)
     return r.stdout.strip()
+import hashlib
 act, load = show("ActiveState"), show("LoadState")
-unit = "absent" if load == "not-found" else "live" if act in ("active", "activating", "deactivating", "reloading") else "dead" if act in ("inactive", "failed") else None
+root = A["root"]
+p = lambda n: os.path.join(root, n)
+lrc = open(p("launch.rc")).read().strip() if os.path.exists(p("launch.rc")) else None
+if load != "not-found":
+    unit = "live" if act in ("active", "activating", "deactivating", "reloading") else "dead" if act in ("inactive", "failed") else None
+elif not os.path.isdir(root) or os.path.exists(p("abandoned")):
+    unit = "absent"                 # never launched, or the consumer's tombstone claimed the root first (a late launcher cannot start)
+elif os.path.exists(p("process.json")):
+    unit = "dead"                   # it ran and its unit was collected
+elif lrc is None:
+    unit = None                     # the launch script is still in flight or died before systemd-run returned: UNKNOWN, never 'absent'
+else:
+    unit = "absent" if lrc != "rc=0" else "dead"
 if unit is None:
     sys.exit(3)
-root = A["root"]
-v = os.path.join(root, "verdict.json"); s = os.path.join(root, "status.txt")
-print(json.dumps({"unit": unit, "process": os.path.exists(os.path.join(root, "process.json")), "status": open(s).read().strip() if os.path.exists(s) else None,
+res = None
+if os.path.exists(p("result.json")):
+    raw = open(p("result.json"), "rb").read()
+    try:
+        j = json.loads(raw)
+    except ValueError:
+        j = {}
+    j = j if isinstance(j, dict) else {}
+    res = {"session": j.get("session_id"), "is_error": j.get("is_error"), "sha256": hashlib.sha256(raw).hexdigest()}
+v = p("verdict.json"); s = p("status.txt")
+print(json.dumps({"unit": unit, "process": os.path.exists(p("process.json")), "root": os.path.isdir(root), "launch_rc": lrc, "result": res,
+                  "status": open(s).read().strip() if os.path.exists(s) else None,
                   "verdict_b64": base64.b64encode(open(v, "rb").read()).decode() if os.path.exists(v) else None}))
 '''
 
@@ -1485,6 +1510,33 @@ def review_probe(unit, root):
     except ValueError:
         return None
     return v if isinstance(v, dict) and v.get("unit") in ("live", "dead", "absent") else None
+
+
+def review_tombstone(unit, root):
+    """Claim a reviewer root that the probe found missing, before its launch is settled 'absent': plain mkdir plus an `abandoned` marker, so a late
+    launcher of the same attempt (an orphaned ssh) finds the root taken and starts nothing. -> True only when this call created the root."""
+    cmd = os.environ.get("DIRECTOR_REVIEW_PROBE_CMD")
+    if cmd:
+        rc, _, _ = sh(shlex.split(cmd) + [unit, root, "--tombstone"])
+        return rc == 0
+    rt = load_route()
+    if rt is None:
+        return False
+    q = shlex.quote
+    rc, _, _ = sh_in(route_transport(rt, ["bash", "-s"]), "set -eu\nroot=%s\nmkdir -p \"$(dirname \"$root\")\"\nmkdir \"$root\"\n: > \"$root/abandoned\"\n" % q(root))
+    return rc == 0
+
+
+def typed_absent_safe(p, pr):
+    """An 'absent' readback may settle the launch failed only when nothing can still start it: the root exists and the probe classified it, or the
+    consumer's tombstone just claimed the missing root."""
+    return bool(pr.get("root", True)) or review_tombstone(p["unit"], p["root"])
+
+
+def native_terminal(pr):
+    """The native invocation's terminal from a probe: {session, result_sha256, status, is_error} (independent review 01, finding 5)."""
+    res = pr.get("result") or {}
+    return {"session": res.get("session"), "result_sha256": res.get("sha256"), "status": pr.get("status"), "is_error": res.get("is_error")}
 
 
 def write_review_prompt(r, attempt, session):
@@ -1737,6 +1789,9 @@ def typed_readback(r):
         return False
     if pr["unit"] == "live" or pr.get("process"):
         return typed_settle_launch(r, "recovered: unit=%s process=%s" % (pr["unit"], pr.get("process")))
+    if not typed_absent_safe(p, pr):
+        typed_block(r, "launch-race", unit=p["unit"], root=p["root"])     # the root appeared meanwhile, or the tombstone failed: read back next tick
+        return False
     rc, _, _, err = wd("effect-finish", "--idem-key", p["idem"], "--outcome", "failed", "--by", r["worker"], "--readback", "absent: unit %s, no process.json under %s" % (pr["unit"], p["root"]))
     if rc != 0:
         typed_block(r, "canonical-unavailable", rc=rc, stderr=err)
@@ -1756,8 +1811,11 @@ def typed_observe(r, epoch):
     if pr["unit"] == "live":
         typed_unblock(r)
         return False
-    if not pr.get("verdict_b64"):
-        typed_decide(r, "reviewer-ended-without-result", attempt=r["attempt"], unit=r["unit"], status=pr.get("status"))
+    nat = native_terminal(pr)
+    if not pr.get("verdict_b64") or nat["status"] != "rc=0" or nat["is_error"] is not False or nat["session"] != r["session"] or not nat["result_sha256"]:
+        # no verdict, or a verdict without the native invocation's own clean terminal for the launched session: not a review result
+        typed_decide(r, "reviewer-ended-without-result", attempt=r["attempt"], unit=r["unit"], status=pr.get("status"), native=nat,
+                     verdict_present=bool(pr.get("verdict_b64")))
         r["state"] = "running"
         typed_save(r)
         return True
@@ -1771,7 +1829,7 @@ def typed_observe(r, epoch):
         typed_block(r, "canonical-unavailable", rc=rc)
         return False
     rc, val, _, err = wd("record-review-result", "--ask", r["ask"], "--expect-rev", str(rev), "--claim", r["claim"], "--epoch", str(r["epoch"]), "--consumer", TYPED_CONSUMER,
-                         "--session", r["session"], "--result", vpath)
+                         "--session", r["session"], "--result", vpath, "--native", json.dumps(nat, sort_keys=True))
     code = val.get("code") if isinstance(val, dict) else None
     if rc == 0:
         import hashlib
@@ -2010,6 +2068,8 @@ def typed_reprobe(r):
     if pr is None:
         return False                    # still UNKNOWN: nothing is settled or relaunched on a guess
     present = pr["unit"] == "live" or bool(pr.get("process"))
+    if not present and not typed_absent_safe(r["pending"], pr):
+        return False
     return typed_settle_unknown(r, "present" if present else "absent", CONSUMER, "probe readback: unit=%s process=%s" % (pr["unit"], pr.get("process")))
 
 
@@ -2027,6 +2087,11 @@ def cmd_reconcile_typed(eid, verdict, by):
         if r["state"] != "reconcile-required" or not r.get("pending"):
             decide(event_id=eid, ask=r["ask"], decision="reconcile-typed-refused", reason="settled-meanwhile")
             return 3
+        if verdict == "absent":
+            pr = review_probe(r["pending"]["unit"], r["pending"]["root"])
+            if pr is not None and not typed_absent_safe(r["pending"], pr):
+                decide(event_id=eid, ask=r["ask"], decision="reconcile-typed-refused", reason="root-not-claimable: a launch of this attempt may still start")
+                return 4
         return 0 if typed_settle_unknown(r, verdict, by, "reconciled %s by %s" % (verdict, by)) else 4
     finally:
         lk.close()
