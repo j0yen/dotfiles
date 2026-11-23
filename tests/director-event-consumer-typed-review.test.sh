@@ -150,10 +150,17 @@ DIRECTOR_CRASH_AT=typed-after-begin run
 chk "T5 crash left the intent, no launch" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = intended ]'
 touch "$STUB/probe-unknown"; run
 chk "T5 UNKNOWN recorded, run held for reconciliation, no launch" '[ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = unknown ] && [ "$(rec $A state)" = reconcile-required ] && [ "$(cnt rlaunch.log)" = 0 ]'
+run
+chk "T5 while the probe still cannot answer: nothing settles, nothing launches" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(rec $A state)" = reconcile-required ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = unknown ]'
 rm -f "$STUB/probe-unknown"; run
-chk "T5 still no launch without an owner readback" '[ "$(cnt rlaunch.log)" = 0 ]'
-python3 "$C" reconcile-typed "typed-$A" --verdict absent --by test-owner >/dev/null 2>&1; run
-chk "T5 after reconcile absent: exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ]'
+chk "T5 a later answering probe (absent) settles the UNKNOWN effect failed and relaunches exactly once" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"' ORDER BY created LIMIT 1")" = failed ] && [ "$(rec $A state)" = launched ]'
+
+echo "== T5b UNKNOWN that the probe never answers: only the owner readback (reconcile-typed) releases it"
+fresh 5b; cutover; ingest >/dev/null; A=$(act)
+DIRECTOR_CRASH_AT=typed-after-begin run; touch "$STUB/probe-unknown"; run; run
+chk "T5b held for reconciliation, no launch" '[ "$(rec $A state)" = reconcile-required ] && [ "$(cnt rlaunch.log)" = 0 ]'
+python3 "$C" reconcile-typed "typed-$A" --verdict absent --by test-owner >/dev/null 2>&1; rm -f "$STUB/probe-unknown"; run
+chk "T5b after reconcile absent: exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ]'
 
 echo "== T6 consumer death after the launcher returned: recovery reads back, no second launch"
 fresh 6; cutover; ingest >/dev/null; A=$(act)
@@ -287,6 +294,12 @@ print("missing:", missing, "groups:", sorted(got))
 sys.exit(1 if set(got) != names or missing else 0)
 PY
 chk "T21 consumer code groups are a subset of work_binding.REFUSAL_CODES" 'python3 "$T/nodrift.py" "$C" "$SD" >/dev/null'
+
+echo "== T22 a route naming the consumer's own host is refused (no local model process): blocked, nothing launched, no effect"
+fresh 22; cutover; ingest >/dev/null; A=$(act)
+printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"}\n' "$HOST" "$T/rroot22" > "$T/route22.json"
+env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
+chk "T22 route-local-refused, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]

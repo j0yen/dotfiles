@@ -1376,10 +1376,13 @@ def review_root(rt):
     return os.environ.get("DIRECTOR_REVIEW_ROOT") or (rt or {}).get("root") or os.path.join(HOME, ".cache/director-reviews")
 
 
-def route_transport(rt, local_argv):
+def route_is_local(rt):
     import socket
-    if rt["host"] == socket.gethostname():
-        return local_argv
+    return rt["host"] in (socket.gethostname(), socket.getfqdn(), "localhost", "127.0.0.1", "::1")
+
+
+def route_transport(rt, local_argv):
+    """Always remote: a reviewer never runs as a local model process of the consumer host (typed_launch refuses a local route)."""
     return list(rt.get("ssh") or ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]) + [rt["host"]] + local_argv
 
 
@@ -1593,9 +1596,14 @@ def typed_launch(r, epoch):
     if not gate_ok(r["ask"]):
         typed_block(r, "held", reason="hold-gate")
         return False
-    if not os.environ.get("DIRECTOR_REVIEW_LAUNCH_CMD") and load_route() is None:
-        typed_block(r, "route-missing", route=REVIEW_ROUTE)
-        return False
+    if not os.environ.get("DIRECTOR_REVIEW_LAUNCH_CMD"):
+        rt = load_route()
+        if rt is None:
+            typed_block(r, "route-missing", route=REVIEW_ROUTE)
+            return False
+        if route_is_local(rt):
+            typed_block(r, "route-local-refused", host=rt["host"], route=REVIEW_ROUTE)
+            return False
     import uuid
     attempt = r.get("attempt", 0) + 1
     key = r["action_key"]
@@ -1653,7 +1661,7 @@ def typed_readback(r):
     pr = review_probe(p["unit"], p["root"])
     if pr is None:
         rc, _, _, _ = wd("effect-finish", "--idem-key", p["idem"], "--outcome", "unknown", "--by", r["worker"])
-        typed_end(r, "reconcile-required", code="probe-unknown")
+        typed_end(r, "reconcile-required", reason="probe-unknown")
         append_incident({"ts": now(), "kind": "typed-unknown-effect", "event_id": r["event_id"], "ask": r["ask"], "idem": p["idem"], "unit": p["unit"], "root": p["root"],
                          "owner": "hermes", "action": "read the reviewer root/unit back, then `director-event-consumer.py reconcile-typed %s --verdict present|absent --by <who>`" % r["event_id"]})
         return False
@@ -1731,8 +1739,8 @@ def typed_step(r, epoch):
             go = typed_launch_pending(r, fresh=False)
         elif st == "launched":
             go = typed_observe(r, epoch)
-        else:               # reconcile-required: only `reconcile-typed` releases it
-            return
+        else:               # reconcile-required: an answering probe or the owner's `reconcile-typed` settles it
+            go = typed_reprobe(r)
         if not go:
             return
 
@@ -1838,6 +1846,38 @@ def typed_poll(scan=False):
     typed_ack_bells()
 
 
+def typed_settle_unknown(r, verdict, by, how):
+    """Settle the UNKNOWN launch effect of a reconcile-required run from a readback: present -> done (observe it), absent -> failed (relaunch the same
+    action). -> True when settled (the caller saves nothing more), False when the store refused (recorded, the run stays reconcile-required)."""
+    p = r["pending"]
+    rb = json.dumps({"session": p["session"], "unit": p["unit"], "root": p["root"], "attempt": p["attempt"], "readback": how}, sort_keys=True)
+    rc, _, _, err = wd("effect-finish", "--idem-key", p["idem"], "--outcome", "done" if verdict == "present" else "failed", "--by", by, "--readback", rb)
+    if rc != 0:
+        decide(event_id=r["event_id"], ask=r["ask"], decision="reconcile-typed-refused", reason="effect-finish rc=%d %s" % (rc, err))
+        return False
+    if verdict == "present":
+        r.update(state="launched", attempt=p["attempt"], session=p["session"], unit=p["unit"], root=p["root"])
+    else:
+        r.update(state="running", attempt=p["attempt"])
+    r.pop("pending", None)
+    r.pop("reason", None)
+    r.setdefault("reconciled", []).append("%s %s (%s)" % (verdict, p["idem"], by))
+    typed_save(r)
+    typed_decide(r, "reconciled", verdict=verdict, by=by, idem=p["idem"], how=how)
+    return True
+
+
+def typed_reprobe(r):
+    """reconcile-required: read the reviewer back again; an answering probe settles the effect the same way the owner's readback would."""
+    if not r.get("pending"):
+        return False
+    pr = review_probe(r["pending"]["unit"], r["pending"]["root"])
+    if pr is None:
+        return False                    # still UNKNOWN: nothing is settled or relaunched on a guess
+    present = pr["unit"] == "live" or bool(pr.get("process"))
+    return typed_settle_unknown(r, "present" if present else "absent", CONSUMER, "probe readback: unit=%s process=%s" % (pr["unit"], pr.get("process")))
+
+
 def cmd_reconcile_typed(eid, verdict, by):
     """The owner's readback of an UNKNOWN reviewer launch: present = it started (settle done, observe it), absent = it never ran (settle failed,
     relaunch the same action). Only this releases a typed run held in reconcile-required."""
@@ -1849,22 +1889,10 @@ def cmd_reconcile_typed(eid, verdict, by):
     fcntl.flock(lk, fcntl.LOCK_EX)
     try:
         r = typed_load(eid)
-        p = r["pending"]
-        rb = json.dumps({"session": p["session"], "unit": p["unit"], "root": p["root"], "attempt": p["attempt"], "readback": "reconciled %s by %s" % (verdict, by)}, sort_keys=True)
-        rc, _, _, err = wd("effect-finish", "--idem-key", p["idem"], "--outcome", "done" if verdict == "present" else "failed", "--by", by, "--readback", rb)
-        if rc != 0:
-            decide(event_id=eid, ask=r["ask"], decision="reconcile-typed-refused", reason="effect-finish rc=%d %s" % (rc, err))
-            return 4
-        if verdict == "present":
-            r.update(state="launched", attempt=p["attempt"], session=p["session"], unit=p["unit"], root=p["root"])
-        else:
-            r.update(state="running", attempt=p["attempt"])
-        r.pop("pending", None)
-        r.pop("code", None)
-        r.setdefault("reconciled", []).append("%s %s (%s)" % (verdict, p["idem"], by))
-        typed_save(r)
-        typed_decide(r, "reconciled", verdict=verdict, by=by, idem=p["idem"])
-        return 0
+        if r["state"] != "reconcile-required" or not r.get("pending"):
+            decide(event_id=eid, ask=r["ask"], decision="reconcile-typed-refused", reason="settled-meanwhile")
+            return 3
+        return 0 if typed_settle_unknown(r, verdict, by, "reconciled %s by %s" % (verdict, by)) else 4
     finally:
         lk.close()
 
