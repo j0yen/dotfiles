@@ -402,6 +402,15 @@ wmd intake supersede --envelope "$(python3 -c 'import json,sys; e=json.loads(sys
 rm -f "$STUB/live-$(rec $A unit)"; run; run
 chk "T26 one launch, one launch effect, record ended superseded" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM effects WHERE ask_id='"'"'$A'"'"'")" = 1 ] && [ "$(rec $A state)" = superseded ] && [ "$(rec $A code)" = binding-superseded ]'
 
+echo "== T26b the obligation is closed while a review runs and the reviewer then dies with no result: nothing is relaunched (the store check, not verify-action, sees a closed obligation)"
+fresh 26b; cutover; ingest >/dev/null; A=$(act); run
+V26=$(wmd record --agent r7 --kind plan --what "verifier row for the obligation" --why w --evidence e --reverse-text r --check-cmd "test -n x" 2>/dev/null)   # an independent verdict row
+wmd verdict "$V26" CONFIRM --by fable >"$T/t26b.txt" 2>&1; wmd asks accept "$OB" --by hermes >>"$T/t26b.txt" 2>&1
+wmd asks resolve "$OB" --by hermes --evidence "obligation met elsewhere" --verdict-row "$V26" --expect-rev "$(sq "SELECT rev FROM asks WHERE ask_id='$OB'")" >>"$T/t26b.txt" 2>&1
+chk "T26b the obligation is closed through the supported close (accept + independent verdict row)" '[ "$(sq "SELECT section FROM asks WHERE ask_id='"'"'$OB'"'"'")" = closed ]'
+rm -f "$STUB/live-$(rec $A unit)"; run; run
+chk "T26b one launch, record ended superseded obligation-closed (no relaunch)" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(rec $A state)" = superseded ] && [ "$(rec $A code)" = obligation-closed ]'
+
 echo "== T27 installed but not cut over: the recover tick writes nothing (no scan, no action); after the cutover the same tick records one action"
 fresh 27; run recover
 chk "T27 before cutover: no action, no scan mark" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 0 ] && [ ! -e "$DIRECTOR_STATE/typed/scan.json" ]'
@@ -559,7 +568,8 @@ fresh 37c; cutover; ingest >/dev/null; A=$(act); realroute 37c; echo "$HEAD1" > 
 DIRECTOR_CRASH_AT=typed-after-begin realrun
 U1=$(pend $A unit); RT1=$(pend $A root); realrun; units_done
 chk "T37 missing root: tombstoned (abandoned), attempt 1 settled failed, attempt 2 launched" '[ -e "$RT1/abandoned" ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"' ORDER BY created LIMIT 1")" = failed ] && [ "$(cnt sdrun.log)" = 1 ] && [ "$(rec $A attempt)" = 2 ]'
-DIRECTOR_REVIEW_ROUTE="$T/route-real.json" DIRECTOR_REVIEW_ROOT= python3 - "$C" "$U1" "$RT1" <<'PY' > "$T/late.txt" 2>&1
+# the late launcher runs the REAL launch script (the stub seams are unset, as in realrun), so the plain mkdir in that script is what is tested
+env -u DIRECTOR_REVIEW_LAUNCH_CMD -u DIRECTOR_REVIEW_PROBE_CMD DIRECTOR_REVIEW_ROUTE="$T/route-real.json" DIRECTOR_REVIEW_ROOT= python3 - "$C" "$U1" "$RT1" <<'PY' > "$T/late.txt" 2>&1
 import importlib.util as u, sys, tempfile
 s = u.spec_from_file_location("c", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
 p = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False); p.write("late"); p.close()
