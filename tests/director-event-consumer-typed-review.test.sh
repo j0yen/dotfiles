@@ -240,6 +240,7 @@ chk "T16 newer launched too, two launches total" '[ "$(state_of $NEW)" = running
 U=$(rec $OLD unit); rm -f "$STUB/live-$U"; run
 chk "T16 older reviewer ended without a result: the older action relaunches (same action, own head)" '[ "$(cnt rlaunch.log)" = 3 ] && [ "$(rec $OLD attempt)" = 2 ] && [ "$(state_of $OLD)" = running ]'
 
+# consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:13 (with T22: the route is always remote; the route file values are the installer's)
 echo "== T17 real route transport: no launch stub; the route file names a remote host -> the argv goes to that host over ssh, no local model process"
 fresh 17; cutover; ingest >/dev/null; A=$(act)
 cat > "$T/fake-ssh" <<'SH'
@@ -254,6 +255,7 @@ chk "T17 the launch script starts a transient user unit running the route launch
 chk "T17 no local reviewer process, no legacy launch, effect done" '[ "$(pgrep -c -f -- "--session-id $(rec $A session)" || true)" = 0 ] && [ "$(cnt legacy-launch.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = done ] && [ "$(rec $A state)" = launched ]'
 chk "T17 the reviewer envelope (prompt) carries head, base and PRD blob" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); p=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > prompt.md" "$f" | cut -d" " -f3 | base64 -d); echo "$p" | grep -q "reviewed_head: $HEAD1" && echo "$p" | grep -q "base: 0000000000" && echo "$p" | grep -q "blob $(blob)"'
 
+# consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:9 (with T27 and T29: the recover tick is the producer trigger; a failed scan is one typed-scan incident per fault)
 echo "== T18 the supervised recover tick runs the producer scan: a real-shaped gate terminal becomes one action and one launch with no other caller"
 fresh 18; cutover
 run consume
@@ -280,6 +282,7 @@ DIRECTOR_LAUNCH_CMD=/bin/true python3 "$C" recover >"$T/out2.txt" 2>&1; rc2=$?
 chk "T20 the legacy launch was refused (EX_CONFIG 78), nothing legacy launched" '[ "$rc1" = 78 ] && [ "$(cnt legacy-launch.log)" = 0 ]'
 chk "T20 the recover tick still scanned and launched the typed review once" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && [ "$(cnt rlaunch.log)" = 1 ]'
 
+# consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:4 (no drift: every refusal code the consumer branches on is in REFUSAL_CODES)
 echo "== T21 no drift: every refusal code the consumer branches on is in the store's one REFUSAL_CODES set"
 cat > "$T/nodrift.py" <<'PY'
 import ast, sys
@@ -312,6 +315,7 @@ for h in localhost 127.0.0.1 "$FQDN" ::1 "[::1]" LOCALHOST. 127.0.0.2 "jsy@local
 done
 chk "T22 control: remote hosts are not refused (redbaron, jsy@redbaron, 100.64.1.2, 10.0.0.5, 1.2.3.4)" 'python3 -c "import importlib.util as u,sys; s=u.spec_from_file_location(\"c\", sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); sys.exit(1 if any(m.route_is_local({\"host\": h}) for h in (\"redbaron\", \"jsy@redbaron\", \"100.64.1.2\", \"10.0.0.5\", \"1.2.3.4\")) else 0)" "$C"'
 
+# names 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:12 (the consumer side of the class-owner fence, with T1, T3, T10, T23b, T23c, T30)
 echo "== T23 rollback while a review is in flight and the reviewer then dies with no result: nothing is relaunched (check before every relaunch)"
 fresh 23; cutover; ingest >/dev/null; A=$(act); run
 wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
@@ -343,6 +347,7 @@ echo "2026-11-22T21:00:00-08:00 | hermes | DIRECTOR-ACTION ask=$L event=evt-lega
 DIRECTOR_REVIEW_LAUNCH_CMD=/bin/true python3 "$C" consume >"$T/out.txt" 2>&1; rc=$?
 chk "T25 legacy launch not refused by the typed variables (rc 0, one legacy launch)" '[ "$rc" = 0 ] && [ "$(cnt legacy-launch.log)" = 1 ]'
 
+# consumes 2026-11-22-wintermute-increment1-review-action-5whys.md#mechanism:4 (kills mutant D10; mutants carry their AC and finding in mutants/mutant-tags.tsv)
 echo "== T26 the binding is superseded while a review runs and the reviewer then dies with no result: nothing is relaunched (store check before every relaunch)"
 fresh 26; cutover; ingest >/dev/null; A=$(act); run
 wmd intake supersede --envelope "$(python3 -c 'import json,sys; e=json.loads(sys.argv[1]); e.update(supersedes=sys.argv[2], supersede_reason="successor requirement revision", author_lineage=e["author_lineage"]+["dream:r2"]); print(json.dumps(e))' "$ENVL" "$BID")" >/dev/null
