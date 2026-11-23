@@ -14,9 +14,11 @@ name = "typed-review-consumer"
 cmd = "bash tests/gate/run-relevant.sh director-event-consumer-typed-review:120"
 where = "host"
 wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
 
 [[check]]
 name = "legacy-director-consumer"
 cmd = "bash tests/gate/run-relevant.sh director-event-consumer director-event-consumer-own-claim-rerun director-consumer-child-env director-event-consumer-tasksmax ctl-intake-consumer director-hermes-stop-gates"
 where = "host"
 wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"

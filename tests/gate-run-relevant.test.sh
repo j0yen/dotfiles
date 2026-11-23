@@ -55,5 +55,11 @@ mk ctl-intake-consumer 'echo "OK ctl-intake-consumer pin=$WM_DECIDE_PIN"'
 WM_DECIDE_PIN="$T/none" SWARM_DECIDE_SRC="$T/none" want "ctl-intake without an intake-capable wm-decide -> 2" 2 ctl-intake-consumer
 printf '#!/bin/sh\n[ "$1" = intake ] && [ "$2" = --help ] && exit 0\nexit 1\n' > "$T/sd/bin/wm-decide"
 SWARM_DECIDE_SRC="$T/sd" want "ctl-intake with intake API via SWARM_DECIDE_SRC" 0 ctl-intake-consumer
+# the last lines name every problem, so wm-build's captured tail and fail_marker carry the cause
+bash "$R" good-counts failing skipline no-such-test >"$T/out" 2>&1
+tailn=$(tail -5 "$T/out" | grep -c '^GATE-RELEVANT-PROBLEM: ')
+if [ "$tailn" -ge 3 ]; then passes=$((passes+1)); echo "PASS problems repeated in the tail ($tailn)"; else fails=$((fails+1)); echo "FAIL problems not repeated in the tail ($tailn)"; fi
+bash "$R" good-counts >"$T/out2" 2>&1
+if grep -q PROBLEM "$T/out2"; then fails=$((fails+1)); echo "FAIL a clean run prints problems"; else passes=$((passes+1)); echo "PASS a clean run prints no problems"; fi
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
