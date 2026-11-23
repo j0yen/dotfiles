@@ -18,10 +18,10 @@
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 [ "$#" -gt 0 ] || { echo "GATE-RELEVANT: no test named (a check with nothing to run is a failure)"; exit 2; }
-worst=0; problems=()
+worst=0; problems=(); provs=()
 provenance() { # <test> <tree>: which swarm-decide tree the test is about to use (path, HEAD, dirty files)
   local h d; h=$(git -C "$2" rev-parse HEAD 2>/dev/null || echo not-a-git-tree); d=$(git -C "$2" status --porcelain 2>/dev/null | wc -l)
-  echo "GATE-RELEVANT: provenance $1 swarm-decide=$2 HEAD=$h dirty-files=$d"
+  echo "GATE-RELEVANT: provenance $1 swarm-decide=$2 HEAD=$h dirty-files=$d"; provs+=("$1 swarm-decide=$2 HEAD=$h dirty-files=$d")
 }
 prob() { echo "$*"; problems+=("$*"); }
 bump() { [ "$1" -gt "$worst" ] && worst=$1; return 0; }
@@ -69,4 +69,6 @@ else
   # repeated last so the gate's captured tail (wm-build keeps the last 4 KB) and `fail_marker` name every problem
   for p in "${problems[@]}"; do echo "GATE-RELEVANT-PROBLEM: $p"; done
 fi
+# provenance goes last too, on pass AND fail (review delta-01 N2): the tests' own output can exceed the 4 KB tail and push the early line out
+for p in "${provs[@]}"; do echo "GATE-RELEVANT: provenance $p"; done
 exit "$worst"
