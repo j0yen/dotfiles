@@ -301,5 +301,20 @@ printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.
 env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
 chk "T22 route-local-refused, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 
+echo "== T23 rollback while a review is in flight and the reviewer then dies with no result: nothing is relaunched (check before every relaunch)"
+fresh 23; cutover; ingest >/dev/null; A=$(act); run
+wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
+rm -f "$STUB/live-$(rec $A unit)"; run; run
+chk "T23 fenced: one launch only, one launch effect, record blocked fenced" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM effects WHERE ask_id='"'"'$A'"'"'")" = 1 ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = fenced ]'
+
+echo "== T23b rollback after a crash between the launch intent and the launcher: the intent is read back under the fence, nothing launches; re-cutover launches once"
+fresh 23b; cutover; ingest >/dev/null; A=$(act)
+DIRECTOR_CRASH_AT=typed-after-begin run
+wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
+run; run
+chk "T23b fenced: intent settled failed by readback, no launch, record blocked fenced" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = failed ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = fenced ]'
+wmd intake class-owner --class $CLS --set director-event-consumer --by hermes --expect-epoch 2 --evidence "re-cutover" >/dev/null; run; run
+chk "T23b after re-cutover (epoch 3): exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ]'
+
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]

@@ -1807,6 +1807,47 @@ def typed_scan():
     atomic_write(mark, json.dumps({"ts": now(), "results": res}, sort_keys=True) + "\n")
 
 
+def typed_effect_state(r):
+    """-> the store state of the run's pending launch effect (intended|done|failed|unknown), or None when it was never begun."""
+    rc, act, _, _ = wd("action", "--ask", r["ask"])
+    if rc != 0 or not isinstance(act, dict):
+        return None
+    for e in act.get("effects") or []:
+        if e.get("idem_key") == (r.get("pending") or {}).get("idem"):
+            return e.get("state")
+    return None
+
+
+def typed_fenced_pass(own):
+    """The class is fenced (the epoch names another owner or none): nothing launches, relaunches or records a result. In-flight launch effects
+    are still read back (an UNKNOWN or intended effect settles from the reviewer root), and every open run record shows the fence."""
+    for n in sorted(os.listdir(TYPED)):
+        if not (n.endswith(".json") and TYPED_EID_RE.match(n[:-5])):
+            continue
+        r = typed_load(n[:-5])
+        if not r or r["state"] in TYPED_TERMINAL:
+            continue
+        lk = try_lock(typed_path(r["event_id"], ".lock"))
+        if lk is None:
+            continue
+        try:
+            alk = try_lock(os.path.join(LOCKS, "ask-" + r["ask"] + ".lock"))
+            if alk is None:
+                continue
+            try:
+                r = typed_load(r["event_id"])
+                if not check_overrides(keys=TYPED_OVERRIDE_KEYS):
+                    if r["state"] == "reconcile-required":
+                        typed_reprobe(r)
+                    elif r["state"] == "launching" and r.get("pending") and typed_effect_state(r) == "intended":
+                        typed_readback(r)
+                typed_block(r, "fenced", epoch=own.get("epoch"), owner=own.get("owner"))
+            finally:
+                alk.close()
+        finally:
+            lk.close()
+
+
 def typed_poll(scan=False):
     """The typed pass. Executes nothing unless the canonical epoch names this consumer for the class (cutover); a fence (owner none) stops it.
     `scan` (the supervised recover tick only) first runs the producer over the current bindings."""
@@ -1828,6 +1869,8 @@ def typed_poll(scan=False):
     if scan:
         typed_scan()
     if own.get("owner") != TYPED_CONSUMER:
+        if own.get("epoch"):
+            typed_fenced_pass(own)      # cut over before, fenced now (rollback or another owner)
         return
     epoch = own.get("epoch")
     for n in sorted(os.listdir(TYPED)):
