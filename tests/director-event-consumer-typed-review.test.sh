@@ -112,7 +112,7 @@ fresh(){ # one private world: canonical store, builder, consumer state, stubs
   builder init; builder gate "$HEAD1" 901
   OB=$(wmd asks add --owner hermes --due 2026-11-23T09:00 --what "build PRD-synthorg-x" --check "test -n x" --by hermes | grep -o 'A[0-9]*' | head -1)
   OBREV=$(sq "SELECT rev FROM asks WHERE ask_id='$OB'")
-  ENVL="{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB\",\"requirement_rev\":$OBREV,\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":577,\"author_lineage\":[\"wm-build:$HOST:run/577\"]}"
+  ENVL="{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB\",\"requirement_rev\":$OBREV,\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":577,\"author_lineage\":[\"wm-build:$HOST:run/577\"],\"harness\":\"fixture:tests/director-event-consumer-typed-review.test.sh\"}"
   BID=$(wmd intake bind --envelope "$ENVL" | jget 'd["binding_id"]')
 }
 cutover(){ wmd intake class-owner --class $CLS --set director-event-consumer --by hermes --expect-epoch "${1:-0}" --evidence "test cutover" >/dev/null; }
@@ -263,7 +263,7 @@ chk "T13 one launch across two consumers" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(
 echo "== T14 wrong origin: a binding whose host is not the builder produces no action and nothing runs"
 fresh 14; cutover
 OB2=$(wmd asks add --owner hermes --due 2026-11-23T09:00 --what "other" --check "test -n x" --by hermes | grep -o 'A[0-9]*' | head -1)
-B2=$(wmd intake bind --envelope "{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB2\",\"requirement_rev\":$(sq "SELECT rev FROM asks WHERE ask_id='$OB2'"),\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST-other\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":578,\"author_lineage\":[\"x\"]}" | jget 'd["binding_id"]')
+B2=$(wmd intake bind --envelope "{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB2\",\"requirement_rev\":$(sq "SELECT rev FROM asks WHERE ask_id='$OB2'"),\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST-other\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":578,\"author_lineage\":[\"x\"],\"harness\":\"fixture:tests/director-event-consumer-typed-review.test.sh\"}" | jget 'd["binding_id"]')
 WM_INGEST_SSH="$SD/tests/fake_builder_ssh.py" wmd intake ingest --binding "$B2" >"$T/wo.json" 2>/dev/null; rc=$?
 chk "T14 refused wrong-origin (exit 66), no action" '[ "$rc" = 66 ] && grep -q wrong-origin "$T/wo.json" && [ "$(sq "SELECT COUNT(*) FROM action_meta")" = 0 ]'
 
@@ -290,12 +290,13 @@ chk "T16 older reviewer ended without a result: the older action relaunches (sam
 # consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:13 (with T22: the route is always remote; the route file values are the installer's)
 echo "== T17 real route transport: no launch stub; the route file names a remote host -> the argv goes to that host over ssh, no local model process"
 fresh 17; cutover; ingest >/dev/null; A=$(act)
-cat > "$T/fake-ssh" <<'SH'
+mkdir -p "$T/t17"; cat > "$T/t17/ssh" <<'SH'
 #!/usr/bin/env bash
+if [ "$1" = "-G" ]; then echo "hostname $2"; exit 0; fi
 printf '%s\n' "$*" >> "$STUB/ssh-argv.log"; cat > "$STUB/ssh-stdin-$(date +%s%N).txt"; exit 0
 SH
-chmod 755 "$T/fake-ssh"
-printf '{"host":"reviewhost.invalid","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high","ssh":["%s"]}\n' "$T/rroot17" "$T/fake-ssh" > "$T/route17.json"
+chmod 755 "$T/t17/ssh"
+printf '{"host":"reviewhost.invalid","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high","ssh":["%s"]}\n' "$T/rroot17" "$T/t17/ssh" > "$T/route17.json"
 env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route17.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
 chk "T17 one ssh launch to the route host" '[ "$(grep -c "^reviewhost.invalid bash -s$" "$STUB/ssh-argv.log")" = 1 ]'
 chk "T17 the launch script starts a transient user unit running the route launcher with the route model/effort and the recorded session" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); grep -q "systemd-run --user --unit wm-review-" "$f" && grep -q "printf %s .* | base64 -d > run.sh" "$f" && s=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > run.sh" "$f" | cut -d" " -f3 | base64 -d) && echo "$s" | grep -q -- "fable-launch.sh --helper --model claude-opus-5-5 --effort high --session-id $(rec $A session)"'
@@ -360,7 +361,7 @@ for h in localhost 127.0.0.1 "$FQDN" ::1 "[::1]" LOCALHOST. 127.0.0.2 "jsy@local
   env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22-x.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
   chk "T22 route-local-refused for host $h, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 done
-chk "T22 control: remote hosts are not refused (redbaron, jsy@redbaron, 100.64.1.2, 10.0.0.5, 1.2.3.4)" 'python3 -c "import importlib.util as u,sys; s=u.spec_from_file_location(\"c\", sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); sys.exit(1 if any(m.route_is_local({\"host\": h}) for h in (\"redbaron\", \"jsy@redbaron\", \"100.64.1.2\", \"10.0.0.5\", \"1.2.3.4\")) else 0)" "$C"'
+chk "T22 control: remote hosts are not refused (reserved names and RFC 5737 addresses, host-neutral)" 'python3 -c "import importlib.util as u,sys; s=u.spec_from_file_location(\"c\", sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); sys.exit(1 if any(m.route_is_local({\"host\": h}) for h in (\"foreign.invalid\", \"jsy@foreign.invalid\", \"192.0.2.10\", \"198.51.100.7\", \"203.0.113.9\")) else 0)" "$C"'
 
 # names 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:12 (the consumer side of the class-owner fence, with T1, T3, T10, T23b, T23c, T30)
 echo "== T23 rollback while a review is in flight and the reviewer then dies with no result: nothing is relaunched (check before every relaunch)"
@@ -566,6 +567,27 @@ print("late-rc", m.review_launch(sys.argv[2], sys.argv[3], "late-session", p.nam
 PY
 units_done
 chk "T37 the late launcher of attempt 1 finds the root taken and starts nothing" 'grep -q "late-rc [1-9]" "$T/late.txt" && [ "$(cnt sdrun.log)" = 1 ] && ! grep -q late-session "$STUB/fable.log"'
+
+# IR1-F4: the route target is resolved as ssh resolves it; every form that lands on this host is refused, and the transport must be ssh
+echo "== T38 own interface address, ssh_config alias, /etc/hosts alias and a non-ssh transport are refused before any effect"
+route_case(){ # <label> <route json>
+  i=$((i+1)); fresh "38-$i"; cutover; ingest >/dev/null; A=$(act); rm -rf "$T/rroot38"; printf '%s\n' "$2" > "$T/route38.json"
+  env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route38.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
+  chk "T38 $1: refused $3, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot38" ] && [ "$(blk $A)" = '"$3"' ]'
+}
+i=0; L='"launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"'
+OWN=$(ip -j addr 2>/dev/null | python3 -c 'import json,sys
+for i in json.load(sys.stdin):
+    for a in i.get("addr_info", []):
+        if a.get("family") == "inet" and not a["local"].startswith("127."): print(a["local"]); sys.exit()' 2>/dev/null)
+if [ -n "$OWN" ]; then route_case "own interface address $OWN" '{"host":"'"$OWN"'","root":"'"$T/rroot38"'",'"$L"'}' route-local-refused
+else echo "SKIP T38 own interface address: this host has no non-loopback IPv4 address"; fi
+printf 'Host loopalias\n  HostName 127.0.0.1\nHost selfalias\n  HostName %s\n' "$HOST" > "$T/ssh38.conf"
+route_case "ssh_config alias to loopback" '{"host":"loopalias","root":"'"$T/rroot38"'",'"$L"',"ssh":["ssh","-F","'"$T/ssh38.conf"'"]}' route-local-refused
+route_case "ssh_config alias to this host" '{"host":"selfalias","root":"'"$T/rroot38"'",'"$L"',"ssh":["ssh","-F","'"$T/ssh38.conf"'"]}' route-local-refused
+if getent hosts ip6-localhost >/dev/null 2>&1; then route_case "/etc/hosts alias ip6-localhost" '{"host":"ip6-localhost","root":"'"$T/rroot38"'",'"$L"'}' route-local-refused
+else echo "SKIP T38 /etc/hosts alias: ip6-localhost is not in this host's resolver"; fi
+route_case "transport override sh -c" '{"host":"foreign.invalid","root":"'"$T/rroot38"'",'"$L"',"ssh":["sh","-c"]}' route-transport-refused
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]

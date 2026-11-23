@@ -1399,12 +1399,12 @@ def review_root(rt):
     return os.environ.get("DIRECTOR_REVIEW_ROOT") or (rt or {}).get("root") or os.path.join(HOME, ".cache/director-reviews")
 
 
-def route_is_local(rt):
-    """True when the ssh target is this host: its hostname or FQDN, localhost, or any loopback or unspecified address (IPv4 shorthand such as 127.1,
+def _host_is_self(h, own):
+    """Literal check of one host string: this host's name or FQDN, localhost, or a loopback/unspecified/own address (IPv4 shorthand such as 127.1,
     0 or a 32-bit integer included, as ssh's resolver accepts them), ignoring case, a trailing dot, a user@ prefix and IPv6 brackets."""
     import ipaddress
     import socket
-    h = str(rt["host"]).strip().rsplit("@", 1)[-1].strip("[]").rstrip(".").lower()
+    h = str(h).strip().rsplit("@", 1)[-1].strip("[]").rstrip(".").lower()
     if h in {socket.gethostname().lower(), socket.getfqdn().lower(), "localhost", "localhost.localdomain"}:
         return True
     try:
@@ -1415,7 +1415,56 @@ def route_is_local(rt):
         except (OSError, ValueError):
             return False
     mapped = getattr(ip, "ipv4_mapped", None)
-    return any(a.is_loopback or a.is_unspecified for a in (ip, mapped) if a is not None)
+    return any(a.is_loopback or a.is_unspecified or str(a) in own for a in (ip, mapped) if a is not None)
+
+
+def _own_addresses():
+    """This host's interface addresses (iproute2 JSON) plus what its own hostname resolves to."""
+    import socket
+    own = set()
+    try:
+        for ifc in json.loads(subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=10).stdout or "[]"):
+            own.update(a["local"].split("%")[0] for a in ifc.get("addr_info", []) if a.get("local"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    try:
+        own.update(ai[4][0].split("%")[0] for ai in socket.getaddrinfo(socket.gethostname(), None))
+    except OSError:
+        pass
+    return own
+
+
+def route_refusal(rt):
+    """-> None when the route's ssh target is another host, else the refusal code. The transport argv must be ssh. The target is resolved as ssh
+    resolves it (`ssh -G`: ssh_config Host aliases, HostName, user@), then through the resolver (/etc/hosts aliases included); any form that lands on
+    loopback, an unspecified address or one of this host's own addresses is refused (independent review 01, finding 4)."""
+    import socket
+    argv = list(rt.get("ssh") or ["ssh"])
+    if not argv or os.path.basename(str(argv[0])) != "ssh":
+        return "route-transport-refused"
+    own = _own_addresses()
+    if _host_is_self(rt["host"], own):
+        return "route-local-refused"
+    try:
+        g = subprocess.run(argv + ["-G", str(rt["host"])], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return "route-unresolvable"
+    target = next((l.split(None, 1)[1].strip() for l in g.stdout.splitlines() if l.lower().startswith("hostname ") and len(l.split(None, 1)) == 2), None)
+    if g.returncode != 0 or not target:
+        return "route-unresolvable"
+    if _host_is_self(target, own):
+        return "route-local-refused"
+    try:
+        resolved = {ai[4][0].split("%")[0] for ai in socket.getaddrinfo(target, None)}
+    except OSError:
+        resolved = set()                # a name only ssh can reach (a proxy or tailnet route) is not this host
+    if any(_host_is_self(a, own) for a in resolved):
+        return "route-local-refused"
+    return None
+
+
+def route_is_local(rt):
+    return route_refusal(rt) is not None
 
 
 def route_transport(rt, local_argv):
@@ -1709,8 +1758,9 @@ def typed_launch(r, epoch):
         if rt is None:
             typed_block(r, "route-missing", route=REVIEW_ROUTE)
             return False
-        if route_is_local(rt):
-            typed_block(r, "route-local-refused", host=rt["host"], route=REVIEW_ROUTE)
+        bad = route_refusal(rt)
+        if bad:
+            typed_block(r, bad, host=rt["host"], ssh=rt.get("ssh"), route=REVIEW_ROUTE)
             return False
     import uuid
     attempt = r.get("attempt", 0) + 1
