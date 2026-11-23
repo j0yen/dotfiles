@@ -1611,6 +1611,8 @@ def typed_launch(r, epoch):
                     "unit": "wm-review-%s-a%d" % (key[:12], attempt), "root": os.path.join(review_root(load_route()), key, "a%d" % attempt), "ts": now()}
     r["state"] = "launching"
     typed_save(r)
+    if os.environ.get("DIRECTOR_CRASH_AT") == "typed-after-launching-saved":
+        os._exit(9)
     return typed_launch_pending(r, fresh=True)
 
 
@@ -1637,6 +1639,18 @@ def typed_launch_pending(r, fresh):
         typed_block(r, "launch-uncertain", rc=rc)
         return False
     return typed_settle_launch(r, "launcher rc=0")
+
+
+def typed_launching_reentry(r, epoch):
+    """Recovery of a run saved as launching. An intent already begun is only read back (begin_effect answers may_have_run). An intent never begun
+    (a crash between saving the run and effect-begin) is a fresh launch, so it passes the store check and the hold gate first."""
+    if typed_effect_state(r) is None:
+        if typed_check(r, epoch) is None:
+            return False
+        if not gate_ok(r["ask"]):
+            typed_block(r, "held", reason="hold-gate")
+            return False
+    return typed_launch_pending(r, fresh=False)
 
 
 def typed_settle_launch(r, how):
@@ -1736,7 +1750,7 @@ def typed_step(r, epoch):
         elif st == "running":
             go = typed_launch(r, epoch)
         elif st == "launching":
-            go = typed_launch_pending(r, fresh=False)
+            go = typed_launching_reentry(r, epoch)
         elif st == "launched":
             go = typed_observe(r, epoch)
         else:               # reconcile-required: an answering probe or the owner's `reconcile-typed` settles it
