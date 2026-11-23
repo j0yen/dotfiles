@@ -527,6 +527,14 @@ def check_overrides(live_home=None, keys=LEGACY_OVERRIDE_KEYS):
     return bad
 
 
+def typed_seams_refused():
+    """The typed review launcher/probe seams replace the remote review route, so they are honoured only in isolation (inside the scratch root, as
+    check_overrides decides); on the live state dir every one of them that is set is refused. The legacy list and its live behaviour are unchanged."""
+    if not isolation_mode():
+        return [k for k in TYPED_OVERRIDE_KEYS if os.environ.get(k)]
+    return check_overrides(keys=TYPED_OVERRIDE_KEYS)
+
+
 def isolation_mode():
     """Isolation = the consumer runs on a state dir that is not the live one, or DIRECTOR_ISOLATION=1."""
     return bool(os.environ.get("DIRECTOR_ISOLATION")) or os.path.realpath(STATE) != os.path.realpath(LIVE_STATE)
@@ -1377,8 +1385,17 @@ def review_root(rt):
 
 
 def route_is_local(rt):
+    """True when the ssh target is this host: its hostname or FQDN, localhost, or any loopback address, ignoring case, a trailing dot, a user@ prefix and
+    IPv6 brackets."""
+    import ipaddress
     import socket
-    return rt["host"] in (socket.gethostname(), socket.getfqdn(), "localhost", "127.0.0.1", "::1")
+    h = str(rt["host"]).strip().rsplit("@", 1)[-1].strip("[]").rstrip(".").lower()
+    if h in {socket.gethostname().lower(), socket.getfqdn().lower(), "localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def route_transport(rt, local_argv):
@@ -1770,7 +1787,7 @@ def typed_work(eid, ask, epoch):
             return
         try:
             r = typed_load(eid)
-            bad = check_overrides(keys=TYPED_OVERRIDE_KEYS)
+            bad = typed_seams_refused()
             if bad:
                 typed_block(r, "isolation-refused", vars=bad)    # a review launcher/probe outside the scratch root: nothing typed runs
                 return
@@ -1864,7 +1881,7 @@ def typed_fenced_pass(own):
 
 def typed_poll(scan=False):
     """The typed pass. Executes nothing unless the canonical epoch names this consumer for the class (cutover); a fence (owner none) stops it.
-    `scan` (the supervised recover tick only) first runs the producer over the current bindings."""
+    `scan` (the supervised recover tick only, after the owner check) first runs the producer over the current bindings."""
     os.makedirs(TYPED, exist_ok=True)
     rc, own, _, err = wd("class-owner", "--class", TYPED_CLASS)
     if rc == 2:
@@ -1880,12 +1897,12 @@ def typed_poll(scan=False):
             append_incident({"ts": now(), "kind": "typed-canonical-read", "fault": fault, "owner": "hermes"})
             atomic_write(mark, json.dumps({"fault": fault, "ts": now()}) + "\n")
         return
-    if scan:
-        typed_scan()
     if own.get("owner") != TYPED_CONSUMER:
         if own.get("epoch"):
             typed_fenced_pass(own)      # cut over before, fenced now (rollback or another owner)
         return
+    if scan:
+        typed_scan()                    # the producer runs only while this consumer owns the class: installed but not cut over writes nothing
     epoch = own.get("epoch")
     for n in sorted(os.listdir(TYPED)):
         if n.endswith(".json") and TYPED_EID_RE.match(n[:-5]):

@@ -301,11 +301,13 @@ echo "== T22 a route naming the consumer's own host is refused (no local model p
 fresh 22; cutover; ingest >/dev/null; A=$(act)
 printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"}\n' "$HOST" "$T/rroot22" > "$T/route22.json"
 env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
-for h in localhost 127.0.0.1; do
-  printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"}\n' "$h" "$T/rroot22" > "$T/route22-$h.json"
-  env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22-$h.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
+chk "T22 route-local-refused (hostname), no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
+FQDN="$(python3 -c 'import socket; print(socket.getfqdn())')"
+for h in localhost 127.0.0.1 "$FQDN" ::1 "[::1]" LOCALHOST. 127.0.0.2 "jsy@localhost" "jsy@$HOST"; do
+  printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"}\n' "$h" "$T/rroot22" > "$T/route22-x.json"
+  env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22-x.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
+  chk "T22 route-local-refused for host $h, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 done
-chk "T22 route-local-refused (hostname, localhost, 127.0.0.1), no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 
 echo "== T23 rollback while a review is in flight and the reviewer then dies with no result: nothing is relaunched (check before every relaunch)"
 fresh 23; cutover; ingest >/dev/null; A=$(act); run
@@ -343,6 +345,31 @@ fresh 26; cutover; ingest >/dev/null; A=$(act); run
 wmd intake supersede --envelope "$(python3 -c 'import json,sys; e=json.loads(sys.argv[1]); e.update(supersedes=sys.argv[2], supersede_reason="successor requirement revision", author_lineage=e["author_lineage"]+["dream:r2"]); print(json.dumps(e))' "$ENVL" "$BID")" >/dev/null
 rm -f "$STUB/live-$(rec $A unit)"; run; run
 chk "T26 one launch, one launch effect, record ended superseded" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM effects WHERE ask_id='"'"'$A'"'"'")" = 1 ] && [ "$(rec $A state)" = superseded ] && [ "$(rec $A code)" = binding-superseded ]'
+
+echo "== T27 installed but not cut over: the recover tick writes nothing (no scan, no action); after the cutover the same tick records one action"
+fresh 27; run recover
+chk "T27 before cutover: no action, no scan mark" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 0 ] && [ ! -e "$DIRECTOR_STATE/typed/scan.json" ]'
+cutover; run recover
+chk "T27 after cutover: one action by build-result-ingest" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && [ -e "$DIRECTOR_STATE/typed/scan.json" ]'
+
+echo "== T28 live state dir: a typed launcher/probe seam variable is refused (no stub replaces the remote route outside isolation); legacy work is unaffected"
+fresh 28; cutover; ingest >/dev/null; A=$(act)
+H28="$T/h28"; mkdir -p "$H28/.local/state"
+HOME="$H28" DIRECTOR_STATE="$H28/.local/state/director-consumer" python3 "$C" consume >"$T/out.txt" 2>&1
+chk "T28 live: nothing launched, no effect, record blocked isolation-refused naming the seam" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && python3 -c "import json,sys; b=json.load(open(sys.argv[1])).get(\"blocked\") or {}; sys.exit(0 if b.get(\"why\") == \"isolation-refused\" and \"DIRECTOR_REVIEW_LAUNCH_CMD\" in b.get(\"vars\", []) else 1)" "$H28/.local/state/director-consumer/typed/typed-$A.json"'
+
+echo "== T29 a failed producer scan is one typed-scan incident per fault (not per tick); a later healthy scan records its results"
+fresh 29; cutover
+cat > "$T/wmd-scanfail" <<SH
+#!/usr/bin/env bash
+case " \$* " in *" intake scan "*) echo "scan unavailable" >&2; exit 1;; esac
+exec "$T/wmd" "\$@"
+SH
+chmod 755 "$T/wmd-scanfail"
+WM_ASKS_CMD="$T/wmd-scanfail" run recover; WM_ASKS_CMD="$T/wmd-scanfail" run recover
+chk "T29 two failing ticks: exactly one typed-scan incident, no action" '[ "$(grep -c "\"kind\": \"typed-scan\"" "$DIRECTOR_STATE/incidents.jsonl" 2>/dev/null)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM action_meta")" = 0 ]'
+run recover
+chk "T29 healthy tick: one action, scan mark carries results" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && python3 -c "import json,sys; sys.exit(0 if \"results\" in json.load(open(sys.argv[1])) else 1)" "$DIRECTOR_STATE/typed/scan.json"'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
