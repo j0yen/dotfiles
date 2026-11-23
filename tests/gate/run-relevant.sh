@@ -19,6 +19,10 @@ set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 [ "$#" -gt 0 ] || { echo "GATE-RELEVANT: no test named (a check with nothing to run is a failure)"; exit 2; }
 worst=0; problems=()
+provenance() { # <test> <tree>: which swarm-decide tree the test is about to use (path, HEAD, dirty files)
+  local h d; h=$(git -C "$2" rev-parse HEAD 2>/dev/null || echo not-a-git-tree); d=$(git -C "$2" status --porcelain 2>/dev/null | wc -l)
+  echo "GATE-RELEVANT: provenance $1 swarm-decide=$2 HEAD=$h dirty-files=$d"
+}
 prob() { echo "$*"; problems+=("$*"); }
 bump() { [ "$1" -gt "$worst" ] && worst=$1; return 0; }
 for spec in "$@"; do
@@ -26,17 +30,19 @@ for spec in "$@"; do
   f="$here/tests/$name.test.sh"
   if [ ! -f "$f" ]; then prob "GATE-RELEVANT: $name MISSING ($f)"; bump 2; continue; fi
   case "$name" in *typed-review*)
-    sd="${SWARM_DECIDE_SRC:-$HOME/wintermute/swarm-decide}"
+    sd="${SWARM_DECIDE_SRC:-$HOME/wintermute/swarm-decide}"; export SWARM_DECIDE_SRC="$sd"   # the test must use the tree this runner validated (review F6)
     if [ ! -f "$sd/wm_decide/work_binding.py" ] || [ ! -x "$sd/bin/wm-decide" ]; then
       prob "GATE-RELEVANT: $name PREREQUISITE missing: SWARM_DECIDE_SRC=$sd lacks wm_decide/work_binding.py or bin/wm-decide (land the swarm-decide binding PRD first)"; bump 2; continue
-    fi;;
+    fi
+    provenance "$name" "$sd";;
   esac
   case "$name" in ctl-intake-consumer)
     sd="${SWARM_DECIDE_SRC:-$HOME/wintermute/swarm-decide}"; pin="${WM_DECIDE_PIN:-$sd/bin/wm-decide}"
     if [ ! -x "$pin" ] || ! "$pin" intake --help >/dev/null 2>&1; then
       prob "GATE-RELEVANT: $name PREREQUISITE missing: no wm-decide with the intake API at $pin (set WM_DECIDE_PIN or SWARM_DECIDE_SRC)"; bump 2; continue
     fi
-    export WM_DECIDE_PIN="$pin";;
+    export WM_DECIDE_PIN="$pin"
+    provenance "$name" "$(cd "$(dirname "$pin")/.." 2>/dev/null && pwd || echo "$pin")";;
   esac
   out=$(mktemp "${TMPDIR:-/tmp}/gate-relevant.XXXXXX")
   timeout "${TEST_RUN_TIMEOUT_S:-1500}" env -u WM_HELPER -u WM_SEAT -u WM_DIRECTOR bash "$f" >"$out" 2>&1; rc=$?

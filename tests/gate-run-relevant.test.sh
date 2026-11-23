@@ -61,5 +61,17 @@ tailn=$(tail -5 "$T/out" | grep -c '^GATE-RELEVANT-PROBLEM: ')
 if [ "$tailn" -ge 3 ]; then passes=$((passes+1)); echo "PASS problems repeated in the tail ($tailn)"; else fails=$((fails+1)); echo "FAIL problems not repeated in the tail ($tailn)"; fi
 bash "$R" good-counts >"$T/out2" 2>&1
 if grep -q PROBLEM "$T/out2"; then fails=$((fails+1)); echo "FAIL a clean run prints problems"; else passes=$((passes+1)); echo "PASS a clean run prints no problems"; fi
+# F6 (review 74270b28): the test must run against the swarm-decide tree the runner validated, and the runner records which one
+mk director-event-consumer-typed-review 'if [ "${SWARM_DECIDE_SRC:-}" = "'"$T"'/sd" ]; then echo "COUNTS: pass=120 fail=0"; else echo "FAIL wrong tree ${SWARM_DECIDE_SRC:-<unset>}"; fi'
+( cd "$T/sd" && git init -q . && git add -A && git -c user.name=x -c user.email=x@x commit -qm sd ) >/dev/null 2>&1
+SWARM_DECIDE_SRC="$T/sd" want "typed test receives the validated tree (exported)" 0 director-event-consumer-typed-review:120
+SWARM_DECIDE_SRC="$T/sd" bash "$R" director-event-consumer-typed-review:120 >"$T/prov" 2>&1
+if grep -qE "^GATE-RELEVANT: provenance director-event-consumer-typed-review swarm-decide=$T/sd HEAD=[0-9a-f]{40} dirty-files=0$" "$T/prov"; then passes=$((passes+1)); echo "PASS provenance line: path, HEAD, dirty count"; else fails=$((fails+1)); echo "FAIL provenance line"; cat "$T/prov"; fi
+echo dirt > "$T/sd/untracked"; SWARM_DECIDE_SRC="$T/sd" bash "$R" director-event-consumer-typed-review:120 >"$T/prov" 2>&1; rm "$T/sd/untracked"
+if grep -q "dirty-files=1" "$T/prov"; then passes=$((passes+1)); echo "PASS dirty tree is recorded"; else fails=$((fails+1)); echo "FAIL dirty not recorded"; fi
+# F6 reviewer counterexample: no SWARM_DECIDE_SRC in the caller env; the runner validates the DEFAULT $HOME tree, the test must receive that same tree
+mkdir -p "$T/home/wintermute"; cp -r "$T/sd" "$T/home/wintermute/swarm-decide"
+mk director-event-consumer-typed-review 'if [ "${SWARM_DECIDE_SRC:-}" = "'"$T"'/home/wintermute/swarm-decide" ]; then echo "COUNTS: pass=120 fail=0"; else echo "FAIL wrong tree ${SWARM_DECIDE_SRC:-<unset>}"; fi'
+HOME="$T/home" want "default-tree validated and exported to the test (no env set)" 0 director-event-consumer-typed-review:120
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
