@@ -96,7 +96,8 @@ fresh(){ # one private world: canonical store, builder, consumer state, stubs
   builder init; builder gate "$HEAD1" 901
   OB=$(wmd asks add --owner hermes --due 2026-11-23T09:00 --what "build PRD-synthorg-x" --check "test -n x" --by hermes | grep -o 'A[0-9]*' | head -1)
   OBREV=$(sq "SELECT rev FROM asks WHERE ask_id='$OB'")
-  BID=$(wmd intake bind --envelope "{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB\",\"requirement_rev\":$OBREV,\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":577,\"author_lineage\":[\"wm-build:$HOST:run/577\"]}" | jget 'd["binding_id"]')
+  ENVL="{\"authorized_by\":\"hermes\",\"obligation_id\":\"$OB\",\"requirement_rev\":$OBREV,\"authority_ref\":\"ledger:A1296\",\"origin\":\"adopted:ledger:A1296\",\"target\":\"synthorg\",\"prd_repo\":\"j0yen/PRDs\",\"prd_path\":\"build-queue/PRD-synthorg-x.md\",\"prd_home\":\"$BUILDER/PRDs\",\"prd_blob\":\"$(blob)\",\"prd_req_digest\":\"$(digest)\",\"builder_host\":\"$HOST\",\"builder_state_dir\":\"$BUILDER/wmb-state\",\"run_id\":577,\"author_lineage\":[\"wm-build:$HOST:run/577\"]}"
+  BID=$(wmd intake bind --envelope "$ENVL" | jget 'd["binding_id"]')
 }
 cutover(){ wmd intake class-owner --class $CLS --set director-event-consumer --by hermes --expect-epoch "${1:-0}" --evidence "test cutover" >/dev/null; }
 ingest(){ wmd intake ingest --binding "$BID" 2>/dev/null; }
@@ -336,6 +337,12 @@ L=$(wmd asks add --owner hermes --due 2026-11-23T09:00 --what "legacy director w
 echo "2026-11-22T21:00:00-08:00 | hermes | DIRECTOR-ACTION ask=$L event=evt-legacy-25 please run" >> "$DIRECTOR_EVENTS_LOG"
 DIRECTOR_REVIEW_LAUNCH_CMD=/bin/true python3 "$C" consume >"$T/out.txt" 2>&1; rc=$?
 chk "T25 legacy launch not refused by the typed variables (rc 0, one legacy launch)" '[ "$rc" = 0 ] && [ "$(cnt legacy-launch.log)" = 1 ]'
+
+echo "== T26 the binding is superseded while a review runs and the reviewer then dies with no result: nothing is relaunched (store check before every relaunch)"
+fresh 26; cutover; ingest >/dev/null; A=$(act); run
+wmd intake supersede --envelope "$(python3 -c 'import json,sys; e=json.loads(sys.argv[1]); e.update(supersedes=sys.argv[2], supersede_reason="successor requirement revision", author_lineage=e["author_lineage"]+["dream:r2"]); print(json.dumps(e))' "$ENVL" "$BID")" >/dev/null
+rm -f "$STUB/live-$(rec $A unit)"; run; run
+chk "T26 one launch, one launch effect, record ended superseded" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM effects WHERE ask_id='"'"'$A'"'"'")" = 1 ] && [ "$(rec $A state)" = superseded ] && [ "$(rec $A code)" = binding-superseded ]'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
