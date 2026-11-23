@@ -1385,17 +1385,22 @@ def review_root(rt):
 
 
 def route_is_local(rt):
-    """True when the ssh target is this host: its hostname or FQDN, localhost, or any loopback address, ignoring case, a trailing dot, a user@ prefix and
-    IPv6 brackets."""
+    """True when the ssh target is this host: its hostname or FQDN, localhost, or any loopback or unspecified address (IPv4 shorthand such as 127.1,
+    0 or a 32-bit integer included, as ssh's resolver accepts them), ignoring case, a trailing dot, a user@ prefix and IPv6 brackets."""
     import ipaddress
     import socket
     h = str(rt["host"]).strip().rsplit("@", 1)[-1].strip("[]").rstrip(".").lower()
     if h in {socket.gethostname().lower(), socket.getfqdn().lower(), "localhost", "localhost.localdomain"}:
         return True
     try:
-        return ipaddress.ip_address(h).is_loopback
+        ip = ipaddress.ip_address(h)
     except ValueError:
-        return False
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(h))
+        except (OSError, ValueError):
+            return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return any(a.is_loopback or a.is_unspecified for a in (ip, mapped) if a is not None)
 
 
 def route_transport(rt, local_argv):
@@ -1867,7 +1872,7 @@ def typed_fenced_pass(own):
                 continue
             try:
                 r = typed_load(r["event_id"])
-                if not check_overrides(keys=TYPED_OVERRIDE_KEYS):
+                if not typed_seams_refused():   # the same seam rule as typed_work: on the live dir a set seam is refused, so only the real route probes
                     if r["state"] == "reconcile-required":
                         typed_reprobe(r)
                     elif r["state"] == "launching" and r.get("pending") and typed_effect_state(r) == "intended":

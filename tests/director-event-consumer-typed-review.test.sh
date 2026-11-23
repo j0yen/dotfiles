@@ -303,11 +303,14 @@ printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.
 env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
 chk "T22 route-local-refused (hostname), no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 FQDN="$(python3 -c 'import socket; print(socket.getfqdn())')"
-for h in localhost 127.0.0.1 "$FQDN" ::1 "[::1]" LOCALHOST. 127.0.0.2 "jsy@localhost" "jsy@$HOST"; do
+i=0
+for h in localhost 127.0.0.1 "$FQDN" ::1 "[::1]" LOCALHOST. 127.0.0.2 "jsy@localhost" "jsy@$HOST" 127.1 0.0.0.0 0 :: "::ffff:127.0.0.1" 2130706433; do
+  i=$((i+1)); fresh "22-$i"; cutover; ingest >/dev/null; A=$(act); rm -rf "$T/rroot22"     # one world per form, so one form that slips through cannot mask or fail the others
   printf '{"host":"%s","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high"}\n' "$h" "$T/rroot22" > "$T/route22-x.json"
   env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route22-x.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
   chk "T22 route-local-refused for host $h, no effect, no reviewer root" '[ "$(sq "SELECT COUNT(*) FROM effects")" = 0 ] && [ ! -e "$T/rroot22" ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = route-local-refused ]'
 done
+chk "T22 control: remote hosts are not refused (redbaron, jsy@redbaron, 100.64.1.2, 10.0.0.5, 1.2.3.4)" 'python3 -c "import importlib.util as u,sys; s=u.spec_from_file_location(\"c\", sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); sys.exit(1 if any(m.route_is_local({\"host\": h}) for h in (\"redbaron\", \"jsy@redbaron\", \"100.64.1.2\", \"10.0.0.5\", \"1.2.3.4\")) else 0)" "$C"'
 
 echo "== T23 rollback while a review is in flight and the reviewer then dies with no result: nothing is relaunched (check before every relaunch)"
 fresh 23; cutover; ingest >/dev/null; A=$(act); run
@@ -370,6 +373,24 @@ WM_ASKS_CMD="$T/wmd-scanfail" run recover; WM_ASKS_CMD="$T/wmd-scanfail" run rec
 chk "T29 two failing ticks: exactly one typed-scan incident, no action" '[ "$(grep -c "\"kind\": \"typed-scan\"" "$DIRECTOR_STATE/incidents.jsonl" 2>/dev/null)" = 1 ] && [ "$(sq "SELECT COUNT(*) FROM action_meta")" = 0 ]'
 run recover
 chk "T29 healthy tick: one action, scan mark carries results" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && python3 -c "import json,sys; sys.exit(0 if \"results\" in json.load(open(sys.argv[1])) else 1)" "$DIRECTOR_STATE/typed/scan.json"'
+
+echo "== T23c an UNKNOWN effect under a fence: an answering probe settles it, nothing launches; re-cutover launches once"
+fresh 23c; cutover; ingest >/dev/null; A=$(act)
+DIRECTOR_CRASH_AT=typed-after-begin run; touch "$STUB/probe-unknown"; run
+wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
+rm -f "$STUB/probe-unknown"; run; run
+chk "T23c fenced: UNKNOWN settled failed by the answering probe, no launch, record blocked fenced" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = failed ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$DIRECTOR_STATE/typed/typed-$A.json" 2>/dev/null)" = fenced ]'
+wmd intake class-owner --class $CLS --set director-event-consumer --by hermes --expect-epoch 2 --evidence "re-cutover" >/dev/null; run; run
+chk "T23c after re-cutover: exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ]'
+
+echo "== T30 live state dir under a fence: the typed probe seam is refused there too (no stub probe runs, the UNKNOWN effect stays for a real probe or the owner)"
+fresh 30; cutover; ingest >/dev/null; A=$(act)
+DIRECTOR_CRASH_AT=typed-after-begin run; touch "$STUB/probe-unknown"; run
+wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback fence" >/dev/null
+H30="$T/h30"; mkdir -p "$H30/.local/state"; cp -a "$DIRECTOR_STATE" "$H30/.local/state/director-consumer"
+rm -f "$STUB/probe-unknown"; : > "$STUB/rprobe.log"
+HOME="$H30" DIRECTOR_STATE="$H30/.local/state/director-consumer" python3 "$C" consume >"$T/out.txt" 2>&1
+chk "T30 live fenced pass: no stub probe, effect still unknown, no launch, record blocked fenced" '[ "$(cnt rprobe.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = unknown ] && [ "$(cnt rlaunch.log)" = 0 ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$H30/.local/state/director-consumer/typed/typed-$A.json" 2>/dev/null)" = fenced ]'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
