@@ -11,7 +11,10 @@
 #   4. prints no FAIL / FAILURES line even at rc 0       (               exit 1)
 #   5. prints a recognised pass summary with count > 0 and, when :<min-pass> is given, count >= min-pass  (none/zero/low -> exit 4)
 # Prerequisites (exit 2 with the reason, never a skip): SWARM_DECIDE_SRC (default $HOME/wintermute/swarm-decide) must hold
-# wm_decide/work_binding.py when a typed-review test is named.
+# wm_decide/work_binding.py when a typed-review test is named, and a wm-decide with the `intake` API when ctl-intake-consumer is named
+# (WM_DECIDE_PIN, else SWARM_DECIDE_SRC/bin/wm-decide). The child env is scrubbed of WM_HELPER / WM_SEAT / WM_DIRECTOR: a helper or seat
+# session exports them, and the stop-gate tests then see their hooks exit early (measured: director-hermes-stop-gates fails under WM_HELPER=1,
+# passes with it unset).
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 [ "$#" -gt 0 ] || { echo "GATE-RELEVANT: no test named (a check with nothing to run is a failure)"; exit 2; }
@@ -27,8 +30,15 @@ for spec in "$@"; do
       echo "GATE-RELEVANT: $name PREREQUISITE missing: SWARM_DECIDE_SRC=$sd lacks wm_decide/work_binding.py or bin/wm-decide (land the swarm-decide binding PRD first)"; bump 2; continue
     fi;;
   esac
+  case "$name" in ctl-intake-consumer)
+    sd="${SWARM_DECIDE_SRC:-$HOME/wintermute/swarm-decide}"; pin="${WM_DECIDE_PIN:-$sd/bin/wm-decide}"
+    if [ ! -x "$pin" ] || ! "$pin" intake --help >/dev/null 2>&1; then
+      echo "GATE-RELEVANT: $name PREREQUISITE missing: no wm-decide with the intake API at $pin (set WM_DECIDE_PIN or SWARM_DECIDE_SRC)"; bump 2; continue
+    fi
+    export WM_DECIDE_PIN="$pin";;
+  esac
   out=$(mktemp "${TMPDIR:-/tmp}/gate-relevant.XXXXXX")
-  timeout "${TEST_RUN_TIMEOUT_S:-1500}" bash "$f" >"$out" 2>&1; rc=$?
+  timeout "${TEST_RUN_TIMEOUT_S:-1500}" env -u WM_HELPER -u WM_SEAT -u WM_DIRECTOR bash "$f" >"$out" 2>&1; rc=$?
   cat "$out"
   if [ "$rc" = 77 ]; then echo "GATE-RELEVANT: $name UNMEASURED (rc 77 skip)"; bump 3; rm -f "$out"; continue; fi
   if [ "$rc" != 0 ]; then echo "GATE-RELEVANT: $name FAILED rc=$rc"; bump 1; rm -f "$out"; continue; fi

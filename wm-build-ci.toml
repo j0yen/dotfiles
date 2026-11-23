@@ -3,6 +3,10 @@
 # sh-ac-traceability, secrets-scan, proof-receipt and risk-gate. sh-tests alone is vacuous here (it runs only tests/<test_prefix>_*
 # executables and *.bats; this repo's tests are tests/*.test.sh, so it passes with files=0), hence these two checks.
 # tests/gate/run-relevant.sh fails on a missing test, a non-zero exit, a SKIP (unmeasured, never a pass), or no pass count.
+# Host prerequisites (a missing one FAILS the check, it is never skipped): SWARM_DECIDE_SRC (default $HOME/wintermute/swarm-decide) with
+# wm_decide/work_binding.py and an `intake`-capable bin/wm-decide; the gate user able to open >= 3 device nodes (member of input/video/audio:
+# director-consumer-child-env's isolation control, unit_devices_proc; RedBaron's jsy is not in those groups, ryzen7's is in input+video);
+# systemd-run --user; jq. Measured pre-existing on base 42c26383: child-env unit_devices_proc fails on RedBaron.
 # Prerequisite for typed-review-consumer: SWARM_DECIDE_SRC (default $HOME/wintermute/swarm-decide) carries wm_decide/work_binding.py.
 # Check names must match ^[a-z0-9-]+$ (wm-build drops others silently); tests/gate-ci-manifest.test.sh pins that.
 [[check]]

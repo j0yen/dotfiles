@@ -47,5 +47,13 @@ SWARM_DECIDE_SRC="$T/nope" want "typed-review prerequisite absent -> 2, not skip
 mkdir -p "$T/sd/wm_decide" "$T/sd/bin"; : > "$T/sd/wm_decide/work_binding.py"; printf '#!/bin/sh\n' > "$T/sd/bin/wm-decide"; chmod +x "$T/sd/bin/wm-decide"
 SWARM_DECIDE_SRC="$T/sd" want "typed-review prerequisite present, min 120" 0 director-event-consumer-typed-review:120
 SWARM_DECIDE_SRC="$T/sd" want "typed-review min 121 unmet" 4 director-event-consumer-typed-review:121
+# env scrub: a seat/helper/director marker in the caller's env must not reach the test
+mk envprobe 'if [ -n "${WM_HELPER:-}${WM_SEAT:-}${WM_DIRECTOR:-}" ]; then echo "FAIL leaked marker"; exit 1; fi; echo "OK clean"'
+WM_HELPER=1 WM_SEAT=rb WM_DIRECTOR=hermes want "WM_HELPER/WM_SEAT/WM_DIRECTOR scrubbed from the test env" 0 envprobe
+# ctl-intake prerequisite: a wm-decide with the intake API
+mk ctl-intake-consumer 'echo "OK ctl-intake-consumer pin=$WM_DECIDE_PIN"'
+WM_DECIDE_PIN="$T/none" SWARM_DECIDE_SRC="$T/none" want "ctl-intake without an intake-capable wm-decide -> 2" 2 ctl-intake-consumer
+printf '#!/bin/sh\n[ "$1" = intake ] && [ "$2" = --help ] && exit 0\nexit 1\n' > "$T/sd/bin/wm-decide"
+SWARM_DECIDE_SRC="$T/sd" want "ctl-intake with intake API via SWARM_DECIDE_SRC" 0 ctl-intake-consumer
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
