@@ -1288,7 +1288,10 @@ TYPED_CONSUMER = "director-event-consumer"
 TYPED = os.path.join(STATE, "typed")
 TYPED_EID_RE = re.compile(r"^typed-A[0-9]+$")
 TYPED_TERMINAL = ("completed", "refused", "superseded", "claim-conflict")
-TYPED_ADMIT = ("seen", "held", "canonical-unavailable", "builder-unknown")
+TYPED_ADMIT = ("seen", "held", "canonical-unavailable", "builder-unknown", "builder-wait", "binding-attention")
+# verify-action refusals that describe the builder's current state (a re-gate in flight, an infra gate, a newer head not yet ingested): the action stays
+# valid, so the run waits and re-verifies on every tick (independent review 01, finding 1); a newer head's action supersedes it in the store
+BUILDER_WAIT_CODES = ("not-terminal", "gate-not-pass", "stale-terminal", "prd-missing", "head-unbound")
 SUPERSEDED_CODES = ("action-superseded", "binding-superseded", "obligation-closed", "state-cancelled", "state-verifying", "state-accepted", "state-blocked")
 FENCE_CODES = ("class-not-cut-over", "epoch-mismatch", "fence-claim")
 RETRY_RESULT_CODES = ("head-mismatch", "session-mismatch", "result-malformed", "reviewer-not-distinct")
@@ -1345,6 +1348,18 @@ def typed_block(r, why, **kw):
 def typed_unblock(r):
     if r.pop("blocked", None) is not None:
         typed_save(r)
+
+
+def typed_wait(r, state, code, detail=None, incident=False):
+    """A non-terminal admit state the store agrees with (the action stays READY); one decision (and incident) per distinct state/code."""
+    first = (r.get("state"), r.get("code")) != (state, code)
+    r.update(state=state, code=code, detail=detail)
+    r.pop("blocked", None)
+    typed_save(r)
+    if first:
+        typed_decide(r, state, code=code, detail=detail)
+        if incident:
+            append_incident({"ts": now(), "kind": "typed-" + state, "ask": r["ask"], "code": code, "detail": detail, "owner": "hermes"})
 
 
 def typed_end(r, state, **kw):
@@ -1556,8 +1571,10 @@ def typed_admit(r, epoch):
                 typed_end(r, "held", reason="builder-held")
             elif code in SUPERSEDED_CODES:
                 typed_end(r, "superseded", code=code)
-            else:
-                typed_end(r, "refused", code=code, detail=(val or {}).get("detail"))
+            elif code in BUILDER_WAIT_CODES:
+                typed_wait(r, "builder-wait", code, (val or {}).get("detail"))
+            else:               # wrong-origin, prd-revision-changed: the binding needs its owner (rebind or supersede), never a silent terminal
+                typed_wait(r, "binding-attention", code, (val or {}).get("detail"), incident=True)
             return False
         if rc != 0:
             typed_block(r, "canonical-unavailable", rc=rc, stderr=err)
@@ -1618,6 +1635,23 @@ def typed_launch(r, epoch):
     if not gate_ok(r["ask"]):
         typed_block(r, "held", reason="hold-gate")
         return False
+    if r.get("attempt", 0) >= 1:
+        # a relaunch consults the builder's STOP state as the first launch did (independent review 01, finding 3); the action keeps its own head,
+        # so only held (paused_at / no_continue / operator-stop), UNKNOWN and supersession matter here
+        rc, val, _, err = wd("verify-action", "--ask", r["ask"])
+        code = val.get("code") if isinstance(val, dict) else None
+        if rc == 75:
+            typed_block(r, "builder-unknown", detail=(val or {}).get("detail"))
+            return False
+        if rc == 66 and code == "held":
+            typed_block(r, "held", reason="builder-held")
+            return False
+        if rc == 66 and code in SUPERSEDED_CODES:
+            typed_end(r, "superseded", code=code)
+            return False
+        if rc not in (0, 66):
+            typed_block(r, "canonical-unavailable", rc=rc, stderr=err)
+            return False
     if not os.environ.get("DIRECTOR_REVIEW_LAUNCH_CMD"):
         rt = load_route()
         if rt is None:
@@ -1762,7 +1796,29 @@ def typed_observe(r, epoch):
     return False
 
 
+def typed_readopt(r, epoch):
+    """After a rollback (owner none) and a re-cutover to this consumer, a run that holds its own claim from an older epoch is re-adopted under the
+    current epoch, so its in-flight review can still record (independent review 01, finding 2). The store check runs first and the store claim must
+    still be the run's own; anything else ends or waits as the check says."""
+    if r.get("claim") is None or r.get("epoch") in (None, epoch):
+        return True
+    chk = typed_check(r, epoch)
+    if chk is None:
+        return False
+    if chk.get("claim") != r["claim"]:
+        typed_end(r, "claim-conflict", claim=chk.get("claim"))
+        return False
+    old = r["epoch"]
+    r["epoch"] = epoch
+    r.pop("blocked", None)
+    typed_save(r)
+    typed_decide(r, "re-adopted", old_epoch=old, epoch=epoch, claim=r["claim"])
+    return True
+
+
 def typed_step(r, epoch):
+    if r and r["state"] not in TYPED_TERMINAL and not typed_readopt(r, epoch):
+        return
     while r and r["state"] not in TYPED_TERMINAL:
         st = r["state"]
         if st in TYPED_ADMIT:

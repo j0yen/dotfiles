@@ -106,6 +106,34 @@ cnt(){ local n; n="$(grep -c -- "${2:-.}" "$STUB/$1" 2>/dev/null)"; echo "${n:-0
 state_of(){ sq "SELECT state FROM asks WHERE ask_id='$1'"; }
 act(){ sq "SELECT ask_id FROM action_meta ORDER BY rowid DESC LIMIT 1"; }
 rec(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]))' "$DIRECTOR_STATE/typed/typed-$1.json" "$2" 2>/dev/null; }
+blk(){ python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("blocked") or {}).get("why"))' "$DIRECTOR_STATE/typed/typed-$1.json" 2>/dev/null; }
+gate_open(){ python3 - "$@" <<'PY'
+import os, sqlite3, sys
+B = os.environ["BUILDER"]; db = sqlite3.connect(os.path.join(B, "wmb-state", "state.db"))
+db.execute("INSERT INTO steps (id, run_id, kind, started, ended, outcome) VALUES (?,577,'gate','2026-11-22T21:00:00+00:00',NULL,NULL)", (int(sys.argv[1]),)); db.commit()
+PY
+}
+gate_close(){ python3 - "$@" <<'PY'
+import json, os, sqlite3, sys
+B = os.environ["BUILDER"]; sid, head = int(sys.argv[1]), sys.argv[2]; rdir = os.path.join(B, "wmb-state", "runs", "577")
+db = sqlite3.connect(os.path.join(B, "wmb-state", "state.db"))
+db.execute("UPDATE steps SET ended='2026-11-22T21:05:00+00:00', outcome='done' WHERE id=?", (sid,)); db.commit()
+json.dump({"kind": "gate", "slug": "synthorg-x", "run_id": "577", "outcome": "done", "started": "2026-11-22T21:00:01+00:00", "ended": "2026-11-22T21:05:00+00:00",
+           "detail": {"base": "0" * 40, "outcome": "pass", "sha": head}}, open(os.path.join(rdir, "gate.result.json"), "w"))
+PY
+}
+gate_infra(){ python3 - "$@" <<'PY'
+import os, sqlite3, sys
+B = os.environ["BUILDER"]; db = sqlite3.connect(os.path.join(B, "wmb-state", "state.db"))
+db.execute("INSERT INTO steps (id, run_id, kind, started, ended, outcome) VALUES (?,577,'gate','2026-11-22T21:00:00+00:00','2026-11-22T21:01:00+00:00','infra')", (int(sys.argv[1]),)); db.commit()
+PY
+}
+set_run(){ python3 - "$@" <<'PY'
+import os, sqlite3, sys
+B = os.environ["BUILDER"]; db = sqlite3.connect(os.path.join(B, "wmb-state", "state.db"))
+db.execute("UPDATE runs SET %s = ? WHERE id = 577" % sys.argv[1], (None if sys.argv[2] == "NULL" else sys.argv[2],)); db.commit()
+PY
+}
 
 echo "== T1 happy path: real producer -> one claim, one launch, review result -> verifying, receipt; later ticks add nothing"
 fresh 1; cutover; ingest >/dev/null; A=$(act)
@@ -187,7 +215,9 @@ chk "T8 older cancelled, newer running, one launch" '[ "$(state_of $OLD)" = canc
 
 echo "== T9 stale terminal at execution: the builder gated a newer head not yet ingested -> refused, no launch"
 fresh 9; cutover; ingest >/dev/null; A=$(act); builder gate "$HEAD2" 903; run
-chk "T9 refused stale-terminal, no claim, no launch" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(state_of $A)" = ready ] && [ "$(rec $A code)" = stale-terminal ]'
+chk "T9 stale-terminal: no claim, no launch, the run waits (not terminal)" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(state_of $A)" = ready ] && [ "$(rec $A code)" = stale-terminal ] && [ "$(rec $A state)" = builder-wait ]'
+ingest >/dev/null; B=$(act); run; run
+chk "T9 once the newer head is ingested: the older run ends superseded, the newer action launches once" '[ "$(rec $A state)" = superseded ] && [ "$B" != "$A" ] && [ "$(cnt rlaunch.log)" = 1 ] && grep -q "$HEAD2" "$STUB/last-review-prompt.md"'
 
 echo "== T10 fence mid-flight: epoch moved to none -> the result is not recorded, no relaunch"
 fresh 10; cutover; ingest >/dev/null; A=$(act); run
@@ -288,7 +318,7 @@ cat > "$T/nodrift.py" <<'PY'
 import ast, sys
 src = open(sys.argv[1]).read(); sys.path.insert(0, sys.argv[2])
 from wm_decide import work_binding as wb
-names = {"SUPERSEDED_CODES", "FENCE_CODES", "RETRY_RESULT_CODES"}
+names = {"SUPERSEDED_CODES", "FENCE_CODES", "RETRY_RESULT_CODES", "BUILDER_WAIT_CODES"}
 got = {}
 for node in ast.parse(src).body:
     if isinstance(node, ast.Assign) and len(node.targets) == 1 and getattr(node.targets[0], "id", None) in names:
@@ -396,6 +426,48 @@ H30="$T/h30"; mkdir -p "$H30/.local/state"; cp -a "$DIRECTOR_STATE" "$H30/.local
 rm -f "$STUB/probe-unknown"; : > "$STUB/rprobe.log"
 HOME="$H30" DIRECTOR_STATE="$H30/.local/state/director-consumer" python3 "$C" consume >"$T/out.txt" 2>&1
 chk "T30 live fenced pass: no stub probe, effect still unknown, no launch, record blocked fenced" '[ "$(cnt rprobe.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = unknown ] && [ "$(cnt rlaunch.log)" = 0 ] && [ "$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get(\"blocked\") or {}).get(\"why\"))" "$H30/.local/state/director-consumer/typed/typed-$A.json" 2>/dev/null)" = fenced ]'
+
+# IR1-F1 (independent review 01, finding 1): a transient builder state is a wait, never a terminal refusal of a valid action
+echo "== T32 a same-head re-gate in flight at execution: the run waits (not terminal); after the re-gate passes it launches exactly once"
+fresh 32; cutover; ingest >/dev/null; A=$(act)
+gate_open 950; run
+chk "T32 while the re-gate runs: no launch, record waiting (not terminal), ask still ready" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(rec $A state)" = builder-wait ] && [ "$(state_of $A)" = ready ]'
+gate_close 950 "$HEAD1"; ingest >/dev/null; run; run
+chk "T32 after the same-head pass: exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(state_of $A)" = running ]'
+
+echo "== T32b an infra gate result then a same-head pass: the run waits, then launches exactly once"
+fresh 32b; cutover; ingest >/dev/null; A=$(act)
+gate_infra 951; run
+chk "T32b after the infra gate: no launch, record waiting, ask still ready" '[ "$(cnt rlaunch.log)" = 0 ] && [ "$(rec $A state)" = builder-wait ] && [ "$(state_of $A)" = ready ]'
+gate_open 952; gate_close 952 "$HEAD1"; ingest >/dev/null; run; run
+chk "T32b after the same-head pass: exactly one launch" '[ "$(cnt rlaunch.log)" = 1 ]'
+
+echo "== T35 heads A -> B -> A before execution: head A is reviewed exactly once (no replay to the cancelled action)"
+fresh 35; cutover; ingest >/dev/null; A=$(act)
+builder gate "$HEAD2" 902; ingest >/dev/null; B=$(act)
+builder gate "$HEAD1" 903; ingest >/dev/null; A2=$(act)
+chk "T35 the return to head A records a new action; A and B are cancelled; one ready action" '[ "$A2" != "$A" ] && [ "$A2" != "$B" ] && [ "$(state_of $A)" = cancelled ] && [ "$(state_of $B)" = cancelled ] && [ "$(wmd intake ready-actions --class $CLS | jget "[a[\"ask_id\"] for a in d]")" = "['"'"'$A2'"'"']" ]'
+run; run
+chk "T35 exactly one launch, for head A" '[ "$(cnt rlaunch.log)" = 1 ] && grep -q "$HEAD1" "$STUB/last-review-prompt.md"'
+
+# IR1-F3: a relaunch consults the builder's STOP state like the first launch does
+echo "== T33 the builder run is paused / no_continue after the first launch and the reviewer dies: no relaunch until it is released"
+fresh 33; cutover; ingest >/dev/null; A=$(act); run
+set_run paused_at "2026-11-22T22:00:00+00:00"; set_run no_continue 1
+rm -f "$STUB/live-$(rec $A unit)"; run
+chk "T33 paused: one launch only, record blocked builder-held" '[ "$(cnt rlaunch.log)" = 1 ] && [ "$(blk $A)" = held ]'
+set_run paused_at NULL; set_run no_continue 0; run
+chk "T33 released: exactly one relaunch" '[ "$(cnt rlaunch.log)" = 2 ]'
+
+# IR1-F2: rollback then re-cutover while a review is in flight: the same consumer re-adopts its own claim under the new epoch
+echo "== T34 rollback (owner none) then re-cutover with a review in flight: the result is recorded under the new epoch"
+fresh 34; cutover 0; ingest >/dev/null; A=$(act); run
+S=$(rec $A session); U=$(rec $A unit); RT=$(rec $A root)
+wmd intake class-owner --class $CLS --set none --by hermes --expect-epoch 1 --evidence "rollback" >/dev/null; run
+chk "T34 fenced while rolled back" '[ "$(blk $A)" = fenced ]'
+cutover 2
+printf '{"verdict":"APPROVE","reviewed_head":"%s","reviewer_session":"%s","findings":[]}\n' "$HEAD1" "$S" > "$RT/verdict.json"; rm -f "$STUB/live-$U"; run; run
+chk "T34 after re-cutover (epoch 3): result recorded, record re-adopted at epoch 3, one launch" '[ "$(state_of $A)" = verifying ] && [ "$(rec $A epoch)" = 3 ] && [ "$(cnt rlaunch.log)" = 1 ] && grep -q "\"decision\": \"re-adopted\"" "$DIRECTOR_STATE/decisions.jsonl" 2>/dev/null'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
