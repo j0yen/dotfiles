@@ -157,7 +157,7 @@ fresh 1; cutover; ingest >/dev/null; A=$(act)
 chk "T1 action is ready before the tick" '[ "$(state_of $A)" = ready ]'
 run
 chk "T1 exactly one reviewer launch" '[ "$(cnt rlaunch.log)" = 1 ]'
-chk "T1 action running under the typed claim" '[ "$(state_of $A)" = running ] && [ "$(sq "SELECT claim FROM asks WHERE ask_id='"'"'$A'"'"'" | cut -d@ -f1)" = "director-typed-$A" ]'
+chk "T1 action running under the typed claim" '[ "$(state_of $A)" = running ] && [ "$(sq "SELECT claim FROM asks WHERE ask_id='"'"'$A'"'"'" | cut -d@ -f1 | sed "s/-[0-9a-f]\{8\}\$//")" = "director-typed-$A" ]'
 chk "T1 launch effect done with the reviewer session" '[ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = done ] && sq "SELECT readback FROM effects WHERE ask_id='"'"'$A'"'"'" | grep -q "$(rec $A session)"'
 chk "T1 legacy launcher never ran" '[ "$(cnt legacy-launch.log)" = 0 ]'
 chk "T1 prompt names the exact head and binding" 'grep -q "$HEAD1" "$STUB/last-review-prompt.md" && grep -q "$BID" "$STUB/last-review-prompt.md"'
@@ -312,7 +312,7 @@ run recover; A=$(act)
 chk "T18 recover tick: one action by build-result-ingest, one launch" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && [ "$(sq "SELECT producer_actor FROM action_meta")" = build-result-ingest ] && [ "$(cnt rlaunch.log)" = 1 ]'
 run recover; run recover
 chk "T18 repeated recover ticks: still one action, one launch" '[ "$(sq "SELECT COUNT(*) FROM action_meta")" = 1 ] && [ "$(cnt rlaunch.log)" = 1 ]'
-chk "T18 a stale-revision claim is refused by the store" '! wmd intake claim --ask "$A" --worker director-typed-x --by director-event-consumer --expect-rev 1 >/dev/null 2>&1 && [ "$(sq "SELECT claim FROM asks WHERE ask_id='"'"'$A'"'"'" | cut -d@ -f1)" = "director-typed-$A" ]'
+chk "T18 a stale-revision claim is refused by the store" '! wmd intake claim --ask "$A" --worker director-typed-x --by director-event-consumer --expect-rev 1 >/dev/null 2>&1 && [ "$(sq "SELECT claim FROM asks WHERE ask_id='"'"'$A'"'"'" | cut -d@ -f1 | sed "s/-[0-9a-f]\{8\}\$//")" = "director-typed-$A" ]'
 
 echo "== T19 isolation: a review launcher outside the scratch root is refused for the typed class only (blocked, nothing launched, no effect)"
 fresh 19; cutover; ingest >/dev/null; A=$(act)
@@ -588,6 +588,16 @@ route_case "ssh_config alias to this host" '{"host":"selfalias","root":"'"$T/rro
 if getent hosts ip6-localhost >/dev/null 2>&1; then route_case "/etc/hosts alias ip6-localhost" '{"host":"ip6-localhost","root":"'"$T/rroot38"'",'"$L"'}' route-local-refused
 else echo "SKIP T38 /etc/hosts alias: ip6-localhost is not in this host's resolver"; fi
 route_case "transport override sh -c" '{"host":"foreign.invalid","root":"'"$T/rroot38"'",'"$L"',"ssh":["sh","-c"]}' route-transport-refused
+
+# IR1-F11: the typed claim names the consumer's state dir, so a second consumer with another state dir (whose flocks it does not share) never adopts it
+echo "== T39 two consumers with different state dirs on one ledger: one claims and launches; the other ends claim-conflict and never launches"
+fresh 39; cutover; ingest >/dev/null; A=$(act)
+ST2="$T/st39-second"; mkdir -p "$ST2"
+touch "$STUB/hold"; DIRECTOR_STATE="$ST2" python3 "$C" consume >"$T/out2.txt" 2>&1     # the second consumer sees the action READY but holds
+rm -f "$STUB/hold"; run                                                                     # the first claims and launches
+DIRECTOR_STATE="$ST2" python3 "$C" consume >>"$T/out2.txt" 2>&1                              # the second re-admits its held record
+rm -f "$STUB/live-$(rec $A unit)"; run; DIRECTOR_STATE="$ST2" python3 "$C" consume >>"$T/out2.txt" 2>&1
+chk "T39 second state dir: claim-conflict, its own launches 0; the first relaunches once after the reviewer dies (2 launches in all)" '[ "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"state\"])" "$ST2/typed/typed-$A.json")" = claim-conflict ] && [ "$(cnt rlaunch.log)" = 2 ] && [ "$(sq "SELECT claim FROM asks WHERE ask_id='"'"'$A'"'"'" | cut -d@ -f1)" = "$(rec $A worker)" ]'
 
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]

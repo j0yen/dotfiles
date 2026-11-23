@@ -1370,6 +1370,13 @@ def typed_end(r, state, **kw):
     typed_decide(r, state, **kw)
 
 
+def typed_worker(ask):
+    """The typed claim's worker token: the ask plus this consumer's state-dir identity. Instances on one state dir share it (their flocks pick
+    one); a consumer on another state dir (flocks not shared) sees a foreign claim and ends claim-conflict (independent review 01, finding 11)."""
+    import hashlib
+    return "director-typed-%s-%s" % (ask, hashlib.sha256(os.path.realpath(STATE).encode()).hexdigest()[:8])
+
+
 def typed_seen(eid, ask):
     try:
         fd = os.open(typed_path(eid, ".owner"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -1379,7 +1386,7 @@ def typed_seen(eid, ask):
         f.write(CONSUMER + "\n")
         f.flush()
         os.fsync(f.fileno())
-    typed_save({"event_id": eid, "ask": ask, "state": "seen", "attempt": 0, "first_seen": now(), "worker": "director-typed-" + ask, "owner": CONSUMER})
+    typed_save({"event_id": eid, "ask": ask, "state": "seen", "attempt": 0, "first_seen": now(), "worker": typed_worker(ask), "owner": CONSUMER})
     return True
 
 
