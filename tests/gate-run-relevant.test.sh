@@ -2,6 +2,8 @@
 # Discriminating test for tests/gate/run-relevant.sh (gate bootstrap, A245/A246 B3): each vacuous/failing/skipped shape must fail the check,
 # only a real pass with a count passes. The runner is copied into a throwaway tree whose tests/ holds fake tests.
 set -u
+# hermetic: a gate host (or a seat) may export these; the cases below set them explicitly
+unset SWARM_DECIDE_SRC WM_DECIDE_PIN WM_HELPER WM_SEAT WM_DIRECTOR
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/gate-rr.XXXXXX"); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/tests/gate"; cp "$HERE/gate/run-relevant.sh" "$T/tests/gate/"
@@ -41,7 +43,7 @@ want "SKIP line is unmeasured"   3 skipline
 want "SKIP-WITH-REASON"          3 skip-with-reason
 want "rc 77 is unmeasured"       3 rc77
 want "worst of mixed wins"       3 good-counts skipline
-want "typed-review without swarm-decide src" 2 director-event-consumer-typed-review
+HOME="$T/emptyhome" want "typed-review without swarm-decide src" 2 director-event-consumer-typed-review
 mk director-event-consumer-typed-review 'echo "COUNTS: pass=120 fail=0"'
 SWARM_DECIDE_SRC="$T/nope" want "typed-review prerequisite absent -> 2, not skip" 2 director-event-consumer-typed-review
 mkdir -p "$T/sd/wm_decide" "$T/sd/bin"; : > "$T/sd/wm_decide/work_binding.py"; printf '#!/bin/sh\n' > "$T/sd/bin/wm-decide"; chmod +x "$T/sd/bin/wm-decide"
