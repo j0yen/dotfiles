@@ -1,0 +1,18 @@
+# Repo-declared gate checks, read by wm-build's repo_ci (src/gate/repo_ci.rs): each [[check]] becomes a `repo:<name>` row that
+# runs in the worktree, 0 = pass, non-zero = block. They are ADDITIVE: build_target `hooks` still runs sh-lint, sh-tests,
+# sh-ac-traceability, secrets-scan, proof-receipt and risk-gate. sh-tests alone is vacuous here (it runs only tests/<test_prefix>_*
+# executables and *.bats; this repo's tests are tests/*.test.sh, so it passes with files=0), hence these two checks.
+# tests/gate/run-relevant.sh fails on a missing test, a non-zero exit, a SKIP (unmeasured, never a pass), or no pass count.
+# Prerequisite for typed-review-consumer: SWARM_DECIDE_SRC (default $HOME/wintermute/swarm-decide) carries wm_decide/work_binding.py.
+# Check names must match ^[a-z0-9-]+$ (wm-build drops others silently); tests/gate-ci-manifest.test.sh pins that.
+[[check]]
+name = "typed-review-consumer"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer-typed-review:120"
+where = "host"
+wall_minutes = 30
+
+[[check]]
+name = "legacy-director-consumer"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer director-event-consumer-own-claim-rerun director-consumer-child-env director-event-consumer-tasksmax ctl-intake-consumer director-hermes-stop-gates"
+where = "host"
+wall_minutes = 30
