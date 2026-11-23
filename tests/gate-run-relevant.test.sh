@@ -77,13 +77,14 @@ mk director-event-consumer-typed-review 'if [ "${SWARM_DECIDE_SRC:-}" = "'"$T"'/
 HOME="$T/home" want "default-tree validated and exported to the test (no env set)" 0 director-event-consumer-typed-review:120
 # N2 (review delta-01): wm-build keeps only the LAST 4 KiB of a check's output. A typed test that prints more than that pushes the provenance line
 # (printed before the test) out of the receipt, on pass and on fail. The runner repeats provenance in its final block.
-mk director-event-consumer-typed-review 'if [ "${SWARM_DECIDE_SRC:-}" = "'"$T"'/sd" ]; then for i in $(seq 1 400); do echo "noise line $i to fill the receipt tail well past four kib of output"; done; echo "COUNTS: pass=120 fail='"'"'${TYPED_FAILS:-0}'"'"'"; exit ${TYPED_FAILS:-0}; else echo "FAIL wrong tree"; exit 1; fi'
+mk director-event-consumer-typed-review 'if [ "${SWARM_DECIDE_SRC:-}" = "'"$T"'/sd" ]; then for i in $(seq 1 400); do echo "noise line $i to fill the receipt tail well past four kib of output"; done; echo "COUNTS: pass=120 fail=${TYPED_FAILS:-0}"; exit ${TYPED_FAILS:-0}; else echo "FAIL wrong tree"; exit 1; fi'
 sdhead=$(git -C "$T/sd" rev-parse HEAD)
 for mode in pass fail; do
   fails_env=0; [ "$mode" = fail ] && fails_env=1
-  TYPED_FAILS=$fails_env SWARM_DECIDE_SRC="$T/sd" bash "$R" director-event-consumer-typed-review:120 >"$T/big-$mode" 2>&1
+  TYPED_FAILS=$fails_env SWARM_DECIDE_SRC="$T/sd" bash "$R" director-event-consumer-typed-review:120 >"$T/big-$mode" 2>&1; brc=$?
   size=$(wc -c < "$T/big-$mode"); tail -c 4096 "$T/big-$mode" > "$T/big-$mode.tail"
-  if [ "$size" -gt 8192 ] && grep -q "provenance director-event-consumer-typed-review swarm-decide=$T/sd HEAD=$sdhead dirty-files=0" "$T/big-$mode.tail"; then passes=$((passes+1)); echo "PASS provenance survives the 4 KiB tail ($mode, output $size bytes)"; else fails=$((fails+1)); echo "FAIL provenance lost from the last 4 KiB ($mode, output $size bytes)"; fi
+  want_rc=0; [ "$mode" = fail ] && want_rc=1   # review delta-02 N6: the pass mode must be a real runner pass (rc 0), not a vacuous rc 4
+  if [ "$brc" = "$want_rc" ] && [ "$size" -gt 8192 ] && grep -q "provenance director-event-consumer-typed-review swarm-decide=$T/sd HEAD=$sdhead dirty-files=0" "$T/big-$mode.tail"; then passes=$((passes+1)); echo "PASS provenance survives the 4 KiB tail ($mode, runner rc $brc, output $size bytes)"; else fails=$((fails+1)); echo "FAIL provenance lost from the last 4 KiB or wrong runner rc ($mode, rc $brc want $want_rc, output $size bytes)"; fi
 done
 echo "COUNTS: pass=$passes fail=$fails"
 [ "$fails" = 0 ]
