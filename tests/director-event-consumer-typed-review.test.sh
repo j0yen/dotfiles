@@ -288,6 +288,7 @@ U=$(rec $OLD unit); rm -f "$STUB/live-$U"; run
 chk "T16 older reviewer ended without a result: the older action relaunches (same action, own head)" '[ "$(cnt rlaunch.log)" = 3 ] && [ "$(rec $OLD attempt)" = 2 ] && [ "$(state_of $OLD)" = running ]'
 
 # consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:13 (with T22: the route is always remote; the route file values are the installer's)
+# T17 checks match text with here-strings, not `echo "$x" | grep -q`: under `set -o pipefail` grep -q exits at its first match, the 19 line-writes of bash echo can then hit a closed pipe (SIGPIPE, rc 141) and fail a correct run (A1296 df3 review, 119/1)
 echo "== T17 real route transport: no launch stub; the route file names a remote host -> the argv goes to that host over ssh, no local model process"
 fresh 17; cutover; ingest >/dev/null; A=$(act)
 mkdir -p "$T/t17"; cat > "$T/t17/ssh" <<'SH'
@@ -299,9 +300,9 @@ chmod 755 "$T/t17/ssh"
 printf '{"host":"reviewhost.invalid","root":"%s","launcher":["/home/jsy/.local/bin/fable-launch.sh","--helper"],"model":"claude-opus-5-5","effort":"high","ssh":["%s"]}\n' "$T/rroot17" "$T/t17/ssh" > "$T/route17.json"
 env -u DIRECTOR_REVIEW_LAUNCH_CMD DIRECTOR_REVIEW_ROUTE="$T/route17.json" DIRECTOR_REVIEW_ROOT= python3 "$C" consume >"$T/out.txt" 2>&1
 chk "T17 one ssh launch to the route host" '[ "$(grep -c "^reviewhost.invalid bash -s$" "$STUB/ssh-argv.log")" = 1 ]'
-chk "T17 the launch script starts a transient user unit running the route launcher with the route model/effort and the recorded session" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); grep -q "systemd-run --user --unit wm-review-" "$f" && grep -q "printf %s .* | base64 -d > run.sh" "$f" && s=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > run.sh" "$f" | cut -d" " -f3 | base64 -d) && echo "$s" | grep -q -- "fable-launch.sh --helper --model claude-opus-5-5 --effort high --session-id $(rec $A session)"'
+chk "T17 the launch script starts a transient user unit running the route launcher with the route model/effort and the recorded session" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); grep -q "systemd-run --user --unit wm-review-" "$f" && grep -q "printf %s .* | base64 -d > run.sh" "$f" && s=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > run.sh" "$f" | cut -d" " -f3 | base64 -d) && grep -q -- "fable-launch.sh --helper --model claude-opus-5-5 --effort high --session-id $(rec $A session)" <<<"$s"'
 chk "T17 no local reviewer process, no legacy launch, effect done" '[ "$(pgrep -c -f -- "--session-id $(rec $A session)" || true)" = 0 ] && [ "$(cnt legacy-launch.log)" = 0 ] && [ "$(sq "SELECT state FROM effects WHERE ask_id='"'"'$A'"'"'")" = done ] && [ "$(rec $A state)" = launched ]'
-chk "T17 the reviewer envelope (prompt) carries head, base and PRD blob" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); p=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > prompt.md" "$f" | cut -d" " -f3 | base64 -d); echo "$p" | grep -q "reviewed_head: $HEAD1" && echo "$p" | grep -q "base: 0000000000" && echo "$p" | grep -q "blob $(blob)"'
+chk "T17 the reviewer envelope (prompt) carries head, base and PRD blob" 'f=$(ls "$STUB"/ssh-stdin-*.txt | head -1); p=$(grep -o "printf %s [A-Za-z0-9+/=]* | base64 -d > prompt.md" "$f" | cut -d" " -f3 | base64 -d); grep -q "reviewed_head: $HEAD1" <<<"$p" && grep -q "base: 0000000000" <<<"$p" && grep -q "blob $(blob)" <<<"$p"'
 
 # consumes 2026-11-22-wintermute-increment1-review-action-wwhtbt.md#mechanism:9 (with T27 and T29: the recover tick is the producer trigger; a failed scan is one typed-scan incident per fault)
 echo "== T18 the supervised recover tick runs the producer scan: a real-shaped gate terminal becomes one action and one launch with no other caller"
