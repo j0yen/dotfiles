@@ -3,6 +3,7 @@
 # inside an enforced systemd boundary. Stub child commands only: no real Hermes, no provider, no credentials, no network.
 # The unit tests start real transient `systemd-run --user` units. Usage: <this> [test-name]   (default: all)
 set -uo pipefail
+# `grep -q P <<<"$x"`, not `echo "$x" | grep -q P`: grep -q exits at its match while echo still writes a multi-write value; echo takes SIGPIPE (rc 141) and pipefail fails a correct check.
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 C="$HERE/.local/bin/director-event-consumer.py"
 SCR="$HOME/.cache/director-scratch"
@@ -142,11 +143,11 @@ PY
   echo "--- inside the boundary:"; echo "$res"; echo "--- control (no boundary):"; echo "$ctl"
   local want="auth claude ssh fleet-token wm-sudo ledger hermes-dir config-dir bus" w
   for w in $want; do
-    echo "$res" | grep -q "^$w FAIL " || { bad unit_boundary_fake_home "$w reachable inside the boundary"; return; }
-    echo "$ctl" | grep -q "^$w OPEN" || { bad unit_boundary_fake_home "control cannot reach $w (test not discriminating)"; return; }
+    grep -q "^$w FAIL " <<<"$res" || { bad unit_boundary_fake_home "$w reachable inside the boundary"; return; }
+    grep -q "^$w OPEN" <<<"$ctl" || { bad unit_boundary_fake_home "control cannot reach $w (test not discriminating)"; return; }
   done
-  echo "$res" | grep -q "^scratch-write OK" || { bad unit_boundary_fake_home "scratch dir not writable"; return; }
-  echo "$res" | grep -q "^livehome-write FAIL " || { bad unit_boundary_fake_home "live home writable"; return; }
+  grep -q "^scratch-write OK" <<<"$res" || { bad unit_boundary_fake_home "scratch dir not writable"; return; }
+  grep -q "^livehome-write FAIL " <<<"$res" || { bad unit_boundary_fake_home "live home writable"; return; }
   ok unit_boundary_fake_home
 }
 t_unit_real_home(){
@@ -168,9 +169,9 @@ PY
   local u="$SCR/$P-realunit" res; res="$(cat "$u/result" 2>/dev/null)"; echo "$res"
   local w
   for w in auth claude ssh fleet-token wm-sudo ledger hermes-dir config-dir bus livehome-write; do
-    echo "$res" | grep -q "^$w FAIL " || { bad unit_real_home "$w did not fail inside the unit"; return; }
+    grep -q "^$w FAIL " <<<"$res" || { bad unit_real_home "$w did not fail inside the unit"; return; }
   done
-  echo "$res" | grep -q "^scratch-write OK" && echo "$res" | grep -q "^HOME=$u/home$" && echo "$res" | grep -q "^HERMES_HOME=$u/hermes-home$" \
+  grep -q "^scratch-write OK" <<<"$res" && grep -q "^HOME=$u/home$" <<<"$res" && grep -q "^HERMES_HOME=$u/hermes-home$" <<<"$res" \
     || { bad unit_real_home "scratch home not in use"; return; }
   grep -q 'fake-secret' "$T/real.argv" && { bad unit_real_home "credential on the unit command line"; return; }
   ok unit_real_home
@@ -259,14 +260,14 @@ PY
   local host_leak=no ctl_leak=no; [ -e "$T/iso-shm-child" ] && host_leak=yes; [ -e "/dev/shm/$m-child" ] && ctl_leak=yes
   echo "host-visible /dev/shm write from isolated child: $host_leak; from control child: $ctl_leak"; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"
   for w in docker docker-run dbus snapd tailscale cups x11-abstract x11-abstract1 x11-own tcp-loopback; do
-    echo "$res" | grep -q "^$w OPEN" && { bad unit_ipc_net_shm "$w reachable inside the boundary"; return; }
-    echo "$res" | grep -q "^$w FAIL " || { bad unit_ipc_net_shm "$w not probed"; return; }
+    grep -q "^$w OPEN" <<<"$res" && { bad unit_ipc_net_shm "$w reachable inside the boundary"; return; }
+    grep -q "^$w FAIL " <<<"$res" || { bad unit_ipc_net_shm "$w not probed"; return; }
   done
   for w in docker dbus tcp-loopback x11-own; do
-    echo "$ctl" | grep -q "^$w OPEN" || { bad unit_ipc_net_shm "control cannot reach $w (test not discriminating)"; return; }
+    grep -q "^$w OPEN" <<<"$ctl" || { bad unit_ipc_net_shm "control cannot reach $w (test not discriminating)"; return; }
   done
-  echo "$ctl" | grep -q "^shm-host-marker VISIBLE" && [ "$ctl_leak" = yes ] || { bad unit_ipc_net_shm "control does not share /dev/shm (test not discriminating)"; return; }
-  echo "$res" | grep -q "^shm-host-marker HIDDEN" && [ "$host_leak" = no ] || { bad unit_ipc_net_shm "host /dev/shm shared with the isolated child"; return; }
+  grep -q "^shm-host-marker VISIBLE" <<<"$ctl" && [ "$ctl_leak" = yes ] || { bad unit_ipc_net_shm "control does not share /dev/shm (test not discriminating)"; return; }
+  grep -q "^shm-host-marker HIDDEN" <<<"$res" && [ "$host_leak" = no ] || { bad unit_ipc_net_shm "host /dev/shm shared with the isolated child"; return; }
   ok unit_ipc_net_shm
 }
 DEV_PROBE='
@@ -319,10 +320,10 @@ PY
   local host_leak=no; [ -e "$T/iso-shm-child" ] && host_leak=yes; rm -f "/dev/shm/$m-host" "/dev/shm/$m-child"
   [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_devices_proc "no probe output"; return; }
   [ "$(echo "$ctl" | grep -c '^dev .* OPEN')" -ge 3 ] || { bad unit_devices_proc "control opens fewer than 3 device nodes (test not discriminating)"; return; }
-  echo "$res" | grep -q '^dev .* OPEN' && { bad unit_devices_proc "device node openable inside the boundary: $(echo "$res" | grep '^dev .* OPEN' | tr '\n' ' ')"; return; }
-  echo "$res" | grep -q '^dev ' || { bad unit_devices_proc "no device probed"; return; }
-  echo "$ctl" | grep -q '^shm-host-marker VISIBLE' || { bad unit_devices_proc "control does not share /dev/shm (test not discriminating)"; return; }
-  echo "$res" | grep -q '^shm-host-marker HIDDEN' && [ "$host_leak" = no ] || { bad unit_devices_proc "host /dev/shm visible or written from the isolated child"; return; }
+  grep -q '^dev .* OPEN' <<<"$res" && { bad unit_devices_proc "device node openable inside the boundary: $(echo "$res" | grep '^dev .* OPEN' | tr '\n' ' ')"; return; }
+  grep -q '^dev ' <<<"$res" || { bad unit_devices_proc "no device probed"; return; }
+  grep -q '^shm-host-marker VISIBLE' <<<"$ctl" || { bad unit_devices_proc "control does not share /dev/shm (test not discriminating)"; return; }
+  grep -q '^shm-host-marker HIDDEN' <<<"$res" && [ "$host_leak" = no ] || { bad unit_devices_proc "host /dev/shm visible or written from the isolated child"; return; }
   local rp cp; rp="$(echo "$res" | sed -n 's/.*cmdline-openable=//p')"; cp="$(echo "$ctl" | sed -n 's/.*cmdline-openable=//p')"
   [ "${cp:-0}" -gt 10 ] || { bad unit_devices_proc "control sees too few pids (test not discriminating)"; return; }
   [ "${rp:-99}" -le 1 ] || { bad unit_devices_proc "host process cmdline openable inside the boundary: $rp"; return; }
@@ -432,10 +433,10 @@ print(json.dumps([x for x in l if os.path.lexists(x) and not os.path.isdir(x) an
   [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_sockets "no probe output"; return; }
   local w
   for w in /dev/log /run/systemd/notify /run/systemd/journal/dev-log /run/systemd/journal/stdout /run/systemd/journal/socket /run/systemd/io.systemd.Hostname /run/systemd/io.systemd.Login; do
-    echo "$ctl" | grep -q "^sock $w OPEN" || { bad unit_sockets "control cannot connect to $w (test not discriminating)"; return; }
+    grep -q "^sock $w OPEN" <<<"$ctl" || { bad unit_sockets "control cannot connect to $w (test not discriminating)"; return; }
   done
-  echo "$res" | grep -q ' OPEN$' && { bad unit_sockets "connectable inside the boundary: $(echo "$res" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
-  echo "$only" | grep -q ' OPEN$' && { bad unit_sockets "connectable with the InaccessiblePaths alone: $(echo "$only" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  grep -q ' OPEN$' <<<"$res" && { bad unit_sockets "connectable inside the boundary: $(echo "$res" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  grep -q ' OPEN$' <<<"$only" && { bad unit_sockets "connectable with the InaccessiblePaths alone: $(echo "$only" | grep ' OPEN$' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
   [ "$(echo "$res" | grep -c ' FAIL ')" = "$(echo "$ctl" | grep -c '^sock')" ] || { bad unit_sockets "a path was not probed or not refused"; return; }
   ok unit_sockets
 }
@@ -470,8 +471,8 @@ PY
   kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
   echo "positive (plain child): $plain"; echo "positive (plain unit): $unit"; echo "negative (InaccessiblePaths=$d/s): $(echo "$neg" | tail -n 3 | tr '\n' ' ')"
   [ "$plain" = "CONNECT OPEN" ] || { bad unit_socket_negative "positive control: plain child cannot connect (test not discriminating)"; return; }
-  echo "$unit" | grep -qx "CONNECT OPEN" || { bad unit_socket_negative "positive control: plain unit cannot connect (test not discriminating)"; return; }
-  echo "$neg" | grep -qE '^CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' || { bad unit_socket_negative "socket reachable or unit failed inside InaccessiblePaths: $(echo "$neg" | tail -n 3 | tr '\n' ' ')"; return; }
+  grep -qx "CONNECT OPEN" <<<"$unit" || { bad unit_socket_negative "positive control: plain unit cannot connect (test not discriminating)"; return; }
+  grep -qE '^CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' <<<"$neg" || { bad unit_socket_negative "socket reachable or unit failed inside InaccessiblePaths: $(echo "$neg" | tail -n 3 | tr '\n' ' ')"; return; }
   ok unit_socket_negative
 }
 t_unit_socket_installed_builder(){
@@ -501,8 +502,8 @@ m1 = load(); m1.SOCKET_DENY_STATIC = tuple(m1.SOCKET_DENY_STATIC) + (sock,); pri
 PY
 )"
   echo "builder-launched unit: $(echo "$out" | tr '\n' ' ')"
-  echo "$out" | grep -qx 'allowed: CONNECT OPEN' || { bad unit_socket_installed_builder "positive control: builder unit cannot reach the owned socket (not discriminating): $(echo "$out" | tr '\n' ' ')"; return; }
-  echo "$out" | grep -qE '^denied: CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' || { bad unit_socket_installed_builder "socket still reachable with it on SOCKET_DENY_STATIC: $(echo "$out" | tr '\n' ' ')"; return; }
+  grep -qx 'allowed: CONNECT OPEN' <<<"$out" || { bad unit_socket_installed_builder "positive control: builder unit cannot reach the owned socket (not discriminating): $(echo "$out" | tr '\n' ' ')"; return; }
+  grep -qE '^denied: CONNECT FAIL (ENOENT|EACCES|ENOTDIR)$' <<<"$out" || { bad unit_socket_installed_builder "socket still reachable with it on SOCKET_DENY_STATIC: $(echo "$out" | tr '\n' ' ')"; return; }
   ok unit_socket_installed_builder
 }
 LISTING_CLOSED='["/run", "/run/udev", "/run/lock", "/run/systemd", "/run/systemd/journal", "/sys/class/input", "/sys/class/hidraw", "/proc/bus/input"]'
@@ -531,15 +532,15 @@ t_unit_listing(){
   for w in $(python3 -c "import json; print(' '.join(json.loads('$LISTING_CLOSED')))"); do
     cnt="$(echo "$ctl" | sed -n "s|^ls $w \([0-9][0-9]*\)$|\1|p" | head -1)"
     if listing_na "$w" "$cnt"; then na="$na $w"; echo "note: $w is empty on this host (no HID device), nothing to enumerate; the in-boundary denial below still applies"
-    else echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "control cannot list $w (test not discriminating)"; return; }; fi
-    echo "$res" | grep -Eq "^ls $w (FAIL [0-9]+|0)$" || { bad unit_listing "names under $w still listable: $(echo "$res" | grep "^ls $w ")"; return; }
+    else grep -Eq "^ls $w [1-9][0-9]*$" <<<"$ctl" || { bad unit_listing "control cannot list $w (test not discriminating)"; return; }; fi
+    grep -Eq "^ls $w (FAIL [0-9]+|0)$" <<<"$res" || { bad unit_listing "names under $w still listable: $(echo "$res" | grep "^ls $w ")"; return; }
   done
   # the N/A branch fires for hidraw alone; any other path in it means the empty-host allowance leaked
   [ -z "${na# }" ] || [ "${na# }" = /sys/class/hidraw ] || { bad unit_listing "N/A branch fired for:$na"; return; }
   # non-empty anchors: the unit always has /run and /run/systemd entries, so these never take the N/A branch on any host
   for w in /run /run/systemd; do
-    echo "$ctl" | grep -Eq "^ls $w [1-9][0-9]*$" || { bad unit_listing "anchor $w has no control entries (test not discriminating)"; return; }
-    echo "$res" | grep -Eq "^ls $w (FAIL [0-9]+|0)$" || { bad unit_listing "anchor $w still listable inside the boundary: $(echo "$res" | grep "^ls $w ")"; return; }
+    grep -Eq "^ls $w [1-9][0-9]*$" <<<"$ctl" || { bad unit_listing "anchor $w has no control entries (test not discriminating)"; return; }
+    grep -Eq "^ls $w (FAIL [0-9]+|0)$" <<<"$res" || { bad unit_listing "anchor $w still listable inside the boundary: $(echo "$res" | grep "^ls $w ")"; return; }
   done
   echo "residual (documented, still listable): $(echo "$res" | grep -E '^ls [^ ]+ [1-9][0-9]*$' | sed 's/^ls //' | tr '\n' ';')"
   ok unit_listing
@@ -613,16 +614,16 @@ t_unit_groups(){
   [ -n "$res" ] && [ -n "$ctl" ] || { bad unit_groups "no probe output"; return; }
   local w
   for w in /var/log/auth.log /var/log/syslog /var/log/kern.log; do
-    echo "$ctl" | grep -q "^named $w OPEN" || { bad unit_groups "control cannot open $w (test not discriminating)"; return; }
+    grep -q "^named $w OPEN" <<<"$ctl" || { bad unit_groups "control cannot open $w (test not discriminating)"; return; }
   done
-  echo "$ctl" | grep -Eq '^walk seen [0-9]+ groupdep-open [1-9][0-9]*$' || { bad unit_groups "control walk found no group-dependent open"; return; }
-  echo "$res" | grep -q '^named .* OPEN' && { bad unit_groups "group-gated file opens in the unit: $(echo "$res" | grep '^named .* OPEN' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
-  echo "$res" | grep -Eq '^walk seen [0-9]+ groupdep-open 0$' || { bad unit_groups "group-dependent opens in the unit: $(echo "$res" | grep '^hit ' | head -8 | tr '\n' ' ')"; return; }
+  grep -Eq '^walk seen [0-9]+ groupdep-open [1-9][0-9]*$' <<<"$ctl" || { bad unit_groups "control walk found no group-dependent open"; return; }
+  grep -q '^named .* OPEN' <<<"$res" && { bad unit_groups "group-gated file opens in the unit: $(echo "$res" | grep '^named .* OPEN' | cut -d' ' -f2 | tr '\n' ' ')"; return; }
+  grep -Eq '^walk seen [0-9]+ groupdep-open 0$' <<<"$res" || { bad unit_groups "group-dependent opens in the unit: $(echo "$res" | grep '^hit ' | head -8 | tr '\n' ' ')"; return; }
   for w in /usr/bin/python3 /etc/passwd; do
-    echo "$res" | grep -q "^need $w OPEN" || { bad unit_groups "unit lost access to $w"; return; }
+    grep -q "^need $w OPEN" <<<"$res" || { bad unit_groups "unit lost access to $w"; return; }
   done
-  echo "$res" | grep -q '^need .*probe.py OPEN' || { bad unit_groups "unit cannot read its scratch probe"; return; }
-  echo "$res" | grep -q 'need state-bind WRITE OK' || { bad unit_groups "state bind not writable"; return; }
+  grep -q '^need .*probe.py OPEN' <<<"$res" || { bad unit_groups "unit cannot read its scratch probe"; return; }
+  grep -q 'need state-bind WRITE OK' <<<"$res" || { bad unit_groups "state bind not writable"; return; }
   echo "residual (documented): group-gated paths created after launch or outside the scanned roots (/usr/lib, /usr/share besides ppd, /mnt, /media, /home) stay open; override check is launch-time only (same-uid swap); scratch root is 0775 and the launcher dir's ancestors are unchecked; sockets created after launch under /run are hidden only by the /run tmpfs"
   ok unit_groups
 }
