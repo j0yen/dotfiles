@@ -1,0 +1,72 @@
+# Repo-declared gate checks, read by wm-build's repo_ci (src/gate/repo_ci.rs): each [[check]] becomes a `repo:<name>` row that runs in the
+# worktree, 0 = pass, non-zero = block. ADDITIVE: build_target `hooks` still runs sh-lint, sh-tests, sh-ac-traceability, secrets-scan,
+# proof-receipt and risk-gate. sh-tests alone is vacuous here (it runs only tests/<test_prefix>_* executables and *.bats; this repo's tests are
+# tests/*.test.sh, so it passes with files=0), and risk-gate is vacuous for `hooks`: these rows are the only behavioral evidence.
+#
+# ONE ROW PER TEST (review 74270b28 F1). wm-build keys a repo row's finding as `repo:<name>-exit<code>` and a head finding whose key the base
+# already carries is INHERITED, not new. A row that is red on the base therefore hides any later failure of the same exit code inside that
+# row. Rows stay separate so a host-prerequisite failure (child-env, G2) masks only itself. RESIDUAL, owned by the wm-build source owner and
+# NOT fixed here: even per row, a row already red on base still inherits a new same-exit failure inside it; this manifest does not claim a
+# full gate or acceptance PASS. A row red on base is UNMEASURED on that host, not a "block".
+#
+# tests/gate/run-relevant.sh fails on a missing test, non-zero exit, a SKIP (unmeasured), a FAIL line at rc 0, or no pass count / below `:min`.
+# Host prerequisites (a missing one FAILS the row with exit 2 or 1, never a skip): SWARM_DECIDE_SRC (default $HOME/wintermute/swarm-decide)
+# with wm_decide/work_binding.py and an `intake`-capable bin/wm-decide (the runner exports it to the test and prints its HEAD and dirty count);
+# the gate user able to open >= 3 device nodes (input/video/audio groups) for director-consumer-child-env unit_devices_proc (RedBaron's jsy
+# is not in them, ryzen7's is in input+video, unmeasured there; fails identically on base 42c26383); systemd-run --user; jq.
+# `gate-selftest` runs this repo's own gate-harness tests so weakening the runner or this manifest fails a row.
+# Names must match ^[a-z0-9-]+$ (wm-build drops others silently); tests/gate-ci-manifest.test.sh pins the exact rows.
+[[check]]
+name = "typed-review-consumer"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer-typed-review:120"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-director-event-consumer"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-director-event-consumer-own-claim-rerun"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer-own-claim-rerun"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-director-consumer-child-env"
+cmd = "bash tests/gate/run-relevant.sh director-consumer-child-env"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-director-event-consumer-tasksmax"
+cmd = "bash tests/gate/run-relevant.sh director-event-consumer-tasksmax"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-ctl-intake-consumer"
+cmd = "bash tests/gate/run-relevant.sh ctl-intake-consumer"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "legacy-director-hermes-stop-gates"
+cmd = "bash tests/gate/run-relevant.sh director-hermes-stop-gates"
+where = "host"
+wall_minutes = 30
+fail_marker = "GATE-RELEVANT-PROBLEM:"
+
+[[check]]
+name = "gate-selftest"
+cmd = "bash tests/gate-run-relevant.test.sh && bash tests/gate-ci-manifest.test.sh"
+where = "host"
+wall_minutes = 10
