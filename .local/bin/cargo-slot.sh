@@ -173,6 +173,31 @@ reap_gate() { # $1 = root; once an hour unless CARGO_SLOT_REAP_FORCE=1; never un
   [ -d "$1" ] && [ ! -L "$1" ] || return 0
   if [ "${CARGO_SLOT_REAP_FORCE:-0}" = 1 ] || [ -z "$(find "$1/.reap-stamp" -mmin -60 2>/dev/null)" ]; then touch "$1/.reap-stamp"; reap_hand_tmp "$1"; fi
 }
+# 2026-11-25 H4: reap_homes removes a per-target home only when ALL hold: it is a real dir (not a symlink) directly under the root, named
+#   <label>-<12 hex>, carries .cargo-slot-target (so the 674 pre-H4 labels and hand-made homes are never touched), the recorded target
+#   no longer exists, the stamp is older than CARGO_SLOT_HOME_REAP_MIN minutes (default 1440), and no process holds either cargo cache
+#   lock file in it (flock -n). rm -rf never follows the index/cache/git-db/bin symlinks inside a home (only the links go).
+#   Once an hour per root (stamp <root>/.reap-stamp), never under DRYRUN or a selftest child; CARGO_SLOT_REAP_FORCE=1 skips the hourly stamp.
+reap_homes() { # $1 = root
+  local d t lf busy
+  for d in "$1"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/.cargo-slot-target" ] || continue
+    [[ "${d##*/}" =~ -[0-9a-f]{12}$ ]] || continue
+    read -r t < "$d/.cargo-slot-target" 2>/dev/null || continue
+    [ -n "$t" ] && [ ! -e "$t" ] || continue
+    [ -n "$(find "$d/.cargo-slot-target" -mmin +"${CARGO_SLOT_HOME_REAP_MIN:-1440}" 2>/dev/null)" ] || continue
+    busy=0; for lf in "$d/.package-cache" "$d/.package-cache-mutate"; do [ -e "$lf" ] && ! flock -n -x "$lf" true && busy=1; done
+    [ "$busy" = 0 ] || continue
+    rm -rf -- "$d" && echo "[cargo-slot] reaped orphan CARGO_HOME ${d##*/} (target $t gone)" >&2
+  done
+  return 0
+}
+reap_homes_gate() { # $1 = root; same gating as reap_gate
+  [ "${CARGO_SLOT_DRYRUN:-0}" = 1 ] && return 0
+  [ "${CARGO_SLOT_SELFTEST_CHILD:-0}" = 1 ] && return 0
+  [ -d "$1" ] && [ ! -L "$1" ] || return 0
+  if [ "${CARGO_SLOT_REAP_FORCE:-0}" = 1 ] || [ -z "$(find "$1/.reap-stamp" -mmin -60 2>/dev/null)" ]; then touch "$1/.reap-stamp"; reap_homes "$1"; fi
+}
 split_selftest() { # fake wm-build/systemd-run/flock/cargo on a temp PATH, temp lock dir; never touches real locks or starts real cargo/acquire
   local T RF self; self=$(readlink -f "$0")
   T=$(mktemp -d /mnt/data/.slot-selftest-split.XXXX) || { echo "  FAIL setup mktemp"; sf=1; sfc="$sfc setup"; return; }
@@ -193,6 +218,7 @@ FEOF
   cat > "$T/bin/cargo" <<'FEOF'
 #!/bin/bash
 echo "CARGO $*" >> "$FAKE_LOG"
+[ -n "${FAKE_CHOME_LOG:-}" ] && echo "CHOME ${CARGO_HOME:-}" >> "$FAKE_CHOME_LOG"   # H4 cases only (own file, so the CARGO/SR/ACQ counts above are unchanged)
 lk() { if "$FAKE_REAL_FLOCK" -n "$FAKE_LOCK" true; then echo free; else echo held; fi; }
 holders() { local l p; for l in /proc/[0-9]*/fd/*; do [ "$(readlink "$l" 2>/dev/null)" = "$1" ] && { p=${l#/proc/}; echo "${p%%/*}"; }; done | sort -u; }
 outside() { local p q c nf=0 o=""; for p in $(holders "$1"); do [ -r /proc/$p/status ] || continue; c=$(cat /proc/$p/comm 2>/dev/null); q=$p; while [ -n "$q" ] && [ "$q" != 1 ] && [ "$q" != "$$" ]; do q=$(awk '/^PPid/{print $2}' /proc/$q/status 2>/dev/null); done; [ "$q" = "$$" ] && continue; if [ "$c" = flock ]; then nf=$((nf + 1)); else o="$o$p:$c "; fi; done; echo "$o|$nf"; }  # holders that are neither the cargo's own subtree nor a flock(1) wrapper (flock forks and keeps its fd): "<leaks>|<n flock wrappers>"
@@ -416,6 +442,38 @@ FEOF
   ok L6 "--last 2 prints the last 2 lines" test "$(cat "$T/out")" = "$(printf 'two\nthree')"; ok L6 "rc 0" rcis 0; ok L6 "touches no gate/cargo/lock" nohas log '.'
   tc l7 CARGO_SLOT_LAUNCH_LOG="$T/ll" -- --last; ok L7 "--last default 5 prints all 3 here" test "$(wc -l < "$T/out")" = 3
   tc l8 CARGO_SLOT_LAUNCH_LOG="$T/absent" -- --last; ok L8 "--last on a missing log: rc 0, no output" rcis 0
+  # H4 (2026-11-25): one private CARGO_HOME per resolved target dir (was per target basename); fake mk-cargo-home, private root
+  printf '#!/bin/bash\necho "MKHOME $1" >> "$FAKE_MK_LOG"\n[ -n "${FAKE_MK_FAIL:-}" ] && exit 3\nmkdir -p "$1/registry/src" "$1/git/checkouts" && echo "$1"\n' > "$T/bin/mkhome"; chmod +x "$T/bin/mkhome"
+  hv=(CARGO_HOME= CARGO_SLOT_MKHOME="$T/bin/mkhome" CARGO_SLOT_HOME_ROOT="$T/homes" FAKE_MK_LOG="$T/mk" FAKE_CHOME_LOG="$T/chome"); : > "$T/mk"; : > "$T/chome"
+  hid() { local t; t=$(readlink -m "$1"); echo "$T/homes/$(basename "$t")-$(printf '%s' "$t" | sha256sum | cut -c1-12)"; }
+  mkdir -p "$T/h1" "$T/h2"; git init -q "$T/h1"; git init -q "$T/h2"
+  TCWD=$T/h1; tc h1 "${hv[@]}" CARGO_TARGET_DIR="$T/gate1/head" -- check; h1=$(hid "$T/gate1/head")
+  ok H1 "unset CARGO_HOME: rc 0" rcis 0; ok H1 "home = <root>/head-<sha256(target)[:12]>" has chome "^CHOME $h1\$"; ok H1 "mk-cargo-home called on that dir" has mk "^MKHOME $h1\$"
+  ok H1 "target stamp written" test "$(cat "$h1/.cargo-slot-target" 2>/dev/null)" = "$(readlink -m "$T/gate1/head")"; ok H1 "decision line" has err "private CARGO_HOME=$h1 .*one home per target dir"
+  TCWD=$T/h2; tc h2 "${hv[@]}" CARGO_TARGET_DIR="$T/gate2/head" -- check; h2=$(hid "$T/gate2/head")
+  ok H2 "second gate, same basename head: its own home" has chome "^CHOME $h2\$"; ok H2 "the two homes differ" test "$h1" != "$h2"; ok H2 "no home named by basename alone" test ! -e "$T/homes/head"
+  : > "$T/chome"; TCWD=$T/h1; tc h3 "${hv[@]}" CARGO_TARGET_DIR="$T/gate1/head" -- test
+  ok H3 "same target, SPLIT test: rc 0" rcis 0; ok H3 "compile and run phase both on the gate's one home" cnt chome "^CHOME $h1\$" 2; ok H3 "no other home" cnt chome '^CHOME ' 2
+  : > "$T/chome"; TCWD=$T/h1; tc h4 "${hv[@]}" CARGO_TARGET_DIR="$T/gate1/./head/" -- check
+  ok H4 "an equivalent spelling of the target maps to the same home" has chome "^CHOME $h1\$"
+  : > "$T/chome"; : > "$T/mk"; mkdir -p "$T/own/registry/src"; TCWD=$T/h1; tc h5 "${hv[@]}" CARGO_HOME="$T/own" CARGO_TARGET_DIR="$T/gate1/head" -- check
+  ok H5 "explicit private CARGO_HOME is used as is (unchanged)" has chome "^CHOME $T/own\$"; ok H5 "mk-cargo-home not called" nohas mk '.'
+  mkdir -p "$T/lnk/registry"; ln -sfn "$T/own/registry/src" "$T/lnk/registry/src"; TCWD=$T/h1; tc h6 "${hv[@]}" CARGO_HOME="$T/lnk" CARGO_TARGET_DIR="$T/gate1/head" -- check
+  ok H6 "symlinked registry/src still refused 76 (unchanged)" rcis 76; ok H6 "cargo never ran" nohas log '^CARGO '
+  TCWD=$T/h1; tc h7 "${hv[@]}" FAKE_MK_FAIL=1 CARGO_TARGET_DIR="$T/gate3/head" -- check
+  ok H7 "mk-cargo-home failure: REFUSED 76 (unchanged)" rcis 76; ok H7 "refusal text" has err 'REFUSED: mk-cargo-home failed'; ok H7 "cargo never ran" nohas log '^CARGO '
+  # reap_homes: only stamped <label>-<12hex> homes whose target is gone, stamp older than the age, no cache lock held
+  HR=$T/reap; mkdir -p "$HR/outside"; touch "$HR/outside/victim"; mkr() { mkdir -p "$HR/$1/registry/src/x"; ln -sfn "$HR/outside" "$HR/$1/registry/index"; [ -n "$2" ] && printf '%s\n' "$2" > "$HR/$1/.cargo-slot-target"; touch -d "3 days ago" "$HR/$1/.cargo-slot-target" 2>/dev/null; :; }
+  mkdir -p "$T/live-target"; mkr orphan-0123456789ab "$T/gone1"; mkr live-0123456789ab "$T/live-target"; mkr head; mkr nostamp-0123456789ab; mkr fresh-0123456789ab "$T/gone2"; touch "$HR/fresh-0123456789ab/.cargo-slot-target"
+  mkr held-0123456789ab "$T/gone3"; : > "$HR/held-0123456789ab/.package-cache-mutate"; "$RF" -s "$HR/held-0123456789ab/.package-cache-mutate" sleep 30 & hp=$!; sleep 0.3
+  mkr realdir-aaaaaaaaaaaa "$T/gone4"; mv "$HR/realdir-aaaaaaaaaaaa" "$T/realdir"; ln -sfn "$T/realdir" "$HR/link-0123456789ab"
+  CARGO_SLOT_DRYRUN=1 CARGO_SLOT_REAP_FORCE=1 reap_homes_gate "$HR"; ok R0 "DRYRUN reaps nothing" test -d "$HR/orphan-0123456789ab"
+  CARGO_SLOT_REAP_FORCE=1 reap_homes_gate "$HR" 2> "$T/reap.err"
+  ok R1 "orphan (target gone, stamp 3 days old) reaped" test ! -e "$HR/orphan-0123456789ab"; ok R1 "reap logged" has reap.err 'reaped orphan CARGO_HOME orphan-0123456789ab'
+  ok R2 "live target kept" test -d "$HR/live-0123456789ab"; ok R3 "legacy label without hash kept" test -d "$HR/head"; ok R4 "unstamped home kept" test -d "$HR/nostamp-0123456789ab"
+  ok R5 "fresh stamp kept" test -d "$HR/fresh-0123456789ab"; ok R6 "home with a held cache lock kept" test -d "$HR/held-0123456789ab"
+  ok R7 "symlinked entry kept, its target untouched" test -L "$HR/link-0123456789ab" -a -d "$T/realdir/registry/src/x"; ok R8 "symlink inside a reaped home not followed" test -e "$HR/outside/victim"
+  kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
   rm -rf -- "$T"
 }
 if [ "${1:-}" = --selftest ] || [ "${1:-}" = --selftest-split ]; then
@@ -442,15 +500,27 @@ if [ "${1:-}" = --selftest ] || [ "${1:-}" = --selftest-split ]; then
   [ "$sf" = 0 ] && { echo "SELFTEST OK"; exit 0; }; echo "SELFTEST FAIL$sfc"; exit 1
 fi
 reap_gate /mnt/data/hand-tmp
+reap_homes_gate "${CARGO_SLOT_HOME_ROOT:-/home/jsy/.cargo-hand}"
 # 10-19 9:1x PM rb (1007 deadlock): a hand `cargo test` with CARGO_HOME=/home/jsy/.cargo held ~/.cargo/.package-cache-mutate
 #   (WRITE, 10 min, 0 % CPU) while its fixture tests ran nested cargo waiting on the same lock: a self-deadlock that also froze the
 #   daemon run-1007 inner and a canary (shared CARGO_HOME). The slot never runs on the shared CARGO_HOME: unset or /home/jsy/.cargo
 #   gives a private home per target dir via mk-cargo-home.sh (own lock, own registry/src + git/checkouts; index/cache/git-db shared).
+# 2026-11-25 H4 (B2 lineage, A1296; incident 11-24 8:28-10:2x AM, ../out-gate/lock-contention-0857.txt): the home was keyed by the target
+#   BASENAME only, so every wmb-verify-suite gate (targets <mktemp run>/head|base|clip) shared ~/.cargo-hand/{head,base,clip} across
+#   sessions and toolchains; one gate's outer cargo held head/.package-cache-mutate WRITE through its run phase, its own nested
+#   `cargo build --offline` fixture waited on it, and a product suite + another gate queued behind the same lock.
+#   Now the home is keyed by the RESOLVED target dir: <root>/<basename>-<sha256(realpath target)[:12]>. One target = one home, so the
+#   compile and run phases (and check then test) of one gate still share a home and its fingerprinted registry/src paths, while two
+#   gates (distinct mktemp targets) never share a lock file. Each call refreshes <home>/.cargo-slot-target (the target path), which
+#   reap_homes uses to remove orphaned homes. Test hooks: CARGO_SLOT_MKHOME (default /mnt/data/hand/mk-cargo-home.sh),
+#   CARGO_SLOT_HOME_ROOT (default /home/jsy/.cargo-hand). REVERSE: restore the basename line from git history (dotfiles origin/main 42c2638).
 ch=$(readlink -f "${CARGO_HOME:-/home/jsy/.cargo}" 2>/dev/null || echo "${CARGO_HOME:-}")
 if [ -z "$ch" ] || [ "$ch" = /home/jsy/.cargo ]; then
   # 9:2x PM controller correction: own registry/src + git/checkouts per home (cp -al seed), only index/cache/git-db shared
-  ch=$(/mnt/data/hand/mk-cargo-home.sh /home/jsy/.cargo-hand/$(basename "$CARGO_TARGET_DIR")) || { echo "[cargo-slot] REFUSED: mk-cargo-home failed" >&2; exit 76; }
-  echo "[cargo-slot] private CARGO_HOME=$ch (shared ~/.cargo refused for hand cargo)" >&2
+  ch_t=$(readlink -m "$CARGO_TARGET_DIR"); ch_id=$(basename "$ch_t")-$(printf '%s' "$ch_t" | sha256sum | cut -c1-12)
+  ch=$("${CARGO_SLOT_MKHOME:-/mnt/data/hand/mk-cargo-home.sh}" "${CARGO_SLOT_HOME_ROOT:-/home/jsy/.cargo-hand}/$ch_id") || { echo "[cargo-slot] REFUSED: mk-cargo-home failed" >&2; exit 76; }
+  printf '%s\n' "$ch_t" > "$ch/.cargo-slot-target" 2>/dev/null || echo "[cargo-slot] WARN: cannot stamp $ch/.cargo-slot-target (home is never reaped)" >&2
+  echo "[cargo-slot] private CARGO_HOME=$ch (shared ~/.cargo refused for hand cargo; one home per target dir)" >&2
 elif [ -L "$ch/registry/src" ] || [ -L "$ch/registry" ]; then
   echo "[cargo-slot] REFUSED: CARGO_HOME=$ch shares registry/src by symlink; build it with /mnt/data/hand/mk-cargo-home.sh" >&2; exit 76
 fi
