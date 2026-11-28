@@ -8,7 +8,7 @@
 #   approve.sh --trial-close <id> <keep|revert|unmeasured|extend> [--trial-ends <iso>]       approve.sh --trial-open <id> --trial-ends <iso> [--arms 'a,b,c']  (pending -> open)       approve.sh --trials
 # Trials: ${APPROVE_TRIALS:-~/.claude/state/trials.json}, JSON array of {id, approval, started, ends, signal, revert, state, start_gate?, closed?, arms?, extended?, closes?}; atomic write under flock;
 #   a malformed file is refused (exit 4) and never overwritten. Trial flags keep the tmux refusal (exit 3); bad input exits 2.
-# Close rule: keep/revert need >= ${APPROVE_TRIAL_MIN_GRADED:-20} Fable-graded decisions rows per arm in started..min(ends,now) (decisions.sqlite, ${WM_DECIDE_DB:-~/.local/state/swarm-decide/decisions.sqlite}),
+# Close rule: keep/revert need >= ${APPROVE_TRIAL_MIN_GRADED:-20} regrader-graded decisions rows per arm (regrade.by fable-regrader (historical) or regrader (A388 no-Fable grader); model not read) in started..min(ends,now) (decisions.sqlite, ${WM_DECIDE_DB:-~/.local/state/swarm-decide/decisions.sqlite}),
 #   else exit 5 and only 'unmeasured' (runs the revert) or 'extend' (once, later --trial-ends) is allowed. Only an open trial closes (else 2). Revert command failing = exit 6; a failed
 #   ${WM_DECIDE_BIN:-wm-decide} plan row = exit 7. Every close writes one plan row. Now = ${APPROVE_NOW:-the clock}. Revert logs: ${APPROVE_TRIAL_LOG_DIR:-~/.claude/state/trial-logs}.
 # Line format: #<id> | <YYYY-MM-DD h:MM AM/PM TZ> | <session> | Joe: "<verbatim>" | re: <what>
@@ -213,14 +213,14 @@ elif op == "close":
             except (ValueError, TypeError): continue
             if not isinstance(rg, dict) or not isinstance(tg, list): continue
             v = rg.get("verdict")
-            if rg.get("by") == "fable-regrader" and isinstance(v, str) and v and v != "UNGRADED" and "test" not in tg and "legacy" not in tg:
+            if rg.get("by") in ("fable-regrader", "regrader") and isinstance(v, str) and v and v != "UNGRADED" and "test" not in tg and "legacy" not in tg:
                 counts[agent]["graded"] += 1
     measured = bool(arms) and all(counts[a]["graded"] >= minn for a in arms)
     win = "%s..%s" % (r["started"], wend.isoformat(timespec="seconds"))
     if verdict in ("keep", "revert") and not measured:
         if dbnote: sys.stderr.write(dbnote + "\n")
         if not arms: sys.stderr.write("trial %s has no arms recorded; nothing to measure\n" % r["id"])
-        for a in arms: sys.stderr.write("arm %s: %d/%d Fable-graded of %d rows in %s\n" % (a, counts[a]["graded"], minn, counts[a]["rows"], win))
+        for a in arms: sys.stderr.write("arm %s: %d/%d graded of %d rows in %s\n" % (a, counts[a]["graded"], minn, counts[a]["rows"], win))
         sys.stderr.write("not measured: only 'unmeasured' (runs the revert) or 'extend' (once)\n"); sys.exit(5)
     ts = nowdt.isoformat(timespec="seconds")
     evid = "; ".join("%s %d/%d graded of %d rows" % (a, counts[a]["graded"], minn, counts[a]["rows"]) for a in arms) + "; window " + win

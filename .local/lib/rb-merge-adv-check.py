@@ -101,7 +101,8 @@ def check_waiver(db, wid, repo, pr, env):
     rg = regrade_of(w)
     if rg is None:
         raise waiver_bad("no-regrade")
-    if rg.get("by") != env["ADV_REGRADER_AGENT"]:
+    by = rg.get("by")
+    if not isinstance(by, str) or by not in env["ADV_REGRADER_AGENTS"].split():   # exact token of the grammar's set (A388: fable-regrader | regrader)
         raise waiver_bad("regrade-agent")
     if rg.get("verdict") != env["ADV_REGRADE_OK"]:
         raise waiver_bad("regrade-not-confirm")
