@@ -15,14 +15,15 @@
 #     `push-verify-mismatch` and exit 3.
 #   --check: run checks 0-4 plus `git ls-remote origin refs/heads/<branch>` (remote in --host mode), print `CHECK-OK sha=<8> host=<h|local>` or the refusal; NEVER pushes, never logs.
 # Checks, in order (reason in brackets):
-#   Controller seat = the set {controller, ctl} (CONTROLLER_AGENTS below, the one place): swarm-decide schema x-agent-compare-aliases {"ctl":"controller"} compares the two names as one seat; no other agent counts.
+#   Controller seat = the set {controller, ctl} (CONTROLLER_AGENTS below): swarm-decide schema x-agent-compare-aliases {"ctl":"controller"} compares the two names as one seat.
+#   Director seat = {hermes} (DIRECTOR_AGENTS, hard-coded; Hermes sole permanent director, 2026-11-14 amendment). Confirm/veto set = both (CONFIRM_AGENTS); no other agent counts.
 #   0 branch is not main/master [branch-protected] and does not start with `-` / has only [A-Za-z0-9._/-] [bad-branch]; the d-id is well formed [bad-confirm-id]; the db opens read-only [db-unreadable];
 #     HEAD resolves [not-a-repo]; ssh answers [ssh-failed rc=N]
-#   1 row <d-id> exists [no-row], agent in the controller set {controller, ctl} [wrong-agent], kind = verdict [kind-not-verdict], `what` starts with CONFIRM, case-sensitive [not-confirm]
+#   1 row <d-id> exists [no-row], agent in the confirm set {controller, ctl, hermes} [wrong-agent], kind = verdict [kind-not-verdict], `what` starts with CONFIRM, case-sensitive [not-confirm]
 #   2 `what` names HEAD: an 8-to-40 hex prefix of the COMMIT or TREE sha as a whole token [sha-not-named] (git am changes the commit sha; the tree is the stable name)
 #   2b row-to-branch binding: <branch> == `symbolic-ref --short HEAD` of the repo, unless `what` names <branch> as a whole word; a detached HEAD must be named too [branch-mismatch]
-#   3 not withdrawn/overridden: a LATER controller-set row naming the d-id (full, or its 4-hex suffix as a whole token) with WITHDRAWN|CORRECT|"Do NOT push" [withdrawn];
-#     a later controller-set "Do NOT push" naming an 8-to-40 hex prefix of HEAD [do-not-push]; a later controller-set verdict CONFIRM naming <branch> but no such prefix of HEAD [superseded];
+#   3 not withdrawn/overridden: a LATER confirm-set row naming the d-id (full, or its 4-hex suffix as a whole token) with WITHDRAWN|CORRECT|"Do NOT push" [withdrawn];
+#     a later confirm-set "Do NOT push" naming an 8-to-40 hex prefix of HEAD [do-not-push]; a later confirm-set verdict CONFIRM naming <branch> but no such prefix of HEAD [superseded];
 #     the row's own `regrade` JSON verdict CORRECT or DISAGREE [regrade-correct|regrade-disagree]
 #   4 fast-forward only: `git fetch origin refs/heads/<branch>` then origin tip is an ancestor of the sha captured once at the top [fetch-failed|non-ff]
 # Success: log `pushing` BEFORE the push, plain `git push origin <sha>:refs/heads/<branch>` (the sha captured once; never HEAD, never --force, never another refspec), then log `pushed` | `push-failed rc=N`.
@@ -32,8 +33,12 @@ DB="${WM_DECISIONS_DB:-$HOME/.local/state/swarm-decide/decisions.sqlite}"
 LOG="${RB_LAND_PUSH_LOG:-$HOME/.local/state/rb-seat/land-push.log}"
 # the controller seat: swarm-decide schema/decision.schema.json x-agent-compare-aliases {"ctl": "controller"} (PR69) compares ctl and controller as one seat; rows keep their recorded agent
 CONTROLLER_AGENTS="controller ctl"
-agent_sql_in() { local a out=""; for a in $CONTROLLER_AGENTS; do out="$out${out:+,}'$a'"; done; printf '%s' "$out"; }
-is_controller_agent() { case " $CONTROLLER_AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
+# the director seat: Hermes is the sole permanent director (approved 2026-11-14 fleet-coordination-simplification amendment); its own verdict rows count as a confirmer and as a veto under their
+# recorded agent name `hermes` (no alias, no impersonation of ctl). Hard-coded: no env var, flag or file adds an agent. CONTROLLER_AGENTS stays the schema-drift-checked legacy set.
+DIRECTOR_AGENTS="hermes"
+CONFIRM_AGENTS="$CONTROLLER_AGENTS $DIRECTOR_AGENTS"
+agent_sql_in() { local a out=""; for a in $CONFIRM_AGENTS; do out="$out${out:+,}'$a'"; done; printf '%s' "$out"; }
+is_controller_agent() { case " $CONFIRM_AGENTS " in *" $1 "*) return 0 ;; esac; return 1; }
 refuse() { echo "REFUSED $*"; exit 2; }
 sq() { sqlite3 -readonly -batch -noheader "$DB" "$1"; }   # read-only; the only interpolated values are the regex-validated d-id and a ts read from the db (quote-doubled)
 sqs() { printf '%s' "${1//\'/\'\'}"; }
@@ -239,6 +244,13 @@ EOS
   row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8";                               case_ ctl-confirm-pushed PUSHED "$ok"; clear
   git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
   row "$ok" 2026-10-24T10:00:00-07:00 aide verdict "CONFIRM tree $t8";                              case_ aide-confirm-wrong-agent wrong-agent "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 hermes verdict "CONFIRM tree $t8";                             case_ hermes-confirm-pushed PUSHED "$ok"; clear
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
+  row "$ok" 2026-10-24T10:00:00-07:00 hermes verdict "CONFIRM tree $t8"
+  row d-20261024-101000-hermes-1111 2026-10-24T10:10:00-07:00 hermes verdict "WITHDRAWN: $ok";      case_ hermes-withdrawn withdrawn "$ok"; clear
+  row "$ok" 2026-10-24T10:00:00-07:00 hermes verdict "CONFIRM tree $t8"
+  row d-20261024-101000-aide-1111 2026-10-24T10:10:00-07:00 aide verdict "WITHDRAWN: $ok";            case_ aide-withdraw-ignored PUSHED "$ok"; clear
+  git -C "$T/origin.git" update-ref refs/heads/wm-build/x "$(git -C "$T/wt" rev-parse HEAD~1)"
   row "$ok" 2026-10-24T10:00:00-07:00 ctl verdict "CONFIRM tree $t8"
   row d-20261024-101000-ctl-1111 2026-10-24T10:10:00-07:00 ctl verdict "WITHDRAWN: $ok";            case_ ctl-withdrawn-of-ctl withdrawn "$ok"; clear
   row "$ok" 2026-10-24T10:00:00-07:00 controller verdict "CONFIRM tree $t8"
