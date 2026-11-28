@@ -130,8 +130,22 @@ def check_alternates(pol, skill, spol):
     return alts
 
 
+# The canonical reader (A1255/A1300): the installed `wm-asks` at a fixed path, never a PATH lookup, so a unit's PATH or a stray
+# wrapper earlier on PATH cannot substitute another store. Store/binary redirect variables are removed from the reader's
+# environment so the read always targets the default canonical store.
+LEDGER_READER = os.path.join(HOME, ".local", "bin", "wm-asks")
+LEDGER_REDIRECT_ENV = ("WM_DECIDE_STATE", "WM_DECIDE_LIVE_BIN")
+
+
+def _ledger_unavailable(ask_id, cause):
+    return Deny("ledger lookup unavailable; cannot verify ledger:%s (fail closed; %s)" % (ask_id, cause))
+
+
 def ledger_has(ask_id):
-    """Read-only lookup. Tests point SKILL_ROUTE_LEDGER_IDS at a file of ids; otherwise `wm-asks asks query` (argv list, no shell)."""
+    """Read-only lookup. Tests point SKILL_ROUTE_LEDGER_IDS at a file of ids; otherwise LEDGER_READER `asks query` (argv list, no
+    shell). True only for a JSON list whose every row is an object with ask_id == the requested id and at least one row; [] = not
+    found (False). A reader that is absent, times out, exits non-zero, prints anything else, or returns a row for another id is a
+    Deny naming the cause: a reader failure is never reported as "not found" and never as found."""
     ids = os.environ.get("SKILL_ROUTE_LEDGER_IDS")
     if ids:
         with open(ids, errors="replace") as f:
@@ -139,12 +153,28 @@ def ledger_has(ask_id):
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", ask_id):
         return False
     import subprocess
+    if not (os.path.isfile(LEDGER_READER) and os.access(LEDGER_READER, os.X_OK)):
+        raise _ledger_unavailable(ask_id, "reader-absent %s" % LEDGER_READER)
+    env = {k: v for k, v in os.environ.items() if k not in LEDGER_REDIRECT_ENV}
     try:
-        p = subprocess.run(["wm-asks", "asks", "query", "--ids", ask_id, "--status", "all", "--json"],
-                           capture_output=True, text=True, timeout=15)
-        return p.returncode == 0 and len(json.loads(p.stdout)) > 0
-    except Exception:
-        raise Deny("ledger lookup unavailable; cannot verify ledger:%s (fail closed)" % ask_id)
+        p = subprocess.run([LEDGER_READER, "asks", "query", "--ids", ask_id, "--status", "all", "--json"],
+                           capture_output=True, text=True, timeout=15, env=env, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise _ledger_unavailable(ask_id, "timeout")
+    except OSError as e:
+        raise _ledger_unavailable(ask_id, "exec-error %s" % type(e).__name__)
+    if p.returncode != 0:
+        raise _ledger_unavailable(ask_id, "exit-%d" % p.returncode)
+    try:
+        rows = json.loads(p.stdout)
+    except ValueError:
+        raise Deny("ledger lookup corrupt; cannot verify ledger:%s (fail closed; non-json)" % ask_id)
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise Deny("ledger lookup corrupt; cannot verify ledger:%s (fail closed; not a list of rows)" % ask_id)
+    other = sorted({str(r.get("ask_id")) for r in rows if r.get("ask_id") != ask_id})
+    if other:
+        raise Deny("ledger lookup mismatch; cannot verify ledger:%s (fail closed; reader returned %s)" % (ask_id, ",".join(other)[:120]))
+    return len(rows) > 0
 
 
 def check_replay(pol, rev):
