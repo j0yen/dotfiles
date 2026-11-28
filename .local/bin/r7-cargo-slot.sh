@@ -6,6 +6,7 @@
 # EXPIRES: when rb's cargo-slot.sh is ported here (this file then execs it) or 2026-11-18, whichever first. Decision rows: 3bae (gate), guard row 10-21 1:3x PM (sandbox).
 # usage: r7-cargo-slot.sh [--cap-gb N] [--wait-s S] -- cargo <args>   (exit 75 = refused by the gate, 77 = sandbox refused, 2 = usage)
 #        r7-cargo-slot.sh --selftest | --check
+#        r7-cargo-slot.sh --run-confined [--rw PATH]... -- <exe> [args...]   (run an ALREADY-BUILT exe in a systemd user unit with no bwrap, so nested userns works; exit = the exe's rc, 75 = gate refused, 77 = unit did not start / no rc file, 2 = usage)
 # PRECHECK-1021 (CTRL 2:05 PM 10-21): default class is INNER (rank 0), never land. Prefix from the top dir name: mcphost* → --prefix mcphost- (inner 11.5 G),
 #   synthorg* → --prefix synthorg- (inner 6.0 G); both caps are READ from [cargo_jobs.mem_caps_gb.<prefix>.<class>] in the config (hardcoded fallback only if that key is missing:
 #   inner 11.5 / hand 5). wm-build* tops stay class hand, no prefix. The scope MemoryMax = that cap rounded UP to whole G (mcphost 12, synthorg 6); --cap-gb still overrides the scope only.
@@ -16,12 +17,18 @@
 #   `cargo-jobs list` (id/run/pid/alive only, no caps) is used for two things: drop parts whose run is no longer alive, and add the row's OWN granted run (parts = holders BEFORE that grant).
 # selftest/dry-run env (documented here, names ours): R7_SLOT_FAKE_PARTS='["483:inner:11.5","waiting:hand-1:land:12.5"]' (JSON list of cargo-admission parts) and R7_SLOT_FAKE_BUDGET=22 replace the journal/config budget.
 # --wait-s is rounded UP to whole --wait-minutes (450 s → 8 min)
+# --run-confined (A1542): AppArmor's bwrap-userns-restrict profile denies the nested uid_map inside the bwrap sandbox, so a test that creates a user namespace (mcphost) cannot run in the slot.
+#   This mode runs the built binary (build it first with `-- cargo test --no-run`) via `systemd-run --user --wait --pipe --quiet --collect` with ProtectSystem=strict, ProtectHome=read-only, PrivateTmp, NoNewPrivileges;
+#   rw only on /mnt/ssd/cargo-target, /mnt/ssd/r7-legs, ~/.cache/mcphost-dev (each if it exists) and every --rw PATH; env TMPDIR=/tmp UV_CACHE_DIR=/tmp/uvc LC_ALL=C (+ CARGO_MANIFEST_DIR when set). The exe's rc travels in an rc file
+#   (runt() in /mnt/ssd/r7-legs/gate562i-fff.sh, mcphost#562). The pre-check memory gate fronts it (refusal = 75); it takes no daemon acquire and no scope, the exe is not memory-capped.
 # Order (Fable 6): acquire → systemd scope (MemoryMax = cap, the 2 G tmpfs is charged to it) → host-side `cargo fetch` with the REAL cargo home
 #   (downloads only, no build script runs) → bwrap → cargo. Never an unsandboxed fallback.
 set -u
-LIB=/home/jsy/.local/lib/hand-sandbox.sh; . "$LIB" || { echo "r7-cargo-slot: sandbox lib missing ($LIB); refusing" >&2; exit 77; }
+usage() { echo "usage: r7-cargo-slot.sh [--cap-gb N] [--wait-s S] -- cargo <args> | --selftest | --check | --run-confined [--rw PATH]... -- <exe> [args...]  (--run-confined = userns-capable run, no bwrap)" >&2; }
+CONFINED=0; for a in "$@"; do [ "$a" = -- ] && break; [ "$a" = --run-confined ] && CONFINED=1; done   # the confined mode uses neither the bwrap lib nor the placement lib
+LIB=/home/jsy/.local/lib/hand-sandbox.sh; [ "$CONFINED" = 1 ] || . "$LIB" || { echo "r7-cargo-slot: sandbox lib missing ($LIB); refusing" >&2; exit 77; }
 PLACE=$(dirname "$(readlink -f "$0")")/../lib/r7-cargo-place.sh; [ -r "$PLACE" ] || PLACE=/home/jsy/.local/lib/r7-cargo-place.sh   # A681 root-device guard (shared with the cargo shim)
-. "$PLACE" || { echo "r7-cargo-slot: placement lib missing ($PLACE); refusing" >&2; exit 77; }
+[ "$CONFINED" = 1 ] || . "$PLACE" || { echo "r7-cargo-slot: placement lib missing ($PLACE); refusing" >&2; exit 77; }
 LOGD=/home/jsy/.local/state/r7-cargo-slot; mkdir -p "$LOGD"; LOG=$LOGD/slot.log
 REAL_CARGO=${R7_SLOT_REAL_CARGO:-/home/jsy/.cargo}
 export RUSTUP_HOME=${RUSTUP_HOME:-/home/jsy/.rustup}
@@ -41,10 +48,14 @@ if [ "${1:-}" = --__inner ]; then  # runs inside the acquired slot + scope; env 
 fi
 CFG=${R7_SLOT_CONFIG:-/home/jsy/.config/wm-build/config.toml}
 WM=${R7_SLOT_WMBUILD:-/home/jsy/.cargo/bin/wm-build}
-CAP=""; WAIT_S=480; MODE=run
+CAP=""; WAIT_S=480; MODE=run; DD=0; RWX=(); RUNN=0
 while [ $# -gt 0 ]; do case "$1" in
+  --run-confined) MODE=confined; shift;;
+  --rw) [ $# -ge 2 ] || { echo "r7-cargo-slot: --rw needs a PATH" >&2; usage; exit 2; }; RWX+=("$2"); shift 2;;
   --cap-gb) CAP=$2; shift 2;; --wait-s) WAIT_S=$2; shift 2;; --check) MODE=check; shift;; --selftest) MODE=selftest; shift;;
-  --) shift; break;; *) echo "r7-cargo-slot: unknown flag $1" >&2; exit 2;; esac; done
+  --) DD=1; shift; break;; *) echo "r7-cargo-slot: unknown flag $1" >&2; exit 2;; esac; done
+[ "$MODE" = confined ] || [ ${#RWX[@]} -eq 0 ] || { echo "r7-cargo-slot: --rw is only valid with --run-confined" >&2; usage; exit 2; }
+[ "$MODE" != confined ] || { [ "$DD" = 1 ] && [ $# -gt 0 ]; } || { echo "r7-cargo-slot: --run-confined needs -- <exe> [args...]" >&2; usage; exit 2; }
 TOP=$(realpath -e "$(git rev-parse --show-toplevel 2>/dev/null || pwd)") || exit 77
 CLS=inner; PFX=""; case "$(basename "$TOP")" in wm-build*) CLS=hand;; mcphost*) PFX=mcphost-;; synthorg*) PFX=synthorg-;; esac
 # A566 (r7 11-02): a clone whose dir name matches none of the above is classed by its origin URL, then its Cargo.toml package name, so a renamed wm-build clone stays class hand.
@@ -116,12 +127,51 @@ selftest_precheck() { # exit-75 path + pass-through, driven by the FAKE env; own
   case $D in /home/jsy/hand/.slot-selftest.????*) rm -rf -- "$D";; esac
   return $fail
 }
+run_confined() { # $1 = exe, rest = its args; gate first, then a transient user unit (no bwrap: nested userns works); the exe's rc comes back through an rc file
+  local exe n=$((++RUNN)) rcd rc="" p unit; local -a rwa=()
+  exe=$(command -v -- "$1" 2>/dev/null) && [ -f "$exe" ] && [ -x "$exe" ] || { echo "r7-cargo-slot: --run-confined: no such executable: $1" >&2; usage; return 2; }
+  shift; exe=$(realpath -e "$exe") || return 2
+  precheck "$LOG" || return 75; [ "$PCV" = error ] && echo "r7-cargo-slot: $PCM" >&2
+  for p in /mnt/ssd/cargo-target /mnt/ssd/r7-legs "$HOME/.cache/mcphost-dev"; do [ -d "$p" ] && rwa+=(-p "ReadWritePaths=$p"); done
+  for p in "${RWX[@]}"; do rwa+=(-p "ReadWritePaths=$(realpath -m -- "$p")"); done
+  rcd=$(mktemp -d "$LOGD/rc.XXXXXX") || return 77; rwa+=(-p "ReadWritePaths=$rcd"); unit=r7-slotrun-$$-$n
+  systemd-run --user --wait --pipe --quiet --collect --unit "$unit" -E TMPDIR=/tmp -E UV_CACHE_DIR=/tmp/uvc -E LC_ALL=C ${CARGO_MANIFEST_DIR:+-E "CARGO_MANIFEST_DIR=$CARGO_MANIFEST_DIR"} -E "RCF=$rcd/rc" \
+    -p ProtectSystem=strict -p ProtectHome=read-only -p PrivateTmp=yes -p NoNewPrivileges=yes "${rwa[@]}" \
+    /bin/bash -c '"$@"; echo $? > "$RCF"' runt "$exe" "$@"
+  [ -s "$rcd/rc" ] && rc=$(cat "$rcd/rc")
+  case $rcd in "$LOGD"/rc.??????) rm -rf -- "$rcd";; esac
+  echo "$(date -Is) RUNCONF pid=$$ unit=$unit rc=${rc:-missing} exe=$exe" >> "$LOG"
+  case $rc in ''|*[!0-9]*) echo "r7-cargo-slot: --run-confined: unit $unit gave no rc file (did not start?)" >&2; return 77;; esac
+  return "$rc"
+}
+selftest_confined() { # needs a reachable user manager; each case PASS/FAIL; own env drives the gate (FAKE parts) so a busy fleet cannot flake it
+  local st D P rc fail=0 S=$0
+  st=$(systemctl --user is-system-running 2>/dev/null)
+  case $st in running|degraded) ;; *) echo "SKIP confined: no user manager (is-system-running=${st:-none})"; return 0;; esac
+  export R7_SLOT_FAKE_PARTS='[]' R7_SLOT_FAKE_BUDGET=22
+  "$S" --run-confined -- /bin/sh -c 'exit 3' 2>/dev/null; rc=$?
+  if [ $rc = 3 ]; then echo "PASS confined (a) exit code 3 carried"; else echo "FAIL confined (a) rc=$rc want 3"; fail=1; fi
+  P=$HOME/slotrun-probe-$$
+  "$S" --run-confined -- /bin/sh -c 'echo x > "$1"' sh "$P" 2>/dev/null; rc=$?
+  if [ $rc != 0 ] && [ ! -e "$P" ]; then echo "PASS confined (b) write to \$HOME refused, no file"; else echo "FAIL confined (b) rc=$rc exists=$([ -e "$P" ] && echo yes || echo no)"; rm -f -- "$P"; fail=1; fi
+  mkdir -p "$HOME/.cache"; D=$(mktemp -d "$HOME/.cache/slotrun-selftest.XXXXXX")
+  "$S" --run-confined --rw "$D" -- /bin/sh -c 'echo x > "$1/f"' sh "$D" 2>/dev/null; rc=$?
+  if [ $rc = 0 ] && [ -f "$D/f" ]; then echo "PASS confined (c) --rw dir writable"; else echo "FAIL confined (c) rc=$rc"; fail=1; fi
+  case $D in "$HOME"/.cache/slotrun-selftest.??????) rm -rf -- "$D";; esac
+  if command -v unshare >/dev/null 2>&1; then
+    "$S" --run-confined -- unshare -Ur true 2>/dev/null; rc=$?
+    if [ $rc = 0 ]; then echo "PASS confined (d) nested userns (unshare -Ur)"; else echo "FAIL confined (d) unshare -Ur rc=$rc"; fail=1; fi
+  else echo "SKIP confined (d): no unshare"; fi
+  unset R7_SLOT_FAKE_PARTS R7_SLOT_FAKE_BUDGET
+  return $fail
+}
 # --cap-gb sets ONLY the scope MemoryMax/High; the daemon prices its config class cap (CTRL 1:38 PM 10-21: no per-call cap overrides; the mem_caps_gb override key is unknown on 0.77.85 anyway)
 [ -n "$CAP" ] || CAP=$(slotcalc cap "$CLS" "$PFX" | awk '{printf "%d", ($1==int($1)) ? $1 : int($1)+1}'); [ -n "$CAP" ] || CAP=$([ "$CLS" = hand ] && echo 5 || echo 12)
 HIGH=$((CAP - 2)); [ "$HIGH" -lt 1 ] && HIGH=1
 WAIT_MIN=$(( (WAIT_S + 59) / 60 )); [ "$WAIT_MIN" -lt 1 ] && WAIT_MIN=1
 case "$MODE" in
-  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G high=${HIGH}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
+  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; selftest_confined || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G high=${HIGH}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
+  confined) run_confined "$@"; exit $?;;
   check) "$WM" builder cargo-jobs list 2>&1 | tail -5; precheck /dev/null 2>/dev/null; echo "PRECHECK: $PCV: $PCM"; echo "CHECK v3: class=$CLS cap=${CAP}G avail=$(availg)G top=$TOP (grant decided by the daemon acquire; sandbox lib $(sha256sum "$LIB" | cut -c1-8))"; exit 0;;
 esac
 [ $# -gt 0 ] || { echo "r7-cargo-slot: no command after --" >&2; exit 2; }
