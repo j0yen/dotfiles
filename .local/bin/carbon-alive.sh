@@ -11,8 +11,17 @@
 # (/proc/sys/kernel/random/boot_id). Derived reading `executor`: fresh | stale (executor_age_s >
 # ${CARBON_ALIVE_EXEC_MAX_S:-1800}) | unknown (absent, non-numeric, or host unreachable); it is written to state.json,
 # probes.jsonl and every alert whatever the state. One state per run, first match wins:
-#   host-unreachable > user-manager-down > host-rebooted > user-manager-restarted > gateway-down > bus-down
+#   witness-offline > host-unreachable > user-manager-down > host-rebooted > user-manager-restarted > gateway-down > bus-down
 #   > dash-stale (dash_age_s > 300 or unreadable) > executor-stale > ok
+# witness-offline is UNKNOWN, never a carbon DOWN: when the ssh probe fails, one TCP connect (bounded to 5 s) tests
+# whether this witness reaches ${CARBON_ALIVE_REF:-discord.com:443} (host:port). REF reachable = the old behavior, state
+# host-unreachable. REF unreachable = state witness-offline: this host lost its own network, so nothing is known about
+# carbon. It neither increments nor resets the carbon outage `consecutive` count, sends no host-unreachable alert and no
+# recovery, and is recorded in state.json and probes.jsonl like every run. state.json keeps its own count of consecutive
+# witness-offline runs (witness_offline_runs); when it reaches 10 one alert with state witness-offline is queued (it waits
+# in the outbox until delivery works), once per streak (witness_offline_alerted) until recovered. The first run after
+# that streak that reads carbon ok queues one recovery for it (`recovers: witness-offline`). An unparseable REF counts as
+# reachable (the old behavior, so a typo cannot hide a real outage).
 # host-rebooted / user-manager-restarted are EVENTS read against the baseline in state.json (boot_id, um_inv,
 # um_nrestarts, um_enter_mono of the last run with the host up and user_manager=active; only such a run moves it):
 # boot_id differs -> host-rebooted; else um_inv differs or um_nrestarts rose -> user-manager-restarted. They exist
@@ -25,7 +34,8 @@
 # times, so without that file the executor stays a reading (state ok, no page). A successful ssh alone is never "ok".
 #
 # State dir ${XDG_STATE_HOME:-$HOME/.local/state}/carbon-alive/: state.json (state, executor, since, outage_since,
-# consecutive, states_seen, alerted, last_alert, last_alert_state, last_ok, readings, baseline), probes.jsonl (capped
+# consecutive, states_seen, alerted, last_alert, last_alert_state, last_ok, readings, baseline, witness_offline_runs,
+# witness_offline_since, witness_offline_alerted), probes.jsonl (capped
 # 5000 lines), outbox.jsonl (alerts not yet delivered, capped 200: the oldest overflow moves to outbox.dead.jsonl),
 # outbox.dead.jsonl (entries a deliverer rejected permanently, unparseable entries and cap overflow; capped 1000 lines).
 # Each move to outbox.dead.jsonl logs one stderr line (kind, state, at; never the URL); a trim of outbox.dead.jsonl logs
@@ -54,7 +64,7 @@
 # after ${CARBON_ALIVE_SEND_BUDGET_S:-40} s of the run have elapsed; the rest waits for the next run. Each send gets
 # min(30, 50 - elapsed) s, then TERM, then KILL 5 s later (timeout -k 5), and none starts when that limit is under 5 s,
 # so one run ends by ~55 s (TimeoutStartSec=60) even with a deliverer that ignores TERM; ssh gets 30 s + 5 s the same
-# way. ssh and the deliverer run without the lock fd, so a straggler child cannot hold the lock into the next run.
+# way, and the REF check 5 s + 1 s (it runs only after a failed ssh, inside the same SECONDS clock the send window reads). ssh and the deliverer run without the lock fd, so a straggler child cannot hold the lock into the next run.
 # Exit 0 after recording; nonzero only on this script's own bug. CARBON_ALIVE_NOW injects the clock (tests).
 set -u
 
@@ -97,13 +107,23 @@ echo "boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 
 out="$(timeout -k 5 30 "$ssh_bin" -n -o BatchMode=yes -o ConnectTimeout=8 carbon "$remote" 2>/dev/null 9>&-)"; rc=$?
 expect=0; [ -e "$cfgdir/expect-executor" ] && expect=1
-export CA_RC="$rc" CA_OUT="$out" CA_NOW="$now" CA_HOST="$host" CA_SD="$sd" CA_EXPECT="$expect" \
+ref="${CARBON_ALIVE_REF:-discord.com:443}"; ref_ok=1
+if [ "$rc" != 0 ]; then # ssh failed: is it carbon, or this witness without a network? exit 1/124/137 = REF unreachable
+  timeout -k 1 5 python3 -I -c 'import socket, sys
+try:
+    h, p = sys.argv[1].rsplit(":", 1)
+    socket.create_connection((h, int(p)), timeout=4).close()
+except Exception as e: sys.exit(1 if isinstance(e, OSError) else 2)' "$ref" >/dev/null 2>&1 9>&-
+  case $? in 1|124|137) ref_ok=0 ;; esac
+fi
+export CA_RC="$rc" CA_REF_OK="$ref_ok" CA_OUT="$out" CA_NOW="$now" CA_HOST="$host" CA_SD="$sd" CA_EXPECT="$expect" \
   CA_EXEC_MAX="${CARBON_ALIVE_EXEC_MAX_S:-1800}"
 
 python3 -I - <<'PY' || exit 1
 import json, os, sys, time
 sd, now, host, rc = os.environ["CA_SD"], int(os.environ["CA_NOW"]), os.environ["CA_HOST"], int(os.environ["CA_RC"])
-OBMAX, DEADMAX = 200, 1000
+OBMAX, DEADMAX, WO_ALERT_AFTER = 200, 1000, 10
+witness_off = rc != 0 and os.environ["CA_REF_OK"] == "0"
 try: exec_max = int(os.environ["CA_EXEC_MAX"])
 except ValueError: exec_max = 1800
 r = {}
@@ -132,7 +152,8 @@ event = None
 if um_up:
     if moved("boot_id"): event = "host-rebooted"
     elif moved("um_inv") or rose("um_nrestarts"): event = "user-manager-restarted"
-if not up: state = "host-unreachable"
+if witness_off: state = "witness-offline"
+elif not up: state = "host-unreachable"
 elif not um_up: state = "user-manager-down"
 elif event: state = event
 elif r.get("gateway") != "active": state = "gateway-down"
@@ -141,6 +162,7 @@ elif num("dash_age_s") is None or num("dash_age_s") > 300: state = "dash-stale"
 elif executor in ("stale", "unknown") and os.environ["CA_EXPECT"] == "1": state = "executor-stale"
 else: state = "ok"
 readings = dict(r) if rc == 0 else {"host_up": "0", "ssh_rc": str(rc)}
+if witness_off: readings["ref"] = "unreachable"
 previous = {k: base.get(k) for k in BASE} if event else None
 # the baseline moves only on a run with the host up and the user manager active, so a down run in between still
 # leaves the restart visible to the next active run
@@ -148,9 +170,8 @@ if um_up: st["baseline"] = {k: (r.get(k) or base.get(k)) for k in BASE}
 if st.get("state") != state: st["since"] = now
 st["state"] = state; st["executor"] = executor; st["readings"] = readings
 alerts = []
-def mk(kind):
-    osince = st.get("outage_since")
-    seen = list(st.get("states_seen", []))
+def mk(kind, osince=None, seen=None, recovers=None):
+    if seen is None: osince, seen = st.get("outage_since"), list(st.get("states_seen", []))
     text = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} carbon-alive[{host}] {kind}: state={state} "
             f"executor={executor} outage_since={osince} states={','.join(seen)} "
             + " ".join(f"{k}={v}" for k, v in readings.items())
@@ -158,8 +179,17 @@ def mk(kind):
     a = {"kind": kind, "host": host, "state": state, "executor": executor, "since": st["since"],
          "outage_since": osince, "states": seen, "at": now, "text": text, "readings": readings}
     if previous: a["previous"] = previous
+    if recovers: a["recovers"] = recovers
     return a
-if state != "ok":
+wo_since = st.get("witness_offline_since")
+if witness_off:
+    # UNKNOWN about carbon: the carbon outage fields (consecutive, outage_since, states_seen, alerted) stay as they were
+    st["witness_offline_runs"] = int(st.get("witness_offline_runs", 0)) + 1
+    if st["witness_offline_runs"] == 1 and not st.get("witness_offline_alerted"): st["witness_offline_since"] = wo_since = now
+    if st["witness_offline_runs"] >= WO_ALERT_AFTER and not st.get("witness_offline_alerted"):
+        alerts.append(mk("alert", wo_since, ["witness-offline"])); st["witness_offline_alerted"] = True
+elif state != "ok":
+    st["witness_offline_runs"] = 0
     if not st.get("outage_since"):
         st.update(outage_since=now, consecutive=0, states_seen=[], alerted=False, last_alert_state="")
     st["consecutive"] = int(st.get("consecutive", 0)) + 1
@@ -173,6 +203,9 @@ if state != "ok":
             alerts.append(mk("alert")); st.update(alerted=True, last_alert=now, last_alert_state=state)
 else:
     if st.get("alerted"): alerts.append(mk("recovery"))
+    if st.get("witness_offline_alerted"):
+        alerts.append(mk("recovery", wo_since, ["witness-offline"], "witness-offline"))
+    st.update(witness_offline_runs=0, witness_offline_alerted=False, witness_offline_since=None)
     st.update(last_ok=now, outage_since=None, consecutive=0, states_seen=[], alerted=False, last_alert_state="")
 tmp = sp + ".tmp"; json.dump(st, open(tmp, "w")); os.replace(tmp, sp)
 pj = os.path.join(sd, "probes.jsonl")

@@ -4,16 +4,21 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0; pass=0
 ok() { echo "PASS $1"; pass=$((pass+1)); }; bad() { echo "FAIL $1"; fail=$((fail+1)); }
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(mktemp -d)"; trap 'kill "${lp:-0}" 2>/dev/null; rm -rf "$T"' EXIT
 export HOME="$T/home" XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/cfg" CARBON_ALIVE_HOST=testhost
 export CARBON_ALIVE_SSH="$here/tests/fixtures/carbon-alive-fake-ssh.sh"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/carbon-alive"
+# open loopback port = a REF the witness reaches (no test touches the internet); 127.0.0.1:1 is closed
+python3 -I "$here/tests/fixtures/carbon-alive-listen.py" > "$T/refport" & lp=$!
+for _ in $(seq 50); do [ -s "$T/refport" ] && break; sleep 0.1; done
+REF_OPEN="127.0.0.1:$(cat "$T/refport")"; REF_CLOSED=127.0.0.1:1; export CARBON_ALIVE_REF="$REF_OPEN"
 calls="$T/calls"; good="$T/deliver-ok.sh"; badd="$T/deliver-bad.sh"
 printf '#!/bin/sh\necho "$1 $(cat)" >> %s\n' "$calls" > "$good"
 printf '#!/bin/sh\ncat >/dev/null; exit 1\n' > "$badd"; chmod +x "$good" "$badd"
 setdel() { echo "$1" > "$XDG_CONFIG_HOME/carbon-alive/deliver"; }
 reset() { rm -rf "$XDG_STATE_HOME" "$calls"; : > "$calls"; unset CA_FAKE_RC CA_FAKE_UM CA_FAKE_GW CA_FAKE_BUS CA_FAKE_DASH CA_FAKE_EXEC CARBON_ALIVE_SEND_BUDGET_S \
     CA_FAKE_UM_INV CA_FAKE_UM_NR CA_FAKE_UM_MONO CA_FAKE_BOOT
+  export CARBON_ALIVE_REF="$REF_OPEN"
   rm -f "$XDG_CONFIG_HOME/carbon-alive/expect-executor"; setdel "$good"; clock=1000000; }
 run() { CARBON_ALIVE_NOW="$clock" "$here/.local/bin/carbon-alive.sh"; local r=$?; clock=$((clock+${1:-120})); return $r; }
 n() { grep -c "^$1 " "$calls"; }
@@ -195,5 +200,46 @@ reset; setdel "$pt"; queue 1; rm -f "$T/sleep.pid"; t0="$(date +%s)"; run 2>/dev
 sp="$(cat "$T/sleep.pid" 2>/dev/null)"; [ -n "$sp" ] && ps -o args= -p "$sp" 2>/dev/null | grep -qx 'sleep 120' && kill -KILL "$sp" 2>/dev/null
 [ "$el" -lt 60 ] && [ "$(wc -l < "$sdir/outbox.jsonl")" = 1 ] && grep -q '"id": "e1"' "$sdir/outbox.jsonl" \
   && ok "v deliverer ignoring TERM, sleep 120 -> run ends in ${el}s (< 60), entry stays in the outbox" || bad "v TERM-ignoring deliverer el=${el}s"
+
+# witness-offline: ssh fails AND the witness cannot reach CARBON_ALIVE_REF -> UNKNOWN about carbon, never a carbon DOWN
+# (every REF here is 127.0.0.1: an open listener or the closed port 1)
+sj() { python3 -I -c "import json;print(json.load(open('$XDG_STATE_HOME/carbon-alive/state.json')).get('$1'))"; }
+reset; export CA_FAKE_RC=255 CARBON_ALIVE_REF="$REF_CLOSED"; for _ in 1 2 3 4 5 6 7 8 9; do run; done
+[ "$(wc -l < "$calls")" = 0 ] && [ "$(st)" = witness-offline ] && [ "$(sj witness_offline_runs)" = 9 ] && [ "$(sj consecutive)" = None ] \
+  && [ "$(grep -c '"state": "witness-offline"' "$sdir/probes.jsonl")" = 9 ] && ! grep -q host-unreachable "$sdir/probes.jsonl" "$sdir/state.json" \
+  && ok "w1 ssh fails, REF closed x9 -> state witness-offline, no alert, no host-unreachable, 9 probes recorded" || { bad "w1 nine runs"; cat "$calls"; }
+run
+[ "$(n alert)" = 1 ] && [ "$(wc -l < "$calls")" = 1 ] && grep -q '"state": "witness-offline"' "$calls" && ! grep -q host-unreachable "$calls" \
+  && grep -q '"states": \["witness-offline"\]' "$calls" && ok "w2 10th witness-offline run -> exactly one alert, state witness-offline" || { bad "w2 tenth run"; cat "$calls"; }
+run; run
+[ "$(wc -l < "$calls")" = 1 ] && [ "$(sj witness_offline_runs)" = 12 ] && ok "w2b runs 11-12 -> still the one alert" || bad "w2b no repeat alert"
+export CARBON_ALIVE_REF="$REF_OPEN"; unset CA_FAKE_RC; run
+[ "$(st)" = ok ] && [ "$(n alert)" = 1 ] && [ "$(n recovery)" = 1 ] && [ "$(wc -l < "$calls")" = 2 ] && grep -q '^recovery .*"recovers": "witness-offline"' "$calls" \
+  && [ "$(sj witness_offline_runs)" = 0 ] && [ "$(sj witness_offline_alerted)" = False ] \
+  && ok "w3 REF open, carbon ok -> one recovery for witness-offline" || { bad "w3 recovery"; cat "$calls"; }
+run
+[ "$(wc -l < "$calls")" = 2 ] && ok "w3b next ok run -> nothing more" || bad "w3b"
+
+reset; export CA_FAKE_RC=255 CARBON_ALIVE_REF="$REF_CLOSED"; setdel "$badd"; for _ in 1 2 3 4 5 6 7 8 9 10; do run; done
+ob="$sdir/outbox.jsonl"; q1="$(wc -l < "$ob")"; setdel "$good"; run
+[ "$q1" = 1 ] && [ ! -s "$ob" ] && [ "$(n alert)" = 1 ] && ok "w4 witness-offline alert waits in the outbox while delivery fails, then goes out" || { bad "w4 outbox q1=$q1"; cat "$calls"; }
+
+reset; export CA_FAKE_RC=255; run; run
+[ "$(n alert)" = 1 ] && [ "$(st)" = host-unreachable ] && grep -q '"state": "host-unreachable"' "$calls" && [ "$(sj witness_offline_runs)" = 0 ] \
+  && ok "w5 ssh fails, REF open -> host-unreachable alert at run 2, as before" || { bad "w5 reachable REF"; cat "$calls"; }
+reset; export CA_FAKE_RC=255 CARBON_ALIVE_REF=not-a-host-port; run; run
+[ "$(st)" = host-unreachable ] && [ "$(n alert)" = 1 ] && ok "w5b unparseable REF -> treated as reachable, host-unreachable alert" || bad "w5b bad REF $(st)"
+
+# a carbon outage in flight: witness-offline runs leave consecutive / outage_since / alerted alone and send nothing
+reset; export CA_FAKE_GW=failed; run; oc="$(sj consecutive)"; os0="$(sj outage_since)"
+unset CA_FAKE_GW; export CA_FAKE_RC=255 CARBON_ALIVE_REF="$REF_CLOSED"; run; run; run
+c3="$(sj consecutive)"; os3="$(sj outage_since)"; w3="$(st)"; a3="$(wc -l < "$calls")"
+unset CA_FAKE_RC; export CARBON_ALIVE_REF="$REF_OPEN" CA_FAKE_GW=failed; run
+[ "$oc" = 1 ] && [ "$c3" = 1 ] && [ "$os0" = "$os3" ] && [ "$w3" = witness-offline ] && [ "$a3" = 0 ] && [ "$(sj consecutive)" = 2 ] && [ "$(n alert)" = 1 ] \
+  && grep -q '"state": "gateway-down"' "$calls" && ! grep -q host-unreachable "$calls" \
+  && ok "w6 witness-offline x3 inside a carbon outage -> consecutive stays $c3, no alert; next gateway-down run is consecutive 2 and alerts" \
+  || { bad "w6 mid-outage oc=$oc c3=$c3 a3=$a3 w3=$w3"; cat "$calls"; }
+
+# mention suppression is tested in carbon-alive-discord.test.sh (the deliverer's fake-curl seam)
 
 echo "carbon-alive.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]

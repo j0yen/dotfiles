@@ -5,10 +5,14 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0; pass=0
 ok() { echo "PASS $1"; pass=$((pass+1)); }; bad() { echo "FAIL $1"; fail=$((fail+1)); }
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(mktemp -d)"; trap 'kill "${lp:-0}" 2>/dev/null; rm -rf "$T"' EXIT
 export HOME="$T/home" XDG_STATE_HOME="$T/state" XDG_CONFIG_HOME="$T/cfg" CARBON_ALIVE_HOST=testhost
 export CARBON_ALIVE_SSH="$here/tests/fixtures/carbon-alive-fake-ssh.sh" CA_CURL_LOG="$T/curl"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/carbon-alive" "$T/bin" "$CA_CURL_LOG"
+# open loopback port = a REF the witness reaches (no test touches the internet)
+python3 -I "$here/tests/fixtures/carbon-alive-listen.py" > "$T/refport" & lp=$!
+for _ in $(seq 50); do [ -s "$T/refport" ] && break; sleep 0.1; done
+REF_OPEN="127.0.0.1:$(cat "$T/refport")"; export CARBON_ALIVE_REF="$REF_OPEN"
 ln -s "$here/tests/fixtures/carbon-alive-fake-curl.sh" "$T/bin/curl"; export PATH="$T/bin:$PATH"
 D="$here/.local/bin/carbon-alive-discord.sh"; wf="$XDG_CONFIG_HOME/carbon-alive/webhook.url"
 SECRET="TOKENsecret9f3a"; URL="https://discord.example/api/webhooks/123/$SECRET"
@@ -92,5 +96,17 @@ left="$(cd "$td" && ls | sort | tr '\n' ' ')"
 [ "$r" = 0 ] && [ ! -e "$td/carbon-alive-discord.stale1" ] && [ -e "$td/carbon-alive-discord.fresh1" ] && [ -e "$td/other.old" ] \
   && [ "$left" = "carbon-alive-discord.fresh1 other.old " ] \
   && ok "w stale carbon-alive-discord.* removed at start, fresh one and other files kept, own config removed on exit" || bad "w temp cleanup (left: $left)"
+
+# (m) allowed_mentions: every payload carries an empty parse list, so @everyone / @here / <@id> in the text ping nobody
+creset; setwf 600 "$URL"
+ma='{"kind":"alert","host":"testhost","state":"bus-down","executor":"fresh","at":2,"states":["bus-down"],"readings":{"note":"@everyone @here <@123456789> <@&987654321>"}}'
+printf '%s' "$ma" | "$D" alert >/dev/null 2>&1; r=$?
+[ "$r" = 0 ] && python3 -I -c 'import json,sys;p=json.load(open(sys.argv[1]));assert "@everyone" in p["content"] and "<@123456789>" in p["content"],p;assert p["allowed_mentions"]=={"parse":[]},p' "$CA_CURL_LOG/stdin" \
+  && ok "m1 alert text with @everyone/@here/<@id> -> payload allowed_mentions {parse: []}" || { bad "m1 mentions"; cat "$CA_CURL_LOG/stdin"; }
+creset; printf '%s' "$ma" | "$D" recovery >/dev/null 2>&1; r=$?
+[ "$r" = 0 ] && python3 -I -c 'import json,sys;p=json.load(open(sys.argv[1]));assert p["allowed_mentions"]=={"parse":[]},p' "$CA_CURL_LOG/stdin" \
+  && printf '%s' "$big" | "$D" alert >/dev/null 2>&1 \
+  && python3 -I -c 'import json,sys;p=json.load(open(sys.argv[1]));assert p["allowed_mentions"]=={"parse":[]} and len(p["content"])<=2000,p' "$CA_CURL_LOG/stdin" \
+  && ok "m2 recovery kind and a truncated long payload carry it too" || bad "m2 mentions on recovery/truncated"
 
 echo "carbon-alive-discord.test: $pass PASS $fail FAIL"; [ "$fail" = 0 ]
