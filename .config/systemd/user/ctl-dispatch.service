@@ -1,0 +1,6 @@
+[Unit]
+Description=ctl task-file dispatch scan (A1210): claim marked Hermes task files once, hold-gated
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ctl-dispatch-claim.sh scan

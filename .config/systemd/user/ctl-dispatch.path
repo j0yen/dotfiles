@@ -1,0 +1,9 @@
+[Unit]
+Description=ctl dispatch: new or changed Hermes task file (Hermes-owned unit, proposal)
+
+[Path]
+PathChanged=%h/wintermute-operations/feedback
+Unit=ctl-dispatch.service
+
+[Install]
+WantedBy=default.target
