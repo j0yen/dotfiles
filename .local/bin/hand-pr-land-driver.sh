@@ -24,6 +24,7 @@
 #   --selftest  pure-function checks (GATED grammar, keys, owner map, suite shape); tests/hand-pr-land-driver.test.sh runs the stubbed end-to-end cases
 # The tier choice is logged on the HPLD LAUNCH row: `tier=<fast|full> tier_reason=<gated|registry:<file>|files-unknown|default> files=<n> [srcset_drift=1]`.
 # Env (tests): HPLD_MERGE_GATE HPLD_STATE_DIR HPLD_WMD HPLD_GH HPLD_VERIFIER HPLD_RBMERGE HPLD_SEATASK HPLD_ROOM HPLD_SYSTEMCTL HPLD_VDIR HPLD_EVENTS HPLD_SINCE HPLD_REPOS HPLD_TOKEN HPLD_LINT_CMD HPLD_NOW HPLD_POSTMERGE_WINDOW_H HPLD_EXPIRES HPLD_PREMISE_IMPORT_CMD HPLD_TICK_BUDGET_S
+# Gate-set premise: before acting, each merge candidate is dry-run through lint() (HPLD_LINT_CMD stubs it); 3 consecutive ticks with every candidate refused and no merge -> `PREMISE FAIL gate-set`, disarm (one ring), counter in STATE_DIR/gate-set-refused.
 # Per-tick budget (HPLD_TICK_BUDGET_S, default 1500 s; the unit allows 1800): a long call (launch 600 s, finish 600 s, merge 900 s) is skipped with a `deferred` log line when elapsed + its timeout > budget.
 # Draft PRs (isDraft) are skipped with one observe row per head. A `Depends-on: #N` line in the PR body (same repo) lets launch proceed but holds the merge, one observe row per head, while #N is OPEN.
 set -u
@@ -642,6 +643,53 @@ def one_line(s, n=300):
     return " | ".join(l.strip() for l in s.strip().splitlines()[-4:])[:n]
 
 
+# ---------------------------------------------------------------- gate-set premise (asks A13/A47): dry-run the rows this tick would merge against the CURRENT gate set
+# (lint() = mergegate.check, read-only). A tick whose merge candidates are ALL refused counts in gate-set-refused; 3 in a row = PREMISE FAIL gate-set, disarm. Any pass or merge resets it.
+GS_FILE = os.path.join(STATE_DIR, "gate-set-refused")
+GS_MARK = os.path.join(STATE_DIR, "rang-gate-set")
+GS_LIMIT = 3
+
+
+def gs_read():
+    try:
+        return int(open(GS_FILE).read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def gs_write(n):
+    try:
+        open(GS_FILE, "w").write("%d\n" % n)
+    except OSError:
+        pass
+    if n == 0:
+        try:
+            os.remove(GS_MARK)   # recovered: a later gate-set failure rings again
+        except OSError:
+            pass
+
+
+_cands = [a for a in actions if a["act"] == "merge"]
+if _cands:
+    _refused, _rules = [], set()
+    for a in _cands:
+        grc, gtxt = lint(a["verdict"], a["repo"], a["pr"])
+        if grc == 0:
+            continue
+        ids = sorted(set(re.findall(r"^(G\d+|SIDECAR)\b", gtxt, re.M))) or ["unusable" if grc == 3 else "unknown"]
+        _rules.update(ids)
+        _refused.append(a)
+        log("GATE-SET REFUSED %s verdict=%s rules=%s: %s" % (a["tag"], a["verdict"], ",".join(ids), one_line(gtxt)))
+    if len(_refused) < len(_cands):
+        gs_write(0)
+    else:
+        _n = gs_read() + 1
+        gs_write(_n)
+        if _n >= GS_LIMIT:
+            log("PREMISE FAIL gate-set rules=%s prs=%d" % (",".join(sorted(_rules)), len(_refused)))
+            disarm("premise-failed", "gate-set: %d refused ticks, rules=%s prs=%d" % (_n, ",".join(sorted(_rules)), len(_refused)), "gate-set")
+
+
 for a in actions:
     act = a["act"]
     if act.startswith("observe-"):
@@ -706,6 +754,7 @@ for a in actions:
         sha = m.group(1) if m else ""
         if rc_ == 0:
             log("MERGED %s %s" % (a["tag"], sha))
+            gs_write(0)
             record("merged", a, "verdict=%s sha=%s" % (a["verdict"], sha))
         else:
             log("MERGE REFUSED %s rc=%d: %s" % (a["tag"], rc_, one_line(e_ + o_)))
