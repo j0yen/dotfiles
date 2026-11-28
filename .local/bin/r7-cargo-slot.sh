@@ -3,12 +3,14 @@
 # PREMISE: (a) the daemon's own memory gate (`wm-build builder cargo-jobs acquire`, .59 § MG) is the one source of truth for hand admission;
 #   (b) hand test binaries can delete or write anywhere the uid can, so they run inside bwrap with / read-only and rw binds only on the clone,
 #   the cargo target dir, a PRIVATE cargo home and one self-created scratch dir (lib: ~/.local/lib/hand-sandbox.sh, Fable F1-F4 10-21).
-# EXPIRES: when rb's cargo-slot.sh is ported here (this file then execs it) or 2026-11-18, whichever first. Decision rows: 3bae (gate), guard row 10-21 1:3x PM (sandbox).
+# EXPIRES: when a shared slot wrapper that keeps premises (a) daemon-gate admission and (b) the bwrap sandbox runs on ryzen7 (this file then execs it). Decision rows: 3bae (gate), guard row 10-21 1:3x PM (sandbox).
+#   A1304 W11 H6 2026-11-20: the first trigger "or 2026-11-18" passed with no port; rb's cargo-slot.sh carries no bwrap sandbox, so execing it would drop premise (b). The date is replaced by
+#   that condition (no new date). Under Joe's no-caps authority (#195, A1296/A1304) the scope carries no Memory* property and carries TasksMax=infinity, as rb's slot does.
 # usage: r7-cargo-slot.sh [--cap-gb N] [--wait-s S] -- cargo <args>   (exit 75 = refused by the gate, 77 = sandbox refused, 2 = usage)
 #        r7-cargo-slot.sh --selftest | --check
 # PRECHECK-1021 (CTRL 2:05 PM 10-21): default class is INNER (rank 0), never land. Prefix from the top dir name: mcphost* → --prefix mcphost- (inner 11.5 G),
 #   synthorg* → --prefix synthorg- (inner 6.0 G); both caps are READ from [cargo_jobs.mem_caps_gb.<prefix>.<class>] in the config (hardcoded fallback only if that key is missing:
-#   inner 11.5 / hand 5). wm-build* tops stay class hand, no prefix. The scope MemoryMax = that cap rounded UP to whole G (mcphost 12, synthorg 6); --cap-gb still overrides the scope only.
+#   inner 11.5 / hand 5). wm-build* tops stay class hand, no prefix. That cap rounded UP to whole G (mcphost 12, synthorg 6) is the admission/log count only; the scope carries no Memory* property.
 # PRE-CHECK before the acquire: live Σ (caps of the NON-`waiting:` holders) + own cap > mem_budget_gb → stderr `would-not-admit: live Σ=X cap=Y budget=Z holders=[id:class:cap,…]`,
 #   an END row (rc=75 + that text) in slot.log, exit 75, no acquire. Waiters are never counted (two hand jobs would refuse each other forever). The daemon acquire stays the source of truth;
 #   a pre-check that cannot run (journal/python error) warns and falls through to it.
@@ -16,7 +18,7 @@
 #   `cargo-jobs list` (id/run/pid/alive only, no caps) is used for two things: drop parts whose run is no longer alive, and add the row's OWN granted run (parts = holders BEFORE that grant).
 # selftest/dry-run env (documented here, names ours): R7_SLOT_FAKE_PARTS='["483:inner:11.5","waiting:hand-1:land:12.5"]' (JSON list of cargo-admission parts) and R7_SLOT_FAKE_BUDGET=22 replace the journal/config budget.
 # --wait-s is rounded UP to whole --wait-minutes (450 s → 8 min)
-# Order (Fable 6): acquire → systemd scope (MemoryMax = cap, the 2 G tmpfs is charged to it) → host-side `cargo fetch` with the REAL cargo home
+# Order (Fable 6): acquire → systemd scope (TasksMax=infinity, no Memory* property; the 2 G sandbox tmpfs is charged to it) → host-side `cargo fetch` with the REAL cargo home
 #   (downloads only, no build script runs) → bwrap → cargo. Never an unsandboxed fallback.
 set -u
 LIB=/home/jsy/.local/lib/hand-sandbox.sh; . "$LIB" || { echo "r7-cargo-slot: sandbox lib missing ($LIB); refusing" >&2; exit 77; }
@@ -116,12 +118,11 @@ selftest_precheck() { # exit-75 path + pass-through, driven by the FAKE env; own
   case $D in /home/jsy/hand/.slot-selftest.????*) rm -rf -- "$D";; esac
   return $fail
 }
-# --cap-gb sets ONLY the scope MemoryMax/High; the daemon prices its config class cap (CTRL 1:38 PM 10-21: no per-call cap overrides; the mem_caps_gb override key is unknown on 0.77.85 anyway)
+# --cap-gb sets ONLY the logged cap (accepted for caller compatibility; the scope carries no Memory* property); the daemon prices its config class cap (CTRL 1:38 PM 10-21: no per-call cap overrides; the mem_caps_gb override key is unknown on 0.77.85 anyway)
 [ -n "$CAP" ] || CAP=$(slotcalc cap "$CLS" "$PFX" | awk '{printf "%d", ($1==int($1)) ? $1 : int($1)+1}'); [ -n "$CAP" ] || CAP=$([ "$CLS" = hand ] && echo 5 || echo 12)
-HIGH=$((CAP - 2)); [ "$HIGH" -lt 1 ] && HIGH=1
 WAIT_MIN=$(( (WAIT_S + 59) / 60 )); [ "$WAIT_MIN" -lt 1 ] && WAIT_MIN=1
 case "$MODE" in
-  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G high=${HIGH}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
+  selftest) "$WM" builder cargo-jobs selftest 2>&1 | tail -2; selftest_precheck || exit 1; sandbox_selftest || exit 1; echo "SELFTEST v3: class=$CLS cap=${CAP}G wait=${WAIT_MIN}m avail=$(availg)G lib=$(sha256sum "$LIB" | cut -c1-8)"; exit 0;;
   check) "$WM" builder cargo-jobs list 2>&1 | tail -5; precheck /dev/null 2>/dev/null; echo "PRECHECK: $PCV: $PCM"; echo "CHECK v3: class=$CLS cap=${CAP}G avail=$(availg)G top=$TOP (grant decided by the daemon acquire; sandbox lib $(sha256sum "$LIB" | cut -c1-8))"; exit 0;;
 esac
 [ $# -gt 0 ] || { echo "r7-cargo-slot: no command after --" >&2; exit 2; }
@@ -137,7 +138,7 @@ JOBHOME=""; case "$HOME" in /home/jsy/hand/?*) JOBHOME=$(realpath -e "$HOME") ||
 echo "$(date -Is) ACQ pid=$$ class=$CLS cap=${CAP}G wait=${WAIT_MIN}m avail=$(availg)G top=$TOP tgt=$TGT scratch=$SCR jobhome=${JOBHOME:--} cmd=$*" >> "$LOG"
 R7I_TOP=$TOP R7I_TGT=$TGT R7I_CH=$CH R7I_SCR=$SCR R7I_JOBHOME=$JOBHOME \
 "$WM" builder cargo-jobs acquire --class "$CLS" ${PFX:+--prefix "$PFX"} --producer cargo-slot --config "$CFG" --state-dir /home/jsy/.local/state/wm-build --wait-minutes "$WAIT_MIN" -- \
-  systemd-run --user --scope --slice=app.slice --quiet -p MemoryHigh=${HIGH}G -p MemoryMax=${CAP}G nice -n 10 ionice -c2 -n7 "$0" --__inner "$@"
+  systemd-run --user --scope --slice=app.slice --quiet -p TasksMax=infinity nice -n 10 ionice -c2 -n7 "$0" --__inner "$@"
 rc=$?
 [ "$rc" = 75 ] && echo "$(date -Is) REFUSE pid=$$ class=$CLS cap=${CAP}G avail=$(availg)G (acquire 75)" >> "$LOG" || echo "$(date -Is) END pid=$$ rc=$rc avail=$(availg)G scratch=$SCR" >> "$LOG"
 exit "$rc"
