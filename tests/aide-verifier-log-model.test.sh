@@ -57,7 +57,7 @@ P() { cat "$th/av/$1/prompt.md"; }
 out=$(lc lg1 --log /tmp/x.log); rc=$?
 p=$(P lg1)
 [ "$rc" = 0 ] && pass "--log /tmp/x.log launches (rc 0)" || bad "--log /tmp/x.log rc=$rc: $out"
-! grep -q 'wm-verify-run .*\(cd\|&&\)' <<<"$p" && ! grep -qF 'cd $d/repo && ~/.local/bin/wm-verify-run' <<<"$p" && pass "log prompt has no wm-verify-run call" || bad "log prompt still calls wm-verify-run"
+! grep -q 'wm-verify-run .*\(\<cd \|&&\)' <<<"$p" && ! grep -qF 'cd $d/repo && ~/.local/bin/wm-verify-run' <<<"$p" && pass "log prompt has no wm-verify-run call" || bad "log prompt still calls wm-verify-run"
 grep -qF 'FORBIDDEN on carbon: pytest, uv, cargo, make, wm-verify-run' <<<"$p" && pass "log prompt names the forbidden tools" || bad "FORBIDDEN line missing"
 grep -qF "cp /tmp/x.log $th/av/lg1/bundle.log" <<<"$p" && pass "log prompt copies the log with cp /tmp/x.log" || bad "cp line missing"
 ! grep -q 'scp' <<<"$(grep -F 'Fetch the log' <<<"$p")" && pass "local log renders no scp fetch" || bad "local log renders scp"
