@@ -34,15 +34,20 @@ if [ -z "$dest" ] && [ -z "$mode" ]; then
   fi
   bin="${SEAT_EVENT_BIN:-$HOME/.local/bin/seat-event.sh}"
   [ -x "$bin" ] || bin="$(command -v seat-event.sh)" || exit 1
-  SEAT_EVENT_NOWAKE=1 EVENT_SOURCE=followup-loop "$bin" "$seat" "$line" >/dev/null 2>&1
-  exit $?
+  SEAT_EVENT_NOWAKE=1 EVENT_SOURCE=followup-loop "$bin" "$seat" "$line" >/dev/null 2>&1; nd_rc=$?
+  # A failed bell is never silent (W5 nodest): ONE failure record (key nodest|id|rev|sha1(fp)[:12]|bell) + ONE canonical open-asks row are raised below under the outbox lock; the entry stays undelivered so a replay may retry.
+  nd="nodest|$id|$(jq -r '.rev // 0' <<<"$in")|$(jq -r '.fp // ""' <<<"$in" | tr -d '\n' | sha1sum | cut -c1-12)|bell"
+  if [ "$nd_rc" = 0 ]; then   # a delivered bell only touches the outbox when an unsettled failure record for this entry exists
+    ob0="${FOLLOWUP_OUTBOX:-${FOLLOWUP_STATE_DIR:-$HOME/.local/state/followup-loop}/outbox.jsonl}"
+    [ -s "$ob0" ] && jq -e -s --arg k "$nd" 'any(.[]; .nodest_failure==true and .key==$k)' "$ob0" >/dev/null 2>&1 || exit 0
+  fi
 fi
 
 sd="${FOLLOWUP_STATE_DIR:-$HOME/.local/state/followup-loop}"; ob="${FOLLOWUP_OUTBOX:-$sd/outbox.jsonl}"
 retries="${FOLLOWUP_DELIVER_RETRIES:-3}"; chunk="${FOLLOWUP_CHUNK_BYTES:-1800}"
 key="$(jq -r '[.dest, (.task // .id), (.rev // 0), (.result // .id), (.kind // "result")] | map(tostring) | join("|")' <<<"$in")"
 [ -n "$rkey" ] && key="$rkey"
-[ -n "$dest" ] || exit 1
+[ -n "$dest" ] || [ -n "${nd:-}" ] || exit 1
 summary="$(jq -r '.summary // empty' <<<"$in")"; att="$(jq -r '.attachment // empty' <<<"$in")"
 if [ -z "${FOLLOWUP_LOCK_HELD:-}" ]; then   # one sender per state dir at a time: check, send and record are atomic against concurrent senders
   mkdir -p "$sd" && exec 9>"$sd/lock" && flock 9 || exit 1
@@ -86,6 +91,30 @@ reconcile() { # part marker_ts: surface the unknown part once per marker (record
   bell "FOLLOW-UP needs-reconcile $id: part $1 of $key may already be sent (outcome unknown); not resent, settle with: followup-deliver.sh --reconcile $1 sent|resend --key '$key'"
   return 0; }
 unknown() { local st; st="$(pstate "$1")"; [ "${st%% *}" = sending ] && reconcile "$1" "${st#* }"; return 0; }
+if [ -n "${nd:-}" ]; then   # no-destination bell outcome (lock held): failure record once, owned row once, settle marker once
+  nd_has() { jq -e -s --arg k "$nd" --arg f "$1" 'any(.[]; .[$f]==true and .key==$k)' "$ob" >/dev/null 2>&1; }
+  if [ "$nd_rc" != 0 ]; then
+    nd_has nodest_failure || commit_line "$(jq -nc --arg k "$nd" --arg i "$id" --arg s "$seat" --arg ts "$(date -Ins)" --arg rc "$nd_rc" '{nodest_failure:true,key:$k,id:$i,seat:$s,class:"bell",rc:($rc|tonumber),ts:$ts}')" || nocommit "nodest failure record"
+    wma="${WM_ASKS_BIN:-wm-asks}"; marker="nodestfail:$(printf '%s' "$nd" | sha1sum | cut -c1-12)"
+    qout="$("$wma" asks query --json --status all --text "$marker" 2>/dev/null)"; qrc=$?
+    hit="$([ "$qrc" = 0 ] && jq -r --arg m "$marker" '[.[]? | select(((.what // "") + " ") | contains($m + " "))] | length' <<<"$qout" 2>/dev/null)"
+    owned=0; [ -n "$hit" ] && [ "$hit" != 0 ] && owned=1
+    if [ "$qrc" = 0 ] && [ "$hit" = 0 ]; then
+      due="$(date -d '+60 minutes' +%Y-%m-%dT%H:%M)"
+      "$wma" asks add --owner ctl --due "$due" --key "$id" --check "grep -qF '\"nodest_settled\":true,\"key\":\"$nd\"' $ob" \
+        --what "followup bell to $seat failed (rc $nd_rc) for $id; deliver it or settle | waits-on=seat-event $marker" --by followup-deliver >/dev/null 2>&1 && owned=1
+    fi
+    if [ "$owned" = 1 ]; then   # a row exists: the unowned marker (if any) is cleared, once
+      ! nd_has nodest_unowned || nd_has nodest_owned || commit_line "$(jq -nc --arg k "$nd" --arg ts "$(date -Ins)" '{nodest_owned:true,key:$k,ts:$ts}')" || nocommit "nodest owned marker"
+    else   # wm-asks query/add failed: loud line every time, ONE durable marker per key that followup-eval lists as nodest-unowned
+      echo "followup-deliver: nodest row NOT created (wm-asks query rc $qrc, key $nd): id=$id rev=$(jq -r '.rev // 0' <<<"$in") key=$nd; surfaced by followup-eval as nodest-unowned" >&2
+      nd_has nodest_unowned || commit_line "$(jq -nc --arg k "$nd" --arg i "$id" --arg s "$seat" --arg r "$(jq -r '.rev // 0' <<<"$in")" --arg ts "$(date -Ins)" '{nodest_unowned:true,key:$k,id:$i,rev:($r|tonumber),seat:$s,ts:$ts}')" || nocommit "nodest unowned marker"
+    fi
+    exit 1
+  fi
+  nd_has nodest_settled || commit_line "$(jq -nc --arg k "$nd" --arg ts "$(date -Ins)" '{nodest_settled:true,key:$k,ts:$ts}')" || nocommit "nodest settle marker"
+  exit 0
+fi
 if [ -n "$mode" ]; then   # flock-guarded human settlement of an unknown part (the lock above is held)
   st="$(pstate "$rpart")"
   [ "${st%% *}" = sending ] || { echo "followup-deliver: no open unknown marker for part $rpart of $key" >&2; exit 1; }
