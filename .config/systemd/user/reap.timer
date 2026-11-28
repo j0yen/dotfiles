@@ -2,8 +2,8 @@
 Description=Hourly retention reap (A239)
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=1h
+OnCalendar=hourly
+RandomizedDelaySec=300
 Persistent=true
 
 [Install]
