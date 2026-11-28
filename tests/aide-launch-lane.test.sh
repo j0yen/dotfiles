@@ -43,7 +43,8 @@ SH="$(dirname "$L")/aide-launch.sh"
 : >"$T/stublog"; env HOME="$T" STUBLOG="$T/stublog" AIDE_CLAUDE_BIN="$T/stub" bash "$SH" --model claude-sonnet-5-5 >/dev/null 2>&1; rc=$?
 [ $rc = 0 ] && grep -q 'WM_SEAT=ctl WM_AIDE_LANE=main' "$T/stublog" && ok "aide-launch.sh shim reaches the stub with WM_SEAT=ctl" || bad "shim launch rc=$rc"
 grep -q 'ctl-launch.sh' "$SH" && [ "$(grep -vc '^#' "$SH")" -le 3 ] && ok "aide-launch.sh is a shim that names ctl-launch.sh" || bad "aide-launch.sh not a shim"
-grep -q '^export WM_SEAT=ctl$' "$L" && ! grep -q '^export WM_SEAT=aide' "$L" && ok "ctl-launch.sh exports WM_SEAT=ctl" || bad "ctl-launch.sh WM_SEAT assignment"
+# a8dba20 (--seat ops/bld/rls) moved the export into the seat case: the ctl|ops arm is the one that exports WM_SEAT=ctl; nothing exports WM_SEAT=aide
+grep -qE '^[[:space:]]*ctl\|ops\) export WM_SEAT=ctl;' "$L" && ! grep -qE 'export WM_SEAT=aide' "$L" && ok "ctl-launch.sh exports WM_SEAT=ctl" || bad "ctl-launch.sh WM_SEAT assignment"
 # AIDE CARD: a lane prints `lane: <name>`; main's card has no lane line (byte-for-byte)
 H="$(cd "$(dirname "$L")/../.." && pwd)/.claude/hooks/seat-context-start.sh"
 card() { env -u TMUX HOME="$T" WM_SEAT=aide WM_AIDE_LANE="$1" bash "$H" </dev/null 2>/dev/null | head -n3; }

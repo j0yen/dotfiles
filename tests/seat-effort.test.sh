@@ -12,5 +12,9 @@ for f in settings.json ctl-settings.json; do
 done
 A="$HOME/.claude/settings.local.json"
 if [ -f "$A" ]; then [ "$(jq -r '.env.CLAUDE_CODE_EFFORT_LEVEL // "unset"' "$A")" = unset ]; ok "aide settings.local.json effort untouched" $?; else echo "skip - no $A"; fi
-! grep -q -- '--effort' "$here/.local/bin/seat-tick.sh"; ok "seat-tick.sh argv carries no --effort (argv tests unchanged)" $?
+# 3d7f6fd (A1300 model/effort rollout, E1) replaced "seat-tick.sh argv carries no --effort": rb/r7 ticks now pass --effort read from seat-model-hold.json
+# through seat_hold_effort (tests/seat-model-rollout.test.sh E1). Kept here: that is the only --effort in seat-tick.sh, scoped to rb|r7, never a hard-coded level.
+ef="$(grep -n -- '--effort' "$here/.local/bin/seat-tick.sh")"
+[ -n "$ef" ] && ! grep -v 'rb|r7) _ef="$(seat_hold_effort "$ROLE")"' <<<"$ef" | grep -q . && ! grep -qE -- '--effort[ "]+(low|medium|high|xhigh|max)' <<<"$ef"
+ok "seat-tick.sh --effort comes only from seat_hold_effort for rb|r7 (no hard-coded level, ctl tick unchanged)" $?
 exit $fail
